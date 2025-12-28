@@ -80,7 +80,10 @@ class InputFieldGenerator:
             "multiscale_grf", "localized", "composite", "heavy_tailed",
             # Tier 1 domain-specific ICs
             "quantum_wave_packet", "turing_pattern", "thermal_gradient",
-            "morphogen_gradient", "reaction_front"
+            "morphogen_gradient", "reaction_front",
+            # Tier 2 domain-specific ICs
+            "light_cone", "critical_fluctuation", "phase_boundary",
+            "bz_reaction", "shannon_entropy"
         ] = "gaussian_random_field",
         seed: Optional[int] = None,
         **kwargs,
@@ -141,13 +144,25 @@ class InputFieldGenerator:
             return self._generate_morphogen_gradient(batch_size, **kwargs)
         elif field_type == "reaction_front":
             return self._generate_reaction_front(batch_size, **kwargs)
+        # Tier 2 domain-specific ICs
+        elif field_type == "light_cone":
+            return self._generate_light_cone(batch_size, **kwargs)
+        elif field_type == "critical_fluctuation":
+            return self._generate_critical_fluctuation(batch_size, **kwargs)
+        elif field_type == "phase_boundary":
+            return self._generate_phase_boundary(batch_size, **kwargs)
+        elif field_type == "bz_reaction":
+            return self._generate_bz_reaction(batch_size, **kwargs)
+        elif field_type == "shannon_entropy":
+            return self._generate_shannon_entropy(batch_size, **kwargs)
         else:
             raise ValueError(
                 f"Unknown field type: {field_type}. "
                 f"Must be one of: 'gaussian_random_field', 'random', 'structured', 'mixed', "
                 f"'multiscale_grf', 'localized', 'composite', 'heavy_tailed', "
                 f"'quantum_wave_packet', 'turing_pattern', 'thermal_gradient', "
-                f"'morphogen_gradient', 'reaction_front'"
+                f"'morphogen_gradient', 'reaction_front', 'light_cone', 'critical_fluctuation', "
+                f"'phase_boundary', 'bz_reaction', 'shannon_entropy'"
             )
 
     def _generate_grf_batch(
@@ -1115,6 +1130,479 @@ class InputFieldGenerator:
 
             # Replicate across channels
             field = field_val.unsqueeze(0).repeat(self.num_channels, 1, 1)
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    # ========================================================================
+    # DOMAIN-SPECIFIC INITIAL CONDITIONS (Tier 2)
+    # ========================================================================
+
+    def _generate_light_cone(
+        self,
+        batch_size: int,
+        cone_radius: float = 20.0,
+        smoothing: float = 2.0,
+        interior_length_scale: float = 5.0,
+        num_cones: int = 1,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate light cone initial conditions.
+
+        Creates causal structure from special relativity - separates timelike
+        from spacelike regions. Signals confined within light cone boundaries.
+
+        Physics: Sigmoid-masked interior with GRF
+            mask = sigmoid((cone_radius - r) / smoothing)
+            field = mask * GRF(interior_length_scale)
+
+        Args:
+            batch_size: Number of samples
+            cone_radius: Opening size (physical: c*t, in pixels)
+            smoothing: Edge sharpness (pixels)
+            interior_length_scale: GRF correlation length inside cone
+            num_cones: Number of independent cones (1-3)
+
+        Returns:
+            Tensor [B, C, H, W] with cone-confined fields
+
+        Expected dynamics: Operators preserve causal structure, signals don't escape cones
+        Cross-domain: Morphogen diffusion boundaries, information propagation limits
+
+        Example:
+            ```python
+            # Single light cone with sharp boundary
+            fields = generator._generate_light_cone(
+                batch_size=16,
+                cone_radius=25.0,
+                smoothing=1.5,
+                num_cones=1
+            )
+            ```
+        """
+        fields = []
+
+        # Create coordinate grids
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Initialize field
+            field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
+
+            for _ in range(num_cones):
+                # Random cone center
+                cx = torch.rand(1, device=self.device) * self.grid_size
+                cy = torch.rand(1, device=self.device) * self.grid_size
+
+                # Distance from center
+                r = torch.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+
+                # Smooth cone mask (sigmoid transition)
+                cone_mask = torch.sigmoid((cone_radius - r) / smoothing)
+
+                # Generate GRF for interior
+                interior = self._generate_grf_batch(
+                    batch_size=1,
+                    length_scale=interior_length_scale / self.grid_size,
+                    variance=1.0
+                )[0]  # [C, H, W]
+
+                # Apply mask to confine field to cone
+                masked_interior = cone_mask.unsqueeze(0) * interior
+
+                # Accumulate cones
+                field += masked_interior
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_critical_fluctuation(
+        self,
+        batch_size: int,
+        correlation_length: float = 15.0,
+        eta: float = 0.04,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate critical fluctuation initial conditions.
+
+        Creates scale-free fluctuations near critical points via Ornstein-Zernike
+        spectrum. Models universality and critical phenomena.
+
+        Physics: Ornstein-Zernike power spectrum
+            P(k) = A / (k^2 + xi^(-2))^(eta/2)
+            where xi is correlation length, eta is anomalous dimension
+
+        Args:
+            batch_size: Number of samples
+            correlation_length: Correlation length xi (pixels)
+            eta: Anomalous dimension (0.04 for 3D Ising universality class)
+
+        Returns:
+            Tensor [B, C, H, W] with critical fluctuations
+
+        Expected dynamics: Scale-invariant dynamics, critical slowing down
+        Cross-domain: Power-law correlations in turbulence, 1/f noise, biological networks
+
+        Example:
+            ```python
+            # Critical fluctuations with 3D Ising exponent
+            fields = generator._generate_critical_fluctuation(
+                batch_size=16,
+                correlation_length=20.0,
+                eta=0.04
+            )
+            ```
+        """
+        # Ornstein-Zernike spectrum: P(k) = A / (k^2 + xi^(-2))^(eta/2)
+        xi_inv_sq = (1.0 / correlation_length) ** 2
+        power_spectrum = 1.0 / torch.pow(self.k_squared + xi_inv_sq, eta / 2)
+
+        # Normalize to preserve variance
+        power_spectrum = power_spectrum / power_spectrum.sum() * (self.grid_size ** 2)
+
+        fields = []
+        for _ in range(batch_size):
+            # Random complex Fourier modes
+            fourier_modes = torch.randn(
+                self.num_channels,
+                self.grid_size,
+                self.grid_size,
+                device=self.device,
+                dtype=torch.complex64
+            ) * torch.sqrt(power_spectrum).unsqueeze(0)
+
+            # Inverse FFT to get real-space field
+            field = torch.fft.ifft2(fourier_modes).real
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_phase_boundary(
+        self,
+        batch_size: int,
+        interface_width: float = 3.0,
+        interface_angle: Optional[float] = None,
+        fluctuation_amplitude: float = 0.1,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate phase boundary initial conditions.
+
+        Creates interfaces between phases (solid/liquid, ordered/disordered)
+        via Allen-Cahn order parameter with fluctuations.
+
+        Physics: Allen-Cahn order parameter
+            phi = tanh((x - x_interface) / (sqrt(2) * xi)) + fluctuations
+
+        Args:
+            batch_size: Number of samples
+            interface_width: Interface width xi (pixels)
+            interface_angle: Interface orientation (radians, None=random)
+            fluctuation_amplitude: Interface roughness amplitude
+
+        Returns:
+            Tensor [B, C, H, W] with phase boundaries
+
+        Expected dynamics: Interface motion, coarsening, curvature-driven flow
+        Cross-domain: Reaction fronts, cell membrane boundaries
+
+        Example:
+            ```python
+            # Phase boundary with random orientation
+            fields = generator._generate_phase_boundary(
+                batch_size=16,
+                interface_width=4.0,
+                fluctuation_amplitude=0.15
+            )
+            ```
+        """
+        fields = []
+
+        # Create coordinate grids
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Random interface orientation
+            if interface_angle is None:
+                angle = torch.rand(1, device=self.device) * 2 * np.pi
+            else:
+                angle = torch.tensor(interface_angle, device=self.device)
+
+            # Random interface position
+            offset = (torch.rand(1, device=self.device) - 0.5) * self.grid_size * 0.5
+
+            # Distance along normal to interface
+            dist = x * torch.cos(angle) + y * torch.sin(angle) - offset
+
+            # Base Allen-Cahn profile
+            base_profile = torch.tanh(dist / (np.sqrt(2) * interface_width))
+
+            # Add interface fluctuations (low-frequency GRF)
+            fluctuations = self._generate_grf_batch(
+                batch_size=1,
+                length_scale=0.1,
+                variance=fluctuation_amplitude ** 2
+            )[0]  # [C, H, W]
+
+            # Combine profile + fluctuations
+            field = base_profile.unsqueeze(0).repeat(self.num_channels, 1, 1) + fluctuations
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_bz_reaction(
+        self,
+        batch_size: int,
+        pattern_type: str = "spiral",
+        num_spirals: int = 1,
+        wavelength: float = 16.0,
+        phase_offset: float = 0.0,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate Belousov-Zhabotinsky (BZ) reaction initial conditions.
+
+        Creates oscillatory chemical reaction patterns showing spiral waves.
+        Paradigmatic example of non-equilibrium chemistry and excitable media.
+
+        Physics: Spiral wave seeds in polar coordinates
+            u = u_ss + A * cos(theta - k*r)
+            v = v_ss + A * sin(theta - k*r + delta)
+
+        Args:
+            batch_size: Number of samples
+            pattern_type: "spiral", "target", or "turbulent"
+            num_spirals: Number of spiral cores (1-5)
+            wavelength: Spiral wavelength (pixels)
+            phase_offset: Phase difference between u and v fields
+
+        Returns:
+            Tensor [B, C, H, W] with BZ reaction patterns
+
+        Expected dynamics: Spiral tip meandering, target waves, chemical turbulence
+        Cross-domain: Cardiac spiral waves, excitable media in biology
+
+        Example:
+            ```python
+            # Single spiral wave
+            fields = generator._generate_bz_reaction(
+                batch_size=16,
+                pattern_type="spiral",
+                num_spirals=1,
+                wavelength=20.0
+            )
+            ```
+        """
+        fields = []
+
+        # Wave number
+        k = 2 * np.pi / wavelength
+
+        # Create coordinate grids
+        y_grid, x_grid = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Initialize field
+            field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
+
+            if pattern_type == "spiral":
+                # Create spiral patterns
+                for _ in range(num_spirals):
+                    # Random spiral center
+                    cx = torch.rand(1, device=self.device) * self.grid_size
+                    cy = torch.rand(1, device=self.device) * self.grid_size
+
+                    # Polar coordinates from center
+                    dx = x_grid - cx
+                    dy = y_grid - cy
+                    r = torch.sqrt(dx ** 2 + dy ** 2)
+                    theta = torch.atan2(dy, dx)
+
+                    # Random spiral handedness
+                    handedness = 1.0 if torch.rand(1).item() > 0.5 else -1.0
+
+                    # Spiral pattern: phase = theta - k*r
+                    spiral_phase = handedness * theta - k * r
+
+                    # Create u and v fields (activator and inhibitor)
+                    u_spiral = torch.cos(spiral_phase)
+                    v_spiral = torch.sin(spiral_phase + phase_offset)
+
+                    # Add to channels (distribute across channels)
+                    field[0] += u_spiral
+                    if self.num_channels > 1:
+                        field[1] += v_spiral
+                    if self.num_channels > 2:
+                        field[2] += (u_spiral + v_spiral) / 2
+
+            elif pattern_type == "target":
+                # Concentric target waves
+                for _ in range(num_spirals):
+                    # Random center
+                    cx = torch.rand(1, device=self.device) * self.grid_size
+                    cy = torch.rand(1, device=self.device) * self.grid_size
+
+                    # Radial distance
+                    r = torch.sqrt((x_grid - cx) ** 2 + (y_grid - cy) ** 2)
+
+                    # Target pattern: pure radial dependence
+                    target_pattern = torch.cos(k * r)
+
+                    # Add to channels
+                    field[0] += target_pattern
+                    if self.num_channels > 1:
+                        field[1] += torch.sin(k * r + phase_offset)
+                    if self.num_channels > 2:
+                        field[2] += target_pattern
+
+            elif pattern_type == "turbulent":
+                # Chemical turbulence: multiple interfering spirals
+                num_spirals_turbulent = np.random.randint(3, 8)
+                for _ in range(num_spirals_turbulent):
+                    cx = torch.rand(1, device=self.device) * self.grid_size
+                    cy = torch.rand(1, device=self.device) * self.grid_size
+
+                    dx = x_grid - cx
+                    dy = y_grid - cy
+                    r = torch.sqrt(dx ** 2 + dy ** 2)
+                    theta = torch.atan2(dy, dx)
+
+                    handedness = 1.0 if torch.rand(1).item() > 0.5 else -1.0
+                    spiral_phase = handedness * theta - k * r
+
+                    field[0] += torch.cos(spiral_phase) / num_spirals_turbulent
+                    if self.num_channels > 1:
+                        field[1] += torch.sin(spiral_phase) / num_spirals_turbulent
+
+            else:
+                raise ValueError(f"Unknown pattern_type: {pattern_type}")
+
+            # Normalize to reasonable range
+            field = field / (field.abs().max() + 1e-10)
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_shannon_entropy(
+        self,
+        batch_size: int,
+        entropy_pattern: str = "gradient",
+        entropy_range: Tuple[float, float] = (0.1, 1.0),
+        patch_size: int = 8,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate Shannon entropy field initial conditions.
+
+        Creates spatially-varying noise levels where local entropy quantifies
+        information content. High entropy = unpredictable, low entropy = ordered.
+
+        Physics: Spatially-varying noise
+            field = mu(x,y) + sigma(x,y) * noise
+            where H ~ log(sigma) encodes local Shannon entropy
+
+        Args:
+            batch_size: Number of samples
+            entropy_pattern: "gradient", "patchy", or "random"
+            entropy_range: (low, high) entropy bounds (in bits)
+            patch_size: Spatial scale for entropy variation (pixels)
+
+        Returns:
+            Tensor [B, C, H, W] with spatially-varying entropy
+
+        Expected dynamics: Entropy transport, information loss/preservation
+        Cross-domain: Thermodynamic entropy, compression quality
+
+        Example:
+            ```python
+            # Entropy gradient from ordered to chaotic
+            fields = generator._generate_shannon_entropy(
+                batch_size=16,
+                entropy_pattern="gradient",
+                entropy_range=(0.1, 2.0)
+            )
+            ```
+        """
+        fields = []
+
+        # Create coordinate grids (normalized to [0, 1])
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Create entropy pattern (controls local noise amplitude)
+            if entropy_pattern == "gradient":
+                # Linear gradient in entropy
+                direction = np.random.choice(["x", "y", "diagonal"])
+                if direction == "x":
+                    entropy_map = x
+                elif direction == "y":
+                    entropy_map = y
+                else:
+                    entropy_map = (x + y) / 2
+
+            elif entropy_pattern == "patchy":
+                # Patchy entropy via low-frequency GRF
+                entropy_base = self._generate_grf_batch(
+                    batch_size=1,
+                    length_scale=patch_size / self.grid_size,
+                    variance=1.0
+                )[0, 0]  # [H, W]
+                # Normalize to [0, 1]
+                entropy_map = (entropy_base - entropy_base.min()) / (entropy_base.max() - entropy_base.min() + 1e-10)
+
+            elif entropy_pattern == "random":
+                # Random entropy (nearly uniform)
+                entropy_map = torch.rand(self.grid_size, self.grid_size, device=self.device)
+
+            else:
+                raise ValueError(f"Unknown entropy_pattern: {entropy_pattern}")
+
+            # Scale to entropy range
+            entropy_low, entropy_high = entropy_range
+            local_entropy = entropy_low + (entropy_high - entropy_low) * entropy_map
+
+            # Convert entropy to noise amplitude: sigma = exp(H)
+            # (Higher entropy = larger sigma = more unpredictable)
+            noise_amplitude = torch.exp(local_entropy)
+
+            # Generate base signal (low-frequency structure)
+            base_signal = self._generate_grf_batch(
+                batch_size=1,
+                length_scale=0.2,
+                variance=0.5
+            )[0]  # [C, H, W]
+
+            # Generate spatially-varying noise
+            noise = torch.randn(self.num_channels, self.grid_size, self.grid_size, device=self.device)
+
+            # Modulate noise by local entropy
+            modulated_noise = noise * noise_amplitude.unsqueeze(0)
+
+            # Combine base signal + spatially-varying noise
+            field = base_signal + modulated_noise
 
             fields.append(field)
 

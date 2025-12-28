@@ -240,7 +240,10 @@ class InputGenerationConfig(BaseModel):
         "random", "gaussian_random_field", "structured", "mixed", "sampled",
         # Tier 1 domain-specific ICs
         "quantum_wave_packet", "turing_pattern", "thermal_gradient",
-        "morphogen_gradient", "reaction_front"
+        "morphogen_gradient", "reaction_front",
+        # Tier 2 domain-specific ICs
+        "light_cone", "critical_fluctuation", "phase_boundary",
+        "bz_reaction", "shannon_entropy"
     ] = "random"
     distribution: Literal["gaussian", "uniform"] = "gaussian"
     num_samples_per_operator: int = Field(default=100, ge=1)
@@ -261,6 +264,12 @@ class InputGenerationConfig(BaseModel):
     thermal_gradient: Dict[str, Any] = Field(default_factory=dict)
     morphogen_gradient: Dict[str, Any] = Field(default_factory=dict)
     reaction_front: Dict[str, Any] = Field(default_factory=dict)
+    # Tier 2 domain-specific IC parameter dicts
+    light_cone: Dict[str, Any] = Field(default_factory=dict)
+    critical_fluctuation: Dict[str, Any] = Field(default_factory=dict)
+    phase_boundary: Dict[str, Any] = Field(default_factory=dict)
+    bz_reaction: Dict[str, Any] = Field(default_factory=dict)
+    shannon_entropy: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PerformanceConfig(BaseModel):

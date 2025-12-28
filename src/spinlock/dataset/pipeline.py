@@ -651,6 +651,17 @@ class DatasetGenerationPipeline:
             return config_gen.morphogen_gradient.copy()
         elif ic_type == "reaction_front" and config_gen.reaction_front:
             return config_gen.reaction_front.copy()
+        # Tier 2 domain-specific ICs
+        elif ic_type == "light_cone" and config_gen.light_cone:
+            return config_gen.light_cone.copy()
+        elif ic_type == "critical_fluctuation" and config_gen.critical_fluctuation:
+            return config_gen.critical_fluctuation.copy()
+        elif ic_type == "phase_boundary" and config_gen.phase_boundary:
+            return config_gen.phase_boundary.copy()
+        elif ic_type == "bz_reaction" and config_gen.bz_reaction:
+            return config_gen.bz_reaction.copy()
+        elif ic_type == "shannon_entropy" and config_gen.shannon_entropy:
+            return config_gen.shannon_entropy.copy()
         elif ic_type == "gaussian_random_field":
             return {
                 "length_scale": config_gen.length_scale,
