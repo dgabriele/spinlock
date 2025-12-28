@@ -50,12 +50,33 @@ parameter_space:
     # Fixed dimensions for MVP (not sampled)
     # input_channels: 3 (hardcoded in operator builder)
     # output_channels: 3 (hardcoded in operator builder)
-    # grid_size: 64 (hardcoded in operator builder)
+
+    grid_size:
+      type: choice
+      choices: [128]
+      description: "Spatial grid resolution (fixed at 128×128)"
 
     normalization:
       type: choice
       choices: ["instance", "batch"]
       description: "Feature normalization type"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["autoregressive", "residual", "convex"]
+      description: "Temporal update policy type"
+
+    alpha:
+      type: continuous
+      bounds: [0.1, 0.9]
+      description: "Convex policy mixing parameter (only used if policy=convex)"
+
+    dt:
+      type: continuous
+      bounds: [0.001, 0.1]
+      log_scale: true
+      description: "Residual policy step size (only used if policy=residual)"
 
 # Sampling configuration
 sampling:

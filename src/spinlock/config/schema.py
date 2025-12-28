@@ -71,8 +71,8 @@ class ChoiceParameter(ParameterSpec):
     @field_validator('choices')
     @classmethod
     def validate_choices(cls, v: list[Any]) -> list[Any]:
-        if len(v) < 2:
-            raise ValueError("Choice parameter must have at least 2 options")
+        if len(v) < 1:
+            raise ValueError("Choice parameter must have at least 1 option")
         return v
 
 
@@ -106,7 +106,13 @@ class ArrayParameter(ParameterSpec):
 
 
 class ParameterSpace(BaseModel):
-    """Complete parameter space definition."""
+    """
+    Complete parameter space definition.
+
+    Includes architecture, stochastic, operator, and evolution parameters.
+    All parameters are sampled via Sobol sequences and stored in datasets
+    for downstream use (e.g., parameter space embeddings, analysis).
+    """
 
     architecture: Dict[str, Union[
         IntegerParameter, ContinuousParameter, ChoiceParameter,
@@ -118,6 +124,9 @@ class ParameterSpace(BaseModel):
     operator: Dict[str, Union[
         IntegerParameter, ContinuousParameter, ChoiceParameter, BooleanParameter
     ]]
+    evolution: Dict[str, Union[
+        IntegerParameter, ContinuousParameter, ChoiceParameter, BooleanParameter
+    ]] = Field(default_factory=dict)  # Optional for backward compatibility
 
     @property
     def total_dimensions(self) -> int:
@@ -125,7 +134,8 @@ class ParameterSpace(BaseModel):
         Calculate total parameter space dimensionality.
 
         Returns:
-            Total number of scalar parameters across all categories.
+            Total number of scalar parameters across all categories
+            (architecture, stochastic, operator, evolution).
         """
         total = 0
         for param in self._all_params():
@@ -133,10 +143,11 @@ class ParameterSpace(BaseModel):
         return total
 
     def _all_params(self) -> Iterator[ParameterSpec]:
-        """DRY: Single iterator over all parameters."""
+        """DRY: Single iterator over all parameters across all categories."""
         yield from self.architecture.values()
         yield from self.stochastic.values()
         yield from self.operator.values()
+        yield from self.evolution.values()  # NEW: Include evolution params
 
     def _count_dimensions(self, param: ParameterSpec) -> int:
         """Count dimensions for a single parameter."""
@@ -225,13 +236,19 @@ class ParallelismConfig(BaseModel):
 class InputGenerationConfig(BaseModel):
     """Input field generation configuration."""
 
-    method: Literal["random", "gaussian_random_field", "structured", "mixed"] = "random"
+    method: Literal["random", "gaussian_random_field", "structured", "mixed", "sampled"] = "random"
     distribution: Literal["gaussian", "uniform"] = "gaussian"
     num_samples_per_operator: int = Field(default=100, ge=1)
     spatial_size: Union[Literal["from_operator"], int] = "from_operator"
     # Optional parameters for GRF generation
     length_scale: float = Field(default=0.1, gt=0, le=1)
     variance: float = Field(default=1.0, gt=0)
+    # Optional parameters for sampled IC type method
+    ic_type_weights: Dict[str, float] = Field(default_factory=dict)
+    multiscale_grf: Dict[str, Any] = Field(default_factory=dict)
+    localized: Dict[str, Any] = Field(default_factory=dict)
+    composite: Dict[str, Any] = Field(default_factory=dict)
+    heavy_tailed: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PerformanceConfig(BaseModel):

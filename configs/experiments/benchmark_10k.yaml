@@ -2,11 +2,18 @@ version: "1.0"
 
 metadata:
   name: "benchmark_10k_experiment"
-  description: "Full 10k benchmark for performance validation"
+  description: "Discovery-focused 10k dataset with diverse ICs, noise schedules, and spatial correlation"
   author: "Spinlock Team"
   created: "2025-12-27"
+  updated: "2025-12-28"
+  purpose: "Explore diverse dynamical behaviors for hypothesis generation and VQVAE tokenization"
 
-# 8-dimensional parameter space for MVP
+# 14-dimensional parameter space (architecture + stochastic + operator + evolution)
+# Architecture (5): num_layers, base_channels, kernel_size, activation, dropout_rate
+# Stochastic (5): noise_type, noise_scale, noise_schedule, schedule_period, spatial_correlation
+# Operator (1): normalization
+# Evolution (3): update_policy, alpha, dt
+# Grid size: Fixed at 128×128 for consistent VQ-VAE tokenization
 parameter_space:
   architecture:
     num_layers:
@@ -42,15 +49,52 @@ parameter_space:
 
     noise_scale:
       type: continuous
-      bounds: [0.001, 0.1]
+      bounds: [0.00001, 1.0]
       log_scale: true
-      description: "Scale of stochastic perturbations"
+      description: "Scale of stochastic perturbations (expanded range for diversity)"
+
+    noise_schedule:
+      type: choice
+      choices: ["constant", "annealing", "periodic"]
+      description: "Temporal noise schedule type"
+
+    schedule_period:
+      type: integer
+      bounds: [50, 200]
+      description: "Period for periodic noise schedule (only used if schedule=periodic)"
+
+    spatial_correlation:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Spatial correlation length for noise (0=uncorrelated)"
 
   operator:
     normalization:
       type: choice
       choices: ["none", "instance", "batch"]
       description: "Feature normalization type"
+
+    grid_size:
+      type: choice
+      choices: [128]
+      description: "Spatial grid resolution (fixed at 128×128)"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["autoregressive", "residual", "convex"]
+      description: "Temporal update policy type"
+
+    alpha:
+      type: continuous
+      bounds: [0.1, 0.9]
+      description: "Convex policy mixing parameter (only used if policy=convex)"
+
+    dt:
+      type: continuous
+      bounds: [0.001, 0.1]
+      log_scale: true
+      description: "Residual policy step size (only used if policy=residual)"
 
 # Sampling configuration
 sampling:
@@ -72,7 +116,7 @@ sampling:
     max_pairwise_correlation: 0.05
 
   total_samples: 10000
-  batch_size: 1000
+  batch_size: 500  # Adaptive batching will auto-adjust for optimal GPU utilization
 
 # Simulation configuration
 simulation:
@@ -83,9 +127,37 @@ simulation:
     devices: "auto"
 
   input_generation:
-    method: "random"
-    length_scale: 0.1
-    variance: 1.0
+    # Diverse IC types for discovery-focused exploration
+    method: "sampled"
+    ic_type_weights:
+      multiscale_grf: 0.30
+      localized: 0.25
+      composite: 0.25
+      gaussian_random_field: 0.15
+      heavy_tailed: 0.05
+
+    # Default parameters for each IC type
+    multiscale_grf:
+      scales: [0.02, 0.05, 0.1, 0.2, 0.4]
+      variance: 1.0
+
+    localized:
+      num_blobs: 5
+      min_width: 5.0
+      max_width: 15.0
+
+    composite:
+      pattern: "waves"
+      noise_level: 0.1
+      grf_length_scale: 0.05
+
+    gaussian_random_field:
+      length_scale: 0.1
+      variance: 1.0
+
+    heavy_tailed:
+      alpha: 1.5
+      variance: 1.0
 
   precision: "float32"
 
