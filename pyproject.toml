@@ -1,0 +1,54 @@
+[tool.poetry]
+name = "spinlock"
+version = "0.1.0"
+description = "High-performance stochastic neural operator dataset generator"
+authors = ["dg <dg@gelotto.io>"]
+readme = "README.md"
+packages = [{include = "spinlock", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+torch = "^2.1.0"
+numpy = "^1.24.0"
+scipy = "^1.11.0"
+h5py = "^3.10.0"
+pydantic = "^2.5.0"
+pydantic-yaml = "^1.2.0"
+pyyaml = "^6.0"
+tqdm = "^4.66.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-cov = "^4.1.0"
+black = "^23.12.0"
+ruff = "^0.1.8"
+mypy = "^1.7.0"
+ipython = "^8.18.0"
+pyright = "^1.1.407"
+
+[tool.poetry.group.optional.dependencies]
+zarr = "^2.16.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I", "N", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

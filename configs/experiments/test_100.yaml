@@ -1,0 +1,108 @@
+version: "1.0"
+
+metadata:
+  name: "test_100_experiment"
+  description: "Small test run with 100 samples for validation"
+  author: "Spinlock Team"
+  created: "2025-12-27"
+
+# Simplified parameter space (fixed input/output dimensions for MVP)
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 4]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: integer
+      bounds: [16, 32]
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5]
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["gelu", "silu"]
+      description: "Activation function"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.2]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian", "laplace"]
+      description: "Type of stochastic noise"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.001, 0.05]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+  operator:
+    # Fixed dimensions for MVP (not sampled)
+    # input_channels: 3 (hardcoded in operator builder)
+    # output_channels: 3 (hardcoded in operator builder)
+    # grid_size: 64 (hardcoded in operator builder)
+
+    normalization:
+      type: choice
+      choices: ["instance", "batch"]
+      description: "Feature normalization type"
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 2
+    min_samples_per_stratum: 5
+
+  validation:
+    check_discrepancy: false  # Skip for small test
+    check_correlation: false
+
+  total_samples: 100
+  batch_size: 100
+
+# Simulation configuration
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "random"
+    length_scale: 0.1
+    variance: 1.0
+
+  precision: "float32"
+
+  num_realizations: 5
+
+# Dataset generation configuration
+dataset:
+  output_path: "./datasets/test_100.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 50
+
+logging:
+  level: "INFO"

@@ -1,0 +1,105 @@
+version: "1.0"
+
+metadata:
+  name: "benchmark_10k_experiment"
+  description: "Full 10k benchmark for performance validation"
+  author: "Spinlock Team"
+  created: "2025-12-27"
+
+# 8-dimensional parameter space for MVP
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 5]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: integer
+      bounds: [16, 64]
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5, 7]
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["relu", "gelu", "silu"]
+      description: "Activation function"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian", "laplace"]
+      description: "Type of stochastic noise"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.001, 0.1]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+  operator:
+    normalization:
+      type: choice
+      choices: ["none", "instance", "batch"]
+      description: "Feature normalization type"
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 4
+    min_samples_per_stratum: 10
+
+  validation:
+    check_discrepancy: true
+    max_discrepancy: 0.01
+    check_correlation: true
+    max_pairwise_correlation: 0.05
+
+  total_samples: 10000
+  batch_size: 1000
+
+# Simulation configuration
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "random"
+    length_scale: 0.1
+    variance: 1.0
+
+  precision: "float32"
+
+  num_realizations: 10
+
+# Dataset generation configuration
+dataset:
+  output_path: "./datasets/benchmark_10k.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 100
+
+logging:
+  level: "INFO"

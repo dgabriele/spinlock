@@ -1,0 +1,162 @@
+version: "1.0"
+
+metadata:
+  name: "default_10k_experiment"
+  description: "Default 10k parameter set experiment with stochastic CNN operators"
+  author: "Spinlock Team"
+  created: "2025-12-27"
+
+# Parameter space definition (20-30 dimensions)
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 6]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: integer
+      bounds: [16, 64]
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5, 7]
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["relu", "gelu", "silu"]
+      description: "Activation function"
+
+    use_batch_norm:
+      type: boolean
+      description: "Whether to use batch normalization"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian", "uniform", "laplace"]
+      description: "Type of stochastic noise"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.001, 0.1]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+    noise_location:
+      type: choice
+      choices: ["features", "output"]
+      description: "Where to inject noise"
+
+  operator:
+    input_channels:
+      type: integer
+      bounds: [1, 4]
+      description: "Number of input channels"
+
+    output_channels:
+      type: integer
+      bounds: [1, 4]
+      description: "Number of output channels"
+
+    grid_size:
+      type: choice
+      choices: [64, 128, 256]
+      description: "Spatial resolution (square grid)"
+
+    normalization:
+      type: choice
+      choices: ["none", "instance", "batch"]
+      description: "Feature normalization type"
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    scramble_method: "owen"
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 4
+    min_samples_per_stratum: 10
+
+  refinement:
+    enabled: false  # Disable for MVP
+    pilot_fraction: 0.01
+    variance_threshold: 0.1
+    max_iterations: 3
+
+  validation:
+    check_discrepancy: true
+    max_discrepancy: 0.01
+    check_correlation: true
+    max_pairwise_correlation: 0.05
+
+  total_samples: 10000
+  batch_size: 1000
+
+# Simulation configuration
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "random"
+    distribution: "gaussian"
+    num_samples_per_operator: 10  # Multiple inputs per operator
+    spatial_size: "from_operator"
+    length_scale: 0.1
+    variance: 1.0
+
+  precision: "float32"
+
+  performance:
+    compile: false
+    benchmark_cudnn: true
+    deterministic: false
+
+  num_realizations: 10
+
+# Dataset generation configuration
+dataset:
+  output_path: "./datasets/default_10k.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 100
+
+  data_to_store:
+    - "operator_parameters"
+    - "operator_outputs"
+    - "input_data"
+
+  metadata:
+    include_config: true
+    include_sampling_metrics: true
+    include_timestamps: true
+
+# Logging & monitoring
+logging:
+  level: "INFO"
+  format: "structured"
+  output: "stdout"
+
+  metrics:
+    track_gpu_memory: true
+    track_sampling_time: true
+    track_simulation_time: true
