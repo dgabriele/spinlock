@@ -67,12 +67,20 @@ python scripts/spinlock.py info --dataset datasets/benchmark_10k.h5
 python scripts/spinlock.py validate --dataset datasets/benchmark_10k.h5
 
 # Visualize operator trajectories
-python scripts/spinlock.py visualize-dataset \
+python scripts/spinlock.py visualize-dataset  
     --dataset datasets/benchmark_10k.h5 \
-    --operator-indices 0 1 2 \
-    --num-realizations 5 \
-    --output-dir visualizations/ \
-    --format mp4
+    --output visualizations/ \
+    --format video \
+    --n-realizations 5 \
+    --n-operators 5 \
+    --size 256x256 \
+    --steps 100 \
+    --fps 20 \
+    --seed 7 \
+    --display-realizations 3 \
+    --add-spacing \
+    --normalization none \
+    --verbose
 ```
 
 **Available Commands:**

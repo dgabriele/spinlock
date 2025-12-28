@@ -421,7 +421,9 @@ class EntropyMapRenderer(AggregateRenderer):
 
     def aggregate(self, realizations: torch.Tensor) -> torch.Tensor:
         """
-        Compute spatial entropy map.
+        Compute spatial entropy map (fully vectorized for performance).
+
+        Uses manual binning for true parallelization across all pixels.
 
         Args:
             realizations: [M, C, H, W]
@@ -435,25 +437,56 @@ class EntropyMapRenderer(AggregateRenderer):
         # Flatten channels into realizations for simplicity
         values = realizations.permute(2, 3, 0, 1).reshape(H, W, M * C)  # [H, W, M*C]
 
-        # Compute histogram per pixel
+        # Compute global min/max for consistent histogram bins across all pixels
+        # (Slight approximation but enables full vectorization)
+        global_min = values.min()
+        global_max = values.max()
         eps = 1e-10
-        entropies = torch.zeros(H, W, device=self.device)
 
-        for i in range(H):
-            for j in range(W):
-                pixel_vals = values[i, j]  # [M*C]
+        # Compute bin edges
+        bin_width = (global_max - global_min + eps) / self.num_bins
 
-                # Histogram
-                hist = torch.histc(pixel_vals, bins=self.num_bins, min=pixel_vals.min(), max=pixel_vals.max())
+        # Flatten all pixels
+        values_flat = values.reshape(H * W, M * C)  # [HW, MC]
 
-                # Normalize to probability
-                probs = hist / (hist.sum() + eps)
+        # Compute bin indices for all values: [HW, MC]
+        # Clamp to valid bin range [0, num_bins-1]
+        bin_indices = ((values_flat - global_min) / bin_width).long()
+        bin_indices = torch.clamp(bin_indices, 0, self.num_bins - 1)
 
-                # Shannon entropy
-                entropy = -(probs * torch.log2(probs + eps)).sum()
-                entropies[i, j] = entropy
+        # Compute histogram for each pixel using advanced indexing
+        # Result: [HW, num_bins]
+        histograms = torch.zeros(H * W, self.num_bins, device=self.device, dtype=torch.float32)
 
-        return entropies.unsqueeze(0)  # [1, H, W]
+        # Create pixel indices for scatter: [HW, MC]
+        pixel_indices = torch.arange(H * W, device=self.device).unsqueeze(1).expand(-1, M * C)
+
+        # Flatten everything for scatter_add: [HW * MC]
+        flat_pixel_indices = pixel_indices.reshape(-1)  # [HW*MC]
+        flat_bin_indices = bin_indices.reshape(-1)  # [HW*MC]
+
+        # Create combined indices for 2D scatter: [HW*MC]
+        # We want to scatter into histograms[pixel_idx, bin_idx]
+        combined_indices = flat_pixel_indices * self.num_bins + flat_bin_indices
+
+        # Use bincount to efficiently build all histograms at once
+        # This is much faster than looping
+        flat_histograms = torch.bincount(
+            combined_indices,
+            minlength=H * W * self.num_bins
+        ).float()
+
+        # Reshape back to [HW, num_bins]
+        histograms = flat_histograms.reshape(H * W, self.num_bins)
+
+        # Normalize to probabilities: [HW, num_bins]
+        probs = histograms / (histograms.sum(dim=1, keepdim=True) + eps)
+
+        # Compute Shannon entropy for all pixels: [HW]
+        # H = -sum(p * log2(p))
+        entropies = -(probs * torch.log2(probs + eps)).sum(dim=1)
+
+        return entropies.reshape(1, H, W)  # [1, H, W]
 
     def render(self, realizations: torch.Tensor) -> torch.Tensor:
         """

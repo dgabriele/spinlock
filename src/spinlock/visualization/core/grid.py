@@ -220,7 +220,9 @@ class VisualizationGrid:
 
     def create_single_frame(
         self,
-        realizations: Dict[int, torch.Tensor]  # op_idx -> [M, C, H, W]
+        realizations: Dict[int, torch.Tensor],  # op_idx -> [M, C, H, W]
+        aggregate_cache: Optional[Dict[int, Dict[str, List[torch.Tensor]]]] = None,
+        timestep_idx: int = 0
     ) -> torch.Tensor:
         """
         Create single frame from pre-extracted realizations (for memory-efficient rendering).
@@ -231,6 +233,10 @@ class VisualizationGrid:
         Args:
             realizations: Dict mapping operator_idx -> realizations [M, C, H, W]
                          (already extracted at specific timestep)
+            aggregate_cache: Optional pre-computed aggregate frames
+                            {op_idx: {agg_name: [T, 3, H, W]}}
+                            If provided, aggregates are read from cache instead of recomputed
+            timestep_idx: Index into aggregate cache (if cache provided)
 
         Returns:
             RGB grid [3, grid_H, grid_W]
@@ -242,6 +248,11 @@ class VisualizationGrid:
                 op_idx: traj[:, timestep, :, :, :]  # [M, C, H, W]
                 for op_idx, traj in trajectories.items()
             }
+
+            # With cached aggregates (recommended for repeated rendering)
+            frame = grid.create_single_frame(realizations_t, aggregate_cache, timestep_idx=42)
+
+            # Without cache (computes aggregates on-the-fly)
             frame = grid.create_single_frame(realizations_t)
             ```
         """
@@ -319,7 +330,14 @@ class VisualizationGrid:
             # Render aggregates (using ALL realizations)
             for agg_idx, agg_renderer in enumerate(self.aggregate_renderers):
                 col = M_display + agg_idx
-                agg_rgb = agg_renderer.render(realizations_op)  # Uses all M realizations - [3, H_orig, W_orig]
+
+                # Use cached aggregate if available (avoids expensive recomputation)
+                if aggregate_cache is not None:
+                    agg_name = type(agg_renderer).__name__
+                    agg_rgb = aggregate_cache[op_idx][agg_name][timestep_idx].to(self.device)  # [3, H_orig, W_orig]
+                else:
+                    # Fallback: Compute on-the-fly (backward compatibility)
+                    agg_rgb = agg_renderer.render(realizations_op)  # Uses all M realizations - [3, H_orig, W_orig]
 
                 # Resize to match grid cell size if needed
                 if agg_rgb.shape[-2:] != (H, W):

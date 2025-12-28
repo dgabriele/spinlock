@@ -437,6 +437,7 @@ Examples:
             VideoExporter,
             ImageSequenceExporter,
         )
+        from spinlock.visualization.exporters.video import create_video_exporter_with_gpu_fallback
 
         start_time = time.time()
         torch_device = torch.device(device)
@@ -636,11 +637,30 @@ Examples:
             display_realizations=display_realizations
         )
 
+        # Pre-compute aggregates ONCE to avoid redundant computation
+        # (Aggregates are expensive: entropy O(H×W), SSIM O(M²), PCA requires SVD)
+        aggregate_cache = None
+        if len(aggregate_renderers) > 0:
+            if verbose:
+                print(f"  Pre-computing {len(aggregate_renderers)} aggregates for {len(trajectories)} operators...")
+                print(f"  (Avoids {len(aggregate_renderers)} × {num_timesteps//stride} redundant computations)", flush=True)
+
+            aggregate_cache = self._precompute_aggregates(
+                trajectories=trajectories,
+                aggregate_renderers=aggregate_renderers,
+                stride=stride,
+                device=torch_device,
+                verbose=verbose
+            )
+
+            if verbose:
+                print(f"  ✓ Aggregates pre-computed and cached")
+
         # Keep trajectories on CPU and render frame-by-frame to avoid OOM
         # Only move one timestep at a time to GPU for rendering
         if verbose:
             full_M = list(trajectories.values())[0].shape[1]
-            print(f"  Rendering {num_timesteps//stride} frames (frame-by-frame to save GPU memory)...")
+            print(f"  Rendering {num_timesteps//stride} frames (using cached aggregates)...")
             print(f"  Showing {display_realizations}/{full_M} realizations individually + {len(aggregates)} aggregates (using all {full_M} realizations)", flush=True)
 
         # Render frames one timestep at a time
@@ -653,7 +673,7 @@ Examples:
         else:
             timesteps_iterator = timesteps_to_render
 
-        for t_idx in timesteps_iterator:
+        for frame_idx, t_idx in enumerate(timesteps_iterator):
             # Move only this timestep's data to GPU
             trajectories_t = {}
             for op_idx, traj in trajectories.items():
@@ -661,8 +681,12 @@ Examples:
                 # Extract timestep t_idx: [M, C, H, W]
                 trajectories_t[op_idx] = traj[t_idx, :, :, :, :].to(torch_device)
 
-            # Render this single timestep
-            frame = grid.create_single_frame(trajectories_t)  # [3, H, W]
+            # Render this single timestep with cached aggregates
+            frame = grid.create_single_frame(
+                realizations=trajectories_t,
+                aggregate_cache=aggregate_cache,
+                timestep_idx=frame_idx  # Index into cache (accounts for stride)
+            )
             all_frames.append(frame.cpu())
 
             # Clear GPU memory immediately
@@ -698,11 +722,11 @@ Examples:
         if output_video:
             output_video.parent.mkdir(parents=True, exist_ok=True)
             if verbose:
-                print(f"  Encoding video...", end=" ", flush=True)
-            exporter = VideoExporter(fps=fps, codec="libx264")
+                print(f"  Encoding video...")
+            exporter = create_video_exporter_with_gpu_fallback(fps=fps, try_gpu=True, verbose=verbose)
             exporter.export(frames, output_path=output_video)
             if verbose:
-                print(f"✓")
+                print(f"  ✓ Video encoding complete")
                 print(f"  Output: {output_video} ({frames.shape[0]} frames @ {fps} fps)")
 
         if output_frames:
@@ -784,6 +808,88 @@ Examples:
 
         else:
             raise ValueError(f"Unknown sampling method: {method}")
+
+    def _precompute_aggregates(
+        self,
+        trajectories: Dict[int, torch.Tensor],
+        aggregate_renderers: List[Any],
+        stride: int,
+        device: torch.device,
+        verbose: bool = False
+    ) -> Dict[int, Dict[str, List[torch.Tensor]]]:
+        """
+        Pre-compute all aggregate frames for all operators and timesteps.
+
+        This eliminates redundant computation by computing each aggregate once
+        per timestep instead of during every frame render. Aggregates like
+        entropy (O(H×W) histograms), SSIM (O(M²) pairwise), and PCA (SVD)
+        are expensive and don't need to be recomputed for every frame.
+
+        Args:
+            trajectories: {op_idx: [T, M, C, H, W]} trajectories on CPU
+            aggregate_renderers: List of aggregate renderer instances
+            stride: Temporal stride for frame selection
+            device: GPU device for computation
+            verbose: Print progress information
+
+        Returns:
+            {op_idx: {agg_name: [T//stride, 3, H, W]}} cached aggregate frames on CPU
+        """
+        aggregate_cache = {}
+
+        # Get total timesteps and determine batch size
+        T = list(trajectories.values())[0].shape[0]
+        num_frames = T // stride
+
+        # Conservative batch size for aggregate computation
+        # (Aggregates require realizations for all timesteps in batch)
+        batch_size = 20  # Process 20 timesteps at once
+
+        # Pre-compute aggregates for each operator
+        for op_idx, traj in trajectories.items():
+            aggregate_cache[op_idx] = {}
+
+            # Process timesteps in batches to avoid OOM
+            timesteps_to_process = list(range(0, T, stride))
+
+            if verbose:
+                from tqdm import tqdm
+                timesteps_iterator = tqdm(
+                    range(0, len(timesteps_to_process), batch_size),
+                    desc=f"  Op {op_idx}",
+                    leave=False
+                )
+            else:
+                timesteps_iterator = range(0, len(timesteps_to_process), batch_size)
+
+            for batch_start in timesteps_iterator:
+                batch_end = min(batch_start + batch_size, len(timesteps_to_process))
+                batch_t_indices = timesteps_to_process[batch_start:batch_end]
+
+                # Load batch to GPU
+                traj_batch = traj[batch_t_indices].to(device)  # [B, M, C, H, W]
+
+                # Compute aggregates for each timestep in batch
+                for t_local_idx, t_global_idx in enumerate(batch_t_indices):
+                    realizations_t = traj_batch[t_local_idx]  # [M, C, H, W]
+
+                    # Compute each aggregate type
+                    for agg_renderer in aggregate_renderers:
+                        agg_rgb = agg_renderer.render(realizations_t)  # [3, H, W]
+
+                        agg_name = type(agg_renderer).__name__
+                        if agg_name not in aggregate_cache[op_idx]:
+                            aggregate_cache[op_idx][agg_name] = []
+
+                        # Store on CPU to save GPU memory
+                        aggregate_cache[op_idx][agg_name].append(agg_rgb.cpu())
+
+                # Clear GPU memory
+                del traj_batch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        return aggregate_cache
 
     def _params_from_vector(
         self,
