@@ -673,6 +673,19 @@ class DatasetGenerationPipeline:
             return config_gen.shock_front.copy()
         elif ic_type == "gene_expression" and config_gen.gene_expression:
             return config_gen.gene_expression.copy()
+        # Tier 4 research frontiers ICs
+        elif ic_type == "coherent_state" and config_gen.coherent_state:
+            return config_gen.coherent_state.copy()
+        elif ic_type == "relativistic_wave_packet" and config_gen.relativistic_wave_packet:
+            return config_gen.relativistic_wave_packet.copy()
+        elif ic_type == "mutual_information" and config_gen.mutual_information:
+            return config_gen.mutual_information.copy()
+        elif ic_type == "regulatory_network" and config_gen.regulatory_network:
+            return config_gen.regulatory_network.copy()
+        elif ic_type == "dla_cluster" and config_gen.dla_cluster:
+            return config_gen.dla_cluster.copy()
+        elif ic_type == "error_correcting_code" and config_gen.error_correcting_code:
+            return config_gen.error_correcting_code.copy()
         elif ic_type == "gaussian_random_field":
             return {
                 "length_scale": config_gen.length_scale,

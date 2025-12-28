@@ -86,7 +86,10 @@ class InputFieldGenerator:
             "bz_reaction", "shannon_entropy",
             # Tier 3 domain-specific ICs
             "interference_pattern", "cell_population", "chromatin_domain",
-            "shock_front", "gene_expression"
+            "shock_front", "gene_expression",
+            # Tier 4 research frontiers ICs
+            "coherent_state", "relativistic_wave_packet", "mutual_information",
+            "regulatory_network", "dla_cluster", "error_correcting_code"
         ] = "gaussian_random_field",
         seed: Optional[int] = None,
         **kwargs,
@@ -169,6 +172,19 @@ class InputFieldGenerator:
             return self._generate_shock_front(batch_size, **kwargs)
         elif field_type == "gene_expression":
             return self._generate_gene_expression(batch_size, **kwargs)
+        # Tier 4 research frontiers ICs
+        elif field_type == "coherent_state":
+            return self._generate_coherent_state(batch_size, **kwargs)
+        elif field_type == "relativistic_wave_packet":
+            return self._generate_relativistic_wave_packet(batch_size, **kwargs)
+        elif field_type == "mutual_information":
+            return self._generate_mutual_information(batch_size, **kwargs)
+        elif field_type == "regulatory_network":
+            return self._generate_regulatory_network(batch_size, **kwargs)
+        elif field_type == "dla_cluster":
+            return self._generate_dla_cluster(batch_size, **kwargs)
+        elif field_type == "error_correcting_code":
+            return self._generate_error_correcting_code(batch_size, **kwargs)
         else:
             raise ValueError(
                 f"Unknown field type: {field_type}. "
@@ -177,7 +193,9 @@ class InputFieldGenerator:
                 f"'quantum_wave_packet', 'turing_pattern', 'thermal_gradient', "
                 f"'morphogen_gradient', 'reaction_front', 'light_cone', 'critical_fluctuation', "
                 f"'phase_boundary', 'bz_reaction', 'shannon_entropy', 'interference_pattern', "
-                f"'cell_population', 'chromatin_domain', 'shock_front', 'gene_expression'"
+                f"'cell_population', 'chromatin_domain', 'shock_front', 'gene_expression', "
+                f"'coherent_state', 'relativistic_wave_packet', 'mutual_information', "
+                f"'regulatory_network', 'dla_cluster', 'error_correcting_code'"
             )
 
     def _generate_grf_batch(
@@ -2202,6 +2220,618 @@ class InputFieldGenerator:
                 # Copy first gene to remaining channels with noise
                 for c in range(genes_to_use, self.num_channels):
                     field[c] = field[0] + torch.randn(self.grid_size, self.grid_size, device=self.device) * 0.1
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    # =========================================================================
+    # Tier 4 Research Frontiers Initial Conditions
+    # =========================================================================
+
+    def _generate_coherent_state(
+        self,
+        batch_size: int,
+        alpha: float = 1.0,
+        sigma: float = 10.0,
+        oscillation_frequency: float = 0.2,
+        num_modes: int = 1,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate coherent state initial conditions.
+
+        Creates "most classical" quantum states used in quantum optics,
+        superconductivity. Minimal spreading, quasi-classical oscillations.
+
+        Physics: Gaussian envelope + oscillation + random background
+            field = GRF(length_scale) + amplitude * Gaussian(center, sigma) * cos(omega*x)
+
+        Args:
+            batch_size: Number of samples
+            alpha: Complex amplitude (coherent state parameter)
+            sigma: Gaussian envelope width (pixels)
+            oscillation_frequency: Spatial oscillation frequency
+            num_modes: Number of independent coherent modes
+
+        Returns:
+            Tensor [B, C, H, W] representing coherent state
+
+        Expected dynamics: Stable oscillations, minimal spreading (quasi-classical)
+        Cross-domain: Laser beam profiles, Gaussian beam optics
+
+        Example:
+            ```python
+            # Single coherent mode
+            fields = generator._generate_coherent_state(
+                batch_size=16,
+                alpha=1.5,
+                sigma=15.0
+            )
+            ```
+        """
+        fields = []
+
+        # Create coordinate grids
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Start with random GRF background (vacuum fluctuations)
+            field = self._generate_grf_batch(
+                batch_size=1,
+                length_scale=0.1,
+                variance=0.5
+            )[0]
+
+            # Add coherent modes
+            for _ in range(num_modes):
+                # Random center position
+                cx = torch.rand(1, device=self.device).item() * self.grid_size
+                cy = torch.rand(1, device=self.device).item() * self.grid_size
+
+                # Gaussian envelope
+                r_sq = (x - cx) ** 2 + (y - cy) ** 2
+                envelope = torch.exp(-r_sq / (2 * sigma ** 2))
+
+                # Random oscillation direction
+                angle = torch.rand(1, device=self.device).item() * 2 * np.pi
+                k_x = oscillation_frequency * np.cos(angle)
+                k_y = oscillation_frequency * np.sin(angle)
+
+                # Coherent state pattern
+                oscillation = torch.cos(k_x * x + k_y * y)
+
+                # Add to all channels
+                for c in range(self.num_channels):
+                    field[c] += alpha * envelope * oscillation
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_relativistic_wave_packet(
+        self,
+        batch_size: int,
+        velocity: float = 0.5,
+        sigma: float = 10.0,
+        wavenumber_range: Tuple[float, float] = (0.1, 0.5),
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate relativistic wave packet initial conditions.
+
+        Creates Lorentz-contracted structures moving at relativistic speeds.
+        Tests translational equivariance and special relativity signatures.
+
+        Physics: Lorentz-contracted Gaussian wave packet
+            gamma = 1/sqrt(1 - v^2/c^2)
+            field = exp(-(gamma^2*(x-x0)^2 + (y-y0)^2)/(2*sigma^2)) * cos(k*x + phase)
+
+        Args:
+            batch_size: Number of samples
+            velocity: Velocity as fraction of c (0-1)
+            sigma: Packet width (before contraction)
+            wavenumber_range: (min, max) wavenumber for oscillation
+
+        Returns:
+            Tensor [B, C, H, W] with Lorentz-contracted packets
+
+        Expected dynamics: Evolve with Lorentz contraction, test translational equivariance
+        Cross-domain: Optical wave packets, information encoding
+
+        Example:
+            ```python
+            # Fast-moving relativistic packet
+            fields = generator._generate_relativistic_wave_packet(
+                batch_size=16,
+                velocity=0.8,
+                sigma=12.0
+            )
+            ```
+        """
+        fields = []
+
+        # Create coordinate grids (centered at origin)
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) - self.grid_size / 2,
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) - self.grid_size / 2,
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
+
+            # Random initial position
+            x0 = (torch.rand(1, device=self.device).item() - 0.5) * self.grid_size * 0.5
+            y0 = (torch.rand(1, device=self.device).item() - 0.5) * self.grid_size * 0.5
+
+            # Lorentz factor
+            gamma = 1.0 / np.sqrt(1 - velocity ** 2)
+
+            # Random velocity direction
+            direction_angle = torch.rand(1, device=self.device).item() * 2 * np.pi
+            v_x = velocity * np.cos(direction_angle)
+            v_y = velocity * np.sin(direction_angle)
+
+            # Rotated coordinates (align x' with velocity direction)
+            x_rot = (x - x0) * np.cos(direction_angle) + (y - y0) * np.sin(direction_angle)
+            y_rot = -(x - x0) * np.sin(direction_angle) + (y - y0) * np.cos(direction_angle)
+
+            # Lorentz-contracted Gaussian
+            contracted_gaussian = torch.exp(
+                -(gamma ** 2 * x_rot ** 2 + y_rot ** 2) / (2 * sigma ** 2)
+            )
+
+            # Random wavenumber
+            k_min, k_max = wavenumber_range
+            k = torch.rand(1, device=self.device).item() * (k_max - k_min) + k_min
+
+            # Random phase
+            phase = torch.rand(1, device=self.device).item() * 2 * np.pi
+
+            # Wave packet
+            wave = torch.cos(k * x_rot + phase)
+
+            # Combine
+            packet = contracted_gaussian * wave
+
+            # Add to all channels
+            for c in range(self.num_channels):
+                field[c] = packet
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_mutual_information(
+        self,
+        batch_size: int,
+        correlation_pattern: str = "local",
+        latent_length_scale: float = 0.3,
+        local_noise_scale: float = 0.5,
+        num_channels_correlated: int = 2,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate mutual information pattern initial conditions.
+
+        Creates fields with controlled mutual information between spatial
+        regions or channels. Tests information flow and correlation propagation.
+
+        Physics: Shared latent variable model
+            z = GRF(long_length_scale)
+            field_i = alpha_i * z + sqrt(1 - alpha_i^2) * noise_i
+            where alpha_i controls local MI with latent variable
+
+        Args:
+            batch_size: Number of samples
+            correlation_pattern: "local", "long_range", or "hierarchical"
+            latent_length_scale: Correlation length of shared latent variable
+            local_noise_scale: Independent noise level (0 = fully correlated, 1 = independent)
+            num_channels_correlated: Number of channels to correlate (max: num_channels)
+
+        Returns:
+            Tensor [B, C, H, W] with controlled MI structure
+
+        Expected dynamics: Correlation propagation, information flow
+        Cross-domain: Neural coding, entanglement structure
+
+        Example:
+            ```python
+            # Long-range correlated fields
+            fields = generator._generate_mutual_information(
+                batch_size=16,
+                correlation_pattern="long_range",
+                latent_length_scale=0.5
+            )
+            ```
+        """
+        fields = []
+
+        for _ in range(batch_size):
+            # Generate shared latent variable
+            if correlation_pattern == "local":
+                latent_scale = latent_length_scale * 0.5
+            elif correlation_pattern == "long_range":
+                latent_scale = latent_length_scale * 2.0
+            elif correlation_pattern == "hierarchical":
+                # Multi-scale latent
+                latent = self._generate_multiscale_grf(
+                    batch_size=1,
+                    num_scales=3,
+                    base_length_scale=latent_length_scale
+                )[0, 0]  # [H, W]
+            else:
+                latent_scale = latent_length_scale
+
+            if correlation_pattern != "hierarchical":
+                latent = self._generate_grf_batch(
+                    batch_size=1,
+                    length_scale=latent_scale,
+                    variance=1.0
+                )[0, 0]  # [H, W]
+
+            field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
+
+            # Determine which channels are correlated
+            channels_to_correlate = min(num_channels_correlated, self.num_channels)
+
+            for c in range(self.num_channels):
+                if c < channels_to_correlate:
+                    # Correlated channels: mix latent + independent noise
+                    # alpha controls correlation strength
+                    alpha = 1.0 - local_noise_scale
+                    independent_noise = torch.randn(
+                        self.grid_size, self.grid_size, device=self.device
+                    )
+                    field[c] = alpha * latent + np.sqrt(1 - alpha ** 2 + 1e-10) * independent_noise
+                else:
+                    # Uncorrelated channels: pure noise
+                    field[c] = torch.randn(
+                        self.grid_size, self.grid_size, device=self.device
+                    )
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_regulatory_network(
+        self,
+        batch_size: int,
+        network_topology: str = "scale_free",
+        network_size: int = 5,
+        connection_probability: float = 0.3,
+        spatial_decay: float = 0.2,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate regulatory network initial conditions.
+
+        Creates gene regulatory networks with spatial embedding. Models
+        bistability, oscillations, cascade propagation.
+
+        Physics: Network-constrained expression + spatial embedding
+            x_i(t+1) = f(sum_j W_ij * x_j(t)) + noise
+            field = sum_i x_i * psi_i(x, y)  (spatial embedding)
+
+        Args:
+            batch_size: Number of samples
+            network_topology: "scale_free", "random", or "hub"
+            network_size: Number of genes in network
+            connection_probability: Edge probability (for random networks)
+            spatial_decay: Spatial localization scale for genes
+
+        Returns:
+            Tensor [B, C, H, W] representing spatially-embedded network state
+
+        Expected dynamics: Bistability, oscillations, cascade propagation
+        Cross-domain: Neural networks, reaction networks
+
+        Example:
+            ```python
+            # Scale-free regulatory network
+            fields = generator._generate_regulatory_network(
+                batch_size=16,
+                network_topology="scale_free",
+                network_size=8
+            )
+            ```
+        """
+        fields = []
+
+        for _ in range(batch_size):
+            # Generate network adjacency matrix
+            W = torch.zeros(network_size, network_size, device=self.device)
+
+            if network_topology == "random":
+                # Random Erdős-Rényi network
+                W = (torch.rand(network_size, network_size, device=self.device) < connection_probability).float()
+            elif network_topology == "scale_free":
+                # Simple preferential attachment (approximate scale-free)
+                for i in range(1, network_size):
+                    # New node connects to existing nodes with probability proportional to degree
+                    degrees = W.sum(dim=1)[:i] + 1  # Add 1 to avoid zero degree
+                    probs = degrees / degrees.sum()
+                    num_connections = min(i, max(1, int(connection_probability * i)))
+                    connected = torch.multinomial(probs, num_connections, replacement=False)
+                    W[i, connected] = 1.0
+                    W[connected, i] = 1.0
+            elif network_topology == "hub":
+                # Hub network: one central node connected to all others
+                W[0, 1:] = 1.0
+                W[1:, 0] = 1.0
+            else:
+                raise ValueError(f"Unknown network_topology: {network_topology}")
+
+            # Random interaction strengths
+            W = W * (torch.rand(network_size, network_size, device=self.device) * 2 - 1)
+
+            # Simulate network dynamics for a few steps
+            x = torch.rand(network_size, device=self.device)  # Initial state
+            for _ in range(5):
+                x_new = torch.tanh(torch.matmul(W, x) + torch.randn(network_size, device=self.device) * 0.1)
+                x = x_new
+
+            # Spatial embedding: place each gene at a random location
+            gene_positions = []
+            for _ in range(network_size):
+                gene_positions.append((
+                    torch.rand(1, device=self.device).item() * self.grid_size,
+                    torch.rand(1, device=self.device).item() * self.grid_size
+                ))
+
+            # Create spatial field from network state
+            y_grid, x_grid = torch.meshgrid(
+                torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+                torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+                indexing="ij"
+            )
+
+            field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
+
+            for gene_idx, (gx, gy) in enumerate(gene_positions):
+                # Spatial basis function for this gene
+                r_sq = (x_grid - gx) ** 2 + (y_grid - gy) ** 2
+                spatial_basis = torch.exp(-r_sq / (2 * (self.grid_size * spatial_decay) ** 2))
+
+                # Add to field weighted by gene expression
+                expression = x[gene_idx].item()
+                for c in range(self.num_channels):
+                    field[c] += expression * spatial_basis
+
+            # Normalize
+            if field.abs().max() > 0:
+                field = field / field.abs().max()
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_dla_cluster(
+        self,
+        batch_size: int,
+        cluster_size: int = 500,
+        seed_type: str = "point",
+        stickiness: float = 1.0,
+        field_type_dla: str = "distance_transform",
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate diffusion-limited aggregation (DLA) cluster initial conditions.
+
+        Creates fractal growth patterns: electrodeposition, crystal growth,
+        bacterial colonies. Highly complex, computationally expensive.
+
+        Physics: Random walk with sticking
+            - Particle random walks from far field
+            - Sticks when touching cluster (with probability = stickiness)
+            - Converts to field via distance transform or indicator
+
+        Args:
+            batch_size: Number of samples
+            cluster_size: Number of particles in cluster
+            seed_type: "point" or "line"
+            stickiness: Probability of sticking (0-1)
+            field_type_dla: "distance_transform" or "indicator"
+
+        Returns:
+            Tensor [B, C, H, W] representing DLA cluster
+
+        Expected dynamics: Growth dynamics, screening, branch competition
+        Cross-domain: Dendritic solidification, vascular networks
+
+        Example:
+            ```python
+            # Point-seeded DLA cluster
+            fields = generator._generate_dla_cluster(
+                batch_size=16,
+                cluster_size=300,
+                seed_type="point"
+            )
+            ```
+        """
+        fields = []
+
+        for _ in range(batch_size):
+            # Initialize cluster
+            cluster = set()
+
+            # Seed
+            if seed_type == "point":
+                cluster.add((self.grid_size // 2, self.grid_size // 2))
+            elif seed_type == "line":
+                for x in range(self.grid_size // 2 - 10, self.grid_size // 2 + 10):
+                    cluster.add((x, self.grid_size // 2))
+            else:
+                raise ValueError(f"Unknown seed_type: {seed_type}")
+
+            # Grow cluster via random walk (simplified DLA)
+            attempts = 0
+            max_attempts = cluster_size * 1000
+
+            while len(cluster) < cluster_size and attempts < max_attempts:
+                attempts += 1
+
+                # Start particle at random edge
+                edge = np.random.randint(0, 4)
+                if edge == 0:  # Top
+                    px, py = np.random.randint(0, self.grid_size), 0
+                elif edge == 1:  # Right
+                    px, py = self.grid_size - 1, np.random.randint(0, self.grid_size)
+                elif edge == 2:  # Bottom
+                    px, py = np.random.randint(0, self.grid_size), self.grid_size - 1
+                else:  # Left
+                    px, py = 0, np.random.randint(0, self.grid_size)
+
+                # Random walk until stick or escape
+                for _ in range(self.grid_size * 2):
+                    # Check if adjacent to cluster
+                    neighbors = [
+                        (px + 1, py), (px - 1, py),
+                        (px, py + 1), (px, py - 1)
+                    ]
+                    if any((nx, ny) in cluster for nx, ny in neighbors if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size):
+                        # Stick with probability = stickiness
+                        if np.random.rand() < stickiness:
+                            cluster.add((px, py))
+                            break
+
+                    # Random step
+                    dx, dy = np.random.choice([-1, 0, 1], size=2)
+                    px, py = px + dx, py + dy
+
+                    # Check bounds
+                    if not (0 <= px < self.grid_size and 0 <= py < self.grid_size):
+                        break  # Escaped
+
+            # Convert cluster to field
+            cluster_array = torch.zeros(self.grid_size, self.grid_size, device=self.device)
+            for (cx, cy) in cluster:
+                if 0 <= cx < self.grid_size and 0 <= cy < self.grid_size:
+                    cluster_array[cy, cx] = 1.0
+
+            if field_type_dla == "distance_transform":
+                # Smooth distance field (approximate)
+                field_dla = torch.zeros(self.grid_size, self.grid_size, device=self.device)
+                y_grid, x_grid = torch.meshgrid(
+                    torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+                    torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+                    indexing="ij"
+                )
+                for (cx, cy) in cluster:
+                    r = torch.sqrt((x_grid - cx) ** 2 + (y_grid - cy) ** 2)
+                    field_dla = torch.maximum(field_dla, torch.exp(-r / 5.0))
+            else:  # indicator
+                field_dla = cluster_array
+
+            # Replicate to all channels
+            field = field_dla.unsqueeze(0).repeat(self.num_channels, 1, 1)
+
+            # Normalize
+            if field.abs().max() > 0:
+                field = field / field.abs().max()
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_error_correcting_code(
+        self,
+        batch_size: int,
+        code_type: str = "repetition",
+        code_rate: float = 0.5,
+        block_size: int = 8,
+        error_rate: float = 0.1,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate error-correcting code initial conditions.
+
+        Creates structured redundancy enabling error correction. Tests
+        whether operators exploit redundancy for robustness.
+
+        Physics: Encode message into redundant codeword
+            message = random_bits(k)
+            codeword = encoder(message)  # n > k bits
+            field = sum_j codeword[j] * basis_j(x, y)
+
+        Args:
+            batch_size: Number of samples
+            code_type: "repetition", "parity", or "random"
+            code_rate: k/n (information rate)
+            block_size: Spatial block size for encoding bits
+            error_rate: Fraction of bits to flip (noise)
+
+        Returns:
+            Tensor [B, C, H, W] with error-correcting code structure
+
+        Expected dynamics: Error propagation, redundancy exploitation
+        Cross-domain: DNA error correction, neural redundancy
+
+        Example:
+            ```python
+            # Repetition code with noise
+            fields = generator._generate_error_correcting_code(
+                batch_size=16,
+                code_type="repetition",
+                error_rate=0.15
+            )
+            ```
+        """
+        fields = []
+
+        for _ in range(batch_size):
+            # Determine message and codeword lengths
+            num_blocks = (self.grid_size // block_size) ** 2
+            k = max(1, int(num_blocks * code_rate))  # Message bits
+            n = num_blocks  # Codeword bits
+
+            # Generate random message
+            message = torch.randint(0, 2, (k,), device=self.device).float()
+
+            # Encode
+            codeword = torch.zeros(n, device=self.device)
+
+            if code_type == "repetition":
+                # Simple repetition code: repeat each message bit
+                repetitions = n // k
+                for i in range(k):
+                    codeword[i * repetitions:(i + 1) * repetitions] = message[i]
+            elif code_type == "parity":
+                # Parity check code
+                codeword[:k] = message
+                codeword[k:] = message.sum() % 2  # Parity bit(s)
+            elif code_type == "random":
+                # Random linear code (generator matrix)
+                G = torch.randint(0, 2, (k, n), device=self.device).float()
+                codeword = torch.matmul(message, G) % 2
+            else:
+                raise ValueError(f"Unknown code_type: {code_type}")
+
+            # Add errors
+            error_mask = torch.rand(n, device=self.device) < error_rate
+            codeword = (codeword + error_mask.float()) % 2
+
+            # Map to spatial field
+            field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
+
+            block_idx = 0
+            for by in range(self.grid_size // block_size):
+                for bx in range(self.grid_size // block_size):
+                    if block_idx < n:
+                        # Fill block with bit value
+                        value = codeword[block_idx].item() * 2 - 1  # Map {0,1} → {-1,1}
+                        for c in range(self.num_channels):
+                            field[
+                                c,
+                                by * block_size:(by + 1) * block_size,
+                                bx * block_size:(bx + 1) * block_size
+                            ] = value
+                        block_idx += 1
 
             fields.append(field)
 
