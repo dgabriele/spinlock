@@ -30,6 +30,9 @@ class OperatorParameters:
             dropout_rate=0.1,
             noise_type="gaussian",
             noise_scale=0.05,
+            noise_schedule="periodic",
+            schedule_period=100,
+            spatial_correlation=0.1,
             # Evolution parameters
             update_policy="convex",
             alpha=0.7,
@@ -62,6 +65,9 @@ class OperatorParameters:
     noise_type: Optional[Literal["gaussian", "dropout", "multiplicative", "laplace"]] = None
     noise_scale: Optional[float] = None
     noise_location: Optional[str] = None
+    noise_schedule: Optional[Literal["constant", "annealing", "periodic"]] = None
+    schedule_period: Optional[int] = None
+    spatial_correlation: Optional[float] = None
 
     # Grid parameters
     grid_size: int = 64
