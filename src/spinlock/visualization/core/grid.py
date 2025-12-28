@@ -43,7 +43,9 @@ class VisualizationGrid:
         device: torch.device = torch.device("cuda"),
         add_spacing: bool = False,
         spacing_width: int = 2,
-        display_realizations: Optional[int] = None
+        display_realizations: Optional[int] = None,
+        add_headers: bool = True,
+        header_height: int = 20
     ):
         """
         Initialize visualization grid.
@@ -56,6 +58,8 @@ class VisualizationGrid:
             add_spacing: Add white spacing between cells (optional)
             spacing_width: Width of spacing in pixels
             display_realizations: Number of individual realizations to show (None = all)
+            add_headers: Add column headers for realizations and aggregates
+            header_height: Height of header row in pixels
         """
         self.render_strategy = render_strategy
         self.aggregate_renderers = aggregate_renderers
@@ -64,6 +68,68 @@ class VisualizationGrid:
         self.add_spacing = add_spacing
         self.spacing_width = spacing_width
         self.display_realizations = display_realizations
+        self.add_headers = add_headers
+        self.header_height = header_height
+
+    def _create_header_row(
+        self,
+        M_display: int,
+        aggregate_names: List[str],
+        grid_W: int
+    ) -> torch.Tensor:
+        """
+        Create header row with column labels.
+
+        Args:
+            M_display: Number of displayed realizations
+            aggregate_names: Names of aggregate renderers
+            grid_W: Total grid width
+
+        Returns:
+            Header tensor [3, header_height, grid_W]
+        """
+        from PIL import Image, ImageDraw, ImageFont
+        import numpy as np
+
+        # Create white background
+        header_img = Image.new('RGB', (grid_W, self.header_height), color=(255, 255, 255))
+        draw = ImageDraw.Draw(header_img)
+
+        # Use default font (small)
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+        except:
+            font = ImageFont.load_default()
+
+        W = self.grid_size
+        spacing = self.spacing_width if self.add_spacing else 0
+
+        # Draw "Realizations" label over realization columns (if any)
+        if M_display > 0:
+            realizations_width = M_display * W + (M_display - 1) * spacing
+            text = "Realizations"
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_x = (realizations_width - text_width) // 2
+            draw.text((text_x, 4), text, fill=(0, 0, 0), font=font)
+
+        # Draw individual aggregate labels
+        for i, agg_name in enumerate(aggregate_names):
+            col = M_display + i
+            col_start = col * (W + spacing)
+            col_center = col_start + W // 2
+
+            # Center text
+            bbox = draw.textbbox((0, 0), agg_name, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_x = col_center - text_width // 2
+            draw.text((text_x, 4), agg_name, fill=(0, 0, 0), font=font)
+
+        # Convert to tensor
+        header_array = np.array(header_img).astype(np.float32) / 255.0
+        header_tensor = torch.from_numpy(header_array).permute(2, 0, 1).to(self.device)
+
+        return header_tensor
 
     def create_frame(
         self,
@@ -181,30 +247,55 @@ class VisualizationGrid:
         """
         N = len(realizations)  # Number of operators
         first_real = next(iter(realizations.values()))
-        M = first_real.shape[0]  # Number of realizations
+        M_total = first_real.shape[0]  # Total number of realizations
+        M_display = M_total if self.display_realizations is None else min(self.display_realizations, M_total)
         K = len(self.aggregate_renderers)  # Number of aggregates
         H, W = self.grid_size, self.grid_size
 
         # Calculate grid dimensions with optional spacing
         spacing = self.spacing_width if self.add_spacing else 0
-        grid_H = N * H + (N - 1) * spacing if N > 1 else H
-        grid_W = (M + K) * W + (M + K - 1) * spacing if (M + K) > 1 else W
+        header_offset = self.header_height if self.add_headers else 0
+        grid_H = header_offset + (N * H + (N - 1) * spacing if N > 1 else H)
+        grid_W = (M_display + K) * W + (M_display + K - 1) * spacing if (M_display + K) > 1 else W
 
-        # Create canvas (white background if spacing enabled)
+        # Create canvas (white background if spacing enabled or headers enabled)
         grid = torch.ones(3, grid_H, grid_W, dtype=torch.float32, device=self.device)
-        if not self.add_spacing:
+        if not self.add_spacing and not self.add_headers:
             grid = torch.zeros(3, grid_H, grid_W, dtype=torch.float32, device=self.device)
+
+        # Add header row if enabled
+        if self.add_headers:
+            # Clean up aggregate names for display
+            aggregate_names = []
+            for agg in self.aggregate_renderers:
+                name = type(agg).__name__
+                # Remove common suffixes
+                name = name.replace('Renderer', '').replace('Aggregate', '')
+                # Handle specific cases
+                name_map = {
+                    'MeanField': 'mean',
+                    'Mean': 'mean',
+                    'Variance': 'variance',
+                    'StdDev': 'stddev',
+                    'EnvelopeMap': 'envelope',
+                    'Envelope': 'envelope',
+                    'EntropyMap': 'entropy',
+                    'PCAMode': 'pca',
+                    'SSIMMap': 'ssim',
+                    'Spectral': 'spectral',
+                    'TrajectoryOverlay': 'overlay'
+                }
+                name = name_map.get(name, name.lower())
+                aggregate_names.append(name)
+            header = self._create_header_row(M_display, aggregate_names, grid_W)
+            grid[:, :header_offset, :] = header
 
         # Render each operator (row)
         for row, op_idx in enumerate(sorted(realizations.keys())):
             realizations_op = realizations[op_idx]  # [M, C, H, W]
-            M_total = realizations_op.shape[0]
 
-            # Determine how many realizations to display individually
-            M_display = M if self.display_realizations is None else min(self.display_realizations, M_total)
-
-            # Calculate row position
-            row_start = row * (H + spacing)
+            # Calculate row position (offset by header)
+            row_start = header_offset + row * (H + spacing)
             row_end = row_start + H
 
             # Render individual realizations (subset)
@@ -320,7 +411,8 @@ class VisualizationGrid:
         H, W = self.grid_size, self.grid_size
 
         spacing = self.spacing_width if self.add_spacing else 0
-        grid_H = N * H + (N - 1) * spacing if N > 1 else H
+        header_offset = self.header_height if self.add_headers else 0
+        grid_H = header_offset + (N * H + (N - 1) * spacing if N > 1 else H)
         grid_W = (M_display + K) * W + (M_display + K - 1) * spacing if (M_display + K) > 1 else W
 
         return {
@@ -331,5 +423,6 @@ class VisualizationGrid:
             "cell_size": H,
             "grid_height": grid_H,
             "grid_width": grid_W,
-            "spacing": spacing
+            "spacing": spacing,
+            "header_height": header_offset
         }
