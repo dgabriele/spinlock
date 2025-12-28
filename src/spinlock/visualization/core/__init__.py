@@ -1,0 +1,1 @@
+"""Core visualization components."""

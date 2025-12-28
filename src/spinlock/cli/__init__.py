@@ -9,6 +9,7 @@ from .base import CLICommand, ConfigurableCommand
 from .generate import GenerateCommand
 from .info import InfoCommand
 from .validate import ValidateCommand
+from .visualize import VisualizeCommand
 
 __all__ = [
     "CLICommand",
@@ -16,4 +17,5 @@ __all__ = [
     "GenerateCommand",
     "InfoCommand",
     "ValidateCommand",
+    "VisualizeCommand",
 ]

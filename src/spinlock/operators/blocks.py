@@ -237,7 +237,7 @@ class StochasticBlock(BaseBlock):
     """
     Block that adds stochastic elements (noise, dropout, etc.).
 
-    Supports multiple noise types for exploring stochastic operators.
+    Supports multiple noise types and schedules for exploring diverse dynamics.
 
     Args:
         in_channels: Number of channels (passthrough)
@@ -245,12 +245,24 @@ class StochasticBlock(BaseBlock):
         noise_scale: Scale/intensity of noise
         learnable_scale: Whether noise scale is learnable parameter
         always_active: If True, apply noise even during eval()
+        noise_schedule: Temporal noise schedule ("constant", "annealing", "periodic")
+        schedule_period: Period for periodic schedule (in steps)
+        spatial_correlation: Spatial correlation length (0.0 = uncorrelated)
 
     Example:
         ```python
+        # Simple Gaussian noise
         block = StochasticBlock(64, noise_type="gaussian", noise_scale=0.1)
         x = torch.randn(8, 64, 32, 32)
         out = block(x)  # x + Gaussian noise
+
+        # Annealing noise schedule
+        block = StochasticBlock(64, noise_scale=0.1, noise_schedule="annealing")
+        out = block(x, step=50, max_steps=100)  # Noise decays with time
+
+        # Spatially correlated noise
+        block = StochasticBlock(64, noise_scale=0.1, spatial_correlation=0.1)
+        out = block(x)  # Smooth, correlated noise pattern
         ```
     """
 
@@ -261,12 +273,18 @@ class StochasticBlock(BaseBlock):
         noise_scale: float = 0.1,
         learnable_scale: bool = False,
         always_active: bool = True,  # For dataset generation
+        noise_schedule: Literal["constant", "annealing", "periodic"] = "constant",
+        schedule_period: int = 100,
+        spatial_correlation: float = 0.0,
         **kwargs,
     ):
         super().__init__(in_channels, in_channels)  # Passthrough channels
 
         self.noise_type = noise_type
         self.always_active = always_active
+        self.noise_schedule = noise_schedule
+        self.schedule_period = schedule_period
+        self.spatial_correlation = spatial_correlation
 
         # Noise scale: learnable parameter or fixed buffer
         if learnable_scale:
@@ -274,25 +292,120 @@ class StochasticBlock(BaseBlock):
         else:
             self.register_buffer("noise_scale", torch.tensor(noise_scale))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Precompute Fourier grid for spatial correlation (lazy init in forward)
+        self._k_squared = None
+
+    def _get_scheduled_scale(self, step: Optional[int] = None, max_steps: Optional[int] = None) -> torch.Tensor:
+        """
+        Compute noise scale based on schedule.
+
+        Args:
+            step: Current timestep (required for annealing/periodic)
+            max_steps: Maximum timesteps (required for annealing)
+
+        Returns:
+            Scheduled noise scale
+        """
+        if self.noise_schedule == "constant":
+            return self.noise_scale
+
+        elif self.noise_schedule == "annealing":
+            if step is None or max_steps is None:
+                return self.noise_scale
+            # Linear annealing: scale * (1 - step / max_steps)
+            progress = min(step / max_steps, 1.0)
+            return self.noise_scale * (1.0 - progress)
+
+        elif self.noise_schedule == "periodic":
+            if step is None:
+                return self.noise_scale
+            # Sinusoidal modulation: scale * (1 + 0.5 * sin(2π * step / period))
+            import math
+            phase = 2.0 * math.pi * step / self.schedule_period
+            modulation = 1.0 + 0.5 * math.sin(phase)
+            return self.noise_scale * modulation
+
+        return self.noise_scale
+
+    def _generate_correlated_noise(self, shape: tuple, device: torch.device) -> torch.Tensor:
+        """
+        Generate spatially correlated noise using Fourier filtering.
+
+        Args:
+            shape: Noise tensor shape (B, C, H, W)
+            device: Device for tensor
+
+        Returns:
+            Correlated noise tensor
+        """
+        B, C, H, W = shape
+
+        # Lazy initialization of Fourier grid
+        if self._k_squared is None or self._k_squared.shape[-1] != H:
+            kx = torch.fft.fftfreq(H, d=1.0, device=device).view(H, 1)
+            ky = torch.fft.fftfreq(W, d=1.0, device=device).view(1, W)
+            self._k_squared = kx**2 + ky**2
+
+        # Generate white noise in Fourier space
+        noise_freq = torch.randn(B, C, H, W, dtype=torch.complex64, device=device)
+
+        # Apply Gaussian filter: P(k) = exp(-k^2 * correlation^2 / 2)
+        filter_kernel = torch.exp(-self._k_squared * (self.spatial_correlation * H) ** 2 / 2.0)
+        noise_freq = noise_freq * filter_kernel.unsqueeze(0).unsqueeze(0)
+
+        # Transform back to real space
+        noise_real = torch.fft.ifft2(noise_freq).real
+
+        # Normalize to unit variance
+        noise_real = noise_real / (noise_real.std() + 1e-8)
+
+        return noise_real
+
+    def forward(self, x: torch.Tensor, step: Optional[int] = None, max_steps: Optional[int] = None) -> torch.Tensor:
+        """
+        Forward pass with optional step information for scheduling.
+
+        Args:
+            x: Input tensor [B, C, H, W]
+            step: Current timestep (for noise scheduling)
+            max_steps: Maximum timesteps (for annealing schedule)
+
+        Returns:
+            Noisy output tensor
+        """
         # Apply stochasticity during training OR if always_active
         if not self.training and not self.always_active:
             return x
 
+        # Get scheduled noise scale
+        scale = self._get_scheduled_scale(step, max_steps)
+
         if self.noise_type == "gaussian":
-            noise = torch.randn_like(x) * self.noise_scale
+            # Generate noise (correlated or uncorrelated)
+            if self.spatial_correlation > 0:
+                noise = self._generate_correlated_noise(x.shape, x.device) * scale
+            else:
+                noise = torch.randn_like(x) * scale
             return x + noise
 
         elif self.noise_type == "laplace":
             # Laplace distribution: exponential with random sign
-            noise = torch.empty_like(x).exponential_() * torch.sign(torch.randn_like(x))
-            return x + noise * self.noise_scale
+            if self.spatial_correlation > 0:
+                noise = self._generate_correlated_noise(x.shape, x.device)
+                noise = noise * torch.sign(torch.randn_like(x))  # Make it Laplace-like
+            else:
+                noise = torch.empty_like(x).exponential_() * torch.sign(torch.randn_like(x))
+            return x + noise * scale
 
         elif self.noise_type == "dropout":
-            return F.dropout2d(x, p=float(self.noise_scale), training=True)
+            return F.dropout2d(x, p=float(scale), training=True)
 
         elif self.noise_type == "multiplicative":
-            noise = 1.0 + torch.randn_like(x) * self.noise_scale
+            # Multiplicative noise
+            if self.spatial_correlation > 0:
+                noise = 1.0 + self._generate_correlated_noise(x.shape, x.device) * scale
+            else:
+                noise = 1.0 + torch.randn_like(x) * scale
             return x * noise
 
         return x

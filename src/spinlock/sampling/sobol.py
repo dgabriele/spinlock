@@ -177,6 +177,11 @@ class StratifiedSobolSampler(BaseSampler):
         Performance:
             Target: 10,000 samples in <10s on CPU
 
+        Note:
+            Sobol sequences have optimal balance properties when n is a power of 2.
+            This method automatically rounds up to the nearest power of 2 during
+            generation, then returns the first n_samples requested.
+
         Example:
             ```python
             samples = sampler.sample(10000)
@@ -187,12 +192,19 @@ class StratifiedSobolSampler(BaseSampler):
         if n_samples < 1:
             raise ValueError(f"n_samples must be ≥ 1, got {n_samples}")
 
-        # Generate Sobol samples
+        # Round up to nearest power of 2 for optimal Sobol balance properties
+        # This avoids scipy warnings and maintains statistical quality
+        n_pow2 = 1 << (n_samples - 1).bit_length()  # Next power of 2 >= n_samples
+
+        # Generate Sobol samples (power of 2 count)
         start_time = time.time()
-        samples = self.sobol_engine.random(n_samples)
+        samples_pow2 = self.sobol_engine.random(n_pow2)
         elapsed = time.time() - start_time
 
-        # Update statistics
+        # Return only the requested number of samples
+        samples = samples_pow2[:n_samples]
+
+        # Update statistics (track actual samples returned)
         self.stats["total_samples_generated"] += n_samples
         self.stats["total_time_seconds"] += elapsed
         self.stats["last_generation_time"] = elapsed

@@ -15,7 +15,7 @@ class OperatorParameters:
     Type-safe operator parameters.
 
     Replaces Dict[str, Any] with explicit fields for type checking
-    and IDE support.
+    and IDE support. Includes evolution parameters for temporal dynamics.
 
     Example:
         ```python
@@ -29,11 +29,16 @@ class OperatorParameters:
             normalization="instance",
             dropout_rate=0.1,
             noise_type="gaussian",
-            noise_scale=0.05
+            noise_scale=0.05,
+            # Evolution parameters
+            update_policy="convex",
+            alpha=0.7,
+            dt=0.01
         )
 
         # Type-safe access
         layers = params.num_layers  # int, not Any
+        policy = params.update_policy  # str
 
         # Convert to dict for legacy code
         param_dict = params.to_dict()
@@ -60,6 +65,12 @@ class OperatorParameters:
 
     # Grid parameters
     grid_size: int = 64
+
+    # Evolution parameters (temporal dynamics)
+    # These define how the operator evolves over time when run autoregressively
+    update_policy: str = "convex"  # "autoregressive", "residual", "convex"
+    alpha: float = 0.5  # Convex policy: mixing parameter in [0,1]
+    dt: float = 0.01    # Residual policy: integration step size
 
     # Additional metadata
     extra: Dict[str, Any] = field(default_factory=dict)
