@@ -243,7 +243,10 @@ class InputGenerationConfig(BaseModel):
         "morphogen_gradient", "reaction_front",
         # Tier 2 domain-specific ICs
         "light_cone", "critical_fluctuation", "phase_boundary",
-        "bz_reaction", "shannon_entropy"
+        "bz_reaction", "shannon_entropy",
+        # Tier 3 domain-specific ICs
+        "interference_pattern", "cell_population", "chromatin_domain",
+        "shock_front", "gene_expression"
     ] = "random"
     distribution: Literal["gaussian", "uniform"] = "gaussian"
     num_samples_per_operator: int = Field(default=100, ge=1)
@@ -270,6 +273,12 @@ class InputGenerationConfig(BaseModel):
     phase_boundary: Dict[str, Any] = Field(default_factory=dict)
     bz_reaction: Dict[str, Any] = Field(default_factory=dict)
     shannon_entropy: Dict[str, Any] = Field(default_factory=dict)
+    # Tier 3 domain-specific IC parameter dicts
+    interference_pattern: Dict[str, Any] = Field(default_factory=dict)
+    cell_population: Dict[str, Any] = Field(default_factory=dict)
+    chromatin_domain: Dict[str, Any] = Field(default_factory=dict)
+    shock_front: Dict[str, Any] = Field(default_factory=dict)
+    gene_expression: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PerformanceConfig(BaseModel):

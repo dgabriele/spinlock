@@ -662,6 +662,17 @@ class DatasetGenerationPipeline:
             return config_gen.bz_reaction.copy()
         elif ic_type == "shannon_entropy" and config_gen.shannon_entropy:
             return config_gen.shannon_entropy.copy()
+        # Tier 3 domain-specific ICs
+        elif ic_type == "interference_pattern" and config_gen.interference_pattern:
+            return config_gen.interference_pattern.copy()
+        elif ic_type == "cell_population" and config_gen.cell_population:
+            return config_gen.cell_population.copy()
+        elif ic_type == "chromatin_domain" and config_gen.chromatin_domain:
+            return config_gen.chromatin_domain.copy()
+        elif ic_type == "shock_front" and config_gen.shock_front:
+            return config_gen.shock_front.copy()
+        elif ic_type == "gene_expression" and config_gen.gene_expression:
+            return config_gen.gene_expression.copy()
         elif ic_type == "gaussian_random_field":
             return {
                 "length_scale": config_gen.length_scale,

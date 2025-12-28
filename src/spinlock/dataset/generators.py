@@ -17,7 +17,7 @@ Design principles:
 - Discovery-focused diversity (not benchmarking)
 """
 
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple, List
 
 import torch
 import numpy as np
@@ -83,7 +83,10 @@ class InputFieldGenerator:
             "morphogen_gradient", "reaction_front",
             # Tier 2 domain-specific ICs
             "light_cone", "critical_fluctuation", "phase_boundary",
-            "bz_reaction", "shannon_entropy"
+            "bz_reaction", "shannon_entropy",
+            # Tier 3 domain-specific ICs
+            "interference_pattern", "cell_population", "chromatin_domain",
+            "shock_front", "gene_expression"
         ] = "gaussian_random_field",
         seed: Optional[int] = None,
         **kwargs,
@@ -155,6 +158,17 @@ class InputFieldGenerator:
             return self._generate_bz_reaction(batch_size, **kwargs)
         elif field_type == "shannon_entropy":
             return self._generate_shannon_entropy(batch_size, **kwargs)
+        # Tier 3 domain-specific ICs
+        elif field_type == "interference_pattern":
+            return self._generate_interference_pattern(batch_size, **kwargs)
+        elif field_type == "cell_population":
+            return self._generate_cell_population(batch_size, **kwargs)
+        elif field_type == "chromatin_domain":
+            return self._generate_chromatin_domain(batch_size, **kwargs)
+        elif field_type == "shock_front":
+            return self._generate_shock_front(batch_size, **kwargs)
+        elif field_type == "gene_expression":
+            return self._generate_gene_expression(batch_size, **kwargs)
         else:
             raise ValueError(
                 f"Unknown field type: {field_type}. "
@@ -162,7 +176,8 @@ class InputFieldGenerator:
                 f"'multiscale_grf', 'localized', 'composite', 'heavy_tailed', "
                 f"'quantum_wave_packet', 'turing_pattern', 'thermal_gradient', "
                 f"'morphogen_gradient', 'reaction_front', 'light_cone', 'critical_fluctuation', "
-                f"'phase_boundary', 'bz_reaction', 'shannon_entropy'"
+                f"'phase_boundary', 'bz_reaction', 'shannon_entropy', 'interference_pattern', "
+                f"'cell_population', 'chromatin_domain', 'shock_front', 'gene_expression'"
             )
 
     def _generate_grf_batch(
@@ -1603,6 +1618,590 @@ class InputFieldGenerator:
 
             # Combine base signal + spatially-varying noise
             field = base_signal + modulated_noise
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    # =========================================================================
+    # Tier 3 Domain-Specific Initial Conditions
+    # =========================================================================
+
+    def _generate_interference_pattern(
+        self,
+        batch_size: int,
+        num_sources: int = 2,
+        wavelength: float = 16.0,
+        coherence_length: float = 100.0,
+        source_spacing: Optional[float] = None,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate interference pattern initial conditions.
+
+        Creates wave interference patterns (double-slit, multi-slit) showing
+        wave-particle duality. Used in quantum optics, acoustics, water waves.
+
+        Physics: Multi-source interference
+            field = sum_j cos(k * sqrt((x-x_j)^2 + (y-y_j)^2) + phase_j) * envelope
+            where k = 2π/λ
+
+        Args:
+            batch_size: Number of samples
+            num_sources: Number of coherent sources (2 = double-slit, etc.)
+            wavelength: Wave wavelength (pixels)
+            coherence_length: Coherence envelope scale
+            source_spacing: Distance between sources (None = random)
+
+        Returns:
+            Tensor [B, C, H, W] showing interference fringes
+
+        Expected dynamics: Fringe evolution, coherence decay, pattern stability
+        Cross-domain: Acoustic interference, Moiré patterns in materials
+
+        Example:
+            ```python
+            # Double-slit interference
+            fields = generator._generate_interference_pattern(
+                batch_size=16,
+                num_sources=2,
+                wavelength=20.0
+            )
+            ```
+        """
+        fields = []
+        k = 2 * np.pi / wavelength
+
+        # Create coordinate grids
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
+
+            # Position sources
+            if num_sources == 2 and source_spacing is not None:
+                # Standard double-slit: centered, horizontal spacing
+                center_x = self.grid_size / 2
+                center_y = self.grid_size / 2
+                source_positions = [
+                    (center_x - source_spacing / 2, center_y),
+                    (center_x + source_spacing / 2, center_y)
+                ]
+            else:
+                # Random source positions
+                source_positions = [
+                    (
+                        torch.rand(1, device=self.device).item() * self.grid_size * 0.8 + self.grid_size * 0.1,
+                        torch.rand(1, device=self.device).item() * self.grid_size * 0.8 + self.grid_size * 0.1
+                    )
+                    for _ in range(num_sources)
+                ]
+
+            # Random phase offsets for each source
+            phase_offsets = torch.rand(num_sources, device=self.device) * 2 * np.pi
+
+            # Compute interference pattern
+            for source_idx, (sx, sy) in enumerate(source_positions):
+                # Distance from source
+                r = torch.sqrt((x - sx) ** 2 + (y - sy) ** 2)
+
+                # Spherical wave with coherence envelope
+                wave = torch.cos(k * r + phase_offsets[source_idx])
+                envelope = torch.exp(-r ** 2 / (2 * coherence_length ** 2))
+
+                # Add to all channels (can have different phases per channel)
+                for c in range(self.num_channels):
+                    channel_phase = torch.rand(1, device=self.device).item() * 2 * np.pi
+                    field[c] += wave * np.cos(channel_phase) * envelope
+
+            # Normalize
+            field = field / (field.abs().max() + 1e-10)
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_cell_population(
+        self,
+        batch_size: int,
+        num_cells: int = 50,
+        cell_radius: float = 3.0,
+        clustering_strength: float = 0.5,
+        kernel_width: float = 5.0,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate cell population initial conditions.
+
+        Creates spatial cell distributions via point processes with kernel
+        density estimation. Models epithelia, tumors, bacterial colonies.
+
+        Physics: Point process → density field
+            rho = sum_i K((r - r_i)/h) / h^2
+            where K is a smoothing kernel
+
+        Args:
+            batch_size: Number of samples
+            num_cells: Number of cells in the population
+            cell_radius: Minimum cell separation (hard-core)
+            clustering_strength: 0 = random, 1 = highly clustered
+            kernel_width: KDE bandwidth (pixels)
+
+        Returns:
+            Tensor [B, C, H, W] representing cell density
+
+        Expected dynamics: Migration, proliferation, collective behavior
+        Cross-domain: Galaxy distributions, molecular positions in materials
+
+        Example:
+            ```python
+            # Random cell distribution
+            fields = generator._generate_cell_population(
+                batch_size=16,
+                num_cells=100,
+                clustering_strength=0.2
+            )
+            ```
+        """
+        fields = []
+
+        # Create coordinate grids
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Generate cell positions via hard-core point process
+            cell_positions = []
+            attempts = 0
+            max_attempts = num_cells * 100
+
+            # If clustering, create cluster centers
+            if clustering_strength > 0:
+                num_clusters = max(1, int(num_cells * 0.1 * (1 - clustering_strength)))
+                cluster_centers = [
+                    (
+                        torch.rand(1, device=self.device).item() * self.grid_size,
+                        torch.rand(1, device=self.device).item() * self.grid_size
+                    )
+                    for _ in range(num_clusters)
+                ]
+            else:
+                cluster_centers = [(self.grid_size / 2, self.grid_size / 2)]
+
+            while len(cell_positions) < num_cells and attempts < max_attempts:
+                # Sample position (clustered or random)
+                if clustering_strength > 0 and torch.rand(1).item() < clustering_strength:
+                    # Sample near a cluster center
+                    center = cluster_centers[torch.randint(0, len(cluster_centers), (1,)).item()]
+                    cluster_radius = self.grid_size * 0.3 * (1 - clustering_strength)
+                    angle = torch.rand(1, device=self.device).item() * 2 * np.pi
+                    radius = torch.rand(1, device=self.device).item() * cluster_radius
+                    cx = (center[0] + radius * np.cos(angle)) % self.grid_size
+                    cy = (center[1] + radius * np.sin(angle)) % self.grid_size
+                else:
+                    # Random position
+                    cx = torch.rand(1, device=self.device).item() * self.grid_size
+                    cy = torch.rand(1, device=self.device).item() * self.grid_size
+
+                # Check hard-core constraint
+                valid = True
+                for (ex_x, ex_y) in cell_positions:
+                    dist = np.sqrt((cx - ex_x) ** 2 + (cy - ex_y) ** 2)
+                    if dist < cell_radius * 2:
+                        valid = False
+                        break
+
+                if valid:
+                    cell_positions.append((cx, cy))
+
+                attempts += 1
+
+            # Convert to density field via kernel density estimation
+            field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
+
+            for (cx, cy) in cell_positions:
+                # Gaussian kernel centered at cell position
+                kernel = torch.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * kernel_width ** 2))
+
+                # Add to all channels (can represent different cell types)
+                for c in range(self.num_channels):
+                    cell_type_weight = torch.rand(1, device=self.device).item()
+                    field[c] += kernel * cell_type_weight
+
+            # Normalize
+            if field.abs().max() > 0:
+                field = field / field.abs().max()
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_chromatin_domain(
+        self,
+        batch_size: int,
+        num_domains: int = 5,
+        domain_size_range: Tuple[int, int] = (10, 30),
+        boundary_sharpness: float = 3.0,
+        compartment_type: str = "TAD",
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate chromatin domain initial conditions.
+
+        Creates chromosome organization patterns: topologically associated
+        domains (TADs) or A/B compartments. Models 3D genome structure.
+
+        Physics: Block-diagonal domain structure (2D projection)
+            field = sum_d indicator(x in domain_d) * indicator(y in domain_d) * interaction_d
+            Or checkerboard: field = sign(sin(k*x) * sin(k*y)) * amplitude
+
+        Args:
+            batch_size: Number of samples
+            num_domains: Number of TADs or compartments
+            domain_size_range: (min, max) domain size in pixels
+            boundary_sharpness: Domain boundary width
+            compartment_type: "TAD" (block-diagonal) or "AB" (checkerboard)
+
+        Returns:
+            Tensor [B, C, H, W] representing chromosome interaction map
+
+        Expected dynamics: Domain dynamics, boundary strengthening/weakening
+        Cross-domain: Image segmentation, phase separation in materials
+
+        Example:
+            ```python
+            # TAD organization
+            fields = generator._generate_chromatin_domain(
+                batch_size=16,
+                num_domains=8,
+                compartment_type="TAD"
+            )
+            ```
+        """
+        fields = []
+
+        # Create coordinate grids
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
+
+            if compartment_type == "TAD":
+                # Generate TADs as block-diagonal structure
+                domains = []
+                current_pos = 0
+
+                for _ in range(num_domains):
+                    domain_size = np.random.randint(domain_size_range[0], domain_size_range[1] + 1)
+                    if current_pos + domain_size > self.grid_size:
+                        domain_size = self.grid_size - current_pos
+
+                    domains.append({
+                        'start': current_pos,
+                        'end': current_pos + domain_size,
+                        'interaction': torch.rand(1, device=self.device).item() * 2 - 1
+                    })
+
+                    current_pos += domain_size
+                    if current_pos >= self.grid_size:
+                        break
+
+                # Create block-diagonal interaction pattern
+                for domain in domains:
+                    start, end = domain['start'], domain['end']
+                    interaction = domain['interaction']
+
+                    # Block region in 2D interaction map
+                    x_mask = torch.sigmoid((x - start) / boundary_sharpness) * torch.sigmoid((end - x) / boundary_sharpness)
+                    y_mask = torch.sigmoid((y - start) / boundary_sharpness) * torch.sigmoid((end - y) / boundary_sharpness)
+
+                    block = x_mask * y_mask * interaction
+
+                    # Add to all channels
+                    for c in range(self.num_channels):
+                        field[c] += block
+
+            elif compartment_type == "AB":
+                # Generate A/B compartments as checkerboard pattern
+                # Wavelength varies to create irregular compartments
+                wavelength = np.random.uniform(15, 40)
+                k = 2 * np.pi / wavelength
+
+                # Random phase and orientation
+                phase_x = torch.rand(1, device=self.device).item() * 2 * np.pi
+                phase_y = torch.rand(1, device=self.device).item() * 2 * np.pi
+
+                # Checkerboard: product of sine waves
+                pattern = torch.sin(k * x + phase_x) * torch.sin(k * y + phase_y)
+
+                # Threshold to create binary A/B compartments
+                compartment_map = torch.sign(pattern)
+
+                # Add to all channels with different interaction strengths
+                for c in range(self.num_channels):
+                    interaction_A = torch.rand(1, device=self.device).item()
+                    interaction_B = torch.rand(1, device=self.device).item()
+                    field[c] = torch.where(compartment_map > 0, interaction_A, interaction_B)
+
+            else:
+                raise ValueError(f"Unknown compartment_type: {compartment_type}. Use 'TAD' or 'AB'.")
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_shock_front(
+        self,
+        batch_size: int,
+        shock_position: Optional[float] = None,
+        shock_angle: Optional[float] = None,
+        shock_width: float = 2.0,
+        amplitude_ratio: float = 2.0,
+        fluctuation_amplitude: float = 0.05,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate shock front initial conditions.
+
+        Creates discontinuous fronts modeling relativistic shocks in
+        astrophysical jets, plasma physics, supersonic flows.
+
+        Physics: Tanh shock profile
+            field = A1*(1-tanh((x-x_shock)/delta))/2 + A2*tanh((x-x_shock)/delta)/2 + noise
+
+        Args:
+            batch_size: Number of samples
+            shock_position: Position along gradient (None = random)
+            shock_angle: Shock orientation in radians (None = random)
+            shock_width: Shock thickness (pixels)
+            amplitude_ratio: Ratio of post-shock to pre-shock amplitude
+            fluctuation_amplitude: Small-scale noise level
+
+        Returns:
+            Tensor [B, C, H, W] with discontinuous shock fronts
+
+        Expected dynamics: Shock stability, numerical diffusion, gradient handling
+        Cross-domain: Same as phase boundaries, reaction fronts
+
+        Example:
+            ```python
+            # Oblique shock front
+            fields = generator._generate_shock_front(
+                batch_size=16,
+                shock_angle=0.5,
+                amplitude_ratio=3.0
+            )
+            ```
+        """
+        fields = []
+
+        # Create coordinate grids (normalized to [0, 1])
+        y_grid, x_grid = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Random shock position if not specified
+            if shock_position is None:
+                shock_pos = torch.rand(1, device=self.device).item() * 0.6 + 0.2  # [0.2, 0.8]
+            else:
+                shock_pos = shock_position
+
+            # Random shock angle if not specified
+            if shock_angle is None:
+                angle = torch.rand(1, device=self.device).item() * 2 * np.pi
+            else:
+                angle = shock_angle
+
+            # Rotated coordinate for shock front
+            x_rot = x_grid * np.cos(angle) + y_grid * np.sin(angle)
+
+            # Tanh shock profile
+            shock_profile = torch.tanh((x_rot - shock_pos) / (shock_width / self.grid_size))
+
+            # Pre-shock and post-shock amplitudes
+            A_pre = 1.0
+            A_post = amplitude_ratio
+
+            # Shock field: transition from A_pre to A_post
+            shock_field = A_pre * (1 - shock_profile) / 2 + A_post * (1 + shock_profile) / 2
+
+            # Add small-scale fluctuations
+            fluctuations = self._generate_grf_batch(
+                batch_size=1,
+                length_scale=0.05,
+                variance=fluctuation_amplitude ** 2
+            )[0]
+
+            # Combine shock + fluctuations
+            field = shock_field.unsqueeze(0) + fluctuations
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_gene_expression(
+        self,
+        batch_size: int,
+        num_genes: int = 3,
+        expression_patterns: Optional[List[str]] = None,
+        correlation_strength: float = 0.3,
+        expression_range: Tuple[float, float] = (0.0, 1.0),
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate gene expression pattern initial conditions.
+
+        Creates spatial transcriptomics data: gene expression levels across
+        tissue space. Models developmental biology, tumor heterogeneity.
+
+        Physics: Pattern composition
+            E_g = sum_i w_{g,i} * basis_i + noise
+            where basis_i are spatial patterns (gradients, stripes, spots)
+
+        Args:
+            batch_size: Number of samples
+            num_genes: Number of genes (uses channels if num_genes <= num_channels)
+            expression_patterns: List of pattern types per gene (None = random)
+            correlation_strength: Gene-gene correlation (0 = independent, 1 = identical)
+            expression_range: (min, max) expression levels
+
+        Returns:
+            Tensor [B, C, H, W] where channels represent genes
+
+        Expected dynamics: Regulatory dynamics, pattern sharpening, noise filtering
+        Cross-domain: Image segmentation, multi-channel signal processing
+
+        Example:
+            ```python
+            # 3-gene expression with gradients and spots
+            fields = generator._generate_gene_expression(
+                batch_size=16,
+                num_genes=3,
+                expression_patterns=["gradient", "spots", "stripes"]
+            )
+            ```
+        """
+        fields = []
+
+        # Available pattern types
+        pattern_types = ["gradient", "spots", "stripes", "radial", "uniform"]
+
+        # Create coordinate grids (normalized to [0, 1])
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Use channels to represent genes
+            genes_to_use = min(num_genes, self.num_channels)
+
+            # Generate shared latent factor for correlation
+            if correlation_strength > 0:
+                shared_pattern = self._generate_grf_batch(
+                    batch_size=1,
+                    length_scale=0.15,
+                    variance=1.0
+                )[0, 0]  # [H, W]
+            else:
+                shared_pattern = torch.zeros(self.grid_size, self.grid_size, device=self.device)
+
+            field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
+
+            for gene_idx in range(genes_to_use):
+                # Select pattern type for this gene
+                if expression_patterns is not None and gene_idx < len(expression_patterns):
+                    pattern_type = expression_patterns[gene_idx]
+                else:
+                    pattern_type = np.random.choice(pattern_types)
+
+                # Generate base pattern
+                if pattern_type == "gradient":
+                    direction = np.random.choice(["x", "y", "diagonal"])
+                    if direction == "x":
+                        base_pattern = x
+                    elif direction == "y":
+                        base_pattern = y
+                    else:
+                        base_pattern = (x + y) / 2
+
+                elif pattern_type == "spots":
+                    # Turing-like spots
+                    wavelength = np.random.uniform(0.1, 0.3)
+                    k = 2 * np.pi / wavelength
+                    angles = [0, 60, 120]  # Hexagonal
+                    base_pattern = torch.zeros(self.grid_size, self.grid_size, device=self.device)
+                    for angle_deg in angles:
+                        angle_rad = np.deg2rad(angle_deg)
+                        kx = k * np.cos(angle_rad)
+                        ky = k * np.sin(angle_rad)
+                        base_pattern += torch.cos(kx * x * self.grid_size + ky * y * self.grid_size)
+                    base_pattern = (base_pattern - base_pattern.min()) / (base_pattern.max() - base_pattern.min() + 1e-10)
+
+                elif pattern_type == "stripes":
+                    wavelength = np.random.uniform(0.1, 0.3)
+                    k = 2 * np.pi / wavelength
+                    angle = torch.rand(1).item() * 2 * np.pi
+                    x_rot = x * np.cos(angle) + y * np.sin(angle)
+                    base_pattern = torch.cos(k * x_rot * self.grid_size)
+                    base_pattern = (base_pattern + 1) / 2  # [0, 1]
+
+                elif pattern_type == "radial":
+                    cx = torch.rand(1, device=self.device).item()
+                    cy = torch.rand(1, device=self.device).item()
+                    r = torch.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+                    base_pattern = torch.exp(-r ** 2 / 0.1)
+
+                elif pattern_type == "uniform":
+                    base_pattern = torch.ones(self.grid_size, self.grid_size, device=self.device) * 0.5
+
+                else:
+                    raise ValueError(f"Unknown pattern_type: {pattern_type}")
+
+                # Add correlation with shared pattern
+                if correlation_strength > 0:
+                    # Normalize shared pattern to [0, 1]
+                    shared_norm = (shared_pattern - shared_pattern.min()) / (shared_pattern.max() - shared_pattern.min() + 1e-10)
+                    correlated_pattern = (
+                        correlation_strength * shared_norm +
+                        (1 - correlation_strength) * base_pattern
+                    )
+                else:
+                    correlated_pattern = base_pattern
+
+                # Add noise
+                noise = torch.randn(self.grid_size, self.grid_size, device=self.device) * 0.1
+
+                # Combine and scale to expression range
+                expr_min, expr_max = expression_range
+                gene_expression = correlated_pattern + noise
+                gene_expression = expr_min + (expr_max - expr_min) * (
+                    (gene_expression - gene_expression.min()) /
+                    (gene_expression.max() - gene_expression.min() + 1e-10)
+                )
+
+                field[gene_idx] = gene_expression
+
+            # If num_genes < num_channels, fill remaining channels with copies or zeros
+            if genes_to_use < self.num_channels:
+                # Copy first gene to remaining channels with noise
+                for c in range(genes_to_use, self.num_channels):
+                    field[c] = field[0] + torch.randn(self.grid_size, self.grid_size, device=self.device) * 0.1
 
             fields.append(field)
 
