@@ -137,6 +137,83 @@ class VisualizationGrid:
 
         return grid
 
+    def create_single_frame(
+        self,
+        realizations: Dict[int, torch.Tensor]  # op_idx -> [M, C, H, W]
+    ) -> torch.Tensor:
+        """
+        Create single frame from pre-extracted realizations (for memory-efficient rendering).
+
+        This method is used for frame-by-frame rendering where only one timestep
+        is loaded to GPU at a time, avoiding OOM with large datasets.
+
+        Args:
+            realizations: Dict mapping operator_idx -> realizations [M, C, H, W]
+                         (already extracted at specific timestep)
+
+        Returns:
+            RGB grid [3, grid_H, grid_W]
+
+        Example:
+            ```python
+            # Extract single timestep from trajectories
+            realizations_t = {
+                op_idx: traj[:, timestep, :, :, :]  # [M, C, H, W]
+                for op_idx, traj in trajectories.items()
+            }
+            frame = grid.create_single_frame(realizations_t)
+            ```
+        """
+        N = len(realizations)  # Number of operators
+        first_real = next(iter(realizations.values()))
+        M = first_real.shape[0]  # Number of realizations
+        K = len(self.aggregate_renderers)  # Number of aggregates
+        H, W = self.grid_size, self.grid_size
+
+        # Calculate grid dimensions with optional spacing
+        spacing = self.spacing_width if self.add_spacing else 0
+        grid_H = N * H + (N - 1) * spacing if N > 1 else H
+        grid_W = (M + K) * W + (M + K - 1) * spacing if (M + K) > 1 else W
+
+        # Create canvas (white background if spacing enabled)
+        grid = torch.ones(3, grid_H, grid_W, dtype=torch.float32, device=self.device)
+        if not self.add_spacing:
+            grid = torch.zeros(3, grid_H, grid_W, dtype=torch.float32, device=self.device)
+
+        # Render each operator (row)
+        for row, op_idx in enumerate(sorted(realizations.keys())):
+            realizations_op = realizations[op_idx]  # [M, C, H, W]
+
+            # Calculate row position
+            row_start = row * (H + spacing)
+            row_end = row_start + H
+
+            # Render individual realizations
+            for col in range(M):
+                realization = realizations_op[col:col+1]  # [1, C, H, W]
+                rgb = self.render_strategy.render(realization)  # [1, 3, H, W]
+
+                # Calculate column position
+                col_start = col * (W + spacing)
+                col_end = col_start + W
+
+                # Place in grid
+                grid[:, row_start:row_end, col_start:col_end] = rgb[0]
+
+            # Render aggregates
+            for agg_idx, agg_renderer in enumerate(self.aggregate_renderers):
+                col = M + agg_idx
+                agg_rgb = agg_renderer.render(realizations_op)  # [3, H, W]
+
+                # Calculate column position
+                col_start = col * (W + spacing)
+                col_end = col_start + W
+
+                # Place in grid
+                grid[:, row_start:row_end, col_start:col_end] = agg_rgb
+
+        return grid
+
     def create_animation_frames(
         self,
         trajectories: Dict[int, torch.Tensor],

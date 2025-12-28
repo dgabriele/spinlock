@@ -625,66 +625,57 @@ Examples:
             add_spacing=add_spacing
         )
 
-        # Now that operators are freed, move trajectories to GPU for fast rendering
+        # Keep trajectories on CPU and render frame-by-frame to avoid OOM
+        # Only move one timestep at a time to GPU for rendering
         if verbose:
-            # Calculate trajectory size
-            first_traj = next(iter(trajectories.values()))
-            traj_size_gb = (first_traj.numel() * first_traj.element_size() * len(trajectories)) / 1024**3
-            print(f"  Moving {len(trajectories)} trajectories to GPU ({traj_size_gb:.2f} GiB)...", end=" ", flush=True)
+            print(f"  Rendering {num_timesteps//stride} frames (frame-by-frame to save GPU memory)...", flush=True)
 
-        try:
-            trajectories_gpu = {k: v.to(torch_device) for k, v in trajectories.items()}
-        except RuntimeError as e:
-            if "out of memory" in str(e).lower():
-                raise RuntimeError(
-                    f"OOM while moving trajectories to GPU. "
-                    f"Tried to allocate {traj_size_gb:.2f} GiB. "
-                    f"Try reducing --n-operators or --steps."
-                ) from e
-            raise
+        # Render frames one timestep at a time
+        all_frames = []
+        timesteps_to_render = list(range(0, num_timesteps, stride))
 
         if verbose:
+            from tqdm import tqdm
+            timesteps_iterator = tqdm(timesteps_to_render, desc="  Frames", leave=False)
+        else:
+            timesteps_iterator = timesteps_to_render
+
+        for t_idx in timesteps_iterator:
+            # Move only this timestep's data to GPU
+            trajectories_t = {}
+            for op_idx, traj in trajectories.items():
+                # traj shape: [M, T, C, H, W]
+                # Extract timestep t_idx: [M, C, H, W]
+                trajectories_t[op_idx] = traj[:, t_idx, :, :, :].to(torch_device)
+
+            # Render this single timestep
+            frame = grid.create_single_frame(trajectories_t)  # [3, H, W]
+            all_frames.append(frame.cpu())
+
+            # Clear GPU memory immediately
+            del trajectories_t
             if torch.cuda.is_available():
-                mem_alloc = torch.cuda.memory_allocated() / 1024**3
-                print(f"✓ GPU: {mem_alloc:.2f} GiB")
-            else:
-                print("✓")
+                torch.cuda.empty_cache()
 
-        # Clear CPU tensors to free RAM
-        del trajectories
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # Stack all frames
+        frames = torch.stack(all_frames, dim=0)  # [T, 3, H, W]
 
         if verbose:
-            print(f"  Rendering {num_timesteps//stride} frames...", end=" ", flush=True)
+            # Get grid info from first timestep for display
+            trajectories_t0 = {op_idx: traj[:, 0, :, :, :].to(torch_device)
+                              for op_idx, traj in trajectories.items()}
+            grid_info = grid.get_grid_info(trajectories_t0)
+            del trajectories_t0
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
-        frames = grid.create_animation_frames(
-            trajectories_gpu,
-            num_timesteps=num_timesteps,
-            stride=stride
-        )
-
-        if verbose:
-            print(f"✓")
-
-        grid_info = grid.get_grid_info(trajectories_gpu)
-
-        if verbose:
-            print(f"  Rendered {frames.shape[0]} frames ({grid_info['grid_height']}×{grid_info['grid_width']})")
+            print(f"  ✓ Rendered {frames.shape[0]} frames ({grid_info['grid_height']}×{grid_info['grid_width']})")
             print(f"  Grid: {grid_info['num_operators']} operators × {grid_info['num_realizations'] + grid_info['num_aggregates']} columns")
 
-        # Move frames to CPU and clear GPU memory
-        if verbose:
-            print(f"  Moving frames to CPU...", end=" ", flush=True)
-
-        frames = frames.cpu()
-        del trajectories_gpu
+        # Clear trajectories from CPU memory
+        del trajectories
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-        if verbose:
-            print(f"✓")
 
         # Export
         if verbose:
