@@ -93,14 +93,18 @@ class VideoExporter:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Write video
-        write_video(
-            str(output_path),
-            frames_uint8,
-            fps=self.fps,
-            video_codec=self.codec,
-            options=options
-        )
+        # Write video (suppress torchvision deprecation warning)
+        import warnings
+        with warnings.catch_warnings():
+            # Suppress torchvision video deprecation warnings (migrating to TorchCodec in future)
+            warnings.filterwarnings("ignore", category=UserWarning, message=".*video.*deprecated.*")
+            write_video(
+                str(output_path),
+                frames_uint8,
+                fps=self.fps,
+                video_codec=self.codec,
+                options=options
+            )
 
 
 class GIFExporter:
