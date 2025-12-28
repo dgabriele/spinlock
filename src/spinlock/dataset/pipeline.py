@@ -640,6 +640,17 @@ class DatasetGenerationPipeline:
             return config_gen.composite.copy()
         elif ic_type == "heavy_tailed" and config_gen.heavy_tailed:
             return config_gen.heavy_tailed.copy()
+        # Tier 1 domain-specific ICs
+        elif ic_type == "quantum_wave_packet" and config_gen.quantum_wave_packet:
+            return config_gen.quantum_wave_packet.copy()
+        elif ic_type == "turing_pattern" and config_gen.turing_pattern:
+            return config_gen.turing_pattern.copy()
+        elif ic_type == "thermal_gradient" and config_gen.thermal_gradient:
+            return config_gen.thermal_gradient.copy()
+        elif ic_type == "morphogen_gradient" and config_gen.morphogen_gradient:
+            return config_gen.morphogen_gradient.copy()
+        elif ic_type == "reaction_front" and config_gen.reaction_front:
+            return config_gen.reaction_front.copy()
         elif ic_type == "gaussian_random_field":
             return {
                 "length_scale": config_gen.length_scale,

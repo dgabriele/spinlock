@@ -236,7 +236,12 @@ class ParallelismConfig(BaseModel):
 class InputGenerationConfig(BaseModel):
     """Input field generation configuration."""
 
-    method: Literal["random", "gaussian_random_field", "structured", "mixed", "sampled"] = "random"
+    method: Literal[
+        "random", "gaussian_random_field", "structured", "mixed", "sampled",
+        # Tier 1 domain-specific ICs
+        "quantum_wave_packet", "turing_pattern", "thermal_gradient",
+        "morphogen_gradient", "reaction_front"
+    ] = "random"
     distribution: Literal["gaussian", "uniform"] = "gaussian"
     num_samples_per_operator: int = Field(default=100, ge=1)
     spatial_size: Union[Literal["from_operator"], int] = "from_operator"
@@ -245,10 +250,17 @@ class InputGenerationConfig(BaseModel):
     variance: float = Field(default=1.0, gt=0)
     # Optional parameters for sampled IC type method
     ic_type_weights: Dict[str, float] = Field(default_factory=dict)
+    # Existing IC type parameter dicts
     multiscale_grf: Dict[str, Any] = Field(default_factory=dict)
     localized: Dict[str, Any] = Field(default_factory=dict)
     composite: Dict[str, Any] = Field(default_factory=dict)
     heavy_tailed: Dict[str, Any] = Field(default_factory=dict)
+    # Tier 1 domain-specific IC parameter dicts
+    quantum_wave_packet: Dict[str, Any] = Field(default_factory=dict)
+    turing_pattern: Dict[str, Any] = Field(default_factory=dict)
+    thermal_gradient: Dict[str, Any] = Field(default_factory=dict)
+    morphogen_gradient: Dict[str, Any] = Field(default_factory=dict)
+    reaction_front: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PerformanceConfig(BaseModel):

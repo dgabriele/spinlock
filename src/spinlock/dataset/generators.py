@@ -77,7 +77,10 @@ class InputFieldGenerator:
         batch_size: int,
         field_type: Literal[
             "gaussian_random_field", "random", "structured", "mixed",
-            "multiscale_grf", "localized", "composite", "heavy_tailed"  # NEW
+            "multiscale_grf", "localized", "composite", "heavy_tailed",
+            # Tier 1 domain-specific ICs
+            "quantum_wave_packet", "turing_pattern", "thermal_gradient",
+            "morphogen_gradient", "reaction_front"
         ] = "gaussian_random_field",
         seed: Optional[int] = None,
         **kwargs,
@@ -127,11 +130,24 @@ class InputFieldGenerator:
             return self._generate_composite_field(batch_size, **kwargs)
         elif field_type == "heavy_tailed":
             return self._generate_heavy_tailed(batch_size, **kwargs)
+        # Tier 1 domain-specific ICs
+        elif field_type == "quantum_wave_packet":
+            return self._generate_quantum_wave_packet(batch_size, **kwargs)
+        elif field_type == "turing_pattern":
+            return self._generate_turing_pattern(batch_size, **kwargs)
+        elif field_type == "thermal_gradient":
+            return self._generate_thermal_gradient(batch_size, **kwargs)
+        elif field_type == "morphogen_gradient":
+            return self._generate_morphogen_gradient(batch_size, **kwargs)
+        elif field_type == "reaction_front":
+            return self._generate_reaction_front(batch_size, **kwargs)
         else:
             raise ValueError(
                 f"Unknown field type: {field_type}. "
                 f"Must be one of: 'gaussian_random_field', 'random', 'structured', 'mixed', "
-                f"'multiscale_grf', 'localized', 'composite', 'heavy_tailed'"
+                f"'multiscale_grf', 'localized', 'composite', 'heavy_tailed', "
+                f"'quantum_wave_packet', 'turing_pattern', 'thermal_gradient', "
+                f"'morphogen_gradient', 'reaction_front'"
             )
 
     def _generate_grf_batch(
@@ -591,6 +607,514 @@ class InputFieldGenerator:
 
             # Inverse FFT to get real-space field
             field = torch.fft.ifft2(fourier_modes).real
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    # ========================================================================
+    # DOMAIN-SPECIFIC INITIAL CONDITIONS (Tier 1)
+    # ========================================================================
+
+    def _generate_quantum_wave_packet(
+        self,
+        batch_size: int,
+        sigma: float = 10.0,
+        momentum_range: Tuple[float, float] = (0.1, 0.5),
+        num_packets: int = 1,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate quantum wave packet initial conditions.
+
+        Creates minimal-uncertainty Gaussian wave packets fundamental to
+        quantum mechanics. Useful for testing wave propagation, dispersion,
+        and interference dynamics.
+
+        Physics: Gaussian envelope with plane wave modulation
+            psi(x,y) = exp(i*k·r) * exp(-r^2/(4*sigma^2))
+
+        Args:
+            batch_size: Number of samples
+            sigma: Wave packet width (position uncertainty, in pixels)
+            momentum_range: (k_min, k_max) wave vector magnitude range
+            num_packets: Number of independent packets per field
+
+        Returns:
+            Tensor [B, 3, H, W] with channels:
+                - Channel 0: Real part of wavefunction
+                - Channel 1: Imaginary part of wavefunction
+                - Channel 2: Probability density |psi|^2
+
+        Expected dynamics: Spreading, interference, dispersion
+        Cross-domain: Optical wave packets, information encoding
+
+        Example:
+            ```python
+            # Single wave packet with moderate momentum
+            fields = generator._generate_quantum_wave_packet(
+                batch_size=16,
+                sigma=12.0,
+                momentum_range=(0.2, 0.3),
+                num_packets=1
+            )
+            ```
+        """
+        fields = []
+
+        # Create coordinate grids
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Initialize field (3 channels: real, imag, |psi|^2)
+            field = torch.zeros(3, self.grid_size, self.grid_size, device=self.device)
+
+            for _ in range(num_packets):
+                # Random wave packet center
+                cx = torch.rand(1, device=self.device) * self.grid_size
+                cy = torch.rand(1, device=self.device) * self.grid_size
+
+                # Random momentum (wave vector)
+                k_magnitude = (
+                    torch.rand(1, device=self.device) * (momentum_range[1] - momentum_range[0])
+                    + momentum_range[0]
+                )
+                k_angle = torch.rand(1, device=self.device) * 2 * np.pi
+                k_x = k_magnitude * torch.cos(k_angle)
+                k_y = k_magnitude * torch.sin(k_angle)
+
+                # Gaussian envelope
+                r_squared = (x - cx) ** 2 + (y - cy) ** 2
+                envelope = torch.exp(-r_squared / (4 * sigma ** 2))
+
+                # Phase: k·r
+                phase = k_x * (x - cx) + k_y * (y - cy)
+
+                # Wave packet: psi = envelope * exp(i * phase)
+                real_part = envelope * torch.cos(phase)
+                imag_part = envelope * torch.sin(phase)
+                prob_density = envelope ** 2  # |psi|^2
+
+                # Accumulate (for multiple packets)
+                field[0] += real_part
+                field[1] += imag_part
+                field[2] += prob_density
+
+            # Normalize probability density to [0, 1]
+            if field[2].max() > 0:
+                field[2] = field[2] / field[2].max()
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_turing_pattern(
+        self,
+        batch_size: int,
+        pattern_type: str = "spots",
+        wavelength: float = 16.0,
+        perturbation_amplitude: float = 0.1,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate Turing pattern initial conditions.
+
+        Creates reaction-diffusion patterns via spectral method. Turing patterns
+        arise from instabilities in activator-inhibitor systems and appear in
+        morphogenesis (animal coat patterns, skin pigmentation).
+
+        Physics: Wavelength-selected patterns from linear stability analysis
+            - Spots: Hexagonal lattice (3 wave vectors at 60°)
+            - Stripes: Single wave vector
+            - Labyrinth: Multiple interfering wave vectors
+
+        Args:
+            batch_size: Number of samples
+            pattern_type: "spots", "stripes", "labyrinth", or "mixed"
+            wavelength: Pattern wavelength (pixels, corresponds to 2π/k_c)
+            perturbation_amplitude: Initial noise level
+
+        Returns:
+            Tensor [B, C, H, W] with pattern seeded at critical wavelength
+
+        Expected dynamics: Pattern formation, selection, defect dynamics
+        Cross-domain: BZ reactions (chemistry), convection patterns
+
+        Example:
+            ```python
+            # Hexagonal spot patterns
+            fields = generator._generate_turing_pattern(
+                batch_size=16,
+                pattern_type="spots",
+                wavelength=20.0
+            )
+            ```
+        """
+        fields = []
+
+        # Critical wave number
+        k_c = 2 * np.pi / wavelength
+
+        # Create coordinate grids
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Determine pattern type for this sample
+            if pattern_type == "mixed":
+                sample_pattern = np.random.choice(["spots", "stripes", "labyrinth"])
+            else:
+                sample_pattern = pattern_type
+
+            if sample_pattern == "spots":
+                # Hexagonal spots: 3 wave vectors at 60° apart
+                angles = [0, 2 * np.pi / 3, 4 * np.pi / 3]
+                pattern_field = torch.zeros(self.grid_size, self.grid_size, device=self.device)
+
+                for angle in angles:
+                    k_x = k_c * np.cos(angle)
+                    k_y = k_c * np.sin(angle)
+                    pattern_field += torch.cos(k_x * x + k_y * y)
+
+                # Normalize
+                pattern_field = pattern_field / 3.0
+
+            elif sample_pattern == "stripes":
+                # Single wave vector with random orientation
+                angle = torch.rand(1, device=self.device).item() * 2 * np.pi
+                k_x = k_c * np.cos(angle)
+                k_y = k_c * np.sin(angle)
+                pattern_field = torch.cos(k_x * x + k_y * y)
+
+            elif sample_pattern == "labyrinth":
+                # Multiple interfering wave vectors (2-4 directions)
+                num_waves = np.random.randint(2, 5)
+                angles = torch.rand(num_waves, device=self.device) * 2 * np.pi
+                pattern_field = torch.zeros(self.grid_size, self.grid_size, device=self.device)
+
+                for angle in angles:
+                    k_x = k_c * torch.cos(angle)
+                    k_y = k_c * torch.sin(angle)
+                    pattern_field += torch.cos(k_x * x + k_y * y)
+
+                # Normalize
+                pattern_field = pattern_field / num_waves
+
+            else:
+                raise ValueError(f"Unknown pattern_type: {sample_pattern}")
+
+            # Add small perturbations (GRF noise)
+            noise = self._generate_grf_batch(
+                batch_size=1,
+                length_scale=wavelength / self.grid_size,
+                variance=perturbation_amplitude ** 2
+            )[0]  # [C, H, W]
+
+            # Combine pattern + noise for all channels
+            field = pattern_field.unsqueeze(0).repeat(self.num_channels, 1, 1) + noise
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_thermal_gradient(
+        self,
+        batch_size: int,
+        gradient_direction: str = "random",
+        temperature_range: Tuple[float, float] = (0.0, 1.0),
+        beta: float = 1.0,
+        thermal_noise_amplitude: float = 0.1,
+        thermal_length_scale: float = 5.0,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate thermal gradient initial conditions.
+
+        Creates temperature gradients that drive heat flow via Fourier's law.
+        Useful for testing diffusion dynamics and equilibration.
+
+        Physics: Linear or power-law gradient + thermal fluctuations
+            T(x) = T_min + (T_max - T_min) * (x/L)^beta + fluctuations
+
+        Args:
+            batch_size: Number of samples
+            gradient_direction: "x", "y", "diagonal", or "random"
+            temperature_range: (T_min, T_max) temperature bounds
+            beta: Gradient exponent (1=linear, <1=concave, >1=convex)
+            thermal_noise_amplitude: Fluctuation strength
+            thermal_length_scale: Correlation length of fluctuations (pixels)
+
+        Returns:
+            Tensor [B, C, H, W] with temperature gradient
+
+        Expected dynamics: Diffusion toward equilibrium, heat flow patterns
+        Cross-domain: Concentration gradients (chemistry), morphogen gradients (biology)
+
+        Example:
+            ```python
+            # Linear gradient along x with small fluctuations
+            fields = generator._generate_thermal_gradient(
+                batch_size=16,
+                gradient_direction="x",
+                beta=1.0,
+                thermal_noise_amplitude=0.05
+            )
+            ```
+        """
+        T_min, T_max = temperature_range
+        fields = []
+
+        # Create coordinate grids (normalized to [0, 1])
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Determine gradient direction
+            if gradient_direction == "random":
+                direction = np.random.choice(["x", "y", "diagonal"])
+            else:
+                direction = gradient_direction
+
+            # Create base gradient
+            if direction == "x":
+                gradient = x ** beta
+            elif direction == "y":
+                gradient = y ** beta
+            elif direction == "diagonal":
+                gradient = ((x + y) / 2) ** beta
+            else:
+                raise ValueError(f"Unknown gradient_direction: {direction}")
+
+            # Scale to temperature range
+            temperature = T_min + (T_max - T_min) * gradient
+
+            # Add thermal fluctuations (GRF)
+            noise = self._generate_grf_batch(
+                batch_size=1,
+                length_scale=thermal_length_scale / self.grid_size,
+                variance=thermal_noise_amplitude ** 2
+            )[0]  # [C, H, W]
+
+            # Combine gradient + noise
+            field = temperature.unsqueeze(0).repeat(self.num_channels, 1, 1) + noise
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_morphogen_gradient(
+        self,
+        batch_size: int,
+        decay_length: float = 20.0,
+        num_sources: int = 1,
+        noise_level: float = 0.05,
+        gradient_type: str = "exponential",
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate morphogen gradient initial conditions.
+
+        Creates signaling molecule gradients that specify cell fate in
+        developmental biology. Morphogens diffuse from source and decay,
+        forming concentration gradients.
+
+        Physics: Exponential decay from point sources
+            C(r) = C_0 * exp(-|r - r_source| / lambda) + noise
+            where lambda = sqrt(D/k) (diffusion/degradation)
+
+        Args:
+            batch_size: Number of samples
+            decay_length: Characteristic decay length lambda (pixels)
+            num_sources: Number of morphogen sources (1-4)
+            noise_level: Stochastic fluctuation amplitude
+            gradient_type: "exponential", "power_law", or "sigmoidal"
+
+        Returns:
+            Tensor [B, C, H, W] with morphogen concentration
+
+        Expected dynamics: Gradient maintenance, boundary refinement, noise filtering
+        Cross-domain: Thermal gradients, chemical gradients, information channels
+
+        Example:
+            ```python
+            # Single exponential gradient from random source
+            fields = generator._generate_morphogen_gradient(
+                batch_size=16,
+                decay_length=25.0,
+                num_sources=1,
+                gradient_type="exponential"
+            )
+            ```
+        """
+        fields = []
+
+        # Create coordinate grids
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Initialize concentration field
+            concentration = torch.zeros(self.grid_size, self.grid_size, device=self.device)
+
+            # Random number of sources (if specified as range)
+            n_sources = num_sources if isinstance(num_sources, int) else np.random.randint(1, num_sources + 1)
+
+            for _ in range(n_sources):
+                # Random source position
+                source_x = torch.rand(1, device=self.device) * self.grid_size
+                source_y = torch.rand(1, device=self.device) * self.grid_size
+
+                # Distance from source
+                r = torch.sqrt((x - source_x) ** 2 + (y - source_y) ** 2)
+
+                # Random source strength
+                C_0 = torch.rand(1, device=self.device) * 0.5 + 0.5  # [0.5, 1.0]
+
+                # Apply gradient profile
+                if gradient_type == "exponential":
+                    profile = C_0 * torch.exp(-r / decay_length)
+                elif gradient_type == "power_law":
+                    # Avoid singularity at source
+                    profile = C_0 / (1 + (r / decay_length) ** 2)
+                elif gradient_type == "sigmoidal":
+                    # Smooth step function
+                    profile = C_0 / (1 + torch.exp((r - decay_length) / (decay_length * 0.2)))
+                else:
+                    raise ValueError(f"Unknown gradient_type: {gradient_type}")
+
+                # Accumulate sources
+                concentration += profile
+
+            # Add noise fluctuations
+            noise = self._generate_grf_batch(
+                batch_size=1,
+                length_scale=0.05,
+                variance=noise_level ** 2
+            )[0]  # [C, H, W]
+
+            # Replicate concentration across channels and add noise
+            field = concentration.unsqueeze(0).repeat(self.num_channels, 1, 1) + noise
+
+            # Normalize to [0, 1]
+            field = (field - field.min()) / (field.max() - field.min() + 1e-10)
+
+            fields.append(field)
+
+        return torch.stack(fields, dim=0)
+
+    def _generate_reaction_front(
+        self,
+        batch_size: int,
+        front_shape: str = "planar",
+        front_width: float = 3.0,
+        num_fronts: int = 1,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate reaction front initial conditions.
+
+        Creates propagating fronts in autocatalytic reactions (Fisher-KPP equation).
+        Fronts separate reacted from unreacted regions and propagate at constant speed.
+
+        Physics: Tanh/sigmoid profile
+            C(x) = 1 / (1 + exp((x - x_front) / delta))
+
+        Args:
+            batch_size: Number of samples
+            front_shape: "planar", "circular", or "irregular"
+            front_width: Front thickness delta (pixels)
+            num_fronts: Number of independent fronts (1-3)
+
+        Returns:
+            Tensor [B, C, H, W] with reaction front(s)
+
+        Expected dynamics: Front propagation, front interactions, speed selection
+        Cross-domain: Phase boundaries, shock waves, biological invasions
+
+        Example:
+            ```python
+            # Single planar front
+            fields = generator._generate_reaction_front(
+                batch_size=16,
+                front_shape="planar",
+                front_width=4.0,
+                num_fronts=1
+            )
+            ```
+        """
+        fields = []
+
+        # Create coordinate grids
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            indexing="ij"
+        )
+
+        for _ in range(batch_size):
+            # Initialize field
+            field_val = torch.zeros(self.grid_size, self.grid_size, device=self.device)
+
+            for _ in range(num_fronts):
+                if front_shape == "planar":
+                    # Random orientation
+                    angle = torch.rand(1, device=self.device) * 2 * np.pi
+                    # Random position along perpendicular axis
+                    offset = (torch.rand(1, device=self.device) - 0.5) * self.grid_size * 0.5
+
+                    # Distance along normal direction
+                    dist = x * torch.cos(angle) + y * torch.sin(angle) - offset
+
+                    # Tanh front profile
+                    front = 0.5 * (1 + torch.tanh(dist / front_width))
+
+                elif front_shape == "circular":
+                    # Random center
+                    cx = torch.rand(1, device=self.device) * self.grid_size
+                    cy = torch.rand(1, device=self.device) * self.grid_size
+
+                    # Random radius
+                    radius = (torch.rand(1, device=self.device) * 0.3 + 0.2) * self.grid_size
+
+                    # Radial distance
+                    r = torch.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+
+                    # Circular front (inside=1, outside=0)
+                    front = 0.5 * (1 + torch.tanh((radius - r) / front_width))
+
+                elif front_shape == "irregular":
+                    # Irregular front via low-frequency GRF isoline
+                    grf = self._generate_grf_batch(
+                        batch_size=1,
+                        length_scale=0.2,
+                        variance=1.0
+                    )[0, 0]  # [H, W]
+
+                    # Threshold GRF to create irregular boundary
+                    threshold = torch.rand(1, device=self.device) * 2 - 1  # [-1, 1]
+                    front = 0.5 * (1 + torch.tanh((grf - threshold) / front_width))
+
+                else:
+                    raise ValueError(f"Unknown front_shape: {front_shape}")
+
+                # Accumulate fronts (max to avoid overlap issues)
+                field_val = torch.maximum(field_val, front)
+
+            # Replicate across channels
+            field = field_val.unsqueeze(0).repeat(self.num_channels, 1, 1)
 
             fields.append(field)
 
