@@ -644,9 +644,9 @@ Examples:
             # Move only this timestep's data to GPU
             trajectories_t = {}
             for op_idx, traj in trajectories.items():
-                # traj shape: [M, T, C, H, W]
+                # traj shape: [T, M, C, H, W] (permuted from evolution output)
                 # Extract timestep t_idx: [M, C, H, W]
-                trajectories_t[op_idx] = traj[:, t_idx, :, :, :].to(torch_device)
+                trajectories_t[op_idx] = traj[t_idx, :, :, :, :].to(torch_device)
 
             # Render this single timestep
             frame = grid.create_single_frame(trajectories_t)  # [3, H, W]

@@ -356,15 +356,17 @@ class OperatorRollout:
         test_batch_size = min(num_realizations, 8)
 
         try:
-            # Clear cache
+            # Clear cache aggressively to minimize fragmentation
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
 
-            # Get total GPU memory
+            # Get GPU memory info
             total_memory = torch.cuda.get_device_properties(0).total_memory
+            allocated_memory = torch.cuda.memory_allocated()
+            reserved_memory = torch.cuda.memory_reserved()
 
-            # Measure baseline memory
-            baseline_allocated = torch.cuda.memory_allocated()
+            # Measure baseline memory before test
+            baseline_allocated = allocated_memory
 
             # Test forward pass with test batch size
             with torch.no_grad():
@@ -372,18 +374,28 @@ class OperatorRollout:
                 _ = operator(X_test)
                 torch.cuda.synchronize()
 
-            # Measure memory used
+            # Measure memory used by test batch
             peak_memory = torch.cuda.max_memory_allocated()
             memory_per_sample = (peak_memory - baseline_allocated) / test_batch_size
 
-            # Use 70% of available memory as safety margin
-            available_memory = total_memory * 0.7
-            safe_batch_size = int(available_memory / memory_per_sample)
+            # Estimate total memory needed for full evolution:
+            # 1. Forward pass memory (measured above)
+            # 2. Trajectory storage: num_timesteps × batch_size × state_size
+            C, H, W = initial_condition.shape
+            bytes_per_state = C * H * W * 4  # float32
+            trajectory_memory_per_sample = self.num_timesteps * bytes_per_state
+            total_memory_per_sample = memory_per_sample + trajectory_memory_per_sample
+
+            # Calculate truly available memory (accounting for what's already used + fragmentation)
+            # Use only 35% of free memory to be very conservative with fragmentation
+            free_memory = total_memory - reserved_memory  # Account for reserved (includes fragmentation)
+            usable_memory = free_memory * 0.35  # Very conservative for fragmentation safety
+            safe_batch_size = int(usable_memory / total_memory_per_sample)
 
             # Clamp to reasonable range
             batch_size = max(1, min(safe_batch_size, num_realizations))
 
-            # Clean up
+            # Clean up test allocation
             del X_test
             torch.cuda.empty_cache()
 
@@ -392,6 +404,8 @@ class OperatorRollout:
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
                 torch.cuda.empty_cache()
+                print("⚠ GPU memory fragmentation detected during calibration.")
+                print("  Consider setting: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
                 # Fallback to very conservative batch size
                 return min(num_realizations, 2)
             raise

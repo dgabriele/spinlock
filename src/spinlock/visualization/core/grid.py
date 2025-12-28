@@ -114,7 +114,13 @@ class VisualizationGrid:
             # Render individual realizations
             for col in range(M):
                 realization = realizations_t[col:col+1]  # [1, C, H, W]
-                rgb = self.render_strategy.render(realization)  # [1, 3, H, W]
+                rgb = self.render_strategy.render(realization)  # [1, 3, H_orig, W_orig]
+
+                # Resize to match grid cell size if needed
+                if rgb.shape[-2:] != (H, W):
+                    rgb = torch.nn.functional.interpolate(
+                        rgb, size=(H, W), mode='bilinear', align_corners=False
+                    )
 
                 # Calculate column position
                 col_start = col * (W + spacing)
@@ -126,7 +132,13 @@ class VisualizationGrid:
             # Render aggregates
             for agg_idx, agg_renderer in enumerate(self.aggregate_renderers):
                 col = M + agg_idx
-                agg_rgb = agg_renderer.render(realizations_t)  # [3, H, W]
+                agg_rgb = agg_renderer.render(realizations_t)  # [3, H_orig, W_orig]
+
+                # Resize to match grid cell size if needed
+                if agg_rgb.shape[-2:] != (H, W):
+                    agg_rgb = torch.nn.functional.interpolate(
+                        agg_rgb.unsqueeze(0), size=(H, W), mode='bilinear', align_corners=False
+                    ).squeeze(0)
 
                 # Calculate column position
                 col_start = col * (W + spacing)
@@ -191,7 +203,13 @@ class VisualizationGrid:
             # Render individual realizations
             for col in range(M):
                 realization = realizations_op[col:col+1]  # [1, C, H, W]
-                rgb = self.render_strategy.render(realization)  # [1, 3, H, W]
+                rgb = self.render_strategy.render(realization)  # [1, 3, H_orig, W_orig]
+
+                # Resize to match grid cell size if needed
+                if rgb.shape[-2:] != (H, W):
+                    rgb = torch.nn.functional.interpolate(
+                        rgb, size=(H, W), mode='bilinear', align_corners=False
+                    )
 
                 # Calculate column position
                 col_start = col * (W + spacing)
@@ -203,7 +221,13 @@ class VisualizationGrid:
             # Render aggregates
             for agg_idx, agg_renderer in enumerate(self.aggregate_renderers):
                 col = M + agg_idx
-                agg_rgb = agg_renderer.render(realizations_op)  # [3, H, W]
+                agg_rgb = agg_renderer.render(realizations_op)  # [3, H_orig, W_orig]
+
+                # Resize to match grid cell size if needed
+                if agg_rgb.shape[-2:] != (H, W):
+                    agg_rgb = torch.nn.functional.interpolate(
+                        agg_rgb.unsqueeze(0), size=(H, W), mode='bilinear', align_corners=False
+                    ).squeeze(0)
 
                 # Calculate column position
                 col_start = col * (W + spacing)

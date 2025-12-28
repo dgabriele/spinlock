@@ -166,10 +166,21 @@ class DatasetGenerationPipeline:
         num_samples = len(parameters)
         batch_size = self.config.sampling.batch_size
 
-        # Create HDF5 writer with max grid size (256x256) and metadata tracking
+        # Group operators by grid size first to determine max size needed
+        print("Grouping operators by grid size...")
+        grid_size_groups = self._group_by_grid_size(parameters)
+
+        # Determine actual max grid size (no padding needed if all same size)
+        self.max_grid_size = max(grid_size_groups.keys())  # Store as instance variable
+        if len(grid_size_groups) == 1:
+            print(f"Single grid size detected: {self.max_grid_size}×{self.max_grid_size} (no padding needed)")
+        else:
+            print(f"Multiple grid sizes detected, will pad to {self.max_grid_size}×{self.max_grid_size}")
+
+        # Create HDF5 writer with actual max grid size (not hardcoded 256)
         with HDF5DatasetWriter(
             output_path=self.config.dataset.output_path,
-            grid_size=256,  # Max size for padding smaller grids
+            grid_size=self.max_grid_size,  # Use actual max, not hardcoded 256
             input_channels=3,  # TODO: Extract from config
             output_channels=3,  # TODO: Extract from config
             num_realizations=self.config.simulation.num_realizations,
@@ -187,10 +198,6 @@ class DatasetGenerationPipeline:
                     "sampling_metrics": validation_metrics,
                 }
             )
-
-            # Group operators by grid size (can't batch different sizes on GPU)
-            print("Grouping operators by grid size...")
-            grid_size_groups = self._group_by_grid_size(parameters)
 
             print(f"Grid size distribution:")
             for grid_size, indices in sorted(grid_size_groups.items()):
@@ -458,8 +465,8 @@ class DatasetGenerationPipeline:
 
         Returns:
             Tuple of (inputs, outputs, metadata)
-            - inputs: [B, C_in, H, W] (padded to 256x256 if needed)
-            - outputs: [B, M, C_out, H, W] (padded to 256x256 if needed)
+            - inputs: [B, C_in, H, W] (padded to max_grid_size if needed)
+            - outputs: [B, M, C_out, H, W] (padded to max_grid_size if needed)
             - metadata: Dict with ic_types, evolution_policies, grid_sizes, noise_regimes
         """
         # Process batch with variable grid size and track IC types used
@@ -512,8 +519,8 @@ class DatasetGenerationPipeline:
 
         Returns:
             Tuple of (inputs, outputs, ic_types_used)
-            - inputs: [B, C_in, H, W] (padded to 256x256)
-            - outputs: [B, M, C_out, H, W] (padded to 256x256)
+            - inputs: [B, C_in, H, W] (padded to max_grid_size if needed)
+            - outputs: [B, M, C_out, H, W] (padded to max_grid_size if needed)
             - ic_types_used: List of IC types used for each sample
         """
         # Build operators with this grid size
@@ -584,10 +591,10 @@ class DatasetGenerationPipeline:
         )
         self.stats["inference_time"] += time.time() - inf_start
 
-        # Pad to 256x256 if needed
-        if grid_size < 256:
-            inputs = self._pad_to_max_size(inputs, target_size=256)
-            outputs = self._pad_to_max_size(outputs, target_size=256)
+        # Pad to max_grid_size if needed (only if variable grid sizes)
+        if grid_size < self.max_grid_size:
+            inputs = self._pad_to_max_size(inputs, target_size=self.max_grid_size)
+            outputs = self._pad_to_max_size(outputs, target_size=self.max_grid_size)
 
         return inputs, outputs, ic_types_used
 
@@ -645,9 +652,9 @@ class DatasetGenerationPipeline:
                 "variance": config_gen.variance
             }
 
-    def _pad_to_max_size(self, tensor: torch.Tensor, target_size: int = 256) -> torch.Tensor:
+    def _pad_to_max_size(self, tensor: torch.Tensor, target_size: int) -> torch.Tensor:
         """
-        Pad tensor to max size (256x256) with zeros.
+        Pad tensor to target size with zeros (dynamic based on dataset grid sizes).
 
         Args:
             tensor: Input tensor [..., H, W]
