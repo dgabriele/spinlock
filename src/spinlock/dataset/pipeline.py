@@ -157,7 +157,7 @@ class DatasetGenerationPipeline:
         self, parameters: NDArray[np.float64], validation_metrics: Dict[str, Any]
     ) -> None:
         """
-        Generate dataset in batches.
+        Generate dataset in batches with group-by-grid-size strategy.
 
         Args:
             parameters: Sampled parameter sets [N, P]
@@ -166,10 +166,10 @@ class DatasetGenerationPipeline:
         num_samples = len(parameters)
         batch_size = self.config.sampling.batch_size
 
-        # Create HDF5 writer
+        # Create HDF5 writer with max grid size (256x256) and metadata tracking
         with HDF5DatasetWriter(
             output_path=self.config.dataset.output_path,
-            grid_size=64,  # TODO: Extract from config
+            grid_size=256,  # Max size for padding smaller grids
             input_channels=3,  # TODO: Extract from config
             output_channels=3,  # TODO: Extract from config
             num_realizations=self.config.simulation.num_realizations,
@@ -177,6 +177,7 @@ class DatasetGenerationPipeline:
             compression=self.config.dataset.storage.compression,
             compression_opts=self.config.dataset.storage.compression_level,
             chunk_size=self.config.dataset.storage.chunk_size,
+            track_ic_metadata=True,  # Enable discovery metadata
         ) as writer:
 
             # Write metadata
@@ -187,38 +188,114 @@ class DatasetGenerationPipeline:
                 }
             )
 
-            # Process in batches
-            num_batches = (num_samples + batch_size - 1) // batch_size
+            # Group operators by grid size (can't batch different sizes on GPU)
+            print("Grouping operators by grid size...")
+            grid_size_groups = self._group_by_grid_size(parameters)
 
-            print(f"Stage 2-4: Generating dataset ({num_batches} batches)...")
+            print(f"Grid size distribution:")
+            for grid_size, indices in sorted(grid_size_groups.items()):
+                print(f"  {grid_size}×{grid_size}: {len(indices)} operators ({len(indices)/num_samples*100:.1f}%)")
+            print()
+
+            # Process each grid size group separately
+            print(f"Stage 2-4: Generating dataset (group-by-grid-size strategy)...\n")
 
             with tqdm(total=num_samples, desc="Generating") as pbar:
-                for batch_idx in range(num_batches):
-                    batch_start = batch_idx * batch_size
-                    batch_end = min(batch_start + batch_size, num_samples)
-                    current_batch_size = batch_end - batch_start
+                for grid_size in sorted(grid_size_groups.keys()):
+                    indices = grid_size_groups[grid_size]
+                    group_params = parameters[indices]
 
-                    # Extract parameter batch
-                    param_batch = parameters[batch_start:batch_end]
+                    print(f"\nProcessing {grid_size}×{grid_size} grid ({len(indices)} operators)...")
 
-                    # Process batch
-                    batch_inputs, batch_outputs = self._process_batch(
-                        param_batch, current_batch_size
-                    )
+                    # Adaptive batch processing for this grid size
+                    current_batch_size = batch_size
+                    min_batch_size = 1
+                    group_processed = 0
 
-                    # Write to HDF5
-                    store_start = time.time()
-                    writer.write_batch(
-                        parameters=param_batch, inputs=batch_inputs, outputs=batch_outputs
-                    )
-                    self.stats["storage_time"] += time.time() - store_start
+                    # Intelligent batch size search state
+                    max_safe_batch_size = None  # Will be determined through search
+                    in_search_mode = False  # True after first OOM, incrementally searching for max
+                    search_increment_pct = 0.05  # Increase by 5% each successful batch during search
 
-                    self.stats["samples_generated"] += current_batch_size
-                    pbar.update(current_batch_size)
+                    while group_processed < len(indices):
+                        batch_start_idx = group_processed
+                        batch_end_idx = min(batch_start_idx + current_batch_size, len(indices))
+                        actual_batch_size = batch_end_idx - batch_start_idx
 
-                    # Memory cleanup
-                    if batch_idx % 10 == 0 and self.device.type == "cuda":
-                        torch.cuda.empty_cache()
+                        # Extract parameter batch
+                        param_batch = group_params[batch_start_idx:batch_end_idx]
+                        batch_indices = indices[batch_start_idx:batch_end_idx]
+
+                        try:
+                            # Process batch with this grid size
+                            batch_inputs, batch_outputs, metadata = self._process_batch_with_metadata(
+                                param_batch, actual_batch_size, grid_size
+                            )
+
+                            # Write to HDF5 (with metadata and proper indexing)
+                            store_start = time.time()
+                            self._write_batch_to_hdf5(
+                                writer, batch_indices, param_batch, batch_inputs, batch_outputs, metadata
+                            )
+                            self.stats["storage_time"] += time.time() - store_start
+
+                            self.stats["samples_generated"] += actual_batch_size
+                            group_processed += actual_batch_size
+                            pbar.update(actual_batch_size)
+
+                            # Memory cleanup
+                            if group_processed % (10 * current_batch_size) == 0:
+                                if self.device.type == "cuda":
+                                    torch.cuda.empty_cache()
+
+                            # Intelligent batch size adaptation
+                            if self.device.type == "cuda":
+                                if in_search_mode and max_safe_batch_size is None:
+                                    # In search mode: incrementally increase by small percentage
+                                    # to find the true maximum batch size
+                                    new_batch_size = max(
+                                        current_batch_size + 1,  # At least +1
+                                        int(current_batch_size * (1 + search_increment_pct))
+                                    )
+                                    print(f"  ↑ Search mode: {current_batch_size} → {new_batch_size} (+{search_increment_pct*100:.0f}%)")
+                                    current_batch_size = new_batch_size
+
+                                elif max_safe_batch_size is None:
+                                    # No OOM yet, not in search mode - use initial batch size
+                                    # (This happens on first iteration before any OOM)
+                                    pass
+
+                        except RuntimeError as e:
+                            if "out of memory" in str(e).lower():
+                                # OOM recovery: intelligent search for optimal batch size
+                                if self.device.type == "cuda":
+                                    torch.cuda.empty_cache()
+
+                                if current_batch_size <= min_batch_size:
+                                    raise RuntimeError(
+                                        f"OOM with minimum batch size ({min_batch_size}). "
+                                        f"GPU memory insufficient for this task."
+                                    ) from e
+
+                                if not in_search_mode:
+                                    # First OOM: halve batch size and enter search mode
+                                    new_batch_size = max(min_batch_size, current_batch_size // 2)
+                                    print(f"\n  ⚠ OOM at batch_size={current_batch_size}")
+                                    print(f"  → Reducing to {new_batch_size}, entering search mode (will increment by {search_increment_pct*100:.0f}% to find optimal size)")
+                                    current_batch_size = new_batch_size
+                                    in_search_mode = True
+                                else:
+                                    # Second OOM while searching: we've found the limit
+                                    # Back off by 10% as safety margin and lock it in
+                                    max_safe_batch_size = int(current_batch_size * 0.9)
+                                    current_batch_size = max_safe_batch_size
+                                    print(f"\n  ⚠ OOM at batch_size={int(current_batch_size / 0.9)} during search")
+                                    print(f"  → Optimal batch size found: {max_safe_batch_size} (90% of max for safety)")
+                                    print(f"  → Search complete, will use batch_size={max_safe_batch_size} for remainder")
+
+                                # Don't update group_processed, retry this batch
+                            else:
+                                raise
 
         print(f"\n✓ Dataset saved: {self.config.dataset.output_path}")
 
@@ -298,6 +375,7 @@ class DatasetGenerationPipeline:
         all_specs.update(self.config.parameter_space.architecture)
         all_specs.update(self.config.parameter_space.stochastic)
         all_specs.update(self.config.parameter_space.operator)
+        all_specs.update(self.config.parameter_space.evolution)
 
         # Convert Pydantic models to dicts
         all_specs_dict = {}
@@ -331,7 +409,7 @@ class DatasetGenerationPipeline:
                 input_i = inputs[i : i + 1]
 
                 # Generate realizations
-                with torch.cuda.amp.autocast(enabled=use_amp):
+                with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
                     realizations = operator.generate_realizations(
                         input_i,
                         num_realizations=num_realizations,
@@ -344,6 +422,288 @@ class DatasetGenerationPipeline:
 
         # Stack: [B, M, C_out, H, W]
         return torch.stack(all_outputs, dim=0)
+
+    def _group_by_grid_size(self, parameters: NDArray[np.float64]) -> Dict[int, NDArray[np.int64]]:
+        """
+        Group parameter indices by grid size.
+
+        Args:
+            parameters: All parameter sets [N, P]
+
+        Returns:
+            Dict mapping grid_size -> array of indices
+        """
+        from collections import defaultdict
+
+        groups = defaultdict(list)
+
+        for idx, params in enumerate(parameters):
+            param_dict = self._map_single_parameter_set(params)
+            grid_size = int(param_dict.get("grid_size", 64))  # Default to 64 if not found
+            groups[grid_size].append(idx)
+
+        # Convert lists to numpy arrays
+        return {grid_size: np.array(indices, dtype=np.int64) for grid_size, indices in groups.items()}
+
+    def _process_batch_with_metadata(
+        self, param_batch: NDArray[np.float64], batch_size: int, grid_size: int
+    ) -> tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
+        """
+        Process a batch with grid-size-specific logic and metadata tracking.
+
+        Args:
+            param_batch: Parameter values [B, P]
+            batch_size: Batch size
+            grid_size: Grid size for this batch
+
+        Returns:
+            Tuple of (inputs, outputs, metadata)
+            - inputs: [B, C_in, H, W] (padded to 256x256 if needed)
+            - outputs: [B, M, C_out, H, W] (padded to 256x256 if needed)
+            - metadata: Dict with ic_types, evolution_policies, grid_sizes, noise_regimes
+        """
+        # Process batch with variable grid size and track IC types used
+        inputs, outputs, ic_types_used = self._process_batch_variable_size_with_tracking(
+            param_batch, batch_size, grid_size
+        )
+
+        # Extract metadata from parameters
+        evolution_policies = []
+        noise_regimes = []
+        grid_sizes = []
+
+        for params in param_batch:
+            param_dict = self._map_single_parameter_set(params)
+
+            # Evolution policy
+            evolution_policies.append(param_dict.get("update_policy", "autoregressive"))
+
+            # Grid size
+            grid_sizes.append(grid_size)
+
+            # Noise regime (classify based on noise_scale)
+            noise_scale = param_dict.get("noise_scale", 0.01)
+            if noise_scale < 0.01:
+                noise_regimes.append("low")
+            elif noise_scale < 0.1:
+                noise_regimes.append("medium")
+            else:
+                noise_regimes.append("high")
+
+        metadata = {
+            "ic_types": ic_types_used,
+            "evolution_policies": evolution_policies,
+            "grid_sizes": grid_sizes,
+            "noise_regimes": noise_regimes,
+        }
+
+        return inputs, outputs, metadata
+
+    def _process_batch_variable_size_with_tracking(
+        self, param_batch: NDArray[np.float64], batch_size: int, grid_size: int
+    ) -> tuple[torch.Tensor, torch.Tensor, list[str]]:
+        """
+        Process batch with variable grid size and track IC types used.
+
+        Args:
+            param_batch: Parameter values [B, P]
+            batch_size: Batch size
+            grid_size: Grid size for this batch
+
+        Returns:
+            Tuple of (inputs, outputs, ic_types_used)
+            - inputs: [B, C_in, H, W] (padded to 256x256)
+            - outputs: [B, M, C_out, H, W] (padded to 256x256)
+            - ic_types_used: List of IC types used for each sample
+        """
+        # Build operators with this grid size
+        operators = []
+
+        fixed_input_channels = 3
+        fixed_output_channels = 3
+
+        for params in param_batch:
+            param_dict = self._map_single_parameter_set(params)
+
+            # Override grid_size (already extracted)
+            param_dict["input_channels"] = fixed_input_channels
+            param_dict["output_channels"] = fixed_output_channels
+            param_dict["grid_size"] = grid_size
+
+            # Build operator
+            model = self.operator_builder.build_simple_cnn(param_dict)
+            operator = NeuralOperator(model)
+
+            # Prepare for inference
+            operator = MemoryManager.optimize_for_inference(operator)
+            operator = operator.to(self.device)
+
+            operators.append(operator)
+
+        # Generate input fields with this grid size
+        input_generator = InputFieldGenerator(
+            grid_size=grid_size, num_channels=fixed_input_channels, device=self.device
+        )
+
+        gen_start = time.time()
+
+        # Sample IC types for each sample in batch
+        ic_types_used = []
+        all_inputs = []
+
+        for i in range(batch_size):
+            # Determine IC type for this sample
+            ic_method = self.config.simulation.input_generation.method
+            if ic_method == "sampled":
+                # Sample IC type based on weights
+                ic_type = self._sample_ic_type()
+            else:
+                ic_type = ic_method
+
+            ic_types_used.append(ic_type)
+
+            # Get parameters for this IC type
+            ic_params = self._get_ic_params(ic_type)
+
+            # Generate single input
+            input_i = input_generator.generate_batch(
+                batch_size=1,
+                field_type=ic_type,
+                **ic_params
+            )
+            all_inputs.append(input_i)
+
+        # Stack all inputs
+        inputs = torch.cat(all_inputs, dim=0)
+        self.stats["generation_time"] += time.time() - gen_start
+
+        # Run inference
+        inf_start = time.time()
+        outputs = self._run_inference_batch(
+            operators, inputs, self.config.simulation.num_realizations
+        )
+        self.stats["inference_time"] += time.time() - inf_start
+
+        # Pad to 256x256 if needed
+        if grid_size < 256:
+            inputs = self._pad_to_max_size(inputs, target_size=256)
+            outputs = self._pad_to_max_size(outputs, target_size=256)
+
+        return inputs, outputs, ic_types_used
+
+    def _sample_ic_type(self) -> str:
+        """
+        Sample IC type based on configured weights.
+
+        Returns:
+            IC type name
+        """
+        weights = self.config.simulation.input_generation.ic_type_weights
+        if not weights:
+            # Default to gaussian_random_field if no weights specified
+            return "gaussian_random_field"
+
+        # Normalize weights
+        total_weight = sum(weights.values())
+        ic_types = list(weights.keys())
+        probs = [weights[ic] / total_weight for ic in ic_types]
+
+        # Sample
+        import random
+        return random.choices(ic_types, weights=probs, k=1)[0]
+
+    def _get_ic_params(self, ic_type: str) -> Dict[str, Any]:
+        """
+        Get parameters for a specific IC type from config.
+
+        Args:
+            ic_type: IC type name
+
+        Returns:
+            Dict of parameters for this IC type
+        """
+        config_gen = self.config.simulation.input_generation
+
+        # Check if this IC type has specific config
+        if ic_type == "multiscale_grf" and config_gen.multiscale_grf:
+            return config_gen.multiscale_grf.copy()
+        elif ic_type == "localized" and config_gen.localized:
+            return config_gen.localized.copy()
+        elif ic_type == "composite" and config_gen.composite:
+            return config_gen.composite.copy()
+        elif ic_type == "heavy_tailed" and config_gen.heavy_tailed:
+            return config_gen.heavy_tailed.copy()
+        elif ic_type == "gaussian_random_field":
+            return {
+                "length_scale": config_gen.length_scale,
+                "variance": config_gen.variance
+            }
+        else:
+            # Default params
+            return {
+                "length_scale": config_gen.length_scale,
+                "variance": config_gen.variance
+            }
+
+    def _pad_to_max_size(self, tensor: torch.Tensor, target_size: int = 256) -> torch.Tensor:
+        """
+        Pad tensor to max size (256x256) with zeros.
+
+        Args:
+            tensor: Input tensor [..., H, W]
+            target_size: Target spatial size
+
+        Returns:
+            Padded tensor [..., target_size, target_size]
+        """
+        current_size = tensor.shape[-1]
+        if current_size >= target_size:
+            return tensor
+
+        pad_total = target_size - current_size
+        pad_left = pad_total // 2
+        pad_right = pad_total - pad_left
+
+        # Pad last two dimensions (H, W)
+        return torch.nn.functional.pad(
+            tensor, (pad_left, pad_right, pad_left, pad_right), mode="constant", value=0
+        )
+
+    def _write_batch_to_hdf5(
+        self,
+        writer: HDF5DatasetWriter,
+        batch_indices: NDArray[np.int64],
+        param_batch: NDArray[np.float64],
+        batch_inputs: torch.Tensor,
+        batch_outputs: torch.Tensor,
+        metadata: Dict[str, Any],
+    ) -> None:
+        """
+        Write batch to HDF5 with proper indexing and metadata.
+
+        Args:
+            writer: HDF5 writer
+            batch_indices: Global indices for this batch
+            param_batch: Parameters
+            batch_inputs: Input fields
+            batch_outputs: Output fields
+            metadata: Per-sample metadata
+        """
+        # We need to write to specific indices, not sequential
+        # But HDF5DatasetWriter expects sequential writes
+        # For now, store temporarily and write sequentially
+        # This is a limitation we'll need to address
+
+        # Workaround: Write batch sequentially (assumes group-by-grid processes in order)
+        writer.write_batch(
+            parameters=param_batch,
+            inputs=batch_inputs,
+            outputs=batch_outputs,
+            ic_types=metadata["ic_types"],
+            evolution_policies=metadata["evolution_policies"],
+            grid_sizes=metadata["grid_sizes"],
+            noise_regimes=metadata["noise_regimes"],
+        )
 
     def _print_final_statistics(self) -> None:
         """Print final generation statistics."""
