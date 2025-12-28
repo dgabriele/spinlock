@@ -42,7 +42,8 @@ class VisualizationGrid:
         grid_size: int = 64,
         device: torch.device = torch.device("cuda"),
         add_spacing: bool = False,
-        spacing_width: int = 2
+        spacing_width: int = 2,
+        display_realizations: Optional[int] = None
     ):
         """
         Initialize visualization grid.
@@ -54,6 +55,7 @@ class VisualizationGrid:
             device: Torch device
             add_spacing: Add white spacing between cells (optional)
             spacing_width: Width of spacing in pixels
+            display_realizations: Number of individual realizations to show (None = all)
         """
         self.render_strategy = render_strategy
         self.aggregate_renderers = aggregate_renderers
@@ -61,6 +63,7 @@ class VisualizationGrid:
         self.device = device
         self.add_spacing = add_spacing
         self.spacing_width = spacing_width
+        self.display_realizations = display_realizations
 
     def create_frame(
         self,
@@ -195,13 +198,17 @@ class VisualizationGrid:
         # Render each operator (row)
         for row, op_idx in enumerate(sorted(realizations.keys())):
             realizations_op = realizations[op_idx]  # [M, C, H, W]
+            M_total = realizations_op.shape[0]
+
+            # Determine how many realizations to display individually
+            M_display = M if self.display_realizations is None else min(self.display_realizations, M_total)
 
             # Calculate row position
             row_start = row * (H + spacing)
             row_end = row_start + H
 
-            # Render individual realizations
-            for col in range(M):
+            # Render individual realizations (subset)
+            for col in range(M_display):
                 realization = realizations_op[col:col+1]  # [1, C, H, W]
                 rgb = self.render_strategy.render(realization)  # [1, 3, H_orig, W_orig]
 
@@ -218,10 +225,10 @@ class VisualizationGrid:
                 # Place in grid
                 grid[:, row_start:row_end, col_start:col_end] = rgb[0]
 
-            # Render aggregates
+            # Render aggregates (using ALL realizations)
             for agg_idx, agg_renderer in enumerate(self.aggregate_renderers):
-                col = M + agg_idx
-                agg_rgb = agg_renderer.render(realizations_op)  # [3, H_orig, W_orig]
+                col = M_display + agg_idx
+                agg_rgb = agg_renderer.render(realizations_op)  # Uses all M realizations - [3, H_orig, W_orig]
 
                 # Resize to match grid cell size if needed
                 if agg_rgb.shape[-2:] != (H, W):
@@ -302,22 +309,24 @@ class VisualizationGrid:
         Example:
             ```python
             info = grid.get_grid_info(trajectories)
-            # {'num_operators': 3, 'num_realizations': 10,
-            #  'num_aggregates': 2, 'grid_height': 192, 'grid_width': 768}
+            # {'num_operators': 3, 'num_realizations': 2, 'num_realizations_total': 10,
+            #  'num_aggregates': 2, 'grid_height': 192, 'grid_width': 256}
             ```
         """
         N = len(trajectories)
-        M = trajectories[0].shape[1]
+        M_total = trajectories[0].shape[1]
+        M_display = M_total if self.display_realizations is None else min(self.display_realizations, M_total)
         K = len(self.aggregate_renderers)
         H, W = self.grid_size, self.grid_size
 
         spacing = self.spacing_width if self.add_spacing else 0
         grid_H = N * H + (N - 1) * spacing if N > 1 else H
-        grid_W = (M + K) * W + (M + K - 1) * spacing if (M + K) > 1 else W
+        grid_W = (M_display + K) * W + (M_display + K - 1) * spacing if (M_display + K) > 1 else W
 
         return {
             "num_operators": N,
-            "num_realizations": M,
+            "num_realizations": M_display,  # Displayed
+            "num_realizations_total": M_total,  # Total (used in aggregates)
             "num_aggregates": K,
             "cell_size": H,
             "grid_height": grid_H,

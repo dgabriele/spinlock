@@ -119,6 +119,14 @@ Examples:
         )
 
         vis_group.add_argument(
+            "--display-realizations",
+            type=int,
+            default=2,
+            metavar="K",
+            help="Number of realizations to display in grid (default: 2, rest shown via aggregates)",
+        )
+
+        vis_group.add_argument(
             "--steps",
             type=int,
             default=500,
@@ -156,9 +164,9 @@ Examples:
             "--aggregates",
             type=str,
             nargs="+",
-            choices=["mean", "variance", "stddev"],
-            default=["mean", "variance"],
-            help="Aggregate renderers to include (default: mean variance)",
+            choices=["mean", "variance", "stddev", "envelope", "overlay", "entropy", "pca", "ssim", "spectral"],
+            default=["mean", "envelope", "entropy"],
+            help="Aggregate renderers to include (default: mean envelope entropy)",
         )
 
         render_group.add_argument(
@@ -284,6 +292,7 @@ Examples:
                 output_frames=output_frames,
                 n_operators=args.n_operators,
                 n_realizations=args.n_realizations,
+                display_realizations=args.display_realizations,
                 num_timesteps=args.steps,
                 grid_size=grid_size,
                 stride=args.stride,
@@ -390,6 +399,7 @@ Examples:
         output_frames: Optional[Path],
         n_operators: int,
         n_realizations: Optional[int],
+        display_realizations: int,
         num_timesteps: int,
         grid_size: int,
         stride: int,
@@ -609,7 +619,7 @@ Examples:
         aggregate_renderers = [
             create_aggregate_renderer(
                 agg_type,
-                base_renderer=base_renderer if agg_type == "mean" else None,
+                base_renderer=base_renderer if agg_type in ["mean", "overlay"] else None,
                 colormap=colormap,
                 device=torch_device
             )
@@ -622,13 +632,16 @@ Examples:
             aggregate_renderers=aggregate_renderers,
             grid_size=grid_size,
             device=torch_device,
-            add_spacing=add_spacing
+            add_spacing=add_spacing,
+            display_realizations=display_realizations
         )
 
         # Keep trajectories on CPU and render frame-by-frame to avoid OOM
         # Only move one timestep at a time to GPU for rendering
         if verbose:
-            print(f"  Rendering {num_timesteps//stride} frames (frame-by-frame to save GPU memory)...", flush=True)
+            full_M = list(trajectories.values())[0].shape[1]
+            print(f"  Rendering {num_timesteps//stride} frames (frame-by-frame to save GPU memory)...")
+            print(f"  Showing {display_realizations}/{full_M} realizations individually + {len(aggregates)} aggregates (using all {full_M} realizations)", flush=True)
 
         # Render frames one timestep at a time
         all_frames = []
@@ -670,7 +683,8 @@ Examples:
                 torch.cuda.empty_cache()
 
             print(f"  ✓ Rendered {frames.shape[0]} frames ({grid_info['grid_height']}×{grid_info['grid_width']})")
-            print(f"  Grid: {grid_info['num_operators']} operators × {grid_info['num_realizations'] + grid_info['num_aggregates']} columns")
+            total_cols = grid_info['num_realizations'] + grid_info['num_aggregates']
+            print(f"  Grid: {grid_info['num_operators']} operators × {total_cols} columns ({grid_info['num_realizations']} realizations + {grid_info['num_aggregates']} aggregates)")
 
         # Clear trajectories from CPU memory
         del trajectories
