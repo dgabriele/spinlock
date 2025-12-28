@@ -802,7 +802,7 @@ Examples:
 
         # Flatten parameter space into ordered dict (same order as generation)
         flat_spec = {}
-        for category in ["architecture", "stochastic", "operator"]:
+        for category in ["architecture", "stochastic", "operator", "evolution"]:  # INCLUDE EVOLUTION!
             if category in param_space:
                 for name, spec in param_space[category].items():
                     flat_spec[name] = spec
@@ -816,10 +816,14 @@ Examples:
         param_dict["output_channels"] = 3
         param_dict["grid_size"] = grid_size
 
-        # Add default evolution parameters (dataset doesn't have them yet)
-        param_dict["update_policy"] = "convex"
-        param_dict["alpha"] = 0.5
-        param_dict["dt"] = 0.01
+        # Evolution parameters are now read from param_vec (not hardcoded!)
+        # Default values only if evolution category missing from old datasets
+        if "update_policy" not in param_dict:
+            param_dict["update_policy"] = "convex"
+        if "alpha" not in param_dict:
+            param_dict["alpha"] = 0.5
+        if "dt" not in param_dict:
+            param_dict["dt"] = 0.01
 
         # Create OperatorParameters object
         # Note: use_batch_norm is in the dataclass but might not be in param_dict
