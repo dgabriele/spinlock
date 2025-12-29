@@ -177,6 +177,15 @@ class DatasetGenerationPipeline:
         else:
             print(f"Multiple grid sizes detected, will pad to {self.max_grid_size}×{self.max_grid_size}")
 
+        # Get store_trajectories setting (defaults to True for backward compatibility)
+        store_trajectories = getattr(self.config.dataset.storage, 'store_trajectories', True)
+
+        if not store_trajectories:
+            print("\n⚠️  FEATURE-ONLY MODE ENABLED")
+            print("   Trajectories will NOT be stored to save space")
+            print("   Features must be extracted during generation or from memory")
+            print("   Dataset size: <10 GB (vs. ~1.2 TB with trajectories)\n")
+
         # Create HDF5 writer with actual max grid size (not hardcoded 256)
         with HDF5DatasetWriter(
             output_path=self.config.dataset.output_path,
@@ -189,6 +198,7 @@ class DatasetGenerationPipeline:
             compression_opts=self.config.dataset.storage.compression_level,
             chunk_size=self.config.dataset.storage.chunk_size,
             track_ic_metadata=True,  # Enable discovery metadata
+            store_trajectories=store_trajectories,  # Feature-only mode support
         ) as writer:
 
             # Write metadata
@@ -574,10 +584,13 @@ class DatasetGenerationPipeline:
         for ic_type, indices in ic_type_to_indices.items():
             ic_params = self._get_ic_params(ic_type)
 
+            # Get base IC type for generator (strip aliases like _v0, _low, etc.)
+            base_ic_type = self._get_base_ic_type(ic_type)
+
             # OPTIMIZATION: Generate entire batch for this IC type at once
             batch_inputs = input_generator.generate_batch(
                 batch_size=len(indices),
-                field_type=ic_type,
+                field_type=base_ic_type,
                 **ic_params,
             )
             all_inputs.append((indices, batch_inputs))
@@ -637,84 +650,116 @@ class DatasetGenerationPipeline:
         import random
         return random.choices(ic_types, weights=probs, k=1)[0]
 
+    def _get_base_ic_type(self, ic_type: str) -> str:
+        """
+        Get base IC type from alias (e.g., gaussian_random_field_v0 → gaussian_random_field).
+
+        Args:
+            ic_type: IC type name (possibly with alias suffix)
+
+        Returns:
+            Base IC type name
+        """
+        import re
+        # Strip common alias patterns: _v[0-9], _low, _mid, _high
+        base_type = re.sub(r'_(v\d+|low|mid|high)$', '', ic_type)
+        return base_type
+
     def _get_ic_params(self, ic_type: str) -> Dict[str, Any]:
         """
         Get parameters for a specific IC type from config.
 
+        Supports IC type aliases (e.g., gaussian_random_field_v0).
+        If alias exists in config, uses those parameters.
+        Otherwise, falls back to base IC type parameters.
+
         Args:
-            ic_type: IC type name
+            ic_type: IC type name (possibly with alias suffix)
 
         Returns:
             Dict of parameters for this IC type
         """
         config_gen = self.config.simulation.input_generation
 
-        # Check if this IC type has specific config
-        if ic_type == "multiscale_grf" and config_gen.multiscale_grf:
+        # First, try to get parameters directly from the alias name
+        # This allows configs to specify gaussian_random_field_v0, multiscale_grf_low, etc.
+        ic_type_attr = ic_type.replace('-', '_')  # Handle kebab-case
+        if hasattr(config_gen, ic_type_attr):
+            params = getattr(config_gen, ic_type_attr)
+            if params is not None and isinstance(params, dict):
+                return params.copy()
+
+        # If no alias-specific config found, check base IC type
+        # (This handles the case where the config uses aliases but we need base parameters)
+        base_ic_type = self._get_base_ic_type(ic_type)
+
+        # Check if base IC type has specific config
+        if base_ic_type == "multiscale_grf" and hasattr(config_gen, 'multiscale_grf') and config_gen.multiscale_grf:
             return config_gen.multiscale_grf.copy()
-        elif ic_type == "localized" and config_gen.localized:
+        elif base_ic_type == "localized" and hasattr(config_gen, 'localized') and config_gen.localized:
             return config_gen.localized.copy()
-        elif ic_type == "composite" and config_gen.composite:
+        elif base_ic_type == "structured" and hasattr(config_gen, 'structured') and config_gen.structured:
+            return config_gen.structured.copy()
+        elif base_ic_type == "composite" and hasattr(config_gen, 'composite') and config_gen.composite:
             return config_gen.composite.copy()
-        elif ic_type == "heavy_tailed" and config_gen.heavy_tailed:
+        elif base_ic_type == "heavy_tailed" and hasattr(config_gen, 'heavy_tailed') and config_gen.heavy_tailed:
             return config_gen.heavy_tailed.copy()
         # Tier 1 domain-specific ICs
-        elif ic_type == "quantum_wave_packet" and config_gen.quantum_wave_packet:
+        elif base_ic_type == "quantum_wave_packet" and hasattr(config_gen, 'quantum_wave_packet') and config_gen.quantum_wave_packet:
             return config_gen.quantum_wave_packet.copy()
-        elif ic_type == "turing_pattern" and config_gen.turing_pattern:
+        elif base_ic_type == "turing_pattern" and hasattr(config_gen, 'turing_pattern') and config_gen.turing_pattern:
             return config_gen.turing_pattern.copy()
-        elif ic_type == "thermal_gradient" and config_gen.thermal_gradient:
+        elif base_ic_type == "thermal_gradient" and hasattr(config_gen, 'thermal_gradient') and config_gen.thermal_gradient:
             return config_gen.thermal_gradient.copy()
-        elif ic_type == "morphogen_gradient" and config_gen.morphogen_gradient:
+        elif base_ic_type == "morphogen_gradient" and hasattr(config_gen, 'morphogen_gradient') and config_gen.morphogen_gradient:
             return config_gen.morphogen_gradient.copy()
-        elif ic_type == "reaction_front" and config_gen.reaction_front:
+        elif base_ic_type == "reaction_front" and hasattr(config_gen, 'reaction_front') and config_gen.reaction_front:
             return config_gen.reaction_front.copy()
         # Tier 2 domain-specific ICs
-        elif ic_type == "light_cone" and config_gen.light_cone:
+        elif base_ic_type == "light_cone" and hasattr(config_gen, 'light_cone') and config_gen.light_cone:
             return config_gen.light_cone.copy()
-        elif ic_type == "critical_fluctuation" and config_gen.critical_fluctuation:
+        elif base_ic_type == "critical_fluctuation" and hasattr(config_gen, 'critical_fluctuation') and config_gen.critical_fluctuation:
             return config_gen.critical_fluctuation.copy()
-        elif ic_type == "phase_boundary" and config_gen.phase_boundary:
+        elif base_ic_type == "phase_boundary" and hasattr(config_gen, 'phase_boundary') and config_gen.phase_boundary:
             return config_gen.phase_boundary.copy()
-        elif ic_type == "bz_reaction" and config_gen.bz_reaction:
+        elif base_ic_type == "bz_reaction" and hasattr(config_gen, 'bz_reaction') and config_gen.bz_reaction:
             return config_gen.bz_reaction.copy()
-        elif ic_type == "shannon_entropy" and config_gen.shannon_entropy:
+        elif base_ic_type == "shannon_entropy" and hasattr(config_gen, 'shannon_entropy') and config_gen.shannon_entropy:
             return config_gen.shannon_entropy.copy()
         # Tier 3 domain-specific ICs
-        elif ic_type == "interference_pattern" and config_gen.interference_pattern:
+        elif base_ic_type == "interference_pattern" and hasattr(config_gen, 'interference_pattern') and config_gen.interference_pattern:
             return config_gen.interference_pattern.copy()
-        elif ic_type == "cell_population" and config_gen.cell_population:
+        elif base_ic_type == "cell_population" and hasattr(config_gen, 'cell_population') and config_gen.cell_population:
             return config_gen.cell_population.copy()
-        elif ic_type == "chromatin_domain" and config_gen.chromatin_domain:
+        elif base_ic_type == "chromatin_domain" and hasattr(config_gen, 'chromatin_domain') and config_gen.chromatin_domain:
             return config_gen.chromatin_domain.copy()
-        elif ic_type == "shock_front" and config_gen.shock_front:
+        elif base_ic_type == "shock_front" and hasattr(config_gen, 'shock_front') and config_gen.shock_front:
             return config_gen.shock_front.copy()
-        elif ic_type == "gene_expression" and config_gen.gene_expression:
+        elif base_ic_type == "gene_expression" and hasattr(config_gen, 'gene_expression') and config_gen.gene_expression:
             return config_gen.gene_expression.copy()
         # Tier 4 research frontiers ICs
-        elif ic_type == "coherent_state" and config_gen.coherent_state:
+        elif base_ic_type == "coherent_state" and hasattr(config_gen, 'coherent_state') and config_gen.coherent_state:
             return config_gen.coherent_state.copy()
-        elif ic_type == "relativistic_wave_packet" and config_gen.relativistic_wave_packet:
+        elif base_ic_type == "relativistic_wave_packet" and hasattr(config_gen, 'relativistic_wave_packet') and config_gen.relativistic_wave_packet:
             return config_gen.relativistic_wave_packet.copy()
-        elif ic_type == "mutual_information" and config_gen.mutual_information:
+        elif base_ic_type == "mutual_information" and hasattr(config_gen, 'mutual_information') and config_gen.mutual_information:
             return config_gen.mutual_information.copy()
-        elif ic_type == "regulatory_network" and config_gen.regulatory_network:
+        elif base_ic_type == "regulatory_network" and hasattr(config_gen, 'regulatory_network') and config_gen.regulatory_network:
             return config_gen.regulatory_network.copy()
-        elif ic_type == "dla_cluster" and config_gen.dla_cluster:
+        elif base_ic_type == "dla_cluster" and hasattr(config_gen, 'dla_cluster') and config_gen.dla_cluster:
             return config_gen.dla_cluster.copy()
-        elif ic_type == "error_correcting_code" and config_gen.error_correcting_code:
+        elif base_ic_type == "error_correcting_code" and hasattr(config_gen, 'error_correcting_code') and config_gen.error_correcting_code:
             return config_gen.error_correcting_code.copy()
-        elif ic_type == "gaussian_random_field":
+        elif base_ic_type == "gaussian_random_field":
+            # Gaussian random field uses default length_scale and variance
             return {
                 "length_scale": config_gen.length_scale,
                 "variance": config_gen.variance
             }
         else:
-            # Default params
-            return {
-                "length_scale": config_gen.length_scale,
-                "variance": config_gen.variance
-            }
+            # For unknown types, return empty dict (let generator use defaults)
+            # This prevents passing incompatible parameters like length_scale to structured, etc.
+            return {}
 
     def _pad_to_max_size(self, tensor: torch.Tensor, target_size: int) -> torch.Tensor:
         """

@@ -1,0 +1,166 @@
+version: "1.0"
+
+metadata:
+  name: "domain_ics_tier2_experiment"
+  description: "Tier 2 domain-specific initial conditions benchmark (100 samples)"
+  author: "Spinlock Team"
+  created: "2025-12-28"
+
+# Simplified parameter space for testing domain-specific ICs
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 4]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: integer
+      bounds: [16, 32]
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5]
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["gelu", "silu"]
+      description: "Activation function"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.2]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian", "laplace"]
+      description: "Type of stochastic noise"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.001, 0.05]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+  operator:
+    grid_size:
+      type: choice
+      choices: [128]
+      description: "Spatial grid resolution (fixed at 128×128)"
+
+    normalization:
+      type: choice
+      choices: ["instance", "batch"]
+      description: "Feature normalization type"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["autoregressive", "residual", "convex"]
+      description: "Temporal update policy type"
+
+    alpha:
+      type: continuous
+      bounds: [0.1, 0.9]
+      description: "Convex policy mixing parameter"
+
+    dt:
+      type: continuous
+      bounds: [0.001, 0.1]
+      log_scale: true
+      description: "Residual policy step size"
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 2
+    min_samples_per_stratum: 5
+
+  validation:
+    check_discrepancy: false
+    check_correlation: false
+
+  total_samples: 100
+  batch_size: 100
+
+# Simulation configuration with Tier 2 domain-specific ICs
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  # Stratified sampling across Tier 2 domain-specific ICs
+  input_generation:
+    method: "sampled"  # Sample IC types based on weights
+
+    # Weighted sampling across Tier 2 domain ICs
+    ic_type_weights:
+      # Tier 2 domain-specific ICs (equal weight for testing)
+      light_cone: 0.20
+      critical_fluctuation: 0.20
+      phase_boundary: 0.20
+      bz_reaction: 0.20
+      shannon_entropy: 0.20
+
+    # Domain-specific IC configurations
+
+    # RELATIVISTIC PHYSICS: Light cone ICs
+    light_cone:
+      cone_radius: 20.0
+      smoothing: 2.0
+      interior_length_scale: 5.0
+      num_cones: 1
+
+    # THERMODYNAMICS: Critical fluctuation ICs
+    critical_fluctuation:
+      correlation_length: 15.0
+      eta: 0.04  # 3D Ising universality class
+
+    # THERMODYNAMICS: Phase boundary ICs
+    phase_boundary:
+      interface_width: 3.0
+      interface_angle: null  # Random orientation
+      fluctuation_amplitude: 0.1
+
+    # CHEMISTRY: BZ reaction ICs
+    bz_reaction:
+      pattern_type: "spiral"
+      num_spirals: 1
+      wavelength: 16.0
+      phase_offset: 0.0
+
+    # INFORMATION THEORY: Shannon entropy ICs
+    shannon_entropy:
+      entropy_pattern: "gradient"
+      entropy_range: [0.1, 1.0]
+      patch_size: 8
+
+  precision: "float32"
+
+  num_realizations: 5
+
+# Dataset generation configuration
+dataset:
+  output_path: "./datasets/domain_ics_tier2.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 50
+
+logging:
+  level: "INFO"

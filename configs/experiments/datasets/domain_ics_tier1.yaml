@@ -1,0 +1,168 @@
+version: "1.0"
+
+metadata:
+  name: "domain_ics_tier1_experiment"
+  description: "Tier 1 domain-specific initial conditions benchmark (100 samples)"
+  author: "Spinlock Team"
+  created: "2025-12-28"
+
+# Simplified parameter space for testing domain-specific ICs
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 4]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: integer
+      bounds: [16, 32]
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5]
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["gelu", "silu"]
+      description: "Activation function"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.2]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian", "laplace"]
+      description: "Type of stochastic noise"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.001, 0.05]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+  operator:
+    grid_size:
+      type: choice
+      choices: [128]
+      description: "Spatial grid resolution (fixed at 128×128)"
+
+    normalization:
+      type: choice
+      choices: ["instance", "batch"]
+      description: "Feature normalization type"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["autoregressive", "residual", "convex"]
+      description: "Temporal update policy type"
+
+    alpha:
+      type: continuous
+      bounds: [0.1, 0.9]
+      description: "Convex policy mixing parameter"
+
+    dt:
+      type: continuous
+      bounds: [0.001, 0.1]
+      log_scale: true
+      description: "Residual policy step size"
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 2
+    min_samples_per_stratum: 5
+
+  validation:
+    check_discrepancy: false
+    check_correlation: false
+
+  total_samples: 100
+  batch_size: 100
+
+# Simulation configuration with domain-specific ICs
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  # Stratified sampling across Tier 1 domain-specific ICs
+  input_generation:
+    method: "sampled"  # Sample IC types based on weights
+
+    # Weighted sampling across domain ICs
+    ic_type_weights:
+      # Tier 1 domain-specific ICs (equal weight for testing)
+      quantum_wave_packet: 0.20
+      turing_pattern: 0.20
+      thermal_gradient: 0.20
+      morphogen_gradient: 0.20
+      reaction_front: 0.20
+
+    # Domain-specific IC configurations
+
+    # QUANTUM PHYSICS: Wave packet ICs
+    quantum_wave_packet:
+      sigma: 10.0
+      momentum_range: [0.1, 0.5]
+      num_packets: 1
+
+    # BIOLOGY: Turing pattern ICs
+    turing_pattern:
+      pattern_type: "mixed"  # Random choice of spots, stripes, labyrinth
+      wavelength: 16.0
+      perturbation_amplitude: 0.1
+
+    # THERMODYNAMICS: Thermal gradient ICs
+    thermal_gradient:
+      gradient_direction: "random"  # Random x, y, or diagonal
+      temperature_range: [0.0, 1.0]
+      beta: 1.0  # Linear gradient
+      thermal_noise_amplitude: 0.1
+      thermal_length_scale: 5.0
+
+    # BIOLOGY: Morphogen gradient ICs
+    morphogen_gradient:
+      decay_length: 20.0
+      num_sources: 1
+      noise_level: 0.05
+      gradient_type: "exponential"
+
+    # CHEMISTRY: Reaction front ICs
+    reaction_front:
+      front_shape: "planar"
+      front_width: 3.0
+      num_fronts: 1
+
+  precision: "float32"
+
+  num_realizations: 5
+
+# Dataset generation configuration
+dataset:
+  output_path: "./datasets/domain_ics_tier1.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 50
+
+logging:
+  level: "INFO"

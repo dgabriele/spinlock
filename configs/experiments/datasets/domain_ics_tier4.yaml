@@ -1,0 +1,177 @@
+version: "1.0"
+
+metadata:
+  name: "domain_ics_tier4_experiment"
+  description: "Tier 4 research frontiers initial conditions benchmark (100 samples)"
+  author: "Spinlock Team"
+  created: "2025-12-28"
+
+# Simplified parameter space for testing domain-specific ICs
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 4]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: integer
+      bounds: [16, 32]
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5]
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["gelu", "silu"]
+      description: "Activation function"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.2]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian", "laplace"]
+      description: "Type of stochastic noise"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.001, 0.05]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+  operator:
+    grid_size:
+      type: choice
+      choices: [128]
+      description: "Spatial grid resolution (fixed at 128×128)"
+
+    normalization:
+      type: choice
+      choices: ["instance", "batch"]
+      description: "Feature normalization type"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["autoregressive", "residual", "convex"]
+      description: "Temporal update policy type"
+
+    alpha:
+      type: continuous
+      bounds: [0.1, 0.9]
+      description: "Convex policy mixing parameter"
+
+    dt:
+      type: continuous
+      bounds: [0.001, 0.1]
+      log_scale: true
+      description: "Residual policy step size"
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 2
+    min_samples_per_stratum: 5
+
+  validation:
+    check_discrepancy: false
+    check_correlation: false
+
+  total_samples: 100
+  batch_size: 100
+
+# Simulation configuration with Tier 4 research frontiers ICs
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  # Stratified sampling across Tier 4 research frontiers ICs
+  input_generation:
+    method: "sampled"  # Sample IC types based on weights
+
+    # Weighted sampling across Tier 4 ICs (equal weight for testing, 6 types)
+    ic_type_weights:
+      # Tier 4 research frontiers ICs
+      coherent_state: 0.167
+      relativistic_wave_packet: 0.167
+      mutual_information: 0.166
+      regulatory_network: 0.167
+      dla_cluster: 0.167
+      error_correcting_code: 0.166
+
+    # Domain-specific IC configurations
+
+    # QUANTUM PHYSICS: Coherent state ICs
+    coherent_state:
+      alpha: 1.0
+      sigma: 10.0
+      oscillation_frequency: 0.2
+      num_modes: 1
+
+    # RELATIVISTIC PHYSICS: Relativistic wave packet ICs
+    relativistic_wave_packet:
+      velocity: 0.5
+      sigma: 10.0
+      wavenumber_range: [0.1, 0.5]
+
+    # INFORMATION THEORY: Mutual information ICs
+    mutual_information:
+      correlation_pattern: "local"
+      latent_length_scale: 0.3
+      local_noise_scale: 0.5
+      num_channels_correlated: 2
+
+    # GENOMICS: Regulatory network ICs
+    regulatory_network:
+      network_topology: "scale_free"
+      network_size: 5
+      connection_probability: 0.3
+      spatial_decay: 0.2
+
+    # CHEMISTRY: DLA cluster ICs
+    dla_cluster:
+      cluster_size: 100  # Reduced for testing (500 is slow)
+      seed_type: "point"
+      stickiness: 1.0
+      field_type_dla: "distance_transform"
+
+    # INFORMATION THEORY: Error-correcting code ICs
+    error_correcting_code:
+      code_type: "repetition"
+      code_rate: 0.5
+      block_size: 8
+      error_rate: 0.1
+
+  precision: "float32"
+
+  num_realizations: 5
+
+# Dataset generation configuration
+dataset:
+  output_path: "./datasets/domain_ics_tier4.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 50
+
+logging:
+  level: "INFO"

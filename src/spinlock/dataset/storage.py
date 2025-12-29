@@ -80,6 +80,7 @@ class HDF5DatasetWriter:
         compression_opts: int = 4,
         chunk_size: Optional[int] = None,
         track_ic_metadata: bool = True,
+        store_trajectories: bool = True,
     ):
         """
         Initialize HDF5 dataset writer.
@@ -95,6 +96,7 @@ class HDF5DatasetWriter:
             compression_opts: Compression level (0-9 for gzip)
             chunk_size: Chunk size for HDF5 (defaults to 100)
             track_ic_metadata: Enable IC-behavior metadata tracking for discovery
+            store_trajectories: Whether to store raw trajectories (False = feature-only mode)
         """
         self.output_path = output_path
         self.grid_size = grid_size
@@ -105,6 +107,7 @@ class HDF5DatasetWriter:
         self.compression = compression if compression != "none" else None
         self.compression_opts = compression_opts if compression == "gzip" else None
         self.track_ic_metadata = track_ic_metadata
+        self.store_trajectories = store_trajectories
 
         # Optimal chunk size
         self.chunk_size = chunk_size or min(100, num_parameter_sets)
@@ -176,22 +179,31 @@ class HDF5DatasetWriter:
             compression_opts=self.compression_opts,
         )
 
-        # Outputs group
-        outputs_group = self.file.create_group("outputs")
-        outputs_group.create_dataset(
-            "fields",
-            shape=(
-                self.num_parameter_sets,
-                self.num_realizations,
-                self.output_channels,
-                self.grid_size,
-                self.grid_size,
-            ),
-            dtype=np.float32,
-            chunks=(self.chunk_size, 1, self.output_channels, self.grid_size, self.grid_size),
-            compression=self.compression,
-            compression_opts=self.compression_opts,
-        )
+        # Outputs group (only if storing trajectories)
+        if self.store_trajectories:
+            outputs_group = self.file.create_group("outputs")
+            outputs_group.create_dataset(
+                "fields",
+                shape=(
+                    self.num_parameter_sets,
+                    self.num_realizations,
+                    self.output_channels,
+                    self.grid_size,
+                    self.grid_size,
+                ),
+                dtype=np.float32,
+                chunks=(self.chunk_size, 1, self.output_channels, self.grid_size, self.grid_size),
+                compression=self.compression,
+                compression_opts=self.compression_opts,
+            )
+        else:
+            # Feature-only mode: create placeholder group with metadata
+            outputs_group = self.file.create_group("outputs")
+            outputs_group.attrs["feature_only_mode"] = True
+            outputs_group.attrs["note"] = (
+                "Trajectories not stored. Feature-only mode enabled to save storage. "
+                "Features extracted during generation and stored in /features/ group."
+            )
 
     def write_batch(
         self,
@@ -261,7 +273,10 @@ class HDF5DatasetWriter:
 
         cast(h5py.Dataset, self.file["parameters/params"])[self.current_idx : end_idx] = parameters
         cast(h5py.Dataset, self.file["inputs/fields"])[self.current_idx : end_idx] = inputs_np
-        cast(h5py.Dataset, self.file["outputs/fields"])[self.current_idx : end_idx] = outputs_np
+
+        # Only write trajectories if storing them (not feature-only mode)
+        if self.store_trajectories:
+            cast(h5py.Dataset, self.file["outputs/fields"])[self.current_idx : end_idx] = outputs_np
 
         # Write discovery metadata if tracking enabled
         if self.track_ic_metadata:

@@ -1,0 +1,171 @@
+version: "1.0"
+
+metadata:
+  name: "domain_ics_tier3_experiment"
+  description: "Tier 3 advanced domain-specific initial conditions benchmark (100 samples)"
+  author: "Spinlock Team"
+  created: "2025-12-28"
+
+# Simplified parameter space for testing domain-specific ICs
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 4]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: integer
+      bounds: [16, 32]
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5]
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["gelu", "silu"]
+      description: "Activation function"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.2]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian", "laplace"]
+      description: "Type of stochastic noise"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.001, 0.05]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+  operator:
+    grid_size:
+      type: choice
+      choices: [128]
+      description: "Spatial grid resolution (fixed at 128×128)"
+
+    normalization:
+      type: choice
+      choices: ["instance", "batch"]
+      description: "Feature normalization type"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["autoregressive", "residual", "convex"]
+      description: "Temporal update policy type"
+
+    alpha:
+      type: continuous
+      bounds: [0.1, 0.9]
+      description: "Convex policy mixing parameter"
+
+    dt:
+      type: continuous
+      bounds: [0.001, 0.1]
+      log_scale: true
+      description: "Residual policy step size"
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 2
+    min_samples_per_stratum: 5
+
+  validation:
+    check_discrepancy: false
+    check_correlation: false
+
+  total_samples: 100
+  batch_size: 100
+
+# Simulation configuration with Tier 3 domain-specific ICs
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  # Stratified sampling across Tier 3 domain-specific ICs
+  input_generation:
+    method: "sampled"  # Sample IC types based on weights
+
+    # Weighted sampling across Tier 3 domain ICs (equal weight for testing)
+    ic_type_weights:
+      # Tier 3 domain-specific ICs
+      interference_pattern: 0.20
+      cell_population: 0.20
+      chromatin_domain: 0.20
+      shock_front: 0.20
+      gene_expression: 0.20
+
+    # Domain-specific IC configurations
+
+    # QUANTUM PHYSICS: Interference pattern ICs
+    interference_pattern:
+      num_sources: 2
+      wavelength: 16.0
+      coherence_length: 100.0
+      source_spacing: 40.0
+
+    # BIOLOGY: Cell population ICs
+    cell_population:
+      num_cells: 50
+      cell_radius: 3.0
+      clustering_strength: 0.5
+      kernel_width: 5.0
+
+    # GENOMICS: Chromatin domain ICs
+    chromatin_domain:
+      num_domains: 5
+      domain_size_range: [10, 30]
+      boundary_sharpness: 3.0
+      compartment_type: "TAD"
+
+    # RELATIVISTIC PHYSICS: Shock front ICs
+    shock_front:
+      shock_position: null  # Random
+      shock_angle: null  # Random
+      shock_width: 2.0
+      amplitude_ratio: 2.0
+      fluctuation_amplitude: 0.05
+
+    # GENOMICS: Gene expression ICs
+    gene_expression:
+      num_genes: 3
+      expression_patterns: null  # Random patterns
+      correlation_strength: 0.3
+      expression_range: [0.0, 1.0]
+
+  precision: "float32"
+
+  num_realizations: 5
+
+# Dataset generation configuration
+dataset:
+  output_path: "./datasets/domain_ics_tier3.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 50
+
+logging:
+  level: "INFO"
