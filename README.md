@@ -17,7 +17,7 @@ Spinlock is a production-grade system for systematic sampling, simulation, and d
 - **Rollout Policies** - 3 temporal update strategies (autoregressive, residual, convex) for diverse dynamical behaviors
 - **Rich Metadata Tracking** - IC types, rollout policies, grid sizes, noise regimes for hypothesis generation and analysis
 - **Advanced Visualization** - 9 aggregate renderers (entropy, PCA, SSIM, spectral analysis, etc.), per-operator color normalization, IC type gallery generation
-- **Feature Extraction System (SDF v2.0)** - GPU-optimized extraction with 153 features across 7 categories: spatial (19), spectral (27), temporal (13), operator sensitivity (10), cross-channel (10), causality (14), invariant drift (60) - NEW v2.0 operator-aware features!
+- **Feature Extraction System (SDF v2.0)** - GPU-optimized extraction with 174 features across 8 categories: spatial (26), spectral (31), temporal (13), cross-channel (12), causality (15), invariant drift (64), operator sensitivity (12), laplacian energy (1) - includes 16 NEW features: harmonic content, effective dimensionality, gradient saturation, coherence structure, scale-specific dissipation!
 - **GPU-Optimized Performance** - Phase 1 optimizations: coordinate grid caching, vectorized input generation, 70% GPU memory utilization (1.8-2.2x speedup)
 - **GPU-Accelerated Execution** - Adaptive batching, memory management, multi-GPU ready
 - **Efficient Storage** - Chunked HDF5 with compression for large-scale datasets
@@ -409,7 +409,7 @@ Extract comprehensive spatial, spectral, and temporal features for:
 ### Quick Start
 
 ```bash
-# Extract features with defaults (all 59 features)
+# Extract features with defaults (all 174 features)
 python scripts/spinlock.py extract-features --dataset datasets/benchmark_10k.h5
 
 # Verbose output
@@ -419,22 +419,37 @@ python scripts/spinlock.py extract-features --dataset datasets/benchmark_10k.h5 
 python scripts/spinlock.py extract-features --dataset datasets/benchmark_10k.h5 --batch-size 16
 ```
 
-### Feature Categories
+### Feature Categories (SDF v2.0)
 
-**All features are scalars** - each operator produces a single scalar value per feature.
+**174 total features** across 8 categories, organized by temporal granularity:
 
-**Per-Timestep Features (46 scalars)**:
-- **Spatial Statistics** (19): moments, gradients, curvature (Laplacian)
-- **Spectral Features** (27): FFT power spectrum (5 scales), dominant frequencies, spectral shape
-- **Output**: `[N, T, 46]` - 46 scalars per operator per timestep
+#### Per-Timestep Features (132 features, requires T≥1)
+Computed for each timestep independently:
 
-**Per-Trajectory Features (13 scalars, requires T>1)**:
-- **Temporal Dynamics**: growth rates, oscillations, stability metrics, stationarity measures
-- **Output**: `[N, M, 13]` - 13 scalars per realization
+- **Spatial** (26): Moments, gradients, curvature, **effective dimensionality** (SVD-based), **gradient saturation** (amplitude limiting), **coherence structure** (autocorrelation, anisotropy)
+- **Spectral** (31): Power spectrum, entropy, anisotropy, phase coherence, **harmonic content** (THD, fundamental purity for nonlinearity detection)
+- **Temporal** (13): Drift, stability, periodicity, regime changes (requires T≥3)
+- **Cross-channel** (12): Correlation, mutual information, **conditional MI** (higher-order dependencies), spectral coherence, phase locking (requires C>1)
+- **Causality** (15): Transfer entropy, Granger causality, delayed correlation for directional information flow (requires T≥3)
+- **Laplacian Energy** (1): Curvature energy per pixel
 
-**Aggregated Features (39 scalars)**:
-- Temporal features aggregated across realizations with mean, std, coefficient of variation
-- **Output**: `[N, 39]` - 39 scalars per operator (ready for VQ-VAE/ML)
+**Output**: `[N, M, T, C]` for spatial/spectral, `[N, M, T]` for cross-channel/causality
+
+#### Per-Trajectory Features (64 features, requires T>1)
+Computed across entire trajectory:
+
+- **Invariant Drift** (64): Norm/entropy drift (L1, L2, L∞, entropy, total variation) across 3 scales (raw, lowpass, highpass) with 4 metrics each (mean drift, variance, ratio, monotonicity), **plus scale-specific dissipation** (frequency-dependent energy decay, cascade direction)
+
+**Output**: `[N, M, C]` for invariant drift
+
+#### Operator-Level Features (12 features, optional)
+Computed during rollout (requires operator access):
+
+- **Operator Sensitivity** (12): Lipschitz estimates (3 scales), gain curves (4 scales), linearity metrics (R², compression, saturation), response asymmetry, multi-channel consistency
+
+**Output**: `[N, M, C]` for operator sensitivity
+
+**Total**: 132 per-timestep + 64 per-trajectory + 12 operator = **174 features** (208 with all options)
 
 ### Performance
 
@@ -452,15 +467,21 @@ from pathlib import Path
 from spinlock.features.storage import HDF5FeatureReader
 
 with HDF5FeatureReader(Path("datasets/benchmark_10k.h5")) as reader:
-    # Get feature registry
+    # Get feature registry (174 features)
     registry = reader.get_sdf_registry()
-    print(f"Total features: {registry.num_features}")
+    print(f"Total features: {registry.num_features}")  # 174
 
-    # Read aggregated features (most compact)
-    features = reader.get_sdf_aggregated()  # [N, 39]
+    # Read spatial features (per-timestep)
+    spatial = reader.get_sdf_features("spatial")  # [N, M, T, C] - 26 features
 
-    # Read per-timestep features
-    per_timestep = reader.get_sdf_per_timestep()  # [N, T, 46]
+    # Read spectral features (per-timestep)
+    spectral = reader.get_sdf_features("spectral")  # [N, M, T, C] - 31 features
+
+    # Read invariant drift (per-trajectory)
+    drift = reader.get_sdf_features("invariant_drift")  # [N, M, C] - 64 features
+
+    # Read all features by category
+    all_features = reader.get_all_sdf_features()  # Dict[str, Tensor]
 ```
 
 ### Documentation
@@ -492,21 +513,32 @@ Generated HDF5 datasets follow this structure:
 /outputs/
     - fields [N, M, C_out, 256, 256] # Output fields (M stochastic realizations, padded)
 
-/features/                           # [Optional] Extracted SDF features
-    @family_versions                 # {"sdf": "1.0.0"}
+/features/                           # [Optional] Extracted SDF v2.0 features
+    @family_versions                 # {"sdf": "2.0.0"}
     @extraction_timestamp
     /sdf/
-        @version                     # "1.0.0"
-        @feature_registry            # JSON name-to-index mapping
-        @num_features                # 59
-        /per_timestep/
-            features [N, T, 46]      # Per-timestep spatial & spectral features
-        /per_trajectory/
-            features [N, M, 13]      # Per-trajectory temporal dynamics
-        /aggregated/
-            features [N, 39]         # Aggregated across realizations
-            /metadata/
-                extraction_time [N]  # Extraction time per sample
+        @version                     # "2.0.0"
+        @feature_registry            # JSON name-to-index mapping (174 features)
+        @num_features                # 174
+        /spatial/                    # 26 features
+            features [N, M, T, C]
+        /spectral/                   # 31 features
+            features [N, M, T, C]
+        /temporal/                   # 13 features (T≥3)
+            features [N, M, T, C]
+        /cross_channel/              # 12 features (C>1)
+            features [N, M, T]
+        /causality/                  # 15 features (T≥3)
+            features [N, M, T]
+        /invariant_drift/            # 64 features (T>1)
+            features [N, M, C]
+        /operator_sensitivity/       # 12 features (optional, inline extraction)
+            features [N, M, C]
+        /laplacian_energy/           # 1 feature
+            features [N, M, T, C]
+        /metadata/
+            extraction_time [N]      # Extraction time per sample
+            nan_counts [N]           # NaN counts per feature category
 ```
 
 ## Development
