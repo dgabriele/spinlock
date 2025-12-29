@@ -42,7 +42,9 @@ class RenderStrategy(ABC):
     def _normalize(
         self,
         x: torch.Tensor,
-        percentile_clip: Optional[Tuple[float, float]] = None
+        percentile_clip: Optional[Tuple[float, float]] = None,
+        vmin: Optional[torch.Tensor] = None,
+        vmax: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         DRY normalization shared across all renderers.
@@ -50,11 +52,16 @@ class RenderStrategy(ABC):
         Args:
             x: Tensor to normalize
             percentile_clip: Optional (low, high) percentile clipping
+            vmin: Optional explicit minimum value (overrides percentile_clip)
+            vmax: Optional explicit maximum value (overrides percentile_clip)
 
         Returns:
             Normalized tensor in [0, 1]
         """
-        if percentile_clip:
+        if vmin is not None and vmax is not None:
+            # Use explicit bounds (for per-operator normalization)
+            pass
+        elif percentile_clip:
             low, high = percentile_clip
             vmin = torch.quantile(x.flatten(), low)
             vmax = torch.quantile(x.flatten(), high)
@@ -101,12 +108,19 @@ class HeatmapRenderer(RenderStrategy):
         self.device = device
         self.percentile_clip = percentile_clip
 
-    def render(self, data: torch.Tensor) -> torch.Tensor:
+    def render(
+        self,
+        data: torch.Tensor,
+        vmin: Optional[torch.Tensor] = None,
+        vmax: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
         Render single channel to RGB via colormap.
 
         Args:
             data: [B, 1, H, W]
+            vmin: Optional explicit minimum for normalization
+            vmax: Optional explicit maximum for normalization
 
         Returns:
             [B, 3, H, W]
@@ -115,7 +129,7 @@ class HeatmapRenderer(RenderStrategy):
             raise ValueError(f"HeatmapRenderer expects 1 channel, got {data.shape[1]}")
 
         # Normalize to [0, 1]
-        normalized = self._normalize(data, self.percentile_clip)
+        normalized = self._normalize(data, self.percentile_clip, vmin, vmax)
 
         # Remove channel dimension: [B, 1, H, W] -> [B, H, W]
         normalized = normalized.squeeze(1)
@@ -159,12 +173,19 @@ class RGBRenderer(RenderStrategy):
         self.device = device
         self.percentile_clip = percentile_clip
 
-    def render(self, data: torch.Tensor) -> torch.Tensor:
+    def render(
+        self,
+        data: torch.Tensor,
+        vmin: Optional[torch.Tensor] = None,
+        vmax: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
         Render RGB channels with normalization.
 
         Args:
             data: [B, 3, H, W]
+            vmin: Optional explicit minimum for normalization
+            vmax: Optional explicit maximum for normalization
 
         Returns:
             [B, 3, H, W] normalized to [0, 1]
@@ -173,7 +194,7 @@ class RGBRenderer(RenderStrategy):
             raise ValueError(f"RGBRenderer expects 3 channels, got {data.shape[1]}")
 
         # Normalize to [0, 1]
-        return self._normalize(data, self.percentile_clip)
+        return self._normalize(data, self.percentile_clip, vmin, vmax)
 
     def supports_channels(self, num_channels: int) -> bool:
         return num_channels == 3

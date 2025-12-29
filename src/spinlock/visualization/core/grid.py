@@ -45,7 +45,8 @@ class VisualizationGrid:
         spacing_width: int = 2,
         display_realizations: Optional[int] = None,
         add_headers: bool = True,
-        header_height: int = 20
+        header_height: int = 20,
+        color_norm_mode: str = "per-cell"
     ):
         """
         Initialize visualization grid.
@@ -60,6 +61,7 @@ class VisualizationGrid:
             display_realizations: Number of individual realizations to show (None = all)
             add_headers: Add column headers for realizations and aggregates
             header_height: Height of header row in pixels
+            color_norm_mode: Color normalization mode ('global', 'per-operator', 'per-cell')
         """
         self.render_strategy = render_strategy
         self.aggregate_renderers = aggregate_renderers
@@ -70,6 +72,7 @@ class VisualizationGrid:
         self.display_realizations = display_realizations
         self.add_headers = add_headers
         self.header_height = header_height
+        self.color_norm_mode = color_norm_mode
 
     def _create_header_row(
         self,
@@ -301,6 +304,24 @@ class VisualizationGrid:
             header = self._create_header_row(M_display, aggregate_names, grid_W)
             grid[:, :header_offset, :] = header
 
+        # Compute normalization bounds based on mode
+        norm_bounds = {}  # op_idx -> (vmin, vmax)
+
+        if self.color_norm_mode == "global":
+            # Global normalization: compute min/max across all operators and realizations
+            all_data = torch.cat([r for r in realizations.values()], dim=0)  # [N*M, C, H, W]
+            global_vmin = all_data.min()
+            global_vmax = all_data.max()
+            for op_idx in realizations.keys():
+                norm_bounds[op_idx] = (global_vmin, global_vmax)
+        elif self.color_norm_mode == "per-operator":
+            # Per-operator normalization: compute min/max across all realizations of each operator
+            for op_idx, realizations_op in realizations.items():
+                op_vmin = realizations_op.min()
+                op_vmax = realizations_op.max()
+                norm_bounds[op_idx] = (op_vmin, op_vmax)
+        # else: per-cell mode - no bounds, each cell normalizes independently
+
         # Render each operator (row)
         for row, op_idx in enumerate(sorted(realizations.keys())):
             realizations_op = realizations[op_idx]  # [M, C, H, W]
@@ -309,10 +330,17 @@ class VisualizationGrid:
             row_start = header_offset + row * (H + spacing)
             row_end = row_start + H
 
+            # Get normalization bounds for this operator (if applicable)
+            vmin, vmax = norm_bounds.get(op_idx, (None, None))
+
             # Render individual realizations (subset)
             for col in range(M_display):
                 realization = realizations_op[col:col+1]  # [1, C, H, W]
-                rgb = self.render_strategy.render(realization)  # [1, 3, H_orig, W_orig]
+
+                if vmin is not None and vmax is not None:
+                    rgb = self.render_strategy.render(realization, vmin=vmin, vmax=vmax)  # [1, 3, H_orig, W_orig]
+                else:
+                    rgb = self.render_strategy.render(realization)  # [1, 3, H_orig, W_orig]
 
                 # Resize to match grid cell size if needed
                 if rgb.shape[-2:] != (H, W):

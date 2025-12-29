@@ -15,7 +15,13 @@ src_path = Path(__file__).parent.parent / "src"
 if src_path.exists():
     sys.path.insert(0, str(src_path))
 
-from spinlock.cli import GenerateCommand, InfoCommand, ValidateCommand, VisualizeCommand
+from spinlock.cli import (
+    GenerateCommand,
+    InfoCommand,
+    ValidateCommand,
+    VisualizeCommand,
+    VisualizeICTypesCommand,
+)
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -58,6 +64,7 @@ For more help on a specific command:
         InfoCommand(),
         ValidateCommand(),
         VisualizeCommand(),
+        VisualizeICTypesCommand(),
     ]
 
     for command in commands:

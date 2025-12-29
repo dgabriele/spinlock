@@ -10,6 +10,7 @@ from .generate import GenerateCommand
 from .info import InfoCommand
 from .validate import ValidateCommand
 from .visualize import VisualizeCommand
+from .visualize_ic_types import VisualizeICTypesCommand
 
 __all__ = [
     "CLICommand",
@@ -18,4 +19,5 @@ __all__ = [
     "InfoCommand",
     "ValidateCommand",
     "VisualizeCommand",
+    "VisualizeICTypesCommand",
 ]

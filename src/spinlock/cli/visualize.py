@@ -161,6 +161,14 @@ Examples:
         )
 
         render_group.add_argument(
+            "--color-norm-mode",
+            type=str,
+            choices=["global", "per-operator", "per-cell"],
+            default="per-cell",
+            help="Color normalization mode: 'global' (all operators share scale), 'per-operator' (each operator has own scale), 'per-cell' (each cell normalized independently) (default: per-cell)",
+        )
+
+        render_group.add_argument(
             "--aggregates",
             type=str,
             nargs="+",
@@ -297,6 +305,7 @@ Examples:
                 grid_size=grid_size,
                 stride=args.stride,
                 colormap=args.colormap,
+                color_norm_mode=args.color_norm_mode,
                 aggregates=args.aggregates,
                 add_spacing=args.add_spacing,
                 sampling_method=args.sampling_method,
@@ -404,6 +413,7 @@ Examples:
         grid_size: int,
         stride: int,
         colormap: str,
+        color_norm_mode: str,
         aggregates: List[str],
         add_spacing: bool,
         sampling_method: str,
@@ -634,7 +644,8 @@ Examples:
             grid_size=grid_size,
             device=torch_device,
             add_spacing=add_spacing,
-            display_realizations=display_realizations
+            display_realizations=display_realizations,
+            color_norm_mode=color_norm_mode
         )
 
         # Pre-compute aggregates ONCE to avoid redundant computation
