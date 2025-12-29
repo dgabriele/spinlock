@@ -62,15 +62,50 @@ class InputFieldGenerator:
         self.num_channels = num_channels
         self.device = device
 
+        # OPTIMIZATION: Pre-compute coordinate grids (cached once for all generations)
+        self._setup_coordinate_grids()
+
         # Pre-compute k-space grid for GRF generation
         self._setup_fourier_grid()
 
+    def _setup_coordinate_grids(self) -> None:
+        """Pre-compute spatial coordinate grids for efficient field generation."""
+        # Cartesian coordinates: x, y in [0, grid_size-1]
+        y, x = torch.meshgrid(
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
+            indexing="ij"
+        )
+        self._cached_x = x
+        self._cached_y = y
+
+        # Center coordinates (origin at grid center)
+        center = (self.grid_size - 1) / 2.0
+        x_centered = x - center
+        y_centered = y - center
+
+        # Polar coordinates (relative to grid center)
+        self._cached_r = torch.sqrt(x_centered**2 + y_centered**2)
+        self._cached_theta = torch.atan2(y_centered, x_centered)
+
+        # Cache centered coordinates for convenience
+        self._cached_x_centered = x_centered
+        self._cached_y_centered = y_centered
+
     def _setup_fourier_grid(self) -> None:
         """Pre-compute Fourier space grid for efficient GRF generation."""
-        # Frequency grid
-        k = torch.fft.fftfreq(self.grid_size, d=1.0 / self.grid_size, device=self.device)
-        kx, ky = torch.meshgrid(k, k, indexing="ij")
-        self.k_squared = kx**2 + ky**2
+        # Frequency grids for spectral methods
+        kx = torch.fft.fftfreq(self.grid_size, d=1.0, device=self.device)
+        ky = torch.fft.fftfreq(self.grid_size, d=1.0, device=self.device)
+        ky_grid, kx_grid = torch.meshgrid(ky, kx, indexing="ij")
+
+        # Cache individual frequency grids
+        self._cached_kx = kx_grid
+        self._cached_ky = ky_grid
+        self._cached_k = torch.sqrt(kx_grid**2 + ky_grid**2)
+
+        # Legacy compatibility: k_squared for old code
+        self.k_squared = kx_grid**2 + ky_grid**2
 
     def generate_batch(
         self,
@@ -298,11 +333,9 @@ class InputFieldGenerator:
                     radius = torch.rand(1, device=self.device) * self.grid_size * 0.2
 
                     # Distance grid
-                    y, x = torch.meshgrid(
-                        torch.arange(self.grid_size, device=self.device),
-                        torch.arange(self.grid_size, device=self.device),
-                        indexing="ij",
-                    )
+                    # OPTIMIZATION: Use cached coordinate grids
+                    x = self._cached_x
+                    y = self._cached_y
                     dist = torch.sqrt((x - cx) ** 2 + (y - cy) ** 2)
                     mask = (dist < radius).float()
 
@@ -315,11 +348,9 @@ class InputFieldGenerator:
                     angle = torch.rand(1, device=self.device) * 2 * np.pi
                     frequency = torch.rand(1, device=self.device) * 5 + 1
 
-                    y, x = torch.meshgrid(
-                        torch.arange(self.grid_size, device=self.device),
-                        torch.arange(self.grid_size, device=self.device),
-                        indexing="ij",
-                    )
+                    # OPTIMIZATION: Use cached coordinate grids
+                    x = self._cached_x
+                    y = self._cached_y
                     stripe = torch.sin(
                         (x * torch.cos(angle) + y * torch.sin(angle))
                         * frequency
@@ -337,11 +368,9 @@ class InputFieldGenerator:
                     cy = torch.rand(1, device=self.device) * self.grid_size
                     sigma = torch.rand(1, device=self.device) * self.grid_size * 0.15
 
-                    y, x = torch.meshgrid(
-                        torch.arange(self.grid_size, device=self.device),
-                        torch.arange(self.grid_size, device=self.device),
-                        indexing="ij",
-                    )
+                    # OPTIMIZATION: Use cached coordinate grids
+                    x = self._cached_x
+                    y = self._cached_y
                     blob = torch.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2))
 
                     channel = np.random.randint(0, self.num_channels)
@@ -461,12 +490,9 @@ class InputFieldGenerator:
                 device=self.device
             )
 
-            # Create coordinate grids (cached for efficiency)
-            y, x = torch.meshgrid(
-                torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-                torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-                indexing="ij"
-            )
+            # OPTIMIZATION: Use cached coordinate grids
+            x = self._cached_x
+            y = self._cached_y
 
             # Add random Gaussian blobs
             for _ in range(num_blobs):
@@ -527,11 +553,9 @@ class InputFieldGenerator:
         # Generate structured background
         if pattern == "waves":
             # Sine wave pattern with random orientation
-            y, x = torch.meshgrid(
-                torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-                torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-                indexing="ij"
-            )
+            # OPTIMIZATION: Use cached coordinate grids
+            x = self._cached_x
+            y = self._cached_y
 
             base_patterns = []
             for _ in range(batch_size):
@@ -551,13 +575,11 @@ class InputFieldGenerator:
 
         elif pattern == "grid":
             # Grid pattern
+            # OPTIMIZATION: Use cached coordinate grids (moved outside loop)
+            x = self._cached_x
+            y = self._cached_y
             base_patterns = []
             for _ in range(batch_size):
-                y, x = torch.meshgrid(
-                    torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-                    torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-                    indexing="ij"
-                )
                 freq = torch.rand(1, device=self.device) * 3 + 3  # 3-6 grid cells
                 pattern_field = (
                     torch.sin(x * freq * 2 * np.pi / self.grid_size) *
@@ -569,11 +591,9 @@ class InputFieldGenerator:
 
         elif pattern == "radial":
             # Radial pattern from center
-            y, x = torch.meshgrid(
-                torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-                torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-                indexing="ij"
-            )
+            # OPTIMIZATION: Use cached coordinate grids
+            x = self._cached_x
+            y = self._cached_y
             cx, cy = self.grid_size / 2, self.grid_size / 2
             r = torch.sqrt((x - cx) ** 2 + (y - cy) ** 2)
 
@@ -710,12 +730,9 @@ class InputFieldGenerator:
         """
         fields = []
 
-        # Create coordinate grids
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids
+        x = self._cached_x
+        y = self._cached_y
 
         for _ in range(batch_size):
             # Initialize field (3 channels: real, imag, |psi|^2)
@@ -807,12 +824,9 @@ class InputFieldGenerator:
         # Critical wave number
         k_c = 2 * np.pi / wavelength
 
-        # Create coordinate grids
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids
+        x = self._cached_x
+        y = self._cached_y
 
         for _ in range(batch_size):
             # Determine pattern type for this sample
@@ -919,12 +933,9 @@ class InputFieldGenerator:
         T_min, T_max = temperature_range
         fields = []
 
-        # Create coordinate grids (normalized to [0, 1])
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids (normalized to [0, 1])
+        x = self._cached_x / self.grid_size
+        y = self._cached_y / self.grid_size
 
         for _ in range(batch_size):
             # Determine gradient direction
@@ -1006,12 +1017,9 @@ class InputFieldGenerator:
         """
         fields = []
 
-        # Create coordinate grids
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids
+        x = self._cached_x
+        y = self._cached_y
 
         for _ in range(batch_size):
             # Initialize concentration field
@@ -1105,12 +1113,9 @@ class InputFieldGenerator:
         """
         fields = []
 
-        # Create coordinate grids
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids
+        x = self._cached_x
+        y = self._cached_y
 
         for _ in range(batch_size):
             # Initialize field
@@ -1217,12 +1222,9 @@ class InputFieldGenerator:
         """
         fields = []
 
-        # Create coordinate grids
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids
+        x = self._cached_x
+        y = self._cached_y
 
         for _ in range(batch_size):
             # Initialize field
@@ -1360,12 +1362,9 @@ class InputFieldGenerator:
         """
         fields = []
 
-        # Create coordinate grids
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids
+        x = self._cached_x
+        y = self._cached_y
 
         for _ in range(batch_size):
             # Random interface orientation
@@ -1445,12 +1444,9 @@ class InputFieldGenerator:
         # Wave number
         k = 2 * np.pi / wavelength
 
-        # Create coordinate grids
-        y_grid, x_grid = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids
+        x_grid = self._cached_x
+        y_grid = self._cached_y
 
         for _ in range(batch_size):
             # Initialize field
@@ -1577,12 +1573,9 @@ class InputFieldGenerator:
         """
         fields = []
 
-        # Create coordinate grids (normalized to [0, 1])
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids (normalized to [0, 1])
+        x = self._cached_x / self.grid_size
+        y = self._cached_y / self.grid_size
 
         for _ in range(batch_size):
             # Create entropy pattern (controls local noise amplitude)
@@ -1690,12 +1683,9 @@ class InputFieldGenerator:
         fields = []
         k = 2 * np.pi / wavelength
 
-        # Create coordinate grids
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids
+        x = self._cached_x
+        y = self._cached_y
 
         for _ in range(batch_size):
             field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
@@ -1787,12 +1777,9 @@ class InputFieldGenerator:
         """
         fields = []
 
-        # Create coordinate grids
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids
+        x = self._cached_x
+        y = self._cached_y
 
         for _ in range(batch_size):
             # Generate cell positions via hard-core point process
@@ -1905,12 +1892,9 @@ class InputFieldGenerator:
         """
         fields = []
 
-        # Create coordinate grids
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids
+        x = self._cached_x
+        y = self._cached_y
 
         for _ in range(batch_size):
             field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
@@ -2024,12 +2008,9 @@ class InputFieldGenerator:
         """
         fields = []
 
-        # Create coordinate grids (normalized to [0, 1])
-        y_grid, x_grid = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids (normalized to [0, 1])
+        x_grid = self._cached_x / self.grid_size
+        y_grid = self._cached_y / self.grid_size
 
         for _ in range(batch_size):
             # Random shock position if not specified
@@ -2118,12 +2099,9 @@ class InputFieldGenerator:
         # Available pattern types
         pattern_types = ["gradient", "spots", "stripes", "radial", "uniform"]
 
-        # Create coordinate grids (normalized to [0, 1])
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) / self.grid_size,
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids (normalized to [0, 1])
+        x = self._cached_x / self.grid_size
+        y = self._cached_y / self.grid_size
 
         for _ in range(batch_size):
             # Use channels to represent genes
@@ -2272,12 +2250,9 @@ class InputFieldGenerator:
         """
         fields = []
 
-        # Create coordinate grids
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached coordinate grids
+        x = self._cached_x
+        y = self._cached_y
 
         for _ in range(batch_size):
             # Start with random GRF background (vacuum fluctuations)
@@ -2355,12 +2330,9 @@ class InputFieldGenerator:
         """
         fields = []
 
-        # Create coordinate grids (centered at origin)
-        y, x = torch.meshgrid(
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) - self.grid_size / 2,
-            torch.arange(self.grid_size, device=self.device, dtype=torch.float32) - self.grid_size / 2,
-            indexing="ij"
-        )
+        # OPTIMIZATION: Use cached centered coordinate grids
+        x = self._cached_x_centered
+        y = self._cached_y_centered
 
         for _ in range(batch_size):
             field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
@@ -2585,11 +2557,9 @@ class InputFieldGenerator:
                 ))
 
             # Create spatial field from network state
-            y_grid, x_grid = torch.meshgrid(
-                torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-                torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-                indexing="ij"
-            )
+            # OPTIMIZATION: Use cached coordinate grids
+            x_grid = self._cached_x
+            y_grid = self._cached_y
 
             field = torch.zeros(self.num_channels, self.grid_size, self.grid_size, device=self.device)
 
@@ -2716,12 +2686,10 @@ class InputFieldGenerator:
 
             if field_type_dla == "distance_transform":
                 # Smooth distance field (approximate)
+                # OPTIMIZATION: Use cached coordinate grids
+                x_grid = self._cached_x
+                y_grid = self._cached_y
                 field_dla = torch.zeros(self.grid_size, self.grid_size, device=self.device)
-                y_grid, x_grid = torch.meshgrid(
-                    torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-                    torch.arange(self.grid_size, device=self.device, dtype=torch.float32),
-                    indexing="ij"
-                )
                 for (cx, cy) in cluster:
                     r = torch.sqrt((x_grid - cx) ** 2 + (y_grid - cy) ** 2)
                     field_dla = torch.maximum(field_dla, torch.exp(-r / 5.0))

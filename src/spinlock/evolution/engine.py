@@ -387,9 +387,9 @@ class OperatorRollout:
             total_memory_per_sample = memory_per_sample + trajectory_memory_per_sample
 
             # Calculate truly available memory (accounting for what's already used + fragmentation)
-            # Use only 35% of free memory to be very conservative with fragmentation
+            # OPTIMIZATION: Use 70% of free memory (increased from 35% for better throughput)
             free_memory = total_memory - reserved_memory  # Account for reserved (includes fragmentation)
-            usable_memory = free_memory * 0.35  # Very conservative for fragmentation safety
+            usable_memory = free_memory * 0.70  # 70% safe, 30% margin for fragmentation
             safe_batch_size = int(usable_memory / total_memory_per_sample)
 
             # Clamp to reasonable range

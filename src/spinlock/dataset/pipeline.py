@@ -554,34 +554,51 @@ class DatasetGenerationPipeline:
 
         gen_start = time.time()
 
-        # Sample IC types for each sample in batch
-        ic_types_used = []
+        # OPTIMIZATION: Vectorized input generation - group by IC type
+        ic_method = self.config.simulation.input_generation.method
+
+        # Sample IC types for entire batch first
+        if ic_method == "sampled":
+            ic_types_used = [self._sample_ic_type() for _ in range(batch_size)]
+        else:
+            ic_types_used = [ic_method] * batch_size
+
+        # Group indices by IC type for batch generation
+        from collections import defaultdict
+        ic_type_to_indices = defaultdict(list)
+        for i, ic_type in enumerate(ic_types_used):
+            ic_type_to_indices[ic_type].append(i)
+
+        # Generate batches per IC type (amortize GPU kernel launches)
         all_inputs = []
-
-        for i in range(batch_size):
-            # Determine IC type for this sample
-            ic_method = self.config.simulation.input_generation.method
-            if ic_method == "sampled":
-                # Sample IC type based on weights
-                ic_type = self._sample_ic_type()
-            else:
-                ic_type = ic_method
-
-            ic_types_used.append(ic_type)
-
-            # Get parameters for this IC type
+        for ic_type, indices in ic_type_to_indices.items():
             ic_params = self._get_ic_params(ic_type)
 
-            # Generate single input
-            input_i = input_generator.generate_batch(
-                batch_size=1,
+            # OPTIMIZATION: Generate entire batch for this IC type at once
+            batch_inputs = input_generator.generate_batch(
+                batch_size=len(indices),
                 field_type=ic_type,
-                **ic_params
+                **ic_params,
             )
-            all_inputs.append(input_i)
+            all_inputs.append((indices, batch_inputs))
 
-        # Stack all inputs
-        inputs = torch.cat(all_inputs, dim=0)
+        # Pre-allocate and fill output tensor
+        if all_inputs:
+            # Get shape from first batch
+            first_batch = all_inputs[0][1]
+            inputs = torch.zeros(
+                (batch_size, *first_batch.shape[1:]),
+                dtype=first_batch.dtype,
+                device=first_batch.device,
+            )
+
+            # Place batches in correct positions
+            for indices, batch_inputs in all_inputs:
+                for i, idx in enumerate(indices):
+                    inputs[idx] = batch_inputs[i]
+        else:
+            # Fallback (should never happen)
+            raise RuntimeError("No inputs generated")
         self.stats["generation_time"] += time.time() - gen_start
 
         # Run inference
@@ -591,7 +608,8 @@ class DatasetGenerationPipeline:
         )
         self.stats["inference_time"] += time.time() - inf_start
 
-        # Pad to max_grid_size if needed (only if variable grid sizes)
+        # OPTIMIZATION: Skip padding for single grid size datasets
+        # (only pad if variable grid sizes exist and grid_size < max_grid_size)
         if grid_size < self.max_grid_size:
             inputs = self._pad_to_max_size(inputs, target_size=self.max_grid_size)
             outputs = self._pad_to_max_size(outputs, target_size=self.max_grid_size)
