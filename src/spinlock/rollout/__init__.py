@@ -17,7 +17,7 @@ Key components:
 
 Example:
     ```python
-    from spinlock.evolution import OperatorRollout, ConvexPolicy
+    from spinlock.rollout import OperatorRollout, ConvexPolicy
 
     policy = ConvexPolicy(alpha=0.7)
     rollout = OperatorRollout(

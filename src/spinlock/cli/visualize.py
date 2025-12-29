@@ -439,7 +439,7 @@ Examples:
         from spinlock.dataset.storage import HDF5DatasetReader
         from spinlock.operators.builder import OperatorBuilder
         from spinlock.operators.parameters import OperatorParameters
-        from spinlock.evolution import OperatorRollout, create_update_policy
+        from spinlock.rollout import OperatorRollout, create_update_policy
         from spinlock.visualization import (
             create_render_strategy,
             create_aggregate_renderer,

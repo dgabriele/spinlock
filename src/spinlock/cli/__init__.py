@@ -11,6 +11,7 @@ from .info import InfoCommand
 from .validate import ValidateCommand
 from .visualize import VisualizeCommand
 from .visualize_ic_types import VisualizeICTypesCommand
+from .extract_features import ExtractFeaturesCommand
 
 __all__ = [
     "CLICommand",
@@ -20,4 +21,5 @@ __all__ = [
     "ValidateCommand",
     "VisualizeCommand",
     "VisualizeICTypesCommand",
+    "ExtractFeaturesCommand",
 ]

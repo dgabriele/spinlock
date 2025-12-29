@@ -14,9 +14,10 @@ Spinlock is a production-grade system for systematic sampling, simulation, and d
 - **Flexible CNN Operators** - YAML-configurable architectures with stochastic elements
 - **28 IC Types** - Baseline + 4 domain-specific tiers covering quantum physics, biology, chemistry, information theory, and more
 - **Variable Grid Sizes** - Multi-scale exploration with 64×64, 128×128, 256×256 resolutions
-- **Evolution Policies** - 3 temporal update strategies (autoregressive, residual, convex) for diverse dynamical behaviors
-- **Rich Metadata Tracking** - IC types, evolution policies, grid sizes, noise regimes for hypothesis generation and analysis
+- **Rollout Policies** - 3 temporal update strategies (autoregressive, residual, convex) for diverse dynamical behaviors
+- **Rich Metadata Tracking** - IC types, rollout policies, grid sizes, noise regimes for hypothesis generation and analysis
 - **Advanced Visualization** - 9 aggregate renderers (entropy, PCA, SSIM, spectral analysis, etc.), per-operator color normalization, IC type gallery generation
+- **Feature Extraction System (SDF v2.0)** - GPU-optimized extraction with 153 features across 7 categories: spatial (19), spectral (27), temporal (13), operator sensitivity (10), cross-channel (10), causality (14), invariant drift (60) - NEW v2.0 operator-aware features!
 - **GPU-Optimized Performance** - Phase 1 optimizations: coordinate grid caching, vectorized input generation, 70% GPU memory utilization (1.8-2.2x speedup)
 - **GPU-Accelerated Execution** - Adaptive batching, memory management, multi-GPU ready
 - **Efficient Storage** - Chunked HDF5 with compression for large-scale datasets
@@ -125,7 +126,8 @@ python scripts/spinlock.py visualize-ic-types \
 - `info` - Display dataset information and metadata
 - `validate` - Verify dataset integrity and quality
 - `visualize-dataset` - Create temporal evolution visualizations from stored datasets
-- `visualize-ic-types` - Generate gallery visualization of all 28 IC types (NEW!)
+- `visualize-ic-types` - Generate gallery visualization of all 28 IC types
+- `extract-features` - Extract SDF features for VQ-VAE training and analysis (NEW!)
 
 Use `python scripts/spinlock.py --help` for full documentation.
 
@@ -160,7 +162,7 @@ Neural Operators [N models with stochastic elements]
     ↓
 Input Generator (Diverse ICs: multi-scale GRF, localized, composite, heavy-tailed)
     ↓
-GPU Execution (M stochastic realizations per operator, 3 evolution policies)
+GPU Execution (M stochastic realizations per operator, 3 rollout policies)
     ↓
 HDF5 Storage (Chunked, compressed, with discovery metadata)
     ↓
@@ -172,10 +174,10 @@ Visualization Pipeline (Temporal evolution, grid layouts, video export) [Optiona
 - **Configuration System** (`src/spinlock/config/`) - Type-safe Pydantic schemas, YAML loading
 - **Sampling System** (`src/spinlock/sampling/`) - Sobol sequences, quality validation metrics
 - **Operator System** (`src/spinlock/operators/`) - Modular CNN blocks, builder pattern
-- **Evolution Policies** (`src/spinlock/evolution/`) - Autoregressive, residual, convex temporal update strategies
+- **Rollout Policies** (`src/spinlock/rollout/`) - Autoregressive, residual, convex temporal update strategies
 - **Execution System** (`src/spinlock/execution/`) - Parallelization, adaptive batching, memory management
 - **Dataset Generation** (`src/spinlock/dataset/`) - Input generators, HDF5 storage, pipeline orchestrator
-- **Visualization System** (`src/spinlock/visualization/`) - Evolution engine, rendering strategies, grid layouts, video export
+- **Visualization System** (`src/spinlock/visualization/`) - Rendering engine, temporal evolution, grid layouts, video export
 
 ## Configuration
 
@@ -214,7 +216,7 @@ parameter_space:
       type: choice
       choices: [64, 128, 256]
 
-  evolution:  # Temporal dynamics configuration
+  rollout:  # Temporal dynamics configuration
     update_policy:
       type: choice
       choices: ["autoregressive", "residual", "convex"]
@@ -392,6 +394,81 @@ python scripts/spinlock.py visualize-dataset \
     --display-realizations 2
 ```
 
+## Feature Extraction
+
+Spinlock includes a GPU-optimized feature extraction system for computing **Summary Descriptor Features (SDF)** from neural operator rollouts.
+
+### Overview
+
+Extract comprehensive spatial, spectral, and temporal features for:
+- **VQ-VAE Training**: Compact, informative features for discrete latent spaces
+- **Dataset Analysis**: Understanding pattern diversity and dynamics
+- **Scientific Discovery**: Identifying invariants and emergent behaviors
+- **Downstream ML**: Classification, clustering, anomaly detection
+
+### Quick Start
+
+```bash
+# Extract features with defaults (all 59 features)
+python scripts/spinlock.py extract-features --dataset datasets/benchmark_10k.h5
+
+# Verbose output
+python scripts/spinlock.py extract-features --dataset datasets/benchmark_10k.h5 --verbose
+
+# Custom batch size for GPU memory
+python scripts/spinlock.py extract-features --dataset datasets/benchmark_10k.h5 --batch-size 16
+```
+
+### Feature Categories
+
+**All features are scalars** - each operator produces a single scalar value per feature.
+
+**Per-Timestep Features (46 scalars)**:
+- **Spatial Statistics** (19): moments, gradients, curvature (Laplacian)
+- **Spectral Features** (27): FFT power spectrum (5 scales), dominant frequencies, spectral shape
+- **Output**: `[N, T, 46]` - 46 scalars per operator per timestep
+
+**Per-Trajectory Features (13 scalars, requires T>1)**:
+- **Temporal Dynamics**: growth rates, oscillations, stability metrics, stationarity measures
+- **Output**: `[N, M, 13]` - 13 scalars per realization
+
+**Aggregated Features (39 scalars)**:
+- Temporal features aggregated across realizations with mean, std, coefficient of variation
+- **Output**: `[N, 39]` - 39 scalars per operator (ready for VQ-VAE/ML)
+
+### Performance
+
+- **GPU-Optimized**: 50-80% GPU utilization during extraction
+- **Throughput**: ~8 samples/sec on 128×128 grids
+- **Benchmarks**:
+  - 100 samples: 12s
+  - 1,000 samples: 2 min
+  - 10,000 samples: 20 min
+
+### Reading Features
+
+```python
+from pathlib import Path
+from spinlock.features.storage import HDF5FeatureReader
+
+with HDF5FeatureReader(Path("datasets/benchmark_10k.h5")) as reader:
+    # Get feature registry
+    registry = reader.get_sdf_registry()
+    print(f"Total features: {registry.num_features}")
+
+    # Read aggregated features (most compact)
+    features = reader.get_sdf_aggregated()  # [N, 39]
+
+    # Read per-timestep features
+    per_timestep = reader.get_sdf_per_timestep()  # [N, T, 46]
+```
+
+### Documentation
+
+- **Extraction Guide**: [`docs/features/extraction-guide.md`](docs/features/extraction-guide.md) - Complete usage guide
+- **Feature Reference**: [`docs/features/feature-reference.md`](docs/features/feature-reference.md) - Detailed feature descriptions
+- **Tutorial**: [`examples/demos/feature_extraction_tutorial.py`](examples/demos/feature_extraction_tutorial.py) - Python examples
+
 ## Dataset Schema
 
 Generated HDF5 datasets follow this structure:
@@ -402,7 +479,7 @@ Generated HDF5 datasets follow this structure:
     - sampling_metrics (JSON)        # Discrepancy, correlations
     - creation_date, version
     - ic_types [N]                   # Initial condition type per operator (29 types available)
-    - evolution_policies [N]         # Evolution policy per operator (autoregressive/residual/convex)
+    - rollout_policies [N]           # Rollout policy per operator (autoregressive/residual/convex)
     - grid_sizes [N]                 # Grid resolution per operator (64/128/256)
     - noise_regimes [N]              # Noise classification (low/medium/high)
 
@@ -414,6 +491,22 @@ Generated HDF5 datasets follow this structure:
 
 /outputs/
     - fields [N, M, C_out, 256, 256] # Output fields (M stochastic realizations, padded)
+
+/features/                           # [Optional] Extracted SDF features
+    @family_versions                 # {"sdf": "1.0.0"}
+    @extraction_timestamp
+    /sdf/
+        @version                     # "1.0.0"
+        @feature_registry            # JSON name-to-index mapping
+        @num_features                # 59
+        /per_timestep/
+            features [N, T, 46]      # Per-timestep spatial & spectral features
+        /per_trajectory/
+            features [N, M, 13]      # Per-trajectory temporal dynamics
+        /aggregated/
+            features [N, 39]         # Aggregated across realizations
+            /metadata/
+                extraction_time [N]  # Extraction time per sample
 ```
 
 ## Development
@@ -478,7 +571,7 @@ poetry run pytest tests/test_sampling/
   - [x] IC type gallery visualization command
   - [x] GPU-accelerated video encoding (NVENC)
   - [x] 20.9x rendering speedup via vectorization
-- [x] Evolution policies (autoregressive, residual, convex)
+- [x] Rollout policies (autoregressive, residual, convex)
 - [x] **Phase 1 Performance Optimizations** (1.8-2.2x speedup):
   - [x] Coordinate grid caching
   - [x] Vectorized input generation

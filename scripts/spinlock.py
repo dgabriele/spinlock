@@ -21,6 +21,7 @@ from spinlock.cli import (
     ValidateCommand,
     VisualizeCommand,
     VisualizeICTypesCommand,
+    ExtractFeaturesCommand,
 )
 
 
@@ -65,6 +66,7 @@ For more help on a specific command:
         ValidateCommand(),
         VisualizeCommand(),
         VisualizeICTypesCommand(),
+        ExtractFeaturesCommand(),
     ]
 
     for command in commands:

@@ -16,13 +16,20 @@ Designed for reusability across multiple use cases:
 
 import torch
 import torch.nn as nn
-from typing import List, Optional, Tuple, Literal
+from typing import List, Optional, Tuple, Literal, Dict
 from pathlib import Path
 from tqdm import tqdm
 
 from .policies import UpdatePolicy, create_update_policy
 from .metrics import MetricsComputer, TrajectoryMetrics
 from .trajectory import TrajectoryWriter
+
+# Optional: Import for operator feature extraction
+try:
+    from spinlock.features.sdf.operator_sensitivity import OperatorSensitivityExtractor
+    OPERATOR_FEATURES_AVAILABLE = True
+except ImportError:
+    OPERATOR_FEATURES_AVAILABLE = False
 
 
 class OperatorRollout:
@@ -48,10 +55,10 @@ class OperatorRollout:
 
     Example:
         ```python
-        from spinlock.evolution import TemporalEvolutionEngine
+        from spinlock.rollout import OperatorRollout
         from spinlock.operators import NeuralOperator
 
-        engine = TemporalEvolutionEngine(
+        engine = OperatorRollout(
             policy="convex",
             alpha=0.7,
             num_timesteps=100,
@@ -76,6 +83,8 @@ class OperatorRollout:
         normalization: Optional[Literal["minmax", "zscore"]] = None,
         clamp_range: Optional[Tuple[float, float]] = None,
         compute_metrics: bool = True,
+        extract_operator_features: bool = False,
+        operator_feature_config: Optional[object] = None,
         device: torch.device = torch.device("cuda")
     ):
         """
@@ -90,6 +99,8 @@ class OperatorRollout:
             normalization: Post-update normalization ("minmax", "zscore", None)
             clamp_range: Optional (min, max) clamping range
             compute_metrics: Whether to compute trajectory metrics
+            extract_operator_features: Whether to extract operator sensitivity features during rollout
+            operator_feature_config: SDFOperatorSensitivityConfig (optional)
             device: Torch device (cuda or cpu)
         """
         self.num_timesteps = num_timesteps
@@ -97,6 +108,7 @@ class OperatorRollout:
         self.compute_metrics = compute_metrics
         self.normalization = normalization
         self.clamp_range = clamp_range
+        self.extract_operator_features = extract_operator_features
 
         # Create or use provided update policy
         if policy is not None:
@@ -112,6 +124,26 @@ class OperatorRollout:
         if compute_metrics:
             self.metrics_computer = MetricsComputer()
 
+        # Operator feature extractor (optional)
+        self.operator_feature_extractor: Optional['OperatorSensitivityExtractor'] = None
+        if extract_operator_features:
+            if not OPERATOR_FEATURES_AVAILABLE:
+                raise RuntimeError(
+                    "Operator feature extraction requested but spinlock.features.sdf not available"
+                )
+            self.operator_feature_extractor = OperatorSensitivityExtractor(
+                device=device,
+                lipschitz_epsilon_scales=(
+                    operator_feature_config.lipschitz_epsilon_scales
+                    if operator_feature_config else None
+                ),
+                gain_scale_factors=(
+                    operator_feature_config.gain_scale_factors
+                    if operator_feature_config else None
+                )
+            )
+            self.operator_feature_config = operator_feature_config
+
     def evolve_operator(
         self,
         operator: nn.Module,
@@ -119,7 +151,7 @@ class OperatorRollout:
         num_realizations: int = 1,
         base_seed: int = 0,
         show_progress: bool = False
-    ) -> Tuple[torch.Tensor, List[List[TrajectoryMetrics]]]:
+    ) -> Tuple[torch.Tensor, List[List[TrajectoryMetrics]], Optional[Dict[str, torch.Tensor]]]:
         """
         Evolve single operator from initial condition with multiple realizations (BATCHED).
 
@@ -137,10 +169,11 @@ class OperatorRollout:
             Tuple of:
             - trajectories: [M, T, C, H, W] where M = num_realizations
             - metrics: List[List[TrajectoryMetrics]] (M realizations, T steps each)
+            - operator_features: Optional Dict[str, torch.Tensor] with operator sensitivity features
 
         Example:
             ```python
-            trajectories, metrics = engine.evolve_operator(
+            trajectories, metrics, op_features = engine.evolve_operator(
                 operator=neural_operator,
                 initial_condition=torch.randn(3, 64, 64),
                 num_realizations=10,
@@ -183,7 +216,15 @@ class OperatorRollout:
         # Concatenate batches
         trajectories = torch.cat(all_trajectories, dim=0)  # [M, T, C, H, W]
 
-        return trajectories, all_metrics
+        # Extract operator features if enabled
+        operator_features = None
+        if self.extract_operator_features:
+            operator_features = self._extract_operator_sensitivity_features(
+                operator=operator,
+                initial_condition=initial_condition
+            )
+
+        return trajectories, all_metrics, operator_features
 
     def _evolve_single_realization(
         self,
@@ -436,6 +477,38 @@ class OperatorRollout:
 
         return X
 
+    def _extract_operator_sensitivity_features(
+        self,
+        operator: nn.Module,
+        initial_condition: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Extract operator sensitivity features.
+
+        This method runs the operator with perturbed inputs to characterize:
+        - Lipschitz estimates (sensitivity to perturbations)
+        - Gain curves (response to amplitude scaling)
+        - Linearity metrics (deviation from linear behavior)
+
+        Args:
+            operator: Neural operator
+            initial_condition: Initial condition [C, H, W]
+
+        Returns:
+            Dictionary of feature name -> scalar tensor
+        """
+        if self.operator_feature_extractor is None:
+            raise RuntimeError("Operator feature extractor not initialized")
+
+        # Extract features using initial condition
+        features = self.operator_feature_extractor.extract(
+            operator=operator,
+            input_field=initial_condition,
+            config=self.operator_feature_config
+        )
+
+        return features
+
     def evolve_batch(
         self,
         operators: List[nn.Module],
@@ -443,7 +516,7 @@ class OperatorRollout:
         num_realizations: int,
         output_path: Optional[Path] = None,
         show_progress: bool = True
-    ) -> Optional[Tuple[torch.Tensor, List[List[List[TrajectoryMetrics]]]]]:
+    ) -> Optional[Tuple[torch.Tensor, List[List[List[TrajectoryMetrics]]], Optional[List[Dict[str, torch.Tensor]]]]]:
         """
         Evolve batch of operators and optionally save to HDF5.
 
@@ -455,7 +528,7 @@ class OperatorRollout:
             show_progress: Show progress bar
 
         Returns:
-            If output_path is None: (trajectories [N, M, T, C, H, W], metrics)
+            If output_path is None: (trajectories [N, M, T, C, H, W], metrics, operator_features)
             If output_path is provided: None (saves to disk)
 
         Example:
@@ -469,7 +542,7 @@ class OperatorRollout:
             )
 
             # Return in memory
-            trajectories, metrics = engine.evolve_batch(
+            trajectories, metrics, op_features = engine.evolve_batch(
                 operators=operators,
                 initial_conditions=ICs,
                 num_realizations=10
@@ -500,6 +573,7 @@ class OperatorRollout:
         # Accumulate results if not saving to disk
         results_traj = [] if output_path is None else None
         results_metrics = [] if output_path is None else None
+        results_operator_features = [] if (output_path is None and self.extract_operator_features) else None
 
         # Iterate over operators
         iterator = enumerate(operators)
@@ -508,7 +582,7 @@ class OperatorRollout:
 
         for i, operator in iterator:
             IC = initial_conditions[i]
-            traj, metrics = self.evolve_operator(
+            traj, metrics, op_features = self.evolve_operator(
                 operator, IC, num_realizations, base_seed=i * 1000,
                 show_progress=False  # Don't show nested progress
             )
@@ -517,10 +591,13 @@ class OperatorRollout:
                 # Save to HDF5
                 for m in range(num_realizations):
                     writer.write_trajectory(i, m, traj[m], metrics[m])
+                # TODO: Save operator features to HDF5 (needs TrajectoryWriter extension)
             else:
                 # Accumulate in memory
                 results_traj.append(traj)
                 results_metrics.append(metrics)
+                if op_features is not None:
+                    results_operator_features.append(op_features)
 
         # Write metadata and close file
         if writer:
@@ -535,4 +612,4 @@ class OperatorRollout:
             writer.__exit__(None, None, None)
             return None
         else:
-            return torch.stack(results_traj), results_metrics
+            return torch.stack(results_traj), results_metrics, results_operator_features
