@@ -470,58 +470,54 @@ class CrossChannelFeatureExtractor:
         # Flatten spatial dimensions: [NMT, C, H*W]
         fields_flat = fields.reshape(NMT, C, H * W)
 
-        # Compute MI for each sample and channel pair
-        mi_values = []
+        # Batched computation: Process all samples and pairs at once
+        # Normalize all channels to [0, 1] per sample
+        c_min = fields_flat.min(dim=2, keepdim=True).values  # [NMT, C, 1]
+        c_max = fields_flat.max(dim=2, keepdim=True).values  # [NMT, C, 1]
+        fields_norm = (fields_flat - c_min) / (c_max - c_min + 1e-8)  # [NMT, C, H*W]
 
-        for n in range(NMT):
-            sample_mi_pairs = []
+        # Discretize to bins
+        fields_discrete = torch.floor(fields_norm * (num_bins - 1)).long()
+        fields_discrete = torch.clamp(fields_discrete, 0, num_bins - 1)  # [NMT, C, H*W]
 
-            for i in range(C):
-                for j in range(i + 1, C):
-                    # Get channel data [H*W]
-                    c_i = fields_flat[n, i]
-                    c_j = fields_flat[n, j]
+        # Compute MI for all channel pairs
+        num_pairs = C * (C - 1) // 2
+        mi_tensor = torch.zeros(NMT, num_pairs, device=fields.device)
 
-                    # Normalize to [0, 1]
-                    c_i_norm = (c_i - c_i.min()) / (c_i.max() - c_i.min() + 1e-8)
-                    c_j_norm = (c_j - c_j.min()) / (c_j.max() - c_j.min() + 1e-8)
+        pair_idx = 0
+        for i in range(C):
+            for j in range(i + 1, C):
+                # Extract channels for all samples
+                c_i = fields_discrete[:, i, :]  # [NMT, H*W]
+                c_j = fields_discrete[:, j, :]  # [NMT, H*W]
 
-                    # Discretize to bins
-                    c_i_discrete = torch.floor(c_i_norm * (num_bins - 1)).long()
-                    c_j_discrete = torch.floor(c_j_norm * (num_bins - 1)).long()
-
-                    # Clip to valid range
-                    c_i_discrete = torch.clamp(c_i_discrete, 0, num_bins - 1)
-                    c_j_discrete = torch.clamp(c_j_discrete, 0, num_bins - 1)
-
-                    # Compute joint histogram
-                    joint_hist = torch.zeros(num_bins, num_bins, device=fields.device)
-                    for k in range(H * W):
-                        joint_hist[c_i_discrete[k], c_j_discrete[k]] += 1
+                # Batched 2D histogram computation using bincount
+                for n in range(NMT):
+                    # Linear indexing for 2D histogram
+                    indices = c_i[n] * num_bins + c_j[n]  # [H*W]
+                    joint_hist = torch.bincount(indices, minlength=num_bins * num_bins)
+                    joint_hist = joint_hist.reshape(num_bins, num_bins).float()
 
                     # Normalize to probabilities
-                    joint_prob = joint_hist / (H * W)
+                    joint_prob = joint_hist / (H * W)  # [num_bins, num_bins]
 
                     # Marginal probabilities
-                    prob_i = joint_prob.sum(dim=1)
-                    prob_j = joint_prob.sum(dim=0)
+                    prob_i = joint_prob.sum(dim=1)  # [num_bins]
+                    prob_j = joint_prob.sum(dim=0)  # [num_bins]
 
-                    # Mutual information: I(X;Y) = Σ p(x,y) log(p(x,y) / (p(x)p(y)))
-                    mi = 0.0
-                    for x in range(num_bins):
-                        for y in range(num_bins):
-                            if joint_prob[x, y] > 1e-10:
-                                pxy = joint_prob[x, y]
-                                px = prob_i[x] + 1e-10
-                                py = prob_j[y] + 1e-10
-                                mi += pxy * torch.log(pxy / (px * py))
+                    # Mutual information (vectorized)
+                    # I(X;Y) = Σ p(x,y) log(p(x,y) / (p(x)p(y)))
+                    outer_prod = prob_i.unsqueeze(1) * prob_j.unsqueeze(0)  # [num_bins, num_bins]
+                    mask = joint_prob > 1e-10
+                    mi = torch.where(
+                        mask,
+                        joint_prob * torch.log(joint_prob / (outer_prod + 1e-10)),
+                        torch.zeros_like(joint_prob)
+                    ).sum()
 
-                    sample_mi_pairs.append(mi.item())
+                    mi_tensor[n, pair_idx] = mi
 
-            mi_values.append(sample_mi_pairs)
-
-        # Convert to tensor [NMT, num_pairs]
-        mi_tensor = torch.tensor(mi_values, device=fields.device, dtype=torch.float32)
+                pair_idx += 1
 
         features = {}
 
@@ -562,78 +558,61 @@ class CrossChannelFeatureExtractor:
         # Flatten spatial dimensions: [NMT, C, H*W]
         fields_flat = fields.reshape(NMT, C, H * W)
 
-        # Compute CMI for each sample and channel triplet (i, j | k)
-        cmi_values = []
+        # Batched computation: Normalize and discretize once for all channels
+        c_min = fields_flat.min(dim=2, keepdim=True).values  # [NMT, C, 1]
+        c_max = fields_flat.max(dim=2, keepdim=True).values  # [NMT, C, 1]
+        fields_norm = (fields_flat - c_min) / (c_max - c_min + 1e-8)  # [NMT, C, H*W]
 
-        for n in range(NMT):
-            sample_cmi_triplets = []
+        # Discretize to bins
+        fields_discrete = torch.floor(fields_norm * (num_bins - 1)).long()
+        fields_discrete = torch.clamp(fields_discrete, 0, num_bins - 1)  # [NMT, C, H*W]
 
-            # Iterate over all triplets (i, j, k) where i < j
-            for i in range(C):
-                for j in range(i + 1, C):
-                    for k in range(C):
-                        if k == i or k == j:
-                            continue  # Skip if conditioning variable is same as observed variables
+        # Compute CMI for all triplets
+        num_triplets = C * (C - 1) // 2 * (C - 2)  # All (i,j,k) where i<j and k!=i,j
+        cmi_tensor = torch.zeros(NMT, num_triplets, device=fields.device)
 
-                        # Get channel data [H*W]
-                        c_i = fields_flat[n, i]
-                        c_j = fields_flat[n, j]
-                        c_k = fields_flat[n, k]
+        triplet_idx = 0
+        for i in range(C):
+            for j in range(i + 1, C):
+                for k in range(C):
+                    if k == i or k == j:
+                        continue
 
-                        # Normalize to [0, 1]
-                        c_i_norm = (c_i - c_i.min()) / (c_i.max() - c_i.min() + 1e-8)
-                        c_j_norm = (c_j - c_j.min()) / (c_j.max() - c_j.min() + 1e-8)
-                        c_k_norm = (c_k - c_k.min()) / (c_k.max() - c_k.min() + 1e-8)
+                    # Extract channels for all samples
+                    c_i = fields_discrete[:, i, :]  # [NMT, H*W]
+                    c_j = fields_discrete[:, j, :]  # [NMT, H*W]
+                    c_k = fields_discrete[:, k, :]  # [NMT, H*W]
 
-                        # Discretize to bins
-                        c_i_discrete = torch.floor(c_i_norm * (num_bins - 1)).long()
-                        c_j_discrete = torch.floor(c_j_norm * (num_bins - 1)).long()
-                        c_k_discrete = torch.floor(c_k_norm * (num_bins - 1)).long()
-
-                        # Clip to valid range
-                        c_i_discrete = torch.clamp(c_i_discrete, 0, num_bins - 1)
-                        c_j_discrete = torch.clamp(c_j_discrete, 0, num_bins - 1)
-                        c_k_discrete = torch.clamp(c_k_discrete, 0, num_bins - 1)
-
-                        # Compute 3D joint histogram p(x,y,z)
-                        joint_hist = torch.zeros(num_bins, num_bins, num_bins, device=fields.device)
-                        for m in range(H * W):
-                            joint_hist[c_i_discrete[m], c_j_discrete[m], c_k_discrete[m]] += 1
+                    # Batched 3D histogram computation
+                    for n in range(NMT):
+                        # Linear indexing for 3D histogram
+                        indices = (c_i[n] * num_bins + c_j[n]) * num_bins + c_k[n]  # [H*W]
+                        joint_hist = torch.bincount(indices, minlength=num_bins ** 3)
+                        joint_hist = joint_hist.reshape(num_bins, num_bins, num_bins).float()
 
                         # Normalize to probabilities
-                        joint_prob = joint_hist / (H * W)
+                        joint_prob = joint_hist / (H * W)  # [num_bins, num_bins, num_bins]
 
                         # Marginal probabilities
-                        prob_k = joint_prob.sum(dim=(0, 1))  # p(z)
-                        prob_ik = joint_prob.sum(dim=1)      # p(x,z)
-                        prob_jk = joint_prob.sum(dim=0)      # p(y,z)
+                        prob_k = joint_prob.sum(dim=(0, 1))  # p(z) [num_bins]
+                        prob_ik = joint_prob.sum(dim=1)      # p(x,z) [num_bins, num_bins]
+                        prob_jk = joint_prob.sum(dim=0)      # p(y,z) [num_bins, num_bins]
 
-                        # Conditional probabilities
-                        # p(x|z) = p(x,z) / p(z)
-                        # p(y|z) = p(y,z) / p(z)
-                        # p(x,y|z) = p(x,y,z) / p(z)
+                        # CMI computation (vectorized)
+                        # I(X;Y|Z) = Σ p(x,y,z) log(p(x,y,z)p(z) / (p(x,z)p(y,z)))
+                        numerator = joint_prob * prob_k.view(1, 1, -1)  # [num_bins, num_bins, num_bins]
+                        denominator = prob_ik.unsqueeze(1) * prob_jk.unsqueeze(0)  # [num_bins, num_bins, num_bins]
 
-                        # CMI: I(X;Y|Z) = Σ p(x,y,z) log(p(x,y|z) / (p(x|z)p(y|z)))
-                        #              = Σ p(x,y,z) log(p(x,y,z)p(z) / (p(x,z)p(y,z)))
-                        cmi = 0.0
-                        for x in range(num_bins):
-                            for y in range(num_bins):
-                                for z in range(num_bins):
-                                    if joint_prob[x, y, z] > 1e-10:
-                                        p_xyz = joint_prob[x, y, z]
-                                        p_z = prob_k[z] + 1e-10
-                                        p_xz = prob_ik[x, z] + 1e-10
-                                        p_yz = prob_jk[y, z] + 1e-10
+                        mask = joint_prob > 1e-10
+                        cmi = torch.where(
+                            mask,
+                            joint_prob * torch.log((numerator + 1e-10) / (denominator + 1e-10)),
+                            torch.zeros_like(joint_prob)
+                        ).sum()
 
-                                        # I(X;Y|Z) = log(p(x,y,z) * p(z) / (p(x,z) * p(y,z)))
-                                        cmi += p_xyz * torch.log((p_xyz * p_z) / (p_xz * p_yz))
+                        cmi_tensor[n, triplet_idx] = cmi
 
-                        sample_cmi_triplets.append(cmi.item())
-
-            cmi_values.append(sample_cmi_triplets)
-
-        # Convert to tensor [NMT, num_triplets]
-        cmi_tensor = torch.tensor(cmi_values, device=fields.device, dtype=torch.float32)
+                    triplet_idx += 1
 
         features = {}
 

@@ -97,7 +97,7 @@ class ConvBlock(BaseBlock):
         stride: Convolution stride
         normalization: Normalization type
         activation: Activation type
-        padding_mode: Padding mode (circular for periodic boundaries)
+        padding_mode: Padding mode (zeros uses optimized kernels; circular for periodic boundaries)
         dropout: Dropout probability
         use_bias: Whether to use bias (typically False when using normalization)
 
@@ -117,7 +117,7 @@ class ConvBlock(BaseBlock):
         stride: int = 1,
         normalization: str = "instance",
         activation: str = "gelu",
-        padding_mode: str = "circular",
+        padding_mode: str = "zeros",
         dropout: float = 0.0,
         use_bias: bool = True,
         **kwargs,

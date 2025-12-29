@@ -13,7 +13,7 @@ Design principles:
 - Extensible: Easy to add new parameter types or strategies
 """
 
-from typing import Literal, Union, Any, Iterator, Dict
+from typing import Literal, Union, Any, Iterator, Dict, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pathlib import Path
 
@@ -63,10 +63,16 @@ class ContinuousParameter(BoundedParameter):
 
 
 class ChoiceParameter(ParameterSpec):
-    """Categorical parameter with discrete choices."""
+    """Categorical parameter with discrete choices.
+
+    Supports optional weighted sampling via the weights field.
+    If weights are provided, they must be non-negative and sum to 1.0.
+    If weights are omitted, uniform distribution is used (backward compatible).
+    """
 
     type: Literal["choice"] = Field(default="choice", frozen=True)  # type: ignore[assignment]
     choices: list[Union[str, int, float]]
+    weights: Optional[list[float]] = None
 
     @field_validator('choices')
     @classmethod
@@ -74,6 +80,26 @@ class ChoiceParameter(ParameterSpec):
         if len(v) < 1:
             raise ValueError("Choice parameter must have at least 1 option")
         return v
+
+    @model_validator(mode='after')
+    def validate_weights(self) -> 'ChoiceParameter':
+        """Validate weights if provided."""
+        if self.weights is not None:
+            if len(self.weights) != len(self.choices):
+                raise ValueError(
+                    f"weights length ({len(self.weights)}) must match "
+                    f"choices length ({len(self.choices)})"
+                )
+            if any(w < 0 for w in self.weights):
+                raise ValueError("All weights must be non-negative")
+
+            total = sum(self.weights)
+            if abs(total - 1.0) > 1e-6:
+                raise ValueError(
+                    f"Weights must sum to 1.0, got {total}. "
+                    f"Normalize: {[w/total for w in self.weights]}"
+                )
+        return self
 
 
 class BooleanParameter(ParameterSpec):
@@ -308,6 +334,8 @@ class SimulationConfig(BaseModel):
     precision: Literal["float32", "float16", "bfloat16"] = "float32"
     performance: PerformanceConfig = Field(default_factory=PerformanceConfig)
     num_realizations: int = Field(default=10, ge=1, le=100)
+    num_timesteps: int = Field(default=1, ge=1, le=10000)
+    extract_operator_features: bool = Field(default=False)
 
 
 # =============================================================================

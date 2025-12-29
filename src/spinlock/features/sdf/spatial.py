@@ -354,7 +354,7 @@ class SpatialFeatureExtractor:
 
     def _compute_effective_dimensionality(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        Compute effective dimensionality via SVD-based measures.
+        Compute effective dimensionality via SVD-based measures (GPU-optimized batched version).
 
         Measures intrinsic dimensionality of spatial structure:
         - Effective rank: Stable rank (sum of singular values squared / largest SV squared)
@@ -370,69 +370,33 @@ class SpatialFeatureExtractor:
         """
         NT, C, H, W = x.shape
 
-        # Reshape to [NT*C, H, W]
+        # Reshape to [NT*C, H, W] for batched processing
         x_flat = x.reshape(NT * C, H, W)
 
-        # Flatten spatial dimensions: [NT*C, H*W]
-        x_matrix = x_flat.reshape(NT * C, H * W)
+        # Batched SVD: Process all samples at once
+        # torch.linalg.svd can handle batched input [N, H, W]
+        U, S, Vh = torch.linalg.svd(x_flat, full_matrices=False)
+        # S has shape [NT*C, K] where K = min(H, W)
 
-        # Process each sample separately (SVD per sample)
-        # Need to loop because torch.linalg.svd doesn't batch well for this use case
-        effective_rank_list = []
-        participation_ratio_list = []
-        explained_variance_90_list = []
+        # Vectorized metric computation (no loops!)
+        S_squared = S ** 2  # [NT*C, K]
+        total_variance = S_squared.sum(dim=1, keepdim=True)  # [NT*C, 1]
 
-        for i in range(NT * C):
-            sample = x_matrix[i:i+1, :]  # [1, H*W]
+        # Normalize to get variance explained per sample
+        variance_explained = S_squared / (total_variance + 1e-8)  # [NT*C, K]
 
-            try:
-                # Compute SVD for single sample
-                U, S, Vh = torch.linalg.svd(sample, full_matrices=False)
-                # S has shape [min(1, H*W)] = [1] for single sample
-                # This is wrong - we need the SVD across spatial dimensions
+        # 1. Effective rank (stable rank): sum(S²) / max(S²)
+        # For each sample: sum over K dimension, divide by first element
+        effective_rank = S_squared.sum(dim=1) / (S_squared[:, 0] + 1e-8)  # [NT*C]
 
-                # Actually, for spatial structure analysis, we want SVD of the spatial field
-                # Reshape back to [H, W] and compute SVD
-                sample_2d = x_flat[i].unsqueeze(0)  # [1, H, W]
-                sample_2d = sample_2d.reshape(H, W)  # [H, W]
+        # 2. Participation ratio: 1 / sum(p_i²) where p_i are normalized SVs
+        participation_ratio = 1.0 / ((variance_explained ** 2).sum(dim=1) + 1e-8)  # [NT*C]
 
-                # Compute SVD of 2D field
-                U, S, Vh = torch.linalg.svd(sample_2d, full_matrices=False)
-                # S has shape [min(H, W)]
-
-            except RuntimeError:
-                # Fallback: use smaller truncated SVD if OOM
-                print("⚠️  SVD OOM, using randomized truncated SVD")
-                from torch.svd_lowrank import svd_lowrank
-                k = min(50, min(H, W))
-                U, S, Vh = svd_lowrank(sample_2d, q=k)
-
-            # S is 1D tensor of singular values [K] where K = min(H, W)
-            S_squared = S ** 2
-            total_variance = S_squared.sum()  # scalar
-
-            # Normalize to get variance explained
-            variance_explained = S_squared / (total_variance + 1e-8)  # [K]
-
-            # 1. Effective rank (stable rank): sum(S²) / max(S²)
-            eff_rank = S_squared.sum() / (S_squared[0] + 1e-8)  # scalar
-
-            # 2. Participation ratio: 1 / sum(p_i²) where p_i are normalized SVs
-            part_ratio = 1.0 / (variance_explained ** 2).sum()  # scalar
-
-            # 3. Explained variance 90: Number of SVs needed to explain 90% variance
-            cumulative_variance = torch.cumsum(variance_explained, dim=0)  # [K]
-            # Find first index where cumulative variance > 0.9
-            exp_var_90 = (cumulative_variance < 0.9).sum().float() + 1.0  # scalar
-
-            effective_rank_list.append(eff_rank)
-            participation_ratio_list.append(part_ratio)
-            explained_variance_90_list.append(exp_var_90)
-
-        # Stack results
-        effective_rank = torch.stack(effective_rank_list)  # [NT*C]
-        participation_ratio = torch.stack(participation_ratio_list)  # [NT*C]
-        explained_variance_90 = torch.stack(explained_variance_90_list)  # [NT*C]
+        # 3. Explained variance 90: Number of SVs needed to explain 90% variance
+        cumulative_variance = torch.cumsum(variance_explained, dim=1)  # [NT*C, K]
+        # Find first index where cumulative variance >= 0.9 for each sample
+        # Count how many values are < 0.9, then add 1
+        explained_variance_90 = (cumulative_variance < 0.9).sum(dim=1).float() + 1.0  # [NT*C]
 
         # Reshape back to [NT, C]
         effective_rank = effective_rank.reshape(NT, C)
@@ -536,31 +500,32 @@ class SpatialFeatureExtractor:
         # Shift autocorrelation to center zero-lag
         autocorr_centered = torch.fft.fftshift(autocorr_normalized, dim=(-2, -1))  # [NT, C, H, W]
 
-        # Find coherence length: where autocorrelation drops to 1/e ≈ 0.368
+        # Find coherence length: where autocorrelation drops to 1/e ≈ 0.368 (batched version)
         threshold = 1.0 / torch.e
 
-        # For each sample/channel, find minimum radius where autocorr < threshold
-        coherence_length_list = []
+        # Batched computation: Process all samples at once
+        autocorr_flat = autocorr_centered.reshape(NT * C, H, W)  # [NT*C, H, W]
 
-        for i in range(NT * C):
-            sample = autocorr_centered.reshape(NT * C, H, W)[i]  # [H, W]
+        # Find where autocorr drops below threshold for all samples
+        below_threshold = (autocorr_flat < threshold).float()  # [NT*C, H, W]
 
-            # Find where autocorr drops below threshold
-            below_threshold = (sample < threshold).float()
+        # Mask radial distances where autocorr < threshold
+        # Broadcast r to match batch dimension: [NT*C, H, W]
+        r_expanded = r.unsqueeze(0).expand(NT * C, -1, -1)  # [NT*C, H, W]
+        r_masked = r_expanded * below_threshold + 1e6 * (1 - below_threshold)  # [NT*C, H, W]
 
-            # Mask radial distances where autocorr < threshold
-            r_masked = r * below_threshold + 1e6 * (1 - below_threshold)  # Large value for above threshold
+        # Coherence length = minimum radius where below threshold (per sample)
+        coherence_length = r_masked.amin(dim=(-2, -1))  # [NT*C]
 
-            # Coherence length = minimum radius where below threshold
-            coh_len = r_masked.min()
+        # If never drops below threshold, use max radius (vectorized)
+        max_radius = torch.tensor(max(H, W) / 2.0, device=x.device)
+        coherence_length = torch.where(
+            coherence_length > 1e5,
+            max_radius,
+            coherence_length
+        )  # [NT*C]
 
-            # If never drops below threshold, use max radius
-            if coh_len > 1e5:
-                coh_len = torch.tensor(max(H, W) / 2.0, device=x.device)
-
-            coherence_length_list.append(coh_len)
-
-        coherence_length = torch.stack(coherence_length_list).reshape(NT, C)  # [NT, C]
+        coherence_length = coherence_length.reshape(NT, C)  # [NT, C]
 
         # 2. Correlation anisotropy: Directional bias
         # Compute autocorrelation in x and y directions
@@ -570,37 +535,38 @@ class SpatialFeatureExtractor:
         # Anisotropy ratio
         correlation_anisotropy = autocorr_x / (autocorr_y + 1e-8)  # [NT, C]
 
-        # 3. Structure factor peak: Characteristic length scale from power spectrum
+        # 3. Structure factor peak: Characteristic length scale from power spectrum (batched version)
         # Find dominant spatial frequency (peak in radial power spectrum)
         # Create radial frequency grid
         freq_y = torch.fft.fftfreq(H, d=1.0, device=x.device)[:, None]  # [H, 1]
         freq_x = torch.fft.rfftfreq(W, d=1.0, device=x.device)[None, :]  # [1, W//2+1]
         freq_radial = torch.sqrt(freq_y ** 2 + freq_x ** 2)  # [H, W//2+1]
 
-        # Compute radial power spectrum
-        # For each sample/channel, find peak frequency
-        structure_factor_peak_list = []
+        # Batched computation: Process all samples at once
+        power_flat = power.reshape(NT * C, H, W // 2 + 1)  # [NT*C, H, W//2+1]
 
-        for i in range(NT * C):
-            power_sample = power.reshape(NT * C, H, W // 2 + 1)[i]  # [H, W//2+1]
+        # Find peak (ignore DC component at freq=0)
+        mask_nonzero = (freq_radial > 0.01).float()  # [H, W//2+1]
+        # Broadcast mask to all samples
+        power_masked = power_flat * mask_nonzero.unsqueeze(0)  # [NT*C, H, W//2+1]
 
-            # Find peak (ignore DC component at freq=0)
-            mask_nonzero = (freq_radial > 0.01).float()  # Exclude near-zero frequencies
-            power_masked = power_sample * mask_nonzero
+        # Find frequency of peak power for all samples
+        power_masked_flat = power_masked.reshape(NT * C, -1)  # [NT*C, H*(W//2+1)]
+        max_indices = power_masked_flat.argmax(dim=1)  # [NT*C]
 
-            # Find frequency of peak power
-            max_idx = power_masked.flatten().argmax()
-            max_idx_y = max_idx // (W // 2 + 1)
-            max_idx_x = max_idx % (W // 2 + 1)
+        # Convert flat indices to 2D coordinates
+        max_idx_y = max_indices // (W // 2 + 1)  # [NT*C]
+        max_idx_x = max_indices % (W // 2 + 1)   # [NT*C]
 
-            peak_freq = freq_radial[max_idx_y, max_idx_x]
+        # Get peak frequencies using advanced indexing
+        # Need to flatten freq_radial and index into it
+        freq_radial_flat = freq_radial.flatten()  # [H*(W//2+1)]
+        peak_freq = freq_radial_flat[max_indices]  # [NT*C]
 
-            # Characteristic length = 1 / peak_freq
-            char_length = 1.0 / (peak_freq + 1e-8)
+        # Characteristic length = 1 / peak_freq
+        structure_factor_peak = 1.0 / (peak_freq + 1e-8)  # [NT*C]
 
-            structure_factor_peak_list.append(char_length)
-
-        structure_factor_peak = torch.stack(structure_factor_peak_list).reshape(NT, C)  # [NT, C]
+        structure_factor_peak = structure_factor_peak.reshape(NT, C)  # [NT, C]
 
         return {
             'coherence_length': coherence_length,

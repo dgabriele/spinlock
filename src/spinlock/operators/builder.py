@@ -136,8 +136,18 @@ class OperatorBuilder:
 
             elif param_type == "choice":
                 choices = spec["choices"]
-                idx_choice = int(np.floor(u * len(choices)))
-                idx_choice = min(idx_choice, len(choices) - 1)  # Handle u=1.0
+                weights = spec.get("weights", None)
+
+                if weights is None:
+                    # Uniform distribution (backward compatible)
+                    idx_choice = int(np.floor(u * len(choices)))
+                    idx_choice = min(idx_choice, len(choices) - 1)  # Handle u=1.0
+                else:
+                    # Weighted distribution using cumulative probabilities
+                    cumulative_weights = np.cumsum(weights)
+                    idx_choice = np.searchsorted(cumulative_weights, u, side='right')
+                    idx_choice = min(idx_choice, len(choices) - 1)  # Safety clamp
+
                 mapped[name] = choices[idx_choice]
 
             elif param_type == "boolean":

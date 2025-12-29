@@ -240,34 +240,38 @@ class CausalityFeatureExtractor:
                 features[f'causality_lag_corr_asymmetry_max_lag{lag}'] = nan_val
                 continue
 
-            asymmetries = []
+            # Batched computation: Process all channel pairs at once using einsum
+            # Prepare time series for forward and backward correlations
+            x_past = time_series[:, :, :-lag, :]  # [N, M, T-lag, C]
+            y_future = time_series[:, :, lag:, :]  # [N, M, T-lag, C]
+            x_future = time_series[:, :, lag:, :]  # [N, M, T-lag, C]
+            y_past = time_series[:, :, :-lag, :]  # [N, M, T-lag, C]
 
-            # Compute for all channel pairs
-            for i in range(C):
-                for j in range(C):
-                    if i == j:
-                        continue  # Skip self-correlation
+            # Center time series
+            x_past_centered = x_past - x_past.mean(dim=2, keepdim=True)  # [N, M, T-lag, C]
+            y_future_centered = y_future - y_future.mean(dim=2, keepdim=True)
+            x_future_centered = x_future - x_future.mean(dim=2, keepdim=True)
+            y_past_centered = y_past - y_past.mean(dim=2, keepdim=True)
 
-                    # Extract time series for channels i and j
-                    x = time_series[:, :, :, i]  # [N, M, T]
-                    y = time_series[:, :, :, j]  # [N, M, T]
+            # Compute all pairwise correlations at once using einsum
+            # Forward: corr(x_i(t), y_j(t+τ)) for all i,j pairs
+            cov_forward = torch.einsum('nmti,nmtj->nmij', x_past_centered, y_future_centered) / (T - lag)  # [N, M, C, C]
+            std_x_past = x_past.std(dim=2, keepdim=True)  # [N, M, 1, C]
+            std_y_future = y_future.std(dim=2, keepdim=True)  # [N, M, 1, C]
+            corr_forward = cov_forward / (std_x_past.squeeze(2).unsqueeze(3) * std_y_future.squeeze(2).unsqueeze(2) + 1e-8)  # [N, M, C, C]
 
-                    # Forward correlation: corr(x(t), y(t+τ))
-                    x_past = x[:, :, :-lag]  # [N, M, T-lag]
-                    y_future = y[:, :, lag:]  # [N, M, T-lag]
-                    forward_corr = self._compute_correlation(x_past, y_future)  # [N, M]
+            # Backward: corr(x_i(t+τ), y_j(t)) for all i,j pairs
+            cov_backward = torch.einsum('nmti,nmtj->nmij', x_future_centered, y_past_centered) / (T - lag)  # [N, M, C, C]
+            std_x_future = x_future.std(dim=2, keepdim=True)  # [N, M, 1, C]
+            std_y_past = y_past.std(dim=2, keepdim=True)  # [N, M, 1, C]
+            corr_backward = cov_backward / (std_x_future.squeeze(2).unsqueeze(3) * std_y_past.squeeze(2).unsqueeze(2) + 1e-8)  # [N, M, C, C]
 
-                    # Backward correlation: corr(x(t+τ), y(t))
-                    x_future = x[:, :, lag:]  # [N, M, T-lag]
-                    y_past = y[:, :, :-lag]  # [N, M, T-lag]
-                    backward_corr = self._compute_correlation(x_future, y_past)  # [N, M]
+            # Asymmetry for all pairs
+            asymmetry_matrix = corr_forward - corr_backward  # [N, M, C, C]
 
-                    # Asymmetry
-                    asymmetry = forward_corr - backward_corr
-                    asymmetries.append(asymmetry)
-
-            # Stack and aggregate across channel pairs
-            asymmetries_stack = torch.stack(asymmetries, dim=-1)  # [N, M, C*(C-1)]
+            # Mask out diagonal (self-correlation) and flatten to get all off-diagonal pairs
+            mask = ~torch.eye(C, dtype=torch.bool, device=time_series.device)  # [C, C]
+            asymmetries_stack = asymmetry_matrix[:, :, mask]  # [N, M, C*(C-1)]
 
             # Mean asymmetry
             features[f'causality_lag_corr_asymmetry_mean_lag{lag}'] = asymmetries_stack.mean(dim=-1)
@@ -554,47 +558,40 @@ class CausalityFeatureExtractor:
                 'causality_transfer_entropy_asymmetry': nan_val
             }
 
-        te_values = []
+        # Batched computation: Process all channel pairs and samples at once
+        # Discretize all channels
+        time_series_discrete = self._discretize_to_bins_batched(time_series, num_bins)  # [N, M, T, C]
 
-        # Compute TE for each channel pair
+        # Prepare lagged sequences for all channels
+        y_t = time_series_discrete[:, :, lag:, :]  # [N, M, T-lag, C]
+        y_t_minus_1 = time_series_discrete[:, :, lag-1:-1, :]  # [N, M, T-lag, C]
+        x_t_minus_1 = time_series_discrete[:, :, lag-1:-1, :]  # [N, M, T-lag, C]
+
+        # Compute TE for all pairs at once
+        te_matrix = torch.zeros(N, M, C, C, device=time_series.device)
+
         for i in range(C):
             for j in range(C):
                 if i == j:
                     continue
 
-                # Extract channels
-                x = time_series[:, :, :, i]  # [N, M, T]
-                y = time_series[:, :, :, j]  # [N, M, T]
+                # Extract specific channel pair for all samples
+                y_curr = y_t[:, :, :, j]  # [N, M, T-lag]
+                y_prev = y_t_minus_1[:, :, :, j]  # [N, M, T-lag]
+                x_prev = x_t_minus_1[:, :, :, i]  # [N, M, T-lag]
 
-                # Discretize to bins (per sample and realization)
-                x_discrete = self._discretize_to_bins(x, num_bins)  # [N, M, T]
-                y_discrete = self._discretize_to_bins(y, num_bins)
+                # Batched conditional entropy computation
+                h_y_given_y = self._conditional_entropy_binned_batched(y_curr, y_prev, num_bins)  # [N, M]
+                h_y_given_both = self._conditional_entropy_2d_binned_batched(
+                    y_curr, y_prev, x_prev, num_bins
+                )  # [N, M]
 
-                # Compute TE for each sample
-                te_sample = []
-                for n in range(N):
-                    for m in range(M):
-                        y_t = y_discrete[n, m, lag:]  # [T-lag]
-                        y_t_minus_1 = y_discrete[n, m, lag-1:-1]  # [T-lag]
-                        x_t_minus_1 = x_discrete[n, m, lag-1:-1]  # [T-lag]
+                # TE = H(Y_t | Y_{t-1}) - H(Y_t | Y_{t-1}, X_{t-1})
+                te_matrix[:, :, i, j] = h_y_given_y - h_y_given_both
 
-                        # Conditional entropies (simplified computation)
-                        # H(Y_t | Y_{t-1})
-                        h_y_given_y = self._conditional_entropy_binned(y_t, y_t_minus_1, num_bins)
-
-                        # H(Y_t | Y_{t-1}, X_{t-1})
-                        h_y_given_both = self._conditional_entropy_2d_binned(
-                            y_t, y_t_minus_1, x_t_minus_1, num_bins
-                        )
-
-                        # TE = H(Y_t | Y_{t-1}) - H(Y_t | Y_{t-1}, X_{t-1})
-                        te = h_y_given_y - h_y_given_both
-                        te_sample.append(te)
-
-                te_values.append(torch.tensor(te_sample, device=time_series.device))
-
-        # Stack and reshape
-        te_stack = torch.stack(te_values, dim=1).reshape(N, M, -1)  # [N, M, num_pairs]
+        # Mask out diagonal and flatten
+        mask = ~torch.eye(C, dtype=torch.bool, device=time_series.device)
+        te_stack = te_matrix[:, :, mask]  # [N, M, C*(C-1)]
 
         # Mean TE across pairs
         te_mean = te_stack.mean(dim=2)
@@ -638,6 +635,137 @@ class CausalityFeatureExtractor:
         x_discrete = torch.clamp(x_discrete, 0, num_bins - 1)
 
         return x_discrete
+
+    def _discretize_to_bins_batched(
+        self,
+        x: torch.Tensor,  # [N, M, T, C]
+        num_bins: int
+    ) -> torch.Tensor:
+        """
+        Batched discretization for all channels.
+
+        Args:
+            x: Continuous values [N, M, T, C]
+            num_bins: Number of bins
+
+        Returns:
+            Discrete bin indices [N, M, T, C] (long tensor)
+        """
+        # Normalize to [0, 1] per sample and channel
+        x_min = x.amin(dim=2, keepdim=True)  # [N, M, 1, C]
+        x_max = x.amax(dim=2, keepdim=True)  # [N, M, 1, C]
+        x_norm = (x - x_min) / (x_max - x_min + 1e-8)
+
+        # Discretize
+        x_discrete = torch.floor(x_norm * (num_bins - 1)).long()
+        x_discrete = torch.clamp(x_discrete, 0, num_bins - 1)
+
+        return x_discrete
+
+    def _conditional_entropy_binned_batched(
+        self,
+        y: torch.Tensor,  # [N, M, T] (discrete bins)
+        x: torch.Tensor,  # [N, M, T] (discrete bins)
+        num_bins: int
+    ) -> torch.Tensor:
+        """
+        Batched conditional entropy H(Y|X) for all samples.
+
+        Args:
+            y: Target variable (discrete) [N, M, T]
+            x: Conditioning variable (discrete) [N, M, T]
+            num_bins: Number of bins
+
+        Returns:
+            Conditional entropy [N, M]
+        """
+        N, M, T = y.shape
+
+        # Vectorized 2D histogram using scatter_add
+        # Flatten batch dimensions
+        y_flat = y.reshape(N * M, T)  # [NM, T]
+        x_flat = x.reshape(N * M, T)  # [NM, T]
+
+        # Compute joint histograms for all samples
+        joint_hist = torch.zeros(N * M, num_bins, num_bins, device=y.device)
+
+        for nm in range(N * M):
+            # Linear indexing for 2D histogram
+            indices = x_flat[nm] * num_bins + y_flat[nm]  # [T]
+            joint_hist[nm] = torch.bincount(indices, minlength=num_bins * num_bins).reshape(num_bins, num_bins).float()
+
+        # Joint and marginal probabilities
+        joint_prob = joint_hist / T  # [NM, num_bins, num_bins]
+        marginal_x = joint_prob.sum(dim=2)  # [NM, num_bins]
+
+        # H(Y|X) = -Σ_x,y p(x,y) log(p(y|x))
+        # Conditional probability: p(y|x) = p(x,y) / p(x)
+        p_y_given_x = joint_prob / (marginal_x.unsqueeze(2) + 1e-10)  # [NM, num_bins, num_bins]
+
+        # Entropy computation (vectorized)
+        # Only include terms where joint_prob > 0
+        mask = joint_prob > 1e-10
+        entropy = -torch.where(
+            mask,
+            joint_prob * torch.log(p_y_given_x + 1e-10),
+            torch.zeros_like(joint_prob)
+        ).sum(dim=(1, 2))  # [NM]
+
+        return entropy.reshape(N, M)
+
+    def _conditional_entropy_2d_binned_batched(
+        self,
+        z: torch.Tensor,  # [N, M, T] (discrete bins)
+        x: torch.Tensor,  # [N, M, T] (discrete bins)
+        y: torch.Tensor,  # [N, M, T] (discrete bins)
+        num_bins: int
+    ) -> torch.Tensor:
+        """
+        Batched conditional entropy H(Z|X,Y) for all samples.
+
+        Args:
+            z: Target variable (discrete) [N, M, T]
+            x: Conditioning variable 1 (discrete) [N, M, T]
+            y: Conditioning variable 2 (discrete) [N, M, T]
+            num_bins: Number of bins
+
+        Returns:
+            Conditional entropy [N, M]
+        """
+        N, M, T = z.shape
+
+        # Flatten batch dimensions
+        z_flat = z.reshape(N * M, T)  # [NM, T]
+        x_flat = x.reshape(N * M, T)  # [NM, T]
+        y_flat = y.reshape(N * M, T)  # [NM, T]
+
+        # Compute 3D joint histograms for all samples
+        joint_hist = torch.zeros(N * M, num_bins, num_bins, num_bins, device=z.device)
+
+        for nm in range(N * M):
+            # Linear indexing for 3D histogram
+            indices = (x_flat[nm] * num_bins + y_flat[nm]) * num_bins + z_flat[nm]  # [T]
+            joint_hist[nm] = torch.bincount(
+                indices, minlength=num_bins ** 3
+            ).reshape(num_bins, num_bins, num_bins).float()
+
+        # Probabilities
+        joint_prob = joint_hist / T  # [NM, num_bins, num_bins, num_bins]
+        marginal_xy = joint_prob.sum(dim=3)  # [NM, num_bins, num_bins]
+
+        # H(Z|X,Y) = -Σ_{x,y,z} p(x,y,z) log(p(z|x,y))
+        # Conditional probability: p(z|x,y) = p(x,y,z) / p(x,y)
+        p_z_given_xy = joint_prob / (marginal_xy.unsqueeze(3) + 1e-10)  # [NM, num_bins, num_bins, num_bins]
+
+        # Entropy computation (vectorized)
+        mask = joint_prob > 1e-10
+        entropy = -torch.where(
+            mask,
+            joint_prob * torch.log(p_z_given_xy + 1e-10),
+            torch.zeros_like(joint_prob)
+        ).sum(dim=(1, 2, 3))  # [NM]
+
+        return entropy.reshape(N, M)
 
     def _conditional_entropy_binned(
         self,

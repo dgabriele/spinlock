@@ -342,9 +342,10 @@ class InvariantDriftExtractor:
         num_bins: int = 32
     ) -> torch.Tensor:
         """
-        Compute histogram-based entropy: -∫p log p dx.
+        Compute histogram-based entropy: -∫p log p dx (GPU-optimized batched version).
 
         Uses binning for efficiency (KDE too expensive for large grids).
+        All operations stay on GPU - no .item() calls.
 
         Args:
             fields: Trajectory fields [N, M, T, C, H, W]
@@ -358,26 +359,32 @@ class InvariantDriftExtractor:
         # Flatten spatial dimensions for histogram computation
         fields_flat = fields.reshape(N, M, T, C, H * W)  # [N, M, T, C, H*W]
 
-        entropies = []
+        # Flatten batch dimensions for batched processing
+        NMTC = N * M * T * C
+        fields_flat_batched = fields_flat.reshape(NMTC, H * W)  # [NMTC, H*W]
 
-        # Compute entropy for each sample (vectorized over batch, time, channel)
-        for n in range(N):
-            for m in range(M):
-                for t in range(T):
-                    for c in range(C):
-                        vals = fields_flat[n, m, t, c]  # [H*W]
+        # Normalize to [0, 1] per sample (no .item() calls - stays on GPU)
+        min_vals = fields_flat_batched.min(dim=1, keepdim=True).values  # [NMTC, 1]
+        max_vals = fields_flat_batched.max(dim=1, keepdim=True).values  # [NMTC, 1]
+        normalized = (fields_flat_batched - min_vals) / (max_vals - min_vals + 1e-8)  # [NMTC, H*W]
 
-                        # Compute histogram
-                        hist = torch.histc(vals, bins=num_bins, min=vals.min().item(), max=vals.max().item())
-                        hist = hist / (H * W)  # Normalize to probabilities
+        # Discretize to bins
+        discrete = torch.floor(normalized * (num_bins - 1)).long()
+        discrete = torch.clamp(discrete, 0, num_bins - 1)  # [NMTC, H*W]
 
-                        # Entropy: -Σ p log p
-                        entropy = -(hist * torch.log(hist + 1e-10)).sum()
-                        entropies.append(entropy.item())
+        # Batched histogram computation using bincount
+        entropies = torch.zeros(NMTC, device=fields.device)
+
+        for i in range(NMTC):
+            # Compute histogram for this sample
+            hist = torch.bincount(discrete[i], minlength=num_bins).float()  # [num_bins]
+            hist = hist / (H * W)  # Normalize to probabilities
+
+            # Entropy: -Σ p log p (vectorized)
+            entropies[i] = -(hist * torch.log(hist + 1e-10)).sum()
 
         # Reshape to [N, M, T, C]
-        entropies_tensor = torch.tensor(entropies, device=fields.device, dtype=torch.float32)
-        return entropies_tensor.reshape(N, M, T, C)
+        return entropies.reshape(N, M, T, C)
 
     def _compute_total_variation(self, fields: torch.Tensor) -> torch.Tensor:
         """

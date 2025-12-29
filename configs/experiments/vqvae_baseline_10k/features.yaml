@@ -1,0 +1,330 @@
+# =============================================================================
+# Feature Extraction Configuration
+# Experiment: vqvae_baseline_10k
+# Purpose: Extract all 174 SDF v2.0 features for VQ-VAE training
+# =============================================================================
+
+metadata:
+  name: "vqvae_baseline_10k_features"
+  description: |
+    SDF v2.0 feature extraction for vqvae_baseline_10k dataset.
+    Extracts all 174 features across 8 categories for comprehensive operator characterization.
+
+    Feature categories:
+    - Spatial statistics: 26 features (moments, gradients, curvature)
+    - Spectral analysis: 31 features (FFT, dominant frequencies, spectral ratios)
+    - Temporal dynamics: 13 features (growth rates, oscillations, stability)
+    - Cross-channel interactions: 12 features (correlation, eigenvalues, mutual info)
+    - Causality/directionality: 15 features (lagged correlations, time irreversibility)
+    - Invariant drift: 64 features (L1/L2/Linf/entropy/TV drift × 3 scales × 4 metrics)
+    - Operator sensitivity: 12 features (Lipschitz, gain curves, linearity)
+    - Laplacian energy: 1 feature (curvature energy)
+
+    Total: 174 features
+  author: "Spinlock Team"
+  created: "2025-12-29"
+  purpose: |
+    Complete feature extraction to replace existing 46 per-timestep features with full
+    174-feature SDF v2.0 representation. Enables downstream VQ-VAE training with rich
+    operator descriptors for discovering discrete operator equivalence classes.
+
+# =============================================================================
+# Root Configuration (FeatureExtractionConfig)
+# =============================================================================
+
+input_dataset: "datasets/vqvae_baseline_10k/vqvae_baseline_10k.h5"
+output_dataset: null  # Write to input dataset in-place
+
+batch_size: 32  # Optimal for 128×128 grids on GPU
+device: "cuda"
+overwrite: true  # Replace existing 46 features
+max_samples: null  # Process all 10,000 samples
+
+num_workers: 4
+cache_trajectories: true
+
+# =============================================================================
+# SDF Configuration (all 174 features)
+# =============================================================================
+
+sdf:
+  # ===========================================================================
+  # v2.0 Core Categories (174 features)
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # Spatial Statistics (26 features, per-timestep)
+  # ---------------------------------------------------------------------------
+  spatial:
+    enabled: true
+
+    # Basic moments (8 features)
+    include_mean: true
+    include_variance: true
+    include_std: true
+    include_skewness: true
+    include_kurtosis: true
+    include_min: true
+    include_max: true
+    include_range: true
+
+    # Robust statistics (2 features)
+    include_iqr: true  # Interquartile range
+    include_mad: true  # Median absolute deviation
+
+    # Gradients (4 features)
+    include_gradient_magnitude: true
+    include_gradient_x_mean: true
+    include_gradient_y_mean: true
+    include_gradient_anisotropy: true
+
+    # Curvature (2 features: Laplacian mean + std)
+    # Note: Laplacian energy is in separate category (1 feature)
+    include_laplacian: true
+    include_hessian_trace: false  # Expensive, not in 174-feature set
+    include_hessian_det: false    # Expensive, not in 174-feature set
+
+  # ---------------------------------------------------------------------------
+  # Spectral/Frequency Features (31 features, per-timestep)
+  # ---------------------------------------------------------------------------
+  spectral:
+    enabled: true
+
+    # FFT power spectrum (15 features: 5 scales × 3 stats)
+    num_fft_scales: 5
+    include_fft_power: true
+
+    # Dominant frequencies (3 features)
+    include_dominant_freq: true          # x and y components
+    include_dominant_freq_magnitude: true
+
+    # Spectral centroids (3 features)
+    include_spectral_centroid_x: true
+    include_spectral_centroid_y: true
+    include_spectral_bandwidth: true
+
+    # Spectral ratios (5 features)
+    include_low_freq_ratio: true
+    include_mid_freq_ratio: true
+    include_high_freq_ratio: true
+    include_spectral_flatness: true   # Tonality measure
+    include_spectral_rolloff: true    # 85th percentile frequency
+
+    # Anisotropy (1 feature)
+    include_spectral_anisotropy: true
+    include_spectral_orientation: false  # Not in 174-feature set
+
+  # ---------------------------------------------------------------------------
+  # Temporal Dynamics (13 features, trajectory-level)
+  # ---------------------------------------------------------------------------
+  temporal:
+    enabled: true
+
+    # Growth & decay (3 features)
+    include_energy_growth_rate: true
+    include_energy_growth_accel: true  # Second derivative
+    include_variance_growth_rate: true
+    include_mean_growth_rate: false    # Not in 174-feature set
+
+    # Oscillations (4 features)
+    include_temporal_freq_dominant: true  # FFT of energy time series
+    include_oscillation_amplitude: true
+    include_oscillation_period: true
+    include_autocorr_decay_time: true  # Exponential decay timescale
+
+    # Stability metrics (5 features)
+    include_lyapunov_approx: true       # Approximate Lyapunov exponent
+    include_trajectory_smoothness: true
+    include_regime_switches: true       # Number of sign changes in growth
+    include_final_to_initial_ratio: true
+    include_trend_strength: true        # R² of linear trend fit
+
+    # Stationarity (1 feature)
+    include_stationarity_test: false    # ADF test (expensive, not in set)
+    include_detrended_variance: true
+
+    # Autocorrelation settings
+    autocorr_max_lag: 20
+
+  # ---------------------------------------------------------------------------
+  # Cross-Channel Interactions (12 features, per-timestep)
+  # ---------------------------------------------------------------------------
+  cross_channel:
+    enabled: true
+
+    # Eigendecomposition (4 features)
+    num_eigen_top: 3
+    include_eigen_values: true       # Top 3 eigenvalues
+    include_eigen_trace: true
+    include_condition_number: true
+    include_participation_ratio: true
+
+    # Correlation statistics (4 features)
+    include_corr_mean: true
+    include_corr_max: true
+    include_corr_min: true
+    include_corr_std: true
+
+    # Mutual information (2 features)
+    include_mutual_info: true
+    mi_num_bins: 16
+
+    # Coherence (expensive, not in 174-feature set)
+    include_coherence: false
+    coherence_freq_bands: ["low", "mid", "high"]
+
+    max_channels_for_full_corr: 16
+
+  # ---------------------------------------------------------------------------
+  # Causality/Directionality (15 features, trajectory-level)
+  # ---------------------------------------------------------------------------
+  causality:
+    enabled: true
+    complexity_level: "fast"  # Use fast features only
+
+    # Level 1 (fast): lagged correlations + prediction (15 features)
+    max_lag_correlation: 3
+    max_lag_prediction: 2
+    include_time_irreversibility: true
+    include_spatial_flow: true
+
+    # Level 2 (expensive, not in 174-feature set)
+    include_transfer_entropy: false
+    include_granger_causality: false
+    transfer_entropy_num_bins: 8
+    granger_ar_order: 2
+
+  # ---------------------------------------------------------------------------
+  # Invariant Drift (64 features, trajectory-level)
+  # ---------------------------------------------------------------------------
+  invariant_drift:
+    enabled: true
+
+    # Generic norms (60 features: 5 norms × 4 metrics × 3 scales)
+    # 4 metrics per norm: mean drift, drift variance, drift ratio, monotonicity
+    # 3 scales: raw, low-pass filtered, high-pass filtered
+    include_L1_drift: true
+    include_L2_drift: true
+    include_Linf_drift: true
+    include_entropy_drift: true
+    include_tv_drift: true  # Total variation
+
+    # Multi-scale filtering (3 scales)
+    num_scales: 3  # raw, low-pass, high-pass
+    gaussian_sigma: 2.0
+
+    # Entropy settings
+    entropy_num_bins: 32
+
+    # Physical invariants (4 features: mass/energy drift, not in generic 174-feature set)
+    include_mass_drift: false
+    include_energy_drift: false
+    include_divergence_drift: false
+
+  # ---------------------------------------------------------------------------
+  # Operator Sensitivity (12 features, trajectory-level)
+  # ---------------------------------------------------------------------------
+  # NOTE: Requires inline operator access during dataset generation.
+  # This dataset was generated without operator re-execution hooks, so these
+  # features will likely be NaN. Enabled for future compatibility.
+  # The extractor will gracefully handle missing data (set to NaN, log warning).
+  operator_sensitivity:
+    enabled: true
+
+    # Lipschitz estimates (3 features)
+    include_lipschitz: true
+    lipschitz_epsilon_scales: [0.0001, 0.001, 0.01]
+
+    # Gain curves (4 features)
+    include_gain_curve: true
+    gain_scale_factors: [0.5, 0.75, 1.25, 1.5]
+
+    # Linearity metrics (3 features: R², compression, saturation)
+    include_linearity_metrics: true
+
+    # Response asymmetry (1 feature)
+    # Multi-channel consistency (1 feature)
+    # Total: 12 features
+
+  # ===========================================================================
+  # v1.0 Categories (disabled for 174-feature extraction)
+  # ===========================================================================
+
+  # Distributional features (disabled)
+  distributional:
+    enabled: false
+
+  # Structural features (disabled)
+  structural:
+    enabled: false
+
+  # Physics features (disabled)
+  physics:
+    enabled: false
+
+  # Morphological features (disabled)
+  morphological:
+    enabled: false
+
+  # Multiscale features (disabled)
+  multiscale:
+    enabled: false
+
+  # ===========================================================================
+  # Aggregation Settings
+  # ===========================================================================
+
+  # Extract features per-channel (3 channels)
+  per_channel: true
+
+  # Temporal aggregation for per-timestep features
+  # Per-timestep features (spatial, spectral, cross_channel) → temporally aggregated
+  temporal_aggregation: ["mean", "std"]
+
+  # Realization aggregation for trajectory-level features
+  # Trajectory-level features (temporal, causality, invariant_drift, operator_sensitivity) → realization aggregated
+  realization_aggregation: ["mean", "std", "cv"]
+
+# =============================================================================
+# Expected Results
+# =============================================================================
+#
+# Feature Extraction Summary:
+# - Total features: 174 (8 categories)
+# - Dataset: vqvae_baseline_10k.h5 (10,000 samples, 5 realizations, 5 timesteps, 128×128 grids)
+# - Device: GPU (CUDA)
+# - Batch size: 32
+# - Overwrite: Yes (replace existing 46 features)
+# - Extraction time: ~10-30 minutes (GPU-dependent)
+#
+# Feature Distribution by Category:
+# - Spatial: 26 (per-timestep → temporally aggregated to mean + std)
+# - Spectral: 31 (per-timestep → temporally aggregated to mean + std)
+# - Temporal: 13 (trajectory-level → realization aggregated to mean + std + cv)
+# - Cross-channel: 12 (per-timestep → temporally aggregated to mean + std)
+# - Causality: 15 (trajectory-level → realization aggregated to mean + std + cv)
+# - Invariant drift: 64 (trajectory-level → realization aggregated to mean + std + cv)
+# - Operator sensitivity: 12 (trajectory-level → realization aggregated, may be NaN)
+# - Laplacian energy: 1 (per-timestep → temporally aggregated to mean + std)
+#
+# Storage:
+# - Location: /features/sdf/ groups in HDF5
+# - Groups: per_timestep, per_trajectory, aggregated
+# - Compression: gzip (level 4)
+# - Estimated storage overhead: ~3-5 MB (compressed)
+#
+# Operator Sensitivity Notes:
+# - Enabled in config but dataset likely missing inline operator data
+# - Generated without operator re-execution hooks during dataset creation
+# - Extractor will gracefully handle missing data (set features to NaN)
+# - Logs warning: "Operator sensitivity data not available, skipping (NaN)"
+# - Does not block extraction of other 162 features
+# - Future datasets can enable operator_sensitivity during generation phase
+#
+# Performance:
+# - GPU extraction: ~10-20 minutes (CUDA, batch_size=32)
+# - CPU fallback: ~1-2 hours (if CUDA unavailable)
+# - Memory usage: ~4-8 GB peak
+# - Disk I/O: Chunked writes, minimal memory footprint
+#
+# =============================================================================

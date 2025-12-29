@@ -1,20 +1,18 @@
 version: "1.0"
 
 metadata:
-  name: "vqvae_baseline_10k_temporal"
+  name: "vqvae_baseline_10k"
   description: |
-    Multi-timestep temporal dataset for operator behavior characterization during rollout.
-    T=500 timesteps to capture non-trivial operator dynamics.
+    Minimal IC basis dataset optimized for VQ-VAE training.
     Equal-weighted (25% each): Gaussian noise, band-limited noise, sinusoids, localized blobs.
     Designed to minimize IC bias and maximize operator regime learning.
   author: "Spinlock Team"
   created: "2025-12-29"
   purpose: |
-    Characterize operator behavior during extended rollouts (T=500 timesteps).
-    Enable temporal, causality, and invariant drift features (require T > 1).
-    Support operator sensitivity extraction during generation.
+    Force VQ-VAE to learn discrete operator equivalence classes under reconstruction pressure.
+    Avoids semantic IC structure. Focuses on operator dynamics.
 
-    Minimal IC basis (same as vqvae_baseline_10k):
+    Minimal IC basis:
     - Gaussian white noise (5 discrete variance levels: 0.25, 0.5, 1.0, 2.0, 4.0)
     - Band-limited noise (3 frequency bands: low/mid/high, strictly isolated)
     - Single-mode sinusoids (pure stripe patterns)
@@ -25,9 +23,8 @@ metadata:
     - Discrete variance regimes (not continuous)
     - Strict spectral isolation (minimal band leakage)
     - Operator effects dominant (IC as probe, not semantic structure)
-    - Extended rollouts (T=500) for temporal feature extraction
 
-# 14-dimensional parameter space (same as vqvae_baseline_10k for consistency)
+# 14-dimensional parameter space (same as 50k_max_stratified for consistency)
 parameter_space:
   architecture:
     num_layers:
@@ -47,8 +44,8 @@ parameter_space:
 
     activation:
       type: choice
-      choices: ["relu", "gelu", "silu"]
-      description: "Activation function"
+      choices: ["gelu"]
+      description: "Activation function (Gaussian Error Linear Unit)"
 
     dropout_rate:
       type: continuous
@@ -58,8 +55,8 @@ parameter_space:
   stochastic:
     noise_type:
       type: choice
-      choices: ["gaussian", "laplace"]
-      description: "Type of stochastic noise"
+      choices: ["gaussian"]
+      description: "Stochastic noise distribution (Gaussian)"
 
     noise_scale:
       type: continuous
@@ -69,13 +66,8 @@ parameter_space:
 
     noise_schedule:
       type: choice
-      choices: ["constant", "annealing", "periodic"]
-      description: "Temporal noise schedule type"
-
-    schedule_period:
-      type: integer
-      bounds: [50, 200]
-      description: "Period for periodic noise schedule"
+      choices: ["constant"]
+      description: "Temporal noise schedule (constant throughout rollout)"
 
     spatial_correlation:
       type: continuous
@@ -85,8 +77,8 @@ parameter_space:
   operator:
     normalization:
       type: choice
-      choices: ["none", "instance", "batch"]
-      description: "Feature normalization type"
+      choices: ["instance"]
+      description: "Feature normalization (instance norm for numerical stability)"
 
     grid_size:
       type: choice
@@ -96,8 +88,17 @@ parameter_space:
   evolution:
     update_policy:
       type: choice
-      choices: ["autoregressive", "residual", "convex"]
-      description: "Temporal update policy type"
+      choices: ["residual"]
+      description: "Temporal update policy (Euler integration)"
+
+      # WEIGHTED CHOICE EXAMPLE:
+      # To stratify across multiple update policies with non-uniform proportions,
+      # use the weights field (must sum to 1.0):
+      #
+      # choices: ["residual", "convex", "autoregressive"]
+      # weights: [0.5, 0.3, 0.2]  # 50% residual, 30% convex, 20% autoregressive
+      #
+      # If weights are omitted, uniform distribution is used (33.3% each for 3 choices).
 
     alpha:
       type: continuous
@@ -221,14 +222,10 @@ simulation:
   precision: "float32"
 
   num_realizations: 5
-  num_timesteps: 500  # ← CRITICAL: Multi-timestep rollout (vs. T=1 in baseline)
-
-  # Operator feature extraction (extracted during generation, not post-hoc)
-  extract_operator_features: true
 
 # Dataset generation configuration
 dataset:
-  output_path: "./datasets/vqvae_baseline_10k_temporal.h5"
+  output_path: "./datasets/vqvae_baseline_10k.h5"
 
   storage:
     backend: "hdf5"
@@ -236,43 +233,42 @@ dataset:
     compression_level: 4
     chunk_size: 100
 
-    # Feature-only storage mode (OPTIONAL, saves storage)
-    # If enabled: store only extracted features, discard raw trajectories
-    # Reduces storage from ~1.2 TB → <10 GB
-    # Trade-off: Cannot reconstruct trajectories for visualization
-    store_trajectories: true  # Set to false for feature-only mode
-
 logging:
   level: "INFO"
 
 # =============================================================================
-# Multi-Timestep Objectives
+# VQ-VAE Training Objectives
 # =============================================================================
 #
-# This dataset extends vqvae_baseline_10k with temporal rollouts to enable:
+# This dataset is designed specifically for VQ-VAE codebook learning with:
 #
-# 1. Temporal Feature Extraction:
-#    - Dynamics: energy growth, stability, regime switches (13 features)
-#    - Causality: transfer entropy, Granger causality, time irreversibility (15 features)
-#    - Invariant drift: norm/entropy tracking across scales (60 features)
-#    - Operator sensitivity: Lipschitz, gain, linearity (12 features)
-#    - Total: ~100 trajectory-level features (vs. 46 per-timestep features)
+# 1. Operator-Centric Tokens:
+#    - Tokens encode: diffusion strength, wave speed, nonlinearity, stability
+#    - NOT: IC type, semantic structure, domain-specific features
+#    - Reconstruction pressure drives operator equivalence class discovery
 #
-# 2. Operator Behavior Characterization:
-#    - Diffusion operators: monotonic energy decay, stable attractors
-#    - Wave operators: periodic oscillations, energy conservation
-#    - Nonlinear operators: regime switches, bifurcations, chaos
-#    - Coupled operators: cross-channel synchronization, emergent patterns
+# 2. Minimal IC Bias:
+#    - Equal weights (25% per IC family) → uniform IC distribution
+#    - Low mutual information I(token_id; IC_type)
+#    - Tokens forced to explain variance within IC families (operator effects)
+#    - No "easy clustering" by IC type
 #
-# 3. Temporal Token Learning (Future VQ-VAE Extension):
-#    - Encode operator trajectories (not just snapshots)
-#    - Learn temporal transitions between operator regimes
-#    - Discover dynamical invariants via temporal codebook
+# 3. Regime Identification:
+#    - Gaussian noise: 5 discrete amplitude regimes (0.25, 0.5, 1.0, 2.0, 4.0)
+#    - Band-limited: 3 frequency regimes (low/mid/high, strictly isolated)
+#    - Controlled study: "How does operator X respond to amplitude/frequency?"
 #
-# 4. Operator Semantics Focus:
-#    - Features capture: diffusion strength, wave speed, nonlinearity, coupling, dissipation
-#    - NOT: IC type, domain-specific physics, conservation laws
-#    - Operator effects emerge over rollout (T=500 sufficient for non-trivial dynamics)
+# 4. Spectral Isolation:
+#    - Low-freq band: Tests diffusion-like operators (suppress high-freq)
+#    - Mid-freq band: Tests wave propagation (selective frequency response)
+#    - High-freq band: Tests fine structure enhancement (sharpen edges)
+#    - Strict bands → clean operator signatures → clear token assignments
+#
+# 5. Codebook Quality:
+#    - Reusable across IC distributions (neutral prior)
+#    - Operator-centric embeddings
+#    - Transferable to new IC types (domain shift robustness)
+#    - Ablation-ready: swap IC distributions without retraining
 #
 # =============================================================================
 # Expected Results
@@ -281,70 +277,55 @@ logging:
 # Dataset Statistics:
 # - Total samples: 10,000 operators
 # - Total trajectories: 50,000 (10k × 5 realizations)
-# - Shape: [10000, 5, 500, 3, 128, 128] (N, M, T, C, H, W)
-# - Size (full): ~1.2 TB compressed (gzip level 4)
-# - Size (feature-only): <10 GB (if store_trajectories=false)
+# - Shape: [10000, 5, 1, 3, 128, 128] (N, M, T, C, H, W)
+# - Size: ~6-7 GB (with gzip compression)
 #
-# IC Distribution (Expected, same as baseline):
+# IC Distribution (Expected):
 # - Gaussian noise (all variances): 25.0% ± 2%
 # - Band-limited (all bands): 25.0% ± 2%
 # - Sinusoids: 25.0% ± 2%
 # - Localized blobs: 25.0% ± 2%
 #
-# Feature Extraction (with T=500):
-# - Per-timestep features: 46 (spatial + spectral + cross-channel)
-# - Per-trajectory features: ~100 (temporal + causality + invariant drift + operator sensitivity)
-# - Aggregated features: ~300 (trajectory features × 3 aggregations: mean/std/cv)
-# - Total: ~146 features per sample (per-timestep averaged over T, trajectory aggregated over M)
+# Gaussian Variance Stratification (Expected):
+# - variance=0.25: 5.0% ± 1%
+# - variance=0.5: 5.0% ± 1%
+# - variance=1.0: 5.0% ± 1%
+# - variance=2.0: 5.0% ± 1%
+# - variance=4.0: 5.0% ± 1%
 #
-# Temporal Feature Validity:
-# - Per-timestep: 0% NaN (spatial, spectral, cross-channel valid for all T)
-# - Per-trajectory: 0% NaN (temporal, causality, drift all valid for T=500)
-# - Operator sensitivity: 0% NaN (extracted during generation)
+# Spectral Band Distribution (Expected):
+# - Low frequency: 8.33% ± 1%
+# - Mid frequency: 8.33% ± 1%
+# - High frequency: 8.34% ± 1%
 #
-# =============================================================================
-# Performance Expectations
-# =============================================================================
-#
-# Generation Time (T=500 vs. T=1):
-# - T=1 baseline: ~13 minutes for 10k samples (~12.5 samples/sec)
-# - T=500 temporal: ~7-14 hours for 10k samples (~0.2-0.4 samples/sec)
-# - Bottleneck: 500× more forward passes per operator
-# - Mitigation: Batched realizations (10× speedup already implemented)
-#
-# Feature Extraction Time:
-# - Per-timestep (46 features): ~2 minutes (81 samples/sec)
-# - Per-trajectory (100 features): ~30 minutes (5-10 samples/sec, T=500)
-# - Operator sensitivity (12 features): Inline during generation (no post-hoc cost)
-# - Total: <1 hour (target with GPU optimization)
-#
-# Storage (Feature-Only Mode):
-# - Raw trajectories: [10000, 5, 500, 3, 128, 128] × 4 bytes = 1.2 TB
-# - Per-timestep features: [10000, 500, 46] × 4 bytes = 920 MB
-# - Per-trajectory features: [10000, 5, 100] × 4 bytes = 20 MB
-# - Aggregated features: [10000, 300] × 4 bytes = 12 MB
-# - Total features: <1 GB (vs. 1.2 TB for raw data!)
+# VQ-VAE Codebook Properties (Target):
+# - Token usage NOT clustered by IC type
+# - Reconstruction error correlates with operator complexity, not IC type
+# - Tokens transfer across IC distributions
+# - Ablation studies show IC-invariant token usage
 #
 # =============================================================================
-# Usage
+# Validation Steps (Post-Generation)
 # =============================================================================
 #
-# Generate dataset:
-#   poetry run spinlock generate \
-#     --config configs/experiments/datasets/vqvae_baseline_10k_temporal.yaml
+# 1. IC Distribution Check:
+#    - Verify 25% ± 2% for each IC family
+#    - Verify 5% ± 1% for each Gaussian variance level
+#    - Verify 8.33% ± 1% for each frequency band
 #
-# Extract features:
-#   poetry run spinlock extract-features \
-#     --dataset datasets/vqvae_baseline_10k_temporal.h5 \
-#     --feature-family sdf \
-#     --batch-size 32
+# 2. Spectral Isolation Check:
+#    - Compute power spectrum for each band
+#    - Verify <5% energy leakage between bands
+#    - Verify energy normalization (mean power ≈ 1.0 per band)
 #
-# Validate IC distribution:
-#   poetry run python scripts/validation/validate_ic_distribution.py \
-#     datasets/vqvae_baseline_10k_temporal.h5
+# 3. Energy Normalization Check:
+#    - All bands: mean(L2 norm) ≈ 1.0 ± 0.1
+#    - All variance levels: mean(L2 norm) ∝ sqrt(variance)
 #
-# Validate temporal features:
-#   poetry run python scripts/validation/validate_temporal_features.py \
-#     datasets/vqvae_baseline_10k_temporal.h5
+# 4. Operator Diversity Check:
+#    - Parameter space coverage (Sobol discrepancy < 0.05)
+#    - Operator output diversity (pairwise similarity matrix)
+#
+# Use: scripts/validation/validate_ic_distribution.py
 #
 # =============================================================================

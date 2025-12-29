@@ -93,3 +93,17 @@ class FeatureExtractionConfig(BaseModel):
         if v < 1 or v > 1000:
             raise ValueError("batch_size must be between 1 and 1000")
         return v
+
+
+# Rebuild model after SDFConfig is imported to resolve forward references
+def _rebuild_model():
+    """Rebuild FeatureExtractionConfig after SDFConfig is defined."""
+    try:
+        from spinlock.features.sdf.config import SDFConfig  # noqa: F401
+        FeatureExtractionConfig.model_rebuild()
+    except ImportError:
+        # SDFConfig not yet available (during initial import)
+        pass
+
+
+_rebuild_model()

@@ -363,9 +363,9 @@ class HDF5FeatureWriter:
         Returns:
             Estimated dimension
         """
-        # Count features in per-timestep categories (spatial, spectral, etc.)
-        per_timestep_categories = ['spatial', 'spectral', 'distributional', 'structural',
-                                   'physics', 'morphological', 'multiscale']
+        # Count features in per-timestep categories (spatial, spectral, cross_channel, etc.)
+        per_timestep_categories = ['spatial', 'spectral', 'cross_channel', 'distributional',
+                                   'structural', 'physics', 'morphological', 'multiscale']
 
         dim = 0
         for category in per_timestep_categories:

@@ -316,8 +316,14 @@ class OperatorRollout:
         X_t = X_t.to(self.device)
         X_t = self._postprocess(X_t)
 
-        # Storage for trajectories (list of tensors, will stack at end)
-        trajectory_storage = [X_t.clone()]  # List of [B, C, H, W]
+        # Pre-allocate trajectory storage for efficiency
+        # Eliminates 500+ clone() + append() + stack() operations
+        B, C, H, W = X_t.shape
+        trajectories = torch.zeros(
+            self.num_timesteps, B, C, H, W,
+            dtype=X_t.dtype, device=X_t.device
+        )
+        trajectories[0] = X_t  # Store initial state (no clone needed)
 
         # Metrics per realization
         all_metrics = [[] for _ in range(num_realizations)]
@@ -351,8 +357,8 @@ class OperatorRollout:
             # Post-processing
             X_next = self._postprocess(X_next)
 
-            # Store
-            trajectory_storage.append(X_next.clone())
+            # Store directly (no clone needed, pre-allocated)
+            trajectories[t] = X_next
 
             # Compute metrics per realization
             if self.compute_metrics:
@@ -363,9 +369,8 @@ class OperatorRollout:
             # Update state
             X_t = X_next
 
-        # Stack trajectories: [T, B, C, H, W] -> [B, T, C, H, W]
-        trajectories = torch.stack(trajectory_storage, dim=0)  # [T, B, C, H, W]
-        trajectories = trajectories.transpose(0, 1)  # [B, T, C, H, W]
+        # Transpose to [B, T, C, H, W] (single operation)
+        trajectories = trajectories.transpose(0, 1)
 
         return trajectories, all_metrics
 
@@ -446,7 +451,7 @@ class OperatorRollout:
             if "out of memory" in str(e).lower():
                 torch.cuda.empty_cache()
                 print("⚠ GPU memory fragmentation detected during calibration.")
-                print("  Consider setting: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+                print("  Consider setting: PYTORCH_ALLOC_CONF=expandable_segments:True")
                 # Fallback to very conservative batch size
                 return min(num_realizations, 2)
             raise

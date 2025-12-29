@@ -20,7 +20,8 @@ import torch.nn as nn
 import numpy as np
 from numpy.typing import NDArray
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
+from collections import defaultdict
 from tqdm import tqdm
 import time
 
@@ -81,6 +82,9 @@ class DatasetGenerationPipeline:
             "samples_generated": 0,
         }
 
+        # Policy cache for temporal mode (reduces instantiation overhead)
+        self._policy_cache: Dict[Tuple[str, float, float], Any] = {}
+
     def _setup_device(self) -> torch.device:
         """Setup torch device from config."""
         device_str = self.config.simulation.device
@@ -117,6 +121,53 @@ class DatasetGenerationPipeline:
             device_ids = self.config.simulation.parallelism.devices
 
         return ParallelExecutor(strategy=strategy, device_ids=device_ids)
+
+    def _get_or_create_policy(
+        self,
+        policy_type: str,
+        dt: float = 0.01,
+        alpha: float = 0.5
+    ) -> Any:
+        """
+        Get cached policy or create new one.
+
+        Caches policies by (policy_type, dt, alpha) tuple to avoid repeated
+        instantiation overhead during dataset generation.
+
+        Args:
+            policy_type: "autoregressive", "residual", or "convex"
+            dt: Step size for residual policy
+            alpha: Mixing parameter for convex policy
+
+        Returns:
+            Cached or newly created UpdatePolicy instance
+
+        Note:
+            Unused parameters are normalized to 0.0 for consistent cache keys:
+            - autoregressive: dt=0.0, alpha=0.0
+            - residual: alpha=0.0
+            - convex: dt=0.0
+        """
+        from ..rollout import create_update_policy
+
+        # Normalize unused params for consistent hashing
+        if policy_type == "autoregressive":
+            dt, alpha = 0.0, 0.0
+        elif policy_type == "residual":
+            alpha = 0.0
+        elif policy_type == "convex":
+            dt = 0.0
+
+        cache_key = (policy_type, dt, alpha)
+
+        if cache_key not in self._policy_cache:
+            self._policy_cache[cache_key] = create_update_policy(
+                policy_type=policy_type,
+                dt=dt,
+                alpha=alpha
+            )
+
+        return self._policy_cache[cache_key]
 
     def generate(self) -> None:
         """
@@ -199,6 +250,7 @@ class DatasetGenerationPipeline:
             chunk_size=self.config.dataset.storage.chunk_size,
             track_ic_metadata=True,  # Enable discovery metadata
             store_trajectories=store_trajectories,  # Feature-only mode support
+            num_timesteps=self.config.simulation.num_timesteps,  # Temporal support
         ) as writer:
 
             # Write metadata
@@ -371,7 +423,7 @@ class DatasetGenerationPipeline:
         # Run inference with stochastic realizations
         inf_start = time.time()
         outputs = self._run_inference_batch(
-            operators, inputs, self.config.simulation.num_realizations
+            operators, inputs, self.config.simulation.num_realizations, param_batch
         )
         self.stats["inference_time"] += time.time() - inf_start
 
@@ -403,7 +455,8 @@ class DatasetGenerationPipeline:
         return self.operator_builder.map_parameters(params, all_specs_dict)
 
     def _run_inference_batch(
-        self, operators: list[NeuralOperator], inputs: torch.Tensor, num_realizations: int
+        self, operators: list[NeuralOperator], inputs: torch.Tensor, num_realizations: int,
+        param_batch: Optional[NDArray[np.float64]] = None
     ) -> torch.Tensor:
         """
         Run inference for a batch of operators.
@@ -412,33 +465,143 @@ class DatasetGenerationPipeline:
             operators: List of operators
             inputs: Input fields [B, C_in, H, W]
             num_realizations: Number of stochastic realizations
+            param_batch: Parameter values [B, P] (needed for temporal mode to extract evolution params)
 
         Returns:
-            Outputs [B, M, C_out, H, W]
+            Outputs [B, M, C_out, H, W] (snapshot mode, T=1)
+                 or [B, M, T, C_out, H, W] (temporal mode, T>1)
         """
-        all_outputs = []
+        num_timesteps = self.config.simulation.num_timesteps
 
-        use_amp = self.config.simulation.precision in ["float16", "bfloat16"]
+        # Temporal mode: Use OperatorRollout for T>1
+        if num_timesteps > 1:
+            from ..rollout import OperatorRollout
 
-        with torch.no_grad():
+            if param_batch is None:
+                raise ValueError("param_batch required for temporal mode to extract evolution parameters")
+
+            use_amp = self.config.simulation.precision in ["float16", "bfloat16"]
+
+            # Performance instrumentation (first batch only)
+            if not hasattr(self, '_temporal_batch_count'):
+                self._temporal_batch_count = 0
+
+            if self._temporal_batch_count == 0:
+                t_start = time.time()
+
+            # ============================================================================
+            # Phase 1: Group operators by policy tuple
+            # ============================================================================
+            # Rationale: Operators are heterogeneous (cannot batch forward passes),
+            # but can share OperatorRollout instances and cached policies within
+            # policy groups. This eliminates repeated instantiation overhead.
+            #
+            # For 10K operators with 2 policy types:
+            # - Before: 10K policy instantiations (~600s) + 10K rollout instantiations (~400s)
+            # - After: 2 policy instantiations (~120ms) + 2 rollout instantiations (~80ms)
+            # - Savings: ~1000s (~17 minutes, ~1.5% of 19h total)
+            # ============================================================================
+
+            policy_groups = defaultdict(list)  # {(policy_type, dt, alpha): [(idx, op, input), ...]}
+
             for i, operator in enumerate(operators):
-                # Single input for this operator
-                input_i = inputs[i : i + 1]
+                # Extract evolution parameters from sampled params
+                param_dict = self._map_single_parameter_set(param_batch[i])
 
-                # Generate realizations
-                with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
-                    realizations = operator.generate_realizations(
-                        input_i,
-                        num_realizations=num_realizations,
-                        base_seed=i,  # Use index as seed for reproducibility
+                # Group by policy tuple
+                policy_tuple = (
+                    param_dict.get("update_policy", "residual"),
+                    param_dict.get("dt", 0.01),
+                    param_dict.get("alpha", 0.5),
+                )
+
+                # Store with original index for order preservation
+                policy_groups[policy_tuple].append((i, operator, inputs[i]))
+
+            if self._temporal_batch_count == 0:
+                t_group = time.time()
+
+            # Pre-allocate outputs to preserve original ordering
+            all_outputs = [None] * len(operators)
+
+            # ============================================================================
+            # Phase 2: Process each policy group with shared rollout instance
+            # ============================================================================
+            with torch.no_grad():
+                for policy_tuple, group_items in policy_groups.items():
+                    policy_type, dt, alpha = policy_tuple
+
+                    # Get cached policy (or create if first time)
+                    policy = self._get_or_create_policy(policy_type, dt, alpha)
+
+                    # Create ONE rollout instance for this entire policy group
+                    # This amortizes instantiation cost across all operators in group
+                    rollout = OperatorRollout(
+                        policy=policy,
+                        num_timesteps=num_timesteps,
+                        device=self.device,
+                        compute_metrics=False,  # Skip expensive metrics during bulk generation
                     )
 
-                # realizations shape: [1, M, C_out, H, W]
-                # We want [M, C_out, H, W]
-                all_outputs.append(realizations[0])
+                    # Process all operators in this group
+                    for op_idx, operator, input_i in group_items:
+                        # Generate temporal trajectories
+                        with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
+                            trajectories, _, _ = rollout.evolve_operator(
+                                operator=operator.model,  # Use underlying model, not wrapper
+                                initial_condition=input_i,
+                                num_realizations=num_realizations,
+                                base_seed=op_idx,
+                            )
 
-        # Stack: [B, M, C_out, H, W]
-        return torch.stack(all_outputs, dim=0)
+                        # trajectories shape: [M, T, C_out, H, W]
+                        # Store at original index to preserve parameter ordering
+                        all_outputs[op_idx] = trajectories
+
+            # Performance logging (first batch only)
+            if self._temporal_batch_count == 0:
+                t_end = time.time()
+                print(f"\n[Temporal Rollout - First Batch]")
+                print(f"  Operators: {len(operators)}")
+                print(f"  Policy groups: {len(policy_groups)}")
+                print(f"  Group sizes: {[len(items) for items in policy_groups.values()]}")
+                print(f"  Grouping time: {(t_group - t_start)*1000:.1f}ms")
+                print(f"  Processing time: {(t_end - t_group):.2f}s")
+                print(f"  Time per operator: {(t_end - t_group)/len(operators):.3f}s")
+                print(f"  Cached policies: {len(self._policy_cache)}\n")
+
+            self._temporal_batch_count += 1
+
+            # Validate all outputs generated (catches logic bugs)
+            assert all(x is not None for x in all_outputs), "Some operators not processed"
+
+            # Stack: [B, M, T, C_out, H, W] (in original parameter order)
+            return torch.stack(all_outputs, dim=0)
+
+        # Snapshot mode: Original behavior for T=1
+        else:
+            all_outputs = []
+            use_amp = self.config.simulation.precision in ["float16", "bfloat16"]
+
+            with torch.no_grad():
+                for i, operator in enumerate(operators):
+                    # Single input for this operator
+                    input_i = inputs[i : i + 1]
+
+                    # Generate realizations
+                    with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
+                        realizations = operator.generate_realizations(
+                            input_i,
+                            num_realizations=num_realizations,
+                            base_seed=i,  # Use index as seed for reproducibility
+                        )
+
+                    # realizations shape: [1, M, C_out, H, W]
+                    # We want [M, C_out, H, W]
+                    all_outputs.append(realizations[0])
+
+            # Stack: [B, M, C_out, H, W]
+            return torch.stack(all_outputs, dim=0)
 
     def _group_by_grid_size(self, parameters: NDArray[np.float64]) -> Dict[int, NDArray[np.int64]]:
         """
@@ -617,7 +780,7 @@ class DatasetGenerationPipeline:
         # Run inference
         inf_start = time.time()
         outputs = self._run_inference_batch(
-            operators, inputs, self.config.simulation.num_realizations
+            operators, inputs, self.config.simulation.num_realizations, param_batch
         )
         self.stats["inference_time"] += time.time() - inf_start
 
