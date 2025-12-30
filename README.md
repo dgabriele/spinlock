@@ -68,24 +68,24 @@ poetry shell
 
 ```bash
 # Generate dataset from configuration
-python scripts/cli.py generate --config configs/experiments/benchmark_10k.yaml
+python scripts/cli.py generate --config configs/experiments/test_1k_inline_features.yaml
 
 # Override parameters for quick tests
 python scripts/cli.py generate \
-    --config configs/experiments/test_100.yaml \
+    --config configs/experiments/test_1k_inline_features.yaml \
     --total-samples 500 \
     --batch-size 50 \
     --output datasets/my_dataset.h5
 
 # Get dataset information
-python scripts/cli.py info --dataset datasets/benchmark_10k.h5
+python scripts/cli.py info --dataset datasets/test_1k_inline_features.h5
 
 # Validate dataset integrity
-python scripts/cli.py validate --dataset datasets/benchmark_10k.h5
+python scripts/cli.py validate --dataset datasets/test_1k_inline_features.h5
 
 # Visualize operator trajectories
 python scripts/cli.py visualize-dataset
-    --dataset datasets/benchmark_10k.h5 \
+    --dataset datasets/test_1k_inline_features.h5 \
     --output visualizations/ \
     --format video \
     --n-realizations 5 \
@@ -138,7 +138,7 @@ from spinlock.config import load_config
 from spinlock.dataset import DatasetGenerationPipeline
 
 # Load configuration
-config = load_config("configs/experiments/benchmark_10k.yaml")
+config = load_config("configs/experiments/test_1k_inline_features.yaml")
 
 # Create and run pipeline
 pipeline = DatasetGenerationPipeline(config)
@@ -410,17 +410,17 @@ Extract comprehensive spatial, spectral, and temporal features for:
 
 ```bash
 # Extract features with defaults (all 221 features with Phase 1+2 extensions)
-python scripts/cli.py extract-features --dataset datasets/benchmark_10k.h5
+python scripts/cli.py extract-features --dataset datasets/test_1k_inline_features.h5
 
 # Verbose output
-python scripts/cli.py extract-features --dataset datasets/benchmark_10k.h5 --verbose
+python scripts/cli.py extract-features --dataset datasets/test_1k_inline_features.h5 --verbose
 
 # Custom batch size for GPU memory
-python scripts/cli.py extract-features --dataset datasets/benchmark_10k.h5 --batch-size 16
+python scripts/cli.py extract-features --dataset datasets/test_1k_inline_features.h5 --batch-size 16
 
 # Custom feature configuration (enable/disable Phase 1/2 features)
 python scripts/cli.py extract-features \
-    --dataset datasets/benchmark_10k.h5 \
+    --dataset datasets/test_1k_inline_features.h5 \
     --config configs/experiments/my_features.yaml
 ```
 
@@ -488,7 +488,7 @@ All expensive features (RQA, correlation dimension, permutation entropy) use con
 from pathlib import Path
 from spinlock.features.storage import HDF5FeatureReader
 
-with HDF5FeatureReader(Path("datasets/benchmark_10k.h5")) as reader:
+with HDF5FeatureReader(Path("datasets/test_1k_inline_features.h5")) as reader:
     # Get feature registry (221 features with Phase 1+2)
     registry = reader.get_sdf_registry()
     print(f"Total features: {registry.num_features}")  # 221
@@ -661,7 +661,7 @@ poetry run pytest tests/test_sampling/
 ```bash
 # Reduce batch size for smaller GPUs
 python scripts/cli.py generate \
-    --config configs/experiments/benchmark_10k.yaml \
+    --config configs/experiments/test_1k_inline_features.yaml \
     --batch-size 50
 
 # Use CPU if CUDA unavailable

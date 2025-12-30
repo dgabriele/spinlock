@@ -228,7 +228,7 @@ simulation:
   precision: "float16"  # 1.89× speedup vs float32 (28h vs 52h for 10K operators)
 
   num_realizations: 3  # Reduced from 5 (1.66× speedup validated empirically, sufficient for VQ-VAE)
-  num_timesteps: 250  # ← CRITICAL: Multi-timestep rollout (vs. T=1 in baseline)
+  num_timesteps: 250  # Multi-timestep rollout
 
   # Operator feature extraction (extracted during generation, not post-hoc)
   extract_operator_features: true
@@ -256,7 +256,7 @@ logging:
 # Multi-Timestep Objectives
 # =============================================================================
 #
-# This dataset extends vqvae_baseline_10k with temporal rollouts to enable:
+# This dataset extends the baseline with temporal rollouts to enable:
 #
 # 1. Temporal Feature Extraction:
 #    - Dynamics: energy growth, stability, regime switches (13 features)

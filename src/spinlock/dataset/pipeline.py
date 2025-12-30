@@ -25,6 +25,9 @@ from collections import defaultdict
 from tqdm import tqdm
 import time
 import gc
+import queue
+import threading
+from dataclasses import dataclass
 
 from .generators import InputFieldGenerator
 from .storage import HDF5DatasetWriter
@@ -35,6 +38,165 @@ from ..config import SpinlockConfig
 from ..features.sdf import SDFExtractor, SDFConfig
 from ..features.storage import HDF5FeatureWriter
 
+
+@dataclass
+class FeatureWriteTask:
+    """Task for async feature writing."""
+    batch_idx_start: int
+    per_timestep: np.ndarray
+    per_trajectory: np.ndarray
+    aggregated: np.ndarray
+
+
+class AsyncFeatureWriter:
+    """
+    Asynchronous feature writer using background thread.
+    
+    Enables pipelining: GPU feature extraction can proceed while
+    previous batch is being written to HDF5 (I/O bound).
+    """
+    
+    def __init__(self, feature_writer: HDF5FeatureWriter, max_queue_size: int = 2):
+        """
+        Initialize async feature writer.
+        
+        Args:
+            feature_writer: HDF5FeatureWriter instance
+            max_queue_size: Maximum number of batches to buffer
+        """
+        self.feature_writer = feature_writer
+        self.write_queue: queue.Queue = queue.Queue(maxsize=max_queue_size)
+        self.write_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._error: Optional[Exception] = None
+        
+    def start(self) -> None:
+        """Start background write thread."""
+        if self.write_thread is not None:
+            return
+            
+        self.write_thread = threading.Thread(
+            target=self._write_worker,
+            daemon=True,
+            name="FeatureWriter"
+        )
+        self.write_thread.start()
+    
+    def stop(self) -> None:
+        """Stop background write thread and wait for completion."""
+        if self.write_thread is None:
+            return
+            
+        self._stop_event.set()
+        self.write_queue.put(None)  # Sentinel to wake worker
+        self.write_thread.join(timeout=30.0)
+        
+        if self._error is not None:
+            raise RuntimeError("Error in feature write thread") from self._error
+    
+    def enqueue(self, task: FeatureWriteTask) -> None:
+        """
+        Enqueue feature write task (non-blocking if queue not full).
+        
+        Args:
+            task: Feature write task
+        """
+        if self._error is not None:
+            raise RuntimeError("Feature writer thread encountered error") from self._error
+            
+        self.write_queue.put(task, block=True)
+    
+    def wait_for_completion(self) -> None:
+        """Wait for all queued writes to complete."""
+        self.write_queue.join()
+    
+    def _write_worker(self) -> None:
+        """Background thread worker for HDF5 writes."""
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    task = self.write_queue.get(timeout=0.1)
+                    if task is None:  # Sentinel
+                        break
+                        
+                    self.feature_writer.write_sdf_batch(
+                        batch_idx=task.batch_idx_start,
+                        per_timestep=task.per_timestep,
+                        per_trajectory=task.per_trajectory,
+                        aggregated=task.aggregated
+                    )
+                    
+                    self.write_queue.task_done()
+                except queue.Empty:
+                    continue
+        except Exception as e:
+            self._error = e
+            self.write_queue.task_done()
+
+
+class FeatureExtractionPipeline:
+    """
+    Optimized feature extraction pipeline.
+    
+    Handles GPU feature extraction with efficient memory management
+    and eliminates wasteful recomputation.
+    """
+    
+    def __init__(self, sdf_extractor: SDFExtractor, device: torch.device):
+        """
+        Initialize feature extraction pipeline.
+        
+        Args:
+            sdf_extractor: SDF feature extractor
+            device: Computation device
+        """
+        self.sdf_extractor = sdf_extractor
+        self.device = device
+    
+    def extract_all(
+        self,
+        batch_outputs: torch.Tensor  # [B, M, T, C, H, W]
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Extract all features efficiently (no recomputation).
+        
+        Args:
+            batch_outputs: Trajectory tensors [B, M, T, C, H, W]
+            
+        Returns:
+            Tuple of (per_timestep_np, per_trajectory_np, aggregated_np)
+        """
+        with torch.no_grad():
+            # Stage 1: Extract per-timestep features
+            per_timestep_gpu = self.sdf_extractor.extract_per_timestep(batch_outputs)
+            per_timestep_np = per_timestep_gpu.cpu().numpy()
+            del per_timestep_gpu
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+            
+            # Stage 2: Extract per-trajectory features
+            per_trajectory_gpu = self.sdf_extractor.extract_per_trajectory(batch_outputs)
+            per_trajectory_np = per_trajectory_gpu.cpu().numpy()
+            
+            # Stage 3: Aggregate using same GPU tensor (no recomputation)
+            aggregated_list = []
+            for method in ['mean', 'std', 'cv']:
+                agg_gpu = self.sdf_extractor.aggregate_realizations(
+                    per_trajectory_gpu, method=method
+                )
+                aggregated_list.append(agg_gpu.cpu())
+                del agg_gpu
+                if self.device.type == "cuda":
+                    torch.cuda.empty_cache()
+            
+            aggregated_np = torch.cat(aggregated_list, dim=1).numpy()
+            
+            # Free GPU memory
+            del per_trajectory_gpu, aggregated_list
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+            
+            return per_timestep_np, per_trajectory_np, aggregated_np
 
 
 class DatasetGenerationPipeline:
@@ -83,11 +245,16 @@ class DatasetGenerationPipeline:
             "generation_time": 0.0,
             "inference_time": 0.0,
             "storage_time": 0.0,
+            "feature_extraction_time": 0.0,
             "samples_generated": 0,
         }
 
         # Policy cache for temporal mode (reduces instantiation overhead)
         self._policy_cache: Dict[Tuple[str, float, float], Any] = {}
+        
+        # Feature extraction pipeline (initialized when needed)
+        self._feature_pipeline: Optional[FeatureExtractionPipeline] = None
+        self._async_feature_writer: Optional[AsyncFeatureWriter] = None
 
     def _setup_device(self) -> torch.device:
         """Setup torch device from config."""
@@ -209,6 +376,11 @@ class DatasetGenerationPipeline:
         self._print_final_statistics()
 
         # Cleanup after generation
+        # Wait for async feature writes to complete
+        if self._async_feature_writer is not None:
+            self._async_feature_writer.wait_for_completion()
+            self._async_feature_writer.stop()
+        
         # Close feature writer if opened
         if hasattr(self, "_feature_writer") and self._feature_writer is not None:
             self._feature_writer.__exit__(None, None, None)
@@ -317,11 +489,25 @@ class DatasetGenerationPipeline:
                     chunk_size=self.config.dataset.storage.chunk_size
                 )
 
+                # Initialize optimized feature extraction pipeline
+                self._feature_pipeline = FeatureExtractionPipeline(
+                    sdf_extractor=sdf_extractor,
+                    device=self.device
+                )
+                
+                # Initialize async feature writer for pipelining
+                self._async_feature_writer = AsyncFeatureWriter(
+                    feature_writer=feature_writer,
+                    max_queue_size=2  # Buffer 2 batches
+                )
+                self._async_feature_writer.start()
+
                 print(f"Feature storage initialized:")
                 print(f"  Per-timestep: {per_timestep_dim} features")
                 print(f"  Per-trajectory: {per_trajectory_dim} features")
                 print(f"  Aggregated: {per_trajectory_dim * 3} features")
-                print(f"  Total registry size: {registry.num_features} features\n")
+                print(f"  Total registry size: {registry.num_features} features")
+                print(f"  Async I/O: Enabled (pipelined writes)\n")
 
             # Write metadata
             writer.write_metadata(
@@ -642,27 +828,60 @@ class DatasetGenerationPipeline:
                         compute_metrics=False,  # Skip expensive metrics during bulk generation
                     )
 
-                    # Process all operators in this group
-                    for op_idx, operator, input_i in group_items:
-                        # Generate temporal trajectories
-                        with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
-                            trajectories, _, _ = rollout.evolve_operator(
-                                operator=operator.model,  # Use underlying model, not wrapper
-                                initial_condition=input_i,
-                                num_realizations=num_realizations,
-                                base_seed=op_idx,
-                            )
-
-                        # trajectories shape: [M, T, C_out, H, W]
-                        # Store at original index to preserve parameter ordering
-                        all_outputs[op_idx] = trajectories
-
-                        # Free trajectory tensor immediately after storing to prevent accumulation
-                        del trajectories
-
-                        # Periodic GPU cache cleanup every 10 operators
-                        if (op_idx + 1) % 10 == 0 and self.device.type == "cuda":
+                    # Parallel processing with CUDA streams (if available and batch size allows)
+                    num_operators = len(group_items)
+                    use_parallel = (
+                        self.device.type == "cuda" and
+                        num_operators > 1 and
+                        torch.cuda.is_available()
+                    )
+                    
+                    if use_parallel:
+                        # Adaptive stream count based on batch size and available memory
+                        max_streams = min(4, num_operators)  # Cap at 4 streams
+                        streams = [torch.cuda.Stream() for _ in range(max_streams)]
+                        
+                        # Process operators across streams
+                        for stream_idx, (op_idx, operator, input_i) in enumerate(group_items):
+                            stream = streams[stream_idx % max_streams]
+                            
+                            with torch.cuda.stream(stream):
+                                with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
+                                    trajectories, _, _ = rollout.evolve_operator(
+                                        operator=operator.model,
+                                        initial_condition=input_i,
+                                        num_realizations=num_realizations,
+                                        base_seed=op_idx,
+                                    )
+                                
+                                # Store at original index (synchronized access is safe here)
+                                all_outputs[op_idx] = trajectories
+                                del trajectories
+                        
+                        # Synchronize all streams before moving to next policy group
+                        for stream in streams:
+                            stream.synchronize()
+                        
+                        # Periodic GPU cache cleanup
+                        if self.device.type == "cuda":
                             torch.cuda.empty_cache()
+                    else:
+                        # Sequential processing (fallback for CPU or small batches)
+                        for op_idx, operator, input_i in group_items:
+                            with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
+                                trajectories, _, _ = rollout.evolve_operator(
+                                    operator=operator.model,
+                                    initial_condition=input_i,
+                                    num_realizations=num_realizations,
+                                    base_seed=op_idx,
+                                )
+                            
+                            all_outputs[op_idx] = trajectories
+                            del trajectories
+                            
+                            # Periodic GPU cache cleanup every 10 operators
+                            if (op_idx + 1) % 10 == 0 and self.device.type == "cuda":
+                                torch.cuda.empty_cache()
 
                     # Free rollout after processing this policy group
                     del rollout
@@ -1101,51 +1320,39 @@ class DatasetGenerationPipeline:
         self,
         batch_outputs: torch.Tensor,  # [B, M, T, C, H, W]
         batch_idx_start: int,
-        sdf_extractor,
-        feature_writer
+        feature_pipeline: FeatureExtractionPipeline,
+        async_writer: Optional[AsyncFeatureWriter]
     ) -> None:
         """
         Extract SDF features inline during generation (GPU-optimized).
         
+        Uses optimized extraction pipeline and async writing for pipelining.
+        
         Args:
             batch_outputs: Trajectory tensors [B, M, T, C, H, W]
             batch_idx_start: Starting index for this batch in dataset
-            sdf_extractor: SDFExtractor instance
-            feature_writer: HDF5FeatureWriter instance
+            feature_pipeline: FeatureExtractionPipeline instance
+            async_writer: AsyncFeatureWriter for non-blocking writes (None = blocking)
         """
-        with torch.no_grad():
-            # Stage 1: Extract per-timestep features (spatial, spectral, cross-channel)
-            # These are computed across all timesteps: [N, T, D_per_timestep]
-            per_timestep_gpu = sdf_extractor.extract_per_timestep(batch_outputs)
-            per_timestep_np = per_timestep_gpu.cpu().numpy()
-            del per_timestep_gpu  # Free GPU memory immediately
-            torch.cuda.empty_cache()
-
-            # Stage 2: Extract per-trajectory features (temporal, causality, drift, sensitivity)
-            # These are computed per realization: [N, M, D_per_trajectory]
-            per_trajectory_gpu = sdf_extractor.extract_per_trajectory(batch_outputs)
-            per_trajectory_np = per_trajectory_gpu.cpu().numpy()
-            del per_trajectory_gpu  # Free GPU memory immediately
-            torch.cuda.empty_cache()
-
-            # Stage 3: Aggregate across realizations (mean, std, cv)
-            # Recompute from trajectories since we freed per_trajectory_gpu
-            # This is cheaper than keeping it in memory
-            per_trajectory_temp = sdf_extractor.extract_per_trajectory(batch_outputs)
-
-            aggregated_list = []
-            for method in ['mean', 'std', 'cv']:
-                agg_gpu = sdf_extractor.aggregate_realizations(per_trajectory_temp, method=method)
-                aggregated_list.append(agg_gpu.cpu())
-                del agg_gpu
-                torch.cuda.empty_cache()
-
-            aggregated_np = torch.cat(aggregated_list, dim=1).numpy()
-            del per_trajectory_temp, aggregated_list
-            torch.cuda.empty_cache()
-
-            # Write batch to HDF5
-            feature_writer.write_sdf_batch(
+        # Extract features efficiently (no recomputation)
+        feat_start = time.time()
+        per_timestep_np, per_trajectory_np, aggregated_np = feature_pipeline.extract_all(
+            batch_outputs
+        )
+        self.stats["feature_extraction_time"] += time.time() - feat_start
+        
+        # Write asynchronously (non-blocking) or synchronously
+        if async_writer is not None:
+            task = FeatureWriteTask(
+                batch_idx_start=batch_idx_start,
+                per_timestep=per_timestep_np,
+                per_trajectory=per_trajectory_np,
+                aggregated=aggregated_np
+            )
+            async_writer.enqueue(task)
+        else:
+            # Fallback: synchronous write (for backward compatibility)
+            self._feature_writer.write_sdf_batch(
                 batch_idx=batch_idx_start,
                 per_timestep=per_timestep_np,
                 per_trajectory=per_trajectory_np,
@@ -1173,12 +1380,12 @@ class DatasetGenerationPipeline:
             metadata: Per-sample metadata
         """
         # Extract features inline if enabled (GPU-optimized)
-        if hasattr(self, '_sdf_extractor') and self._sdf_extractor is not None:
+        if self._feature_pipeline is not None:
             self._extract_and_write_features_inline(
                 batch_outputs=batch_outputs,
                 batch_idx_start=batch_indices[0],  # First index in batch
-                sdf_extractor=self._sdf_extractor,
-                feature_writer=self._feature_writer
+                feature_pipeline=self._feature_pipeline,
+                async_writer=self._async_feature_writer
             )
 
         # We need to write to specific indices, not sequential
@@ -1225,6 +1432,11 @@ class DatasetGenerationPipeline:
             f"  Inference: {self.stats['inference_time']:.2f}s "
             f"({self.stats['inference_time']/total_time*100:.1f}%)"
         )
+        if self.stats['feature_extraction_time'] > 0:
+            print(
+                f"  Feature extraction: {self.stats['feature_extraction_time']:.2f}s "
+                f"({self.stats['feature_extraction_time']/total_time*100:.1f}%)"
+            )
         print(
             f"  Storage (HDF5): {self.stats['storage_time']:.2f}s "
             f"({self.stats['storage_time']/total_time*100:.1f}%)"
