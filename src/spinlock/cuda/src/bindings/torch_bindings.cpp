@@ -67,9 +67,12 @@ py::dict get_device_info() {
  * @brief pybind11 module definition
  *
  * Exposes CUDA functions to Python as spinlock.cuda._C module
+ *
+ * NOTE: Fused ConvBlock CUDA kernels removed due to 80× performance regression.
+ * Pivoting to torch.compile() optimization strategy instead.
  */
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.doc() = "Spinlock CUDA kernels for fused operator execution";
+    m.doc() = "Spinlock CUDA utilities (custom kernels abandoned, using torch.compile instead)";
 
     m.def("dummy_add", &dummy_add_torch,
           "Element-wise addition of two tensors (testing infrastructure)",

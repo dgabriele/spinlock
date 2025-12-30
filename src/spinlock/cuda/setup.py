@@ -13,7 +13,7 @@ from setuptools import setup
 # Get current directory
 CUDA_DIR = Path(__file__).parent.resolve()
 
-# Source files
+# Source files (CUDA kernel approach abandoned - pivoting to torch.compile)
 sources = [
     str(CUDA_DIR / "src" / "bindings" / "torch_bindings.cpp"),
     str(CUDA_DIR / "src" / "common" / "dummy_kernel.cu"),

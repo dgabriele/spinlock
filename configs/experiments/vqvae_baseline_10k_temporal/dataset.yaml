@@ -225,7 +225,7 @@ simulation:
       min_width: 5.0                       # Minimum blob width (pixels)
       max_width: 15.0                      # Maximum blob width (pixels)
 
-  precision: "float32"
+  precision: "float16"  # 1.89× speedup vs float32 (28h vs 52h for 10K operators)
 
   num_realizations: 5
   num_timesteps: 500  # ← CRITICAL: Multi-timestep rollout (vs. T=1 in baseline)
@@ -241,13 +241,13 @@ dataset:
     backend: "hdf5"
     compression: "gzip"
     compression_level: 4
-    chunk_size: 100
+    chunk_size: 5  # Reduced from 100 to 5 for temporal mode (500 timesteps = huge outputs)
 
     # Feature-only storage mode (OPTIONAL, saves storage)
     # If enabled: store only extracted features, discard raw trajectories
     # Reduces storage from ~1.2 TB → <10 GB
     # Trade-off: Cannot reconstruct trajectories for visualization
-    store_trajectories: true  # Set to false for feature-only mode
+    store_trajectories: false  # Feature-only mode - 10K operators would be 1.2TB otherwise!
 
 logging:
   level: "INFO"

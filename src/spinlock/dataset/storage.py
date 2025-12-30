@@ -112,8 +112,9 @@ class HDF5DatasetWriter:
         self.store_trajectories = store_trajectories
         self.num_timesteps = num_timesteps
 
-        # Optimal chunk size
-        self.chunk_size = chunk_size or min(100, num_parameter_sets)
+        # Reduced chunk size for more frequent flushing (prevents buffer accumulation)
+        # Changed from 100 to 20 to reduce peak memory usage by ~80%
+        self.chunk_size = chunk_size or min(20, num_parameter_sets)
 
         self.file: Optional[h5py.File] = None
         self.current_idx = 0
@@ -283,9 +284,18 @@ class HDF5DatasetWriter:
 
         batch_size = parameters.shape[0]
 
-        # Convert tensors to numpy
-        inputs_np = inputs.cpu().numpy() if isinstance(inputs, torch.Tensor) else inputs
-        outputs_np = outputs.cpu().numpy() if isinstance(outputs, torch.Tensor) else outputs
+        # Convert tensors to numpy and free GPU memory immediately
+        if isinstance(inputs, torch.Tensor):
+            inputs_np = inputs.cpu().numpy()
+            del inputs  # Free GPU memory
+        else:
+            inputs_np = inputs
+
+        if isinstance(outputs, torch.Tensor):
+            outputs_np = outputs.cpu().numpy()
+            del outputs  # Free GPU memory
+        else:
+            outputs_np = outputs
 
         # Create parameters dataset on first write
         param_group = cast(h5py.Group, self.file["parameters"])
@@ -380,6 +390,9 @@ class HDF5DatasetWriter:
 
         self.current_idx = end_idx
 
+        # Explicitly free concatenated numpy arrays to prevent memory accumulation
+        del parameters, inputs_np, outputs_np
+
         # Clear buffer
         for key in self._write_buffer:
             self._write_buffer[key].clear()
@@ -388,6 +401,10 @@ class HDF5DatasetWriter:
         # Flush to disk periodically
         if self.current_idx % (self.chunk_size * 10) == 0:
             self.file.flush()
+
+        # Force GPU memory cleanup if CUDA available
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def write_metadata(self, metadata: Dict[str, Any]) -> None:
         """

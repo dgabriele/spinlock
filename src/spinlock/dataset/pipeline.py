@@ -24,6 +24,7 @@ from typing import Optional, Dict, Any, Tuple
 from collections import defaultdict
 from tqdm import tqdm
 import time
+import gc
 
 from .generators import InputFieldGenerator
 from .storage import HDF5DatasetWriter
@@ -204,6 +205,9 @@ class DatasetGenerationPipeline:
         self.stats["total_time"] = time.time() - start_time
         self._print_final_statistics()
 
+        # Cleanup after generation
+        self.cleanup()
+
     def _generate_dataset_batches(
         self, parameters: NDArray[np.float64], validation_metrics: Dict[str, Any]
     ) -> None:
@@ -228,8 +232,9 @@ class DatasetGenerationPipeline:
         else:
             print(f"Multiple grid sizes detected, will pad to {self.max_grid_size}×{self.max_grid_size}")
 
-        # Get store_trajectories setting (defaults to True for backward compatibility)
-        store_trajectories = getattr(self.config.dataset.storage, 'store_trajectories', True)
+        # Get store_trajectories setting (defaults to False for storage efficiency)
+        # Feature-only mode saves ~99% storage (10GB vs 1.2TB for 10K temporal operators)
+        store_trajectories = getattr(self.config.dataset.storage, 'store_trajectories', False)
 
         if not store_trajectories:
             print("\n⚠️  FEATURE-ONLY MODE ENABLED")
@@ -308,12 +313,18 @@ class DatasetGenerationPipeline:
                             )
                             self.stats["storage_time"] += time.time() - store_start
 
+                            # Aggressive memory cleanup after HDF5 write
+                            del batch_inputs, batch_outputs, metadata
+                            if self.device.type == "cuda":
+                                torch.cuda.empty_cache()
+
                             self.stats["samples_generated"] += actual_batch_size
                             group_processed += actual_batch_size
                             pbar.update(actual_batch_size)
 
-                            # Memory cleanup
-                            if group_processed % (10 * current_batch_size) == 0:
+                            # Periodic garbage collection (every 5 batches instead of 10)
+                            if group_processed % (5 * current_batch_size) == 0:
+                                gc.collect()
                                 if self.device.type == "cuda":
                                     torch.cuda.empty_cache()
 
@@ -427,6 +438,14 @@ class DatasetGenerationPipeline:
         )
         self.stats["inference_time"] += time.time() - inf_start
 
+        # Explicitly delete operators to break reference cycles and free GPU memory
+        for op in operators:
+            del op
+        del operators
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+        gc.collect()  # Force garbage collection
+
         return inputs, outputs
 
     def _map_single_parameter_set(self, params: NDArray[np.float64]) -> Dict[str, Any]:
@@ -521,8 +540,14 @@ class DatasetGenerationPipeline:
             if self._temporal_batch_count == 0:
                 t_group = time.time()
 
-            # Pre-allocate outputs to preserve original ordering
-            all_outputs = [None] * len(operators)
+            # Pre-allocate tensor directly instead of list to avoid torch.stack memory duplication
+            # Shape: [B, M, T, C_out, H, W]
+            B = len(operators)
+            M = num_realizations
+            T = num_timesteps
+            C = inputs.shape[1]  # Assuming C_out == C_in
+            H, W = inputs.shape[-2], inputs.shape[-1]
+            all_outputs = torch.zeros(B, M, T, C, H, W, dtype=torch.float32, device=self.device)
 
             # ============================================================================
             # Phase 2: Process each policy group with shared rollout instance
@@ -558,7 +583,17 @@ class DatasetGenerationPipeline:
                         # Store at original index to preserve parameter ordering
                         all_outputs[op_idx] = trajectories
 
-            # Performance logging (first batch only)
+                        # Free trajectory tensor immediately after storing to prevent accumulation
+                        del trajectories
+
+                        # Periodic GPU cache cleanup every 10 operators
+                        if (op_idx + 1) % 10 == 0 and self.device.type == "cuda":
+                            torch.cuda.empty_cache()
+
+                    # Free rollout after processing this policy group
+                    del rollout
+
+            # Performance logging (first batch only) - BEFORE deleting policy_groups
             if self._temporal_batch_count == 0:
                 t_end = time.time()
                 print(f"\n[Temporal Rollout - First Batch]")
@@ -572,15 +607,25 @@ class DatasetGenerationPipeline:
 
             self._temporal_batch_count += 1
 
-            # Validate all outputs generated (catches logic bugs)
-            assert all(x is not None for x in all_outputs), "Some operators not processed"
+            # Free policy_groups dict after all processing (AFTER logging)
+            del policy_groups
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+            gc.collect()
 
-            # Stack: [B, M, T, C_out, H, W] (in original parameter order)
-            return torch.stack(all_outputs, dim=0)
+            # all_outputs already has shape [B, M, T, C_out, H, W] (no stack needed)
+            return all_outputs
 
         # Snapshot mode: Original behavior for T=1
         else:
-            all_outputs = []
+            # Pre-allocate tensor directly to avoid torch.stack memory duplication
+            # Shape: [B, M, C_out, H, W]
+            B = len(operators)
+            M = num_realizations
+            C = inputs.shape[1]  # Assuming C_out == C_in
+            H, W = inputs.shape[-2], inputs.shape[-1]
+            all_outputs = torch.zeros(B, M, C, H, W, dtype=torch.float32, device=self.device)
+
             use_amp = self.config.simulation.precision in ["float16", "bfloat16"]
 
             with torch.no_grad():
@@ -597,11 +642,18 @@ class DatasetGenerationPipeline:
                         )
 
                     # realizations shape: [1, M, C_out, H, W]
-                    # We want [M, C_out, H, W]
-                    all_outputs.append(realizations[0])
+                    # We want [M, C_out, H, W] - direct assignment instead of append
+                    all_outputs[i] = realizations[0]
 
-            # Stack: [B, M, C_out, H, W]
-            return torch.stack(all_outputs, dim=0)
+                    # Free realizations immediately after storing
+                    del realizations, input_i
+
+                    # Periodic GPU cache cleanup every 10 operators
+                    if (i + 1) % 10 == 0 and self.device.type == "cuda":
+                        torch.cuda.empty_cache()
+
+            # all_outputs already has shape [B, M, C_out, H, W] (no stack needed)
+            return all_outputs
 
     def _group_by_grid_size(self, parameters: NDArray[np.float64]) -> Dict[int, NDArray[np.int64]]:
         """
@@ -772,6 +824,11 @@ class DatasetGenerationPipeline:
             for indices, batch_inputs in all_inputs:
                 for i, idx in enumerate(indices):
                     inputs[idx] = batch_inputs[i]
+
+            # Free all_inputs list after copying to prevent accumulation
+            for indices, batch_inputs in all_inputs:
+                del batch_inputs
+            del all_inputs
         else:
             # Fallback (should never happen)
             raise RuntimeError("No inputs generated")
@@ -783,6 +840,14 @@ class DatasetGenerationPipeline:
             operators, inputs, self.config.simulation.num_realizations, param_batch
         )
         self.stats["inference_time"] += time.time() - inf_start
+
+        # Explicitly delete operators to break reference cycles and free GPU memory
+        for op in operators:
+            del op
+        del operators
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+        gc.collect()  # Force garbage collection
 
         # OPTIMIZATION: Skip padding for single grid size datasets
         # (only pad if variable grid sizes exist and grid_size < max_grid_size)
@@ -1023,3 +1088,22 @@ class DatasetGenerationPipeline:
             print(f"  Peak allocated: {mem_stats['max_allocated']:.2f} GB")
 
         print("=" * 60)
+
+    def cleanup(self) -> None:
+        """
+        Explicit cleanup for long-running pipelines.
+
+        Clears cached policies and forces garbage collection to free memory.
+        Called automatically after dataset generation completes.
+        """
+        # Clear policy cache
+        for key in list(self._policy_cache.keys()):
+            del self._policy_cache[key]
+        self._policy_cache.clear()
+
+        # Force GPU memory cleanup if CUDA available
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+
+        # Force garbage collection
+        gc.collect()

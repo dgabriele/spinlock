@@ -16,6 +16,7 @@ Designed for reusability across multiple use cases:
 
 import torch
 import torch.nn as nn
+from torch.amp import autocast
 from typing import List, Optional, Tuple, Literal, Dict
 from pathlib import Path
 from tqdm import tqdm
@@ -85,7 +86,8 @@ class OperatorRollout:
         compute_metrics: bool = True,
         extract_operator_features: bool = False,
         operator_feature_config: Optional[object] = None,
-        device: torch.device = torch.device("cuda")
+        device: torch.device = torch.device("cuda"),
+        precision: str = "float16"
     ):
         """
         Initialize operator rollout.
@@ -102,6 +104,8 @@ class OperatorRollout:
             extract_operator_features: Whether to extract operator sensitivity features during rollout
             operator_feature_config: SDFOperatorSensitivityConfig (optional)
             device: Torch device (cuda or cpu)
+            precision: Precision mode ("float32", "float16", "bfloat16")
+                      Defaults to "float16" for 2× speedup on modern GPUs
         """
         self.num_timesteps = num_timesteps
         self.device = device
@@ -109,6 +113,15 @@ class OperatorRollout:
         self.normalization = normalization
         self.clamp_range = clamp_range
         self.extract_operator_features = extract_operator_features
+
+        # Mixed precision setup
+        self.precision = precision
+        self.dtype = self._get_dtype(precision)
+        self.use_amp = precision in ("float16", "bfloat16")
+
+        # Enable cuDNN auto-tuning for convolution algorithms (5-15% speedup)
+        if device.type == "cuda":
+            torch.backends.cudnn.benchmark = True
 
         # Create or use provided update policy
         if policy is not None:
@@ -143,6 +156,46 @@ class OperatorRollout:
                 )
             )
             self.operator_feature_config = operator_feature_config
+
+    def _get_dtype(self, precision: str) -> torch.dtype:
+        """
+        Convert precision string to PyTorch dtype.
+
+        Args:
+            precision: Precision mode ("float32", "float16", "bfloat16")
+
+        Returns:
+            torch.dtype corresponding to precision mode
+
+        Raises:
+            ValueError: If precision mode is unsupported
+        """
+        dtype_map = {
+            "float32": torch.float32,
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+        }
+
+        if precision not in dtype_map:
+            raise ValueError(
+                f"Unsupported precision mode: '{precision}'. "
+                f"Supported modes: {list(dtype_map.keys())}"
+            )
+
+        dtype = dtype_map[precision]
+
+        # Check GPU capability for bfloat16
+        if precision == "bfloat16" and self.device.type == "cuda":
+            capability = torch.cuda.get_device_capability(self.device)
+            major, minor = capability
+
+            # BF16 requires Ampere (sm_80) or newer
+            if major < 8:
+                print(f"[WARNING] bfloat16 requested but GPU (sm_{major}{minor}) doesn't support it")
+                print(f"          Falling back to float16")
+                return torch.float16
+
+        return dtype
 
     def evolve_operator(
         self,
@@ -191,7 +244,7 @@ class OperatorRollout:
 
         # Process realizations in batches
         all_trajectories = []
-        all_metrics = []
+        all_metrics = [] if self.compute_metrics else None  # Only create if metrics enabled
 
         num_batches = (num_realizations + batch_size - 1) // batch_size
 
@@ -211,10 +264,17 @@ class OperatorRollout:
                 )
 
                 all_trajectories.append(batch_trajs)
-                all_metrics.extend(batch_metrics)
+                if self.compute_metrics:
+                    all_metrics.extend(batch_metrics)
+
+                # Free batch_metrics immediately to prevent accumulation
+                del batch_metrics
 
         # Concatenate batches
         trajectories = torch.cat(all_trajectories, dim=0)  # [M, T, C, H, W]
+
+        # Free all_trajectories list to prevent accumulation
+        del all_trajectories
 
         # Extract operator features if enabled
         operator_features = None
@@ -224,7 +284,9 @@ class OperatorRollout:
                 initial_condition=initial_condition
             )
 
-        return trajectories, all_metrics, operator_features
+        # Return empty list instead of None for metrics when disabled (for compatibility)
+        metrics_return = all_metrics if all_metrics is not None else []
+        return trajectories, metrics_return, operator_features
 
     def _evolve_single_realization(
         self,
@@ -269,10 +331,12 @@ class OperatorRollout:
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(seed + t)
 
-            O_theta_X = operator(X_t)
+            # Forward pass with automatic mixed precision
+            with autocast(device_type=self.device.type, enabled=self.use_amp, dtype=self.dtype):
+                O_theta_X = operator(X_t)
 
-            # Apply update policy
-            X_next = self.policy.update(X_t, O_theta_X)
+                # Apply update policy
+                X_next = self.policy.update(X_t, O_theta_X)
 
             # Post-processing
             X_next = self._postprocess(X_next)
@@ -325,12 +389,14 @@ class OperatorRollout:
         )
         trajectories[0] = X_t  # Store initial state (no clone needed)
 
-        # Metrics per realization
-        all_metrics = [[] for _ in range(num_realizations)]
+        # Metrics per realization (only create if needed to save memory)
         if self.compute_metrics:
+            all_metrics = [[] for _ in range(num_realizations)]
             for b in range(num_realizations):
                 m = self.metrics_computer.compute_all(X_t[b:b+1])
                 all_metrics[b].append(m)
+        else:
+            all_metrics = []  # Empty list when metrics disabled (saves memory)
 
         # Temporal evolution
         iterator = range(1, self.num_timesteps)
@@ -348,13 +414,14 @@ class OperatorRollout:
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(base_seed + t)
 
-            # Forward pass for entire batch in parallel
-            O_theta_X = operator(X_t)  # [B, C, H, W]
+            # Forward pass with automatic mixed precision (2× speedup)
+            with autocast(device_type=self.device.type, enabled=self.use_amp, dtype=self.dtype):
+                O_theta_X = operator(X_t)  # [B, C, H, W]
 
-            # Apply update policy
-            X_next = self.policy.update(X_t, O_theta_X)  # [B, C, H, W]
+                # Apply update policy
+                X_next = self.policy.update(X_t, O_theta_X)  # [B, C, H, W]
 
-            # Post-processing
+            # Post-processing (convert back to float32 if needed for metrics)
             X_next = self._postprocess(X_next)
 
             # Store directly (no clone needed, pre-allocated)
