@@ -1,0 +1,193 @@
+version: "1.0"
+
+metadata:
+  name: "test_realizations_50"
+  description: |
+    Small test dataset (50 operators) to empirically validate M=3 vs M=5 realizations
+    for VQ-VAE tokenization quality.
+
+    Test objectives:
+    1. Compare feature statistics stability (mean, std, CV)
+    2. Measure generation time difference (expect 1.67× speedup for M=3)
+    3. Validate that M=3 is sufficient for coarse-grained operator characterization
+
+    Same config as vqvae_baseline_10k_temporal but with 50 samples.
+  author: "Spinlock Team"
+  created: "2025-12-30"
+
+# Same 12-dimensional parameter space as 10k temporal
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 5]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: integer
+      bounds: [16, 64]
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5, 7]
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["gelu"]
+      description: "Activation function"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian"]
+      description: "Stochastic noise distribution"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.00001, 1.0]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+    noise_schedule:
+      type: choice
+      choices: ["constant"]
+      description: "Temporal noise schedule"
+
+    spatial_correlation:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Spatial correlation length for noise"
+
+  operator:
+    normalization:
+      type: choice
+      choices: ["instance"]
+      description: "Feature normalization"
+
+    grid_size:
+      type: choice
+      choices: [128]
+      description: "Spatial grid resolution (128×128)"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["residual", "convex"]
+      weights: [0.75, 0.25]
+      description: "Temporal update policy"
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 3
+    min_samples_per_stratum: 1  # Reduced from 10 for small dataset
+
+  validation:
+    check_discrepancy: true
+    check_correlation: true
+
+  total_samples: 100  # Minimum allowed test dataset
+  batch_size: 2
+
+# Simulation configuration
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "sampled"
+
+    # Same IC type weights as 10k temporal
+    ic_type_weights:
+      gaussian_random_field_v0: 0.05
+      gaussian_random_field_v1: 0.05
+      gaussian_random_field_v2: 0.05
+      gaussian_random_field_v3: 0.05
+      gaussian_random_field_v4: 0.05
+      multiscale_grf_low: 0.0833
+      multiscale_grf_mid: 0.0833
+      multiscale_grf_high: 0.0834
+      structured: 0.25
+      localized: 0.25
+
+    # IC configurations
+    gaussian_random_field_v0:
+      length_scale: 0.05
+      variance: 0.25
+
+    gaussian_random_field_v1:
+      length_scale: 0.05
+      variance: 0.5
+
+    gaussian_random_field_v2:
+      length_scale: 0.05
+      variance: 1.0
+
+    gaussian_random_field_v3:
+      length_scale: 0.05
+      variance: 2.0
+
+    gaussian_random_field_v4:
+      length_scale: 0.05
+      variance: 4.0
+
+    multiscale_grf_low:
+      scales: [0.30, 0.35, 0.40]
+      variance: 1.0
+
+    multiscale_grf_mid:
+      scales: [0.08, 0.10, 0.12]
+      variance: 1.0
+
+    multiscale_grf_high:
+      scales: [0.02, 0.03, 0.04]
+      variance: 1.0
+
+    structured:
+      num_structures: 3
+      structure_types: ["stripe"]
+
+    localized:
+      num_blobs: 5
+      min_width: 5.0
+      max_width: 15.0
+
+  precision: "float16"
+
+  # THIS IS THE PARAMETER WE'LL VARY (5 vs 3)
+  num_realizations: 5  # Start with baseline M=5
+
+  num_timesteps: 500
+
+  extract_operator_features: true
+
+# Dataset configuration
+dataset:
+  output_path: "./datasets/test_realizations_m5_100.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 5
+    store_trajectories: false  # Feature-only mode
+
+logging:
+  level: "INFO"

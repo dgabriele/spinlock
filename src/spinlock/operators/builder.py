@@ -463,7 +463,7 @@ class NeuralOperator(nn.Module):
             self.model = torch.compile(
                 self.model,
                 mode=mode,
-                fullgraph=True,  # Require complete graph capture (no Python breaks)
+                fullgraph=False,  # Allow partial graphs to avoid excessive recompilation
                 dynamic=False     # Static shapes for better optimization
             )
             self._compiled = True
