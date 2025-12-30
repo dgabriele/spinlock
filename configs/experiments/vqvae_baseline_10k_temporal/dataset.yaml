@@ -135,7 +135,7 @@ sampling:
     check_correlation: true
 
   total_samples: 10000
-  batch_size: 5
+  batch_size: 2
 
 # Simulation with minimal IC basis (4 families, 25% each)
 simulation:
