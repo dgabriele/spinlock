@@ -1,0 +1,357 @@
+version: "1.0"
+
+metadata:
+  name: "test_10_inline_features"
+  description: |
+    Multi-timestep temporal dataset for operator behavior characterization during rollout.
+    T=500 timesteps to capture non-trivial operator dynamics.
+    Equal-weighted (25% each): Gaussian noise, band-limited noise, sinusoids, localized blobs.
+    Designed to minimize IC bias and maximize operator regime learning.
+  author: "Spinlock Team"
+  created: "2025-12-29"
+  purpose: |
+    Characterize operator behavior during extended rollouts (T=500 timesteps).
+    Enable temporal, causality, and invariant drift features (require T > 1).
+    Support operator sensitivity extraction during generation.
+
+    Minimal IC basis (same as vqvae_baseline_10k):
+    - Gaussian white noise (5 discrete variance levels: 0.25, 0.5, 1.0, 2.0, 4.0)
+    - Band-limited noise (3 frequency bands: low/mid/high, strictly isolated)
+    - Single-mode sinusoids (pure stripe patterns)
+    - Localized Gaussian blobs/impulses
+
+    Design principles:
+    - Equal weights (25% per IC family) to eliminate IC bias
+    - Discrete variance regimes (not continuous)
+    - Strict spectral isolation (minimal band leakage)
+    - Operator effects dominant (IC as probe, not semantic structure)
+    - Extended rollouts (T=500) for temporal feature extraction
+
+# 14-dimensional parameter space (same as vqvae_baseline_10k for consistency)
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 5]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: integer
+      bounds: [16, 64]
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5, 7]
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["gelu"]
+      description: "Activation function (Gaussian Error Linear Unit)"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian"]
+      description: "Stochastic noise distribution (Gaussian)"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.00001, 1.0]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+    noise_schedule:
+      type: choice
+      choices: ["constant"]
+      description: "Temporal noise schedule (constant throughout rollout)"
+
+    spatial_correlation:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Spatial correlation length for noise"
+
+  operator:
+    normalization:
+      type: choice
+      choices: ["instance"]
+      description: "Feature normalization (instance norm for numerical stability)"
+
+    grid_size:
+      type: choice
+      choices: [128]
+      description: "Spatial grid resolution (128 means 128x128. square grids only)"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["residual", "convex"]
+      weights: [0.75, 0.25]
+      description: "Temporal update policy (Euler integration)"
+
+      # WEIGHTED CHOICE EXAMPLE:
+      # To stratify across multiple update policies with non-uniform proportions,
+      # use the weights field (must sum to 1.0):
+      #
+      # choices: ["residual", "convex", "autoregressive"]
+      # weights: [0.5, 0.3, 0.2]  # 50% residual, 30% convex, 20% autoregressive
+      #
+      # If weights are omitted, uniform distribution is used (33.3% each for 3 choices).
+
+    # Only used by convex and/or residualupdate policies:
+    # ---------
+    # alpha:
+    #   type: continuous
+    #   bounds: [0.1, 0.9]
+    #   description: "Convex policy mixing parameter"
+
+    # dt:
+    #   type: continuous
+    #   bounds: [0.001, 0.1]
+    #   log_scale: true
+    #   description: "Residual policy step size"
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 3
+    min_samples_per_stratum: 10
+
+  validation:
+    check_discrepancy: true
+    check_correlation: true
+
+  total_samples: 100
+  batch_size: 2
+
+# Simulation with minimal IC basis (4 families, 25% each)
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "sampled"
+
+    # Equal weighting: 25% per IC family
+    # Total IC types: 10 (5 Gaussian variants + 3 band variants + 1 structured + 1 localized)
+    ic_type_weights:
+      # Gaussian noise family (25% total, split across 5 variance levels)
+      # Each variance level gets 5% (0.05)
+      gaussian_random_field_v0: 0.05   # variance=0.25
+      gaussian_random_field_v1: 0.05   # variance=0.5
+      gaussian_random_field_v2: 0.05   # variance=1.0
+      gaussian_random_field_v3: 0.05   # variance=2.0
+      gaussian_random_field_v4: 0.05   # variance=4.0
+
+      # Band-limited noise family (25% total, 8.33% per band)
+      multiscale_grf_low: 0.0833       # Low frequency
+      multiscale_grf_mid: 0.0833       # Mid frequency
+      multiscale_grf_high: 0.0834      # High frequency (extra 0.0001 for rounding)
+
+      # Sinusoid family (25%)
+      structured: 0.25
+
+      # Localized blob family (25%)
+      localized: 0.25
+
+    # =================================================================
+    # IC-Specific Configurations
+    # =================================================================
+
+    # Gaussian noise: 5 discrete variance levels (log-spaced)
+    # Note: Uses near-white noise (length_scale=0.05) to minimize spatial correlation
+    gaussian_random_field_v0:
+      length_scale: 0.05  # Near white noise
+      variance: 0.25      # Low amplitude regime
+
+    gaussian_random_field_v1:
+      length_scale: 0.05
+      variance: 0.5       # Medium-low amplitude regime
+
+    gaussian_random_field_v2:
+      length_scale: 0.05
+      variance: 1.0       # Standard amplitude regime (baseline)
+
+    gaussian_random_field_v3:
+      length_scale: 0.05
+      variance: 2.0       # Medium-high amplitude regime
+
+    gaussian_random_field_v4:
+      length_scale: 0.05
+      variance: 4.0       # High amplitude regime
+
+    # Band-limited noise: 3 frequency bands with strict isolation
+    # Low frequency: Long correlation lengths (large-scale structure)
+    multiscale_grf_low:
+      scales: [0.30, 0.35, 0.40]  # Long correlation (low frequency)
+      variance: 1.0                # Energy-normalized
+
+    # Mid frequency: Medium correlation lengths (intermediate-scale structure)
+    multiscale_grf_mid:
+      scales: [0.08, 0.10, 0.12]  # Medium correlation (mid frequency)
+      variance: 1.0                # Energy-normalized
+
+    # High frequency: Short correlation lengths (fine-scale structure)
+    multiscale_grf_high:
+      scales: [0.02, 0.03, 0.04]  # Short correlation (high frequency)
+      variance: 1.0                # Energy-normalized
+
+    # Sinusoids: Pure stripe patterns (no circles/blobs)
+    # Note: Frequency/amplitude are hardcoded in generator (freq ~ [1,6], amp ~ N(0,1))
+    structured:
+      num_structures: 3                    # Reduced for cleaner patterns
+      structure_types: ["stripe"]          # Sinusoids only (no circles, no blobs)
+
+    # Localized blobs: Gaussian impulses
+    # Width range: 5-15 pixels (localized features)
+    localized:
+      num_blobs: 5                         # 5 blobs per field
+      min_width: 5.0                       # Minimum blob width (pixels)
+      max_width: 15.0                      # Maximum blob width (pixels)
+
+  precision: "float16"  # 1.89× speedup vs float32 (28h vs 52h for 10K operators)
+
+  num_realizations: 3  # Reduced from 5 (1.66× speedup validated empirically, sufficient for VQ-VAE)
+  num_timesteps: 250  # ← CRITICAL: Multi-timestep rollout (vs. T=1 in baseline)
+
+  # Operator feature extraction (extracted during generation, not post-hoc)
+  extract_operator_features: true
+
+# Dataset generation configuration
+dataset:
+  output_path: "./datasets/test_10_inline_features.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 5  # Reduced from 100 to 5 for temporal mode (500 timesteps = huge outputs)
+
+    # Feature-only storage mode (OPTIONAL, saves storage)
+    # If enabled: store only extracted features, discard raw trajectories
+    # Reduces storage from ~1.2 TB → <10 GB
+    # Trade-off: Cannot reconstruct trajectories for visualization
+    store_trajectories: false  # Feature-only mode - 10K operators would be 1.2TB otherwise!
+
+logging:
+  level: "INFO"
+
+# =============================================================================
+# Multi-Timestep Objectives
+# =============================================================================
+#
+# This dataset extends vqvae_baseline_10k with temporal rollouts to enable:
+#
+# 1. Temporal Feature Extraction:
+#    - Dynamics: energy growth, stability, regime switches (13 features)
+#    - Causality: transfer entropy, Granger causality, time irreversibility (15 features)
+#    - Invariant drift: norm/entropy tracking across scales (60 features)
+#    - Operator sensitivity: Lipschitz, gain, linearity (12 features)
+#    - Total: ~100 trajectory-level features (vs. 46 per-timestep features)
+#
+# 2. Operator Behavior Characterization:
+#    - Diffusion operators: monotonic energy decay, stable attractors
+#    - Wave operators: periodic oscillations, energy conservation
+#    - Nonlinear operators: regime switches, bifurcations, chaos
+#    - Coupled operators: cross-channel synchronization, emergent patterns
+#
+# 3. Temporal Token Learning (Future VQ-VAE Extension):
+#    - Encode operator trajectories (not just snapshots)
+#    - Learn temporal transitions between operator regimes
+#    - Discover dynamical invariants via temporal codebook
+#
+# 4. Operator Semantics Focus:
+#    - Features capture: diffusion strength, wave speed, nonlinearity, coupling, dissipation
+#    - NOT: IC type, domain-specific physics, conservation laws
+#    - Operator effects emerge over rollout (T=500 sufficient for non-trivial dynamics)
+#
+# =============================================================================
+# Expected Results
+# =============================================================================
+#
+# Dataset Statistics:
+# - Total samples: 10,000 operators
+# - Total trajectories: 50,000 (10k × 5 realizations)
+# - Shape: [10000, 5, 500, 3, 128, 128] (N, M, T, C, H, W)
+# - Size (full): ~1.2 TB compressed (gzip level 4)
+# - Size (feature-only): <10 GB (if store_trajectories=false)
+#
+# IC Distribution (Expected, same as baseline):
+# - Gaussian noise (all variances): 25.0% ± 2%
+# - Band-limited (all bands): 25.0% ± 2%
+# - Sinusoids: 25.0% ± 2%
+# - Localized blobs: 25.0% ± 2%
+#
+# Feature Extraction (with T=500):
+# - Per-timestep features: 46 (spatial + spectral + cross-channel)
+# - Per-trajectory features: ~100 (temporal + causality + invariant drift + operator sensitivity)
+# - Aggregated features: ~300 (trajectory features × 3 aggregations: mean/std/cv)
+# - Total: ~146 features per sample (per-timestep averaged over T, trajectory aggregated over M)
+#
+# Temporal Feature Validity:
+# - Per-timestep: 0% NaN (spatial, spectral, cross-channel valid for all T)
+# - Per-trajectory: 0% NaN (temporal, causality, drift all valid for T=500)
+# - Operator sensitivity: 0% NaN (extracted during generation)
+#
+# =============================================================================
+# Performance Expectations
+# =============================================================================
+#
+# Generation Time (T=500 vs. T=1):
+# - T=1 baseline: ~13 minutes for 10k samples (~12.5 samples/sec)
+# - T=500 temporal: ~7-14 hours for 10k samples (~0.2-0.4 samples/sec)
+# - Bottleneck: 500× more forward passes per operator
+# - Mitigation: Batched realizations (10× speedup already implemented)
+#
+# Feature Extraction Time:
+# - Per-timestep (46 features): ~2 minutes (81 samples/sec)
+# - Per-trajectory (100 features): ~30 minutes (5-10 samples/sec, T=500)
+# - Operator sensitivity (12 features): Inline during generation (no post-hoc cost)
+# - Total: <1 hour (target with GPU optimization)
+#
+# Storage (Feature-Only Mode):
+# - Raw trajectories: [10000, 5, 500, 3, 128, 128] × 4 bytes = 1.2 TB
+# - Per-timestep features: [10000, 500, 46] × 4 bytes = 920 MB
+# - Per-trajectory features: [10000, 5, 100] × 4 bytes = 20 MB
+# - Aggregated features: [10000, 300] × 4 bytes = 12 MB
+# - Total features: <1 GB (vs. 1.2 TB for raw data!)
+#
+# =============================================================================
+# Usage
+# =============================================================================
+#
+# Generate dataset:
+#   poetry run spinlock generate \
+#     --config configs/experiments/datasets/test_10_inline_features.yaml
+#
+# Extract features:
+#   poetry run spinlock extract-features \
+#     --dataset datasets/test_10_inline_features.h5 \
+#     --feature-family sdf \
+#     --batch-size 32
+#
+# Validate IC distribution:
+#   poetry run python scripts/validation/validate_ic_distribution.py \
+#     datasets/test_10_inline_features.h5
+#
+# Validate temporal features:
+#   poetry run python scripts/validation/validate_temporal_features.py \
+#     datasets/test_10_inline_features.h5
+#
+# =============================================================================

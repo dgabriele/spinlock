@@ -17,7 +17,7 @@ Spinlock is a production-grade system for systematic sampling, simulation, and d
 - **Rollout Policies** - 3 temporal update strategies (autoregressive, residual, convex) for diverse dynamical behaviors
 - **Rich Metadata Tracking** - IC types, rollout policies, grid sizes, noise regimes for hypothesis generation and analysis
 - **Advanced Visualization** - 9 aggregate renderers (entropy, PCA, SSIM, spectral analysis, etc.), per-operator color normalization, IC type gallery generation
-- **Feature Extraction System (SDF v2.0)** - GPU-optimized extraction with 174 features across 8 categories: spatial (26), spectral (31), temporal (13), cross-channel (12), causality (15), invariant drift (64), operator sensitivity (12), laplacian energy (1) - includes 16 NEW features: harmonic content, effective dimensionality, gradient saturation, coherence structure, scale-specific dissipation!
+- **Feature Extraction System (SDF v2.0 + Phase 1/2 Extensions)** - GPU-optimized extraction with 221 features across 8 categories: spatial (34), spectral (31), temporal (44), cross-channel (12), causality (15), invariant drift (64), operator sensitivity (12), laplacian energy (1), nonlinear (8) - includes Phase 1 (percentiles, event counts, time-to-event, rolling windows, RQA, correlation dimension) and Phase 2 (PACF, permutation entropy, histogram/occupancy) research features!
 - **GPU-Optimized Performance** - Phase 1 optimizations: coordinate grid caching, vectorized input generation, 70% GPU memory utilization (1.8-2.2x speedup)
 - **GPU-Accelerated Execution** - Adaptive batching, memory management, multi-GPU ready
 - **Efficient Storage** - Chunked HDF5 with compression for large-scale datasets
@@ -68,23 +68,23 @@ poetry shell
 
 ```bash
 # Generate dataset from configuration
-python scripts/spinlock.py generate --config configs/experiments/benchmark_10k.yaml
+python scripts/cli.py generate --config configs/experiments/benchmark_10k.yaml
 
 # Override parameters for quick tests
-python scripts/spinlock.py generate \
+python scripts/cli.py generate \
     --config configs/experiments/test_100.yaml \
     --total-samples 500 \
     --batch-size 50 \
     --output datasets/my_dataset.h5
 
 # Get dataset information
-python scripts/spinlock.py info --dataset datasets/benchmark_10k.h5
+python scripts/cli.py info --dataset datasets/benchmark_10k.h5
 
 # Validate dataset integrity
-python scripts/spinlock.py validate --dataset datasets/benchmark_10k.h5
+python scripts/cli.py validate --dataset datasets/benchmark_10k.h5
 
 # Visualize operator trajectories
-python scripts/spinlock.py visualize-dataset
+python scripts/cli.py visualize-dataset
     --dataset datasets/benchmark_10k.h5 \
     --output visualizations/ \
     --format video \
@@ -102,7 +102,7 @@ python scripts/spinlock.py visualize-dataset
     --verbose
 
 # Visualize all IC types (gallery view)
-python scripts/spinlock.py visualize-ic-types \
+python scripts/cli.py visualize-ic-types \
     --output visualizations/all_ics.png \
     --variations 3 \
     --add-labels \
@@ -110,13 +110,13 @@ python scripts/spinlock.py visualize-ic-types \
     --verbose
 
 # Visualize specific tiers
-python scripts/spinlock.py visualize-ic-types \
+python scripts/cli.py visualize-ic-types \
     --tiers baseline tier1 tier4 \
     --output visualizations/selected_tiers.png \
     --variations 5
 
 # Visualize specific IC types
-python scripts/spinlock.py visualize-ic-types \
+python scripts/cli.py visualize-ic-types \
     --ic-types quantum_wave_packet turing_pattern coherent_state \
     --output visualizations/quantum_patterns.png
 ```
@@ -129,7 +129,7 @@ python scripts/spinlock.py visualize-ic-types \
 - `visualize-ic-types` - Generate gallery visualization of all 28 IC types
 - `extract-features` - Extract SDF features for VQ-VAE training and analysis (NEW!)
 
-Use `python scripts/spinlock.py --help` for full documentation.
+Use `python scripts/cli.py --help` for full documentation.
 
 ### Python API
 
@@ -329,7 +329,7 @@ Or use specific tiers:
 Generate a visual gallery of all IC types:
 
 ```bash
-python scripts/spinlock.py visualize-ic-types \
+python scripts/cli.py visualize-ic-types \
     --output ic_gallery.png \
     --variations 3 \
     --tiers all \
@@ -381,12 +381,12 @@ Control how color scales are applied across the visualization grid:
 
 ```bash
 # Basic temporal evolution
-python scripts/spinlock.py visualize-dataset \
+python scripts/cli.py visualize-dataset \
     --dataset datasets/my_data.h5 \
     --output evolution.mp4
 
 # Advanced: entropy + spectral analysis with per-operator normalization
-python scripts/spinlock.py visualize-dataset \
+python scripts/cli.py visualize-dataset \
     --dataset datasets/my_data.h5 \
     --output analysis.mp4 \
     --aggregates entropy spectral pca \
@@ -409,38 +409,45 @@ Extract comprehensive spatial, spectral, and temporal features for:
 ### Quick Start
 
 ```bash
-# Extract features with defaults (all 174 features)
-python scripts/spinlock.py extract-features --dataset datasets/benchmark_10k.h5
+# Extract features with defaults (all 221 features with Phase 1+2 extensions)
+python scripts/cli.py extract-features --dataset datasets/benchmark_10k.h5
 
 # Verbose output
-python scripts/spinlock.py extract-features --dataset datasets/benchmark_10k.h5 --verbose
+python scripts/cli.py extract-features --dataset datasets/benchmark_10k.h5 --verbose
 
 # Custom batch size for GPU memory
-python scripts/spinlock.py extract-features --dataset datasets/benchmark_10k.h5 --batch-size 16
+python scripts/cli.py extract-features --dataset datasets/benchmark_10k.h5 --batch-size 16
+
+# Custom feature configuration (enable/disable Phase 1/2 features)
+python scripts/cli.py extract-features \
+    --dataset datasets/benchmark_10k.h5 \
+    --config configs/experiments/my_features.yaml
 ```
 
-### Feature Categories (SDF v2.0)
+### Feature Categories (SDF v2.0 + Phase 1/2 Extensions)
 
-**174 total features** across 8 categories, organized by temporal granularity:
+**221 total features** (baseline 174 + Phase 1: 33 + Phase 2: 14) across 9 categories, organized by temporal granularity:
 
-#### Per-Timestep Features (132 features, requires T≥1)
+#### Per-Timestep Features (140 features, requires T≥1)
 Computed for each timestep independently:
 
-- **Spatial** (26): Moments, gradients, curvature, **effective dimensionality** (SVD-based), **gradient saturation** (amplitude limiting), **coherence structure** (autocorrelation, anisotropy)
+- **Spatial** (34): Moments, gradients, curvature, **effective dimensionality** (SVD-based), **gradient saturation** (amplitude limiting), **coherence structure** (autocorrelation, anisotropy), **Phase 1: percentiles** (5), **Phase 2: histogram/occupancy** (3)
 - **Spectral** (31): Power spectrum, entropy, anisotropy, phase coherence, **harmonic content** (THD, fundamental purity for nonlinearity detection)
-- **Temporal** (13): Drift, stability, periodicity, regime changes (requires T≥3)
+- **Temporal** (44): Drift, stability, periodicity, regime changes (requires T≥3), **Phase 1: event counts** (3), **time-to-event** (2), **rolling windows** (18), **Phase 2: PACF** (10)
 - **Cross-channel** (12): Correlation, mutual information, **conditional MI** (higher-order dependencies), spectral coherence, phase locking (requires C>1)
 - **Causality** (15): Transfer entropy, Granger causality, delayed correlation for directional information flow (requires T≥3)
 - **Laplacian Energy** (1): Curvature energy per pixel
+- **Nonlinear** (3): **Phase 1: RQA** (4 metrics), **correlation dimension** (1), **Phase 2: permutation entropy** (1) [Note: Expensive features use subsampling by default]
 
-**Output**: `[N, M, T, C]` for spatial/spectral, `[N, M, T]` for cross-channel/causality
+**Output**: `[N, M, T, C]` for spatial/spectral/temporal, `[N, M, T]` for cross-channel/causality
 
-#### Per-Trajectory Features (64 features, requires T>1)
+#### Per-Trajectory Features (69 features, requires T>1)
 Computed across entire trajectory:
 
 - **Invariant Drift** (64): Norm/entropy drift (L1, L2, L∞, entropy, total variation) across 3 scales (raw, lowpass, highpass) with 4 metrics each (mean drift, variance, ratio, monotonicity), **plus scale-specific dissipation** (frequency-dependent energy decay, cascade direction)
+- **Nonlinear** (5): **Phase 1: RQA** (recurrence rate, determinism, laminarity, entropy), **correlation dimension** (attractor complexity) [trajectory-aggregated]
 
-**Output**: `[N, M, C]` for invariant drift
+**Output**: `[N, M, C]` for invariant drift and nonlinear features
 
 #### Operator-Level Features (12 features, optional)
 Computed during rollout (requires operator access):
@@ -449,7 +456,22 @@ Computed during rollout (requires operator access):
 
 **Output**: `[N, M, C]` for operator sensitivity
 
-**Total**: 132 per-timestep + 64 per-trajectory + 12 operator = **174 features** (208 with all options)
+**Total**: 140 per-timestep + 69 per-trajectory + 12 operator = **221 features** (255 with all options)
+
+**Phase 1 Extensions** (High-Impact, Default Enabled):
+- Percentiles (5): Distribution shape characterization
+- Event counts (3): Spikes, bursts, zero-crossings
+- Time-to-event (2): Critical transition detection
+- Rolling windows (18): Multi-timescale analysis (5%, 10%, 20% windows)
+- RQA (4): Recurrence plot analysis for hidden periodicities
+- Correlation dimension (1): Attractor complexity measure
+
+**Phase 2 Extensions** (Research Features, Opt-In):
+- PACF (10): Partial autocorrelation function (lags 1-10)
+- Permutation entropy (1): Ordinal pattern complexity
+- Histogram/occupancy (3): State space coverage metrics
+
+All expensive features (RQA, correlation dimension, permutation entropy) use configurable subsampling (default: factor of 10) to reduce O(T²) computational cost.
 
 ### Performance
 
@@ -467,18 +489,24 @@ from pathlib import Path
 from spinlock.features.storage import HDF5FeatureReader
 
 with HDF5FeatureReader(Path("datasets/benchmark_10k.h5")) as reader:
-    # Get feature registry (174 features)
+    # Get feature registry (221 features with Phase 1+2)
     registry = reader.get_sdf_registry()
-    print(f"Total features: {registry.num_features}")  # 174
+    print(f"Total features: {registry.num_features}")  # 221
 
-    # Read spatial features (per-timestep)
-    spatial = reader.get_sdf_features("spatial")  # [N, M, T, C] - 26 features
+    # Read spatial features (per-timestep, includes Phase 1+2)
+    spatial = reader.get_sdf_features("spatial")  # [N, M, T, C] - 34 features
+
+    # Read temporal features (per-timestep, includes Phase 1+2)
+    temporal = reader.get_sdf_features("temporal")  # [N, M, T, C] - 44 features
 
     # Read spectral features (per-timestep)
     spectral = reader.get_sdf_features("spectral")  # [N, M, T, C] - 31 features
 
     # Read invariant drift (per-trajectory)
     drift = reader.get_sdf_features("invariant_drift")  # [N, M, C] - 64 features
+
+    # Read nonlinear features (per-trajectory, includes Phase 1+2)
+    nonlinear = reader.get_sdf_features("nonlinear")  # [N, M, C] - 8 features
 
     # Read all features by category
     all_features = reader.get_all_sdf_features()  # Dict[str, Tensor]
@@ -513,18 +541,18 @@ Generated HDF5 datasets follow this structure:
 /outputs/
     - fields [N, M, C_out, 256, 256] # Output fields (M stochastic realizations, padded)
 
-/features/                           # [Optional] Extracted SDF v2.0 features
+/features/                           # [Optional] Extracted SDF v2.0 + Phase 1/2 features
     @family_versions                 # {"sdf": "2.0.0"}
     @extraction_timestamp
     /sdf/
         @version                     # "2.0.0"
-        @feature_registry            # JSON name-to-index mapping (174 features)
-        @num_features                # 174
-        /spatial/                    # 26 features
+        @feature_registry            # JSON name-to-index mapping (221 features w/ Phase 1+2)
+        @num_features                # 221 (baseline: 174, Phase 1: +33, Phase 2: +14)
+        /spatial/                    # 34 features (26 baseline + 5 percentiles + 3 histogram)
             features [N, M, T, C]
         /spectral/                   # 31 features
             features [N, M, T, C]
-        /temporal/                   # 13 features (T≥3)
+        /temporal/                   # 44 features (13 baseline + 3 events + 2 time-to-event + 18 rolling + 10 PACF)
             features [N, M, T, C]
         /cross_channel/              # 12 features (C>1)
             features [N, M, T]
@@ -536,6 +564,8 @@ Generated HDF5 datasets follow this structure:
             features [N, M, C]
         /laplacian_energy/           # 1 feature
             features [N, M, T, C]
+        /nonlinear/                  # 8 features (4 RQA + 1 corr_dim + 1 perm_entropy + 2 reserved)
+            features [N, M, C]       # Trajectory-level, expensive (subsampled by default)
         /metadata/
             extraction_time [N]      # Extraction time per sample
             nan_counts [N]           # NaN counts per feature category
@@ -630,12 +660,12 @@ poetry run pytest tests/test_sampling/
 
 ```bash
 # Reduce batch size for smaller GPUs
-python scripts/spinlock.py generate \
+python scripts/cli.py generate \
     --config configs/experiments/benchmark_10k.yaml \
     --batch-size 50
 
 # Use CPU if CUDA unavailable
-python scripts/spinlock.py generate \
+python scripts/cli.py generate \
     --config configs/experiments/test_100.yaml \
     --device cpu
 ```

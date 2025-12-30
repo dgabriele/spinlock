@@ -49,6 +49,13 @@ class SDFSpatialConfig(BaseModel):
     include_iqr: bool = True  # Interquartile range
     include_mad: bool = True  # Median absolute deviation
 
+    # Distribution percentiles (Phase 1 extension)
+    include_percentiles: bool = True  # 5%, 25%, 50%, 75%, 95%
+
+    # Histogram/occupancy features (Phase 2 extension)
+    include_histogram: bool = False  # State space coverage (opt-in, moderate cost)
+    histogram_num_bins: int = Field(default=16, ge=8, le=64)  # Number of histogram bins
+
     # Gradients
     include_gradient_magnitude: bool = True
     include_gradient_x_mean: bool = True
@@ -172,8 +179,22 @@ class SDFTemporalConfig(BaseModel):
     include_trend_strength: bool = True  # R² of linear trend fit
     include_detrended_variance: bool = True
 
+    # Event detection features (Phase 1 extension)
+    include_event_counts: bool = True  # Spikes, bursts, zero-crossings
+    include_time_to_event: bool = True  # Time to threshold crossings
+
+    # Rolling window statistics (Phase 1 CRITICAL: multi-timescale analysis)
+    include_rolling_windows: bool = True
+    rolling_window_fractions: List[float] = Field(
+        default_factory=lambda: [0.05, 0.10, 0.20]
+    )
+
     # Autocorrelation settings
     autocorr_max_lag: int = Field(default=20, ge=1, le=100)
+
+    # Phase 2 extension: PACF (Partial Autocorrelation Function)
+    include_pacf: bool = False  # Partial autocorrelation (opt-in, moderate cost)
+    pacf_max_lag: int = Field(default=10, ge=1, le=50)  # PACF lag count
 
     @field_validator('autocorr_max_lag')
     @classmethod
@@ -181,6 +202,14 @@ class SDFTemporalConfig(BaseModel):
         """Ensure max lag is reasonable."""
         if v < 1 or v > 100:
             raise ValueError("autocorr_max_lag must be between 1 and 100")
+        return v
+
+    @field_validator('pacf_max_lag')
+    @classmethod
+    def validate_pacf_lag(cls, v: int) -> int:
+        """Ensure PACF lag is reasonable."""
+        if v < 1 or v > 50:
+            raise ValueError("pacf_max_lag must be between 1 and 50")
         return v
 
 
@@ -517,6 +546,56 @@ class SDFCausalityConfig(BaseModel):
         return v
 
 
+class SDFNonlinearConfig(BaseModel):
+    """
+    Nonlinear dynamics feature configuration (Phase 1 extension).
+
+    Features: Recurrence Quantification Analysis (RQA), correlation dimension
+
+    These features are computationally expensive (O(T²)) and use temporal
+    subsampling for efficiency. Default: disabled (opt-in).
+
+    Note: These are trajectory-level features computed once per realization.
+    """
+
+    enabled: bool = False  # Expensive, opt-in by default
+
+    # Recurrence Quantification Analysis
+    include_recurrence: bool = True  # RQA metrics (if enabled)
+    rqa_epsilon: float = Field(default=0.1, ge=0.01, le=1.0)  # Recurrence threshold
+    rqa_embedding_dim: int = Field(default=3, ge=2, le=10)  # Phase space dimension
+    rqa_tau: int = Field(default=1, ge=1, le=10)  # Time delay
+    rqa_subsample_factor: int = Field(default=10, ge=1, le=50)  # Temporal subsampling
+
+    # Correlation dimension
+    include_correlation_dim: bool = True  # Attractor dimension (if enabled)
+    corr_dim_embedding_dim: int = Field(default=5, ge=2, le=10)
+    corr_dim_tau: int = Field(default=1, ge=1, le=10)
+    corr_dim_subsample_factor: int = Field(default=10, ge=1, le=50)
+
+    # Phase 2 extension: Permutation entropy
+    include_permutation_entropy: bool = False  # Ordinal pattern complexity (opt-in)
+    perm_entropy_embedding_dim: int = Field(default=3, ge=2, le=7)
+    perm_entropy_tau: int = Field(default=1, ge=1, le=10)
+    perm_entropy_subsample_factor: int = Field(default=10, ge=1, le=50)
+
+    @field_validator('rqa_epsilon')
+    @classmethod
+    def validate_rqa_epsilon(cls, v: float) -> float:
+        """Ensure RQA epsilon is reasonable."""
+        if v < 0.01 or v > 1.0:
+            raise ValueError("rqa_epsilon must be between 0.01 and 1.0")
+        return v
+
+    @field_validator('rqa_subsample_factor', 'corr_dim_subsample_factor', 'perm_entropy_subsample_factor')
+    @classmethod
+    def validate_subsample(cls, v: int) -> int:
+        """Ensure subsampling factor is reasonable."""
+        if v < 1 or v > 50:
+            raise ValueError("Subsample factor must be between 1 and 50")
+        return v
+
+
 class SDFInvariantDriftConfig(BaseModel):
     """
     Invariant drift feature configuration.
@@ -615,6 +694,7 @@ class SDFConfig(BaseModel):
     cross_channel: SDFCrossChannelConfig = Field(default_factory=SDFCrossChannelConfig)
     causality: SDFCausalityConfig = Field(default_factory=SDFCausalityConfig)
     invariant_drift: SDFInvariantDriftConfig = Field(default_factory=SDFInvariantDriftConfig)
+    nonlinear: SDFNonlinearConfig = Field(default_factory=SDFNonlinearConfig)  # Phase 1 extension
 
     # Aggregation settings
     per_channel: bool = True  # Extract features per-channel or aggregate across channels
@@ -666,6 +746,9 @@ class SDFConfig(BaseModel):
                 self.spatial.include_hessian_trace,
                 self.spatial.include_hessian_det,
             ])
+            # Phase 1 extension: percentiles
+            if self.spatial.include_percentiles:
+                base_count += 5  # 5th, 25th, 50th, 75th, 95th percentiles
             count += base_count * len(self.temporal_aggregation)
 
         # Spectral (multiscale FFT + other features)
@@ -727,6 +810,14 @@ class SDFConfig(BaseModel):
                 self.temporal.include_trend_strength,
                 self.temporal.include_detrended_variance,
             ])
+            # Phase 1 extensions
+            if self.temporal.include_event_counts:
+                base_count += 3  # num_spikes, num_bursts, num_zero_crossings
+            if self.temporal.include_time_to_event:
+                base_count += 2  # time_to_0.5x, time_to_2.0x
+            if self.temporal.include_rolling_windows:
+                # 6 features per window × 3 windows = 18 features
+                base_count += 6 * len(self.temporal.rolling_window_fractions)
             count += base_count * len(self.realization_aggregation)
 
         # Structural, Physics, Morphological (similar pattern)
@@ -837,6 +928,21 @@ class SDFConfig(BaseModel):
 
             # Multiply by realization aggregation (trajectory-level features)
             count += drift_base_count * len(self.realization_aggregation)
+
+        # Nonlinear (Phase 1 extension, trajectory-level, expensive)
+        if self.nonlinear is not None and self.nonlinear.enabled:
+            nonlinear_count = 0
+
+            # RQA metrics: 4 features (recurrence_rate, determinism, laminarity, entropy)
+            if self.nonlinear.include_recurrence:
+                nonlinear_count += 4
+
+            # Correlation dimension: 1 feature
+            if self.nonlinear.include_correlation_dim:
+                nonlinear_count += 1
+
+            # Multiply by realization aggregation (trajectory-level features)
+            count += nonlinear_count * len(self.realization_aggregation)
 
         return count
 

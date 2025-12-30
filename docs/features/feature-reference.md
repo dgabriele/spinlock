@@ -1,19 +1,26 @@
-# SDF Feature Reference v2.0
+# SDF Feature Reference v2.0 + Phase 1/2 Extensions
 
 Complete reference for all Summary Descriptor Features (SDF) computed by Spinlock.
 
+**Total Features**: 221 (baseline 174 + Phase 1: 33 + Phase 2: 14)
+
 ## Table of Contents
 
-### v1.0 Categories
-1. [Spatial Statistics](#spatial-statistics) (19 features)
-2. [Spectral Features](#spectral-features) (27 features)
-3. [Temporal Dynamics](#temporal-dynamics) (13 features)
+### v1.0 Categories (Baseline)
+1. [Spatial Statistics](#spatial-statistics) (26 baseline + 8 extensions = 34 features)
+2. [Spectral Features](#spectral-features) (31 features)
+3. [Temporal Dynamics](#temporal-dynamics) (13 baseline + 33 extensions = 44 features)
 
 ### v2.0 Categories (Operator-Aware Features)
-4. [Operator Sensitivity](#operator-sensitivity) (10 features, trajectory-level)
-5. [Cross-Channel Interactions](#cross-channel-interactions) (10 features, per-timestep)
-6. [Causality/Directionality](#causalitydirectionality) (14 features, trajectory-level)
-7. [Invariant Drift](#invariant-drift) (60 features, trajectory-level)
+4. [Operator Sensitivity](#operator-sensitivity) (12 features, trajectory-level)
+5. [Cross-Channel Interactions](#cross-channel-interactions) (12 features, per-timestep)
+6. [Causality/Directionality](#causalitydirectionality) (15 features, trajectory-level)
+7. [Invariant Drift](#invariant-drift) (64 features, trajectory-level)
+8. [Nonlinear Dynamics](#nonlinear-dynamics) (8 features, trajectory-level)
+
+### Extensions
+- **Phase 1** (High-Impact, 33 features): Percentiles, event counts, time-to-event, rolling windows, RQA, correlation dimension
+- **Phase 2** (Research, 14 features): PACF, permutation entropy, histogram/occupancy
 
 ---
 
@@ -150,6 +157,53 @@ Computed using Laplacian operator (∇²u).
 - **Range**: 0 to ∞ (typically 0-20)
 - **Interpretation**: Energy in curvature field (normalized per pixel)
 - **Use**: Measures pattern complexity; high = many small-scale features
+
+### Phase 1 Extension: Percentiles (5 features)
+
+Capture distribution shape beyond mean/variance:
+
+**`percentile_5`**, **`percentile_25`**, **`percentile_50`**, **`percentile_75`**, **`percentile_95`**
+- **Formula**: `Q_p = value at pth percentile`
+- **Range**: Depends on input data (same scale as field values)
+- **Interpretation**: Distribution quantiles
+  - Q₅, Q₉₅: Extreme tails (outlier boundaries)
+  - Q₂₅, Q₇₅: Interquartile boundaries
+  - Q₅₀: Median (robust central tendency)
+- **Use**:
+  - Distribution shape characterization (skewness via Q₂₅-Q₅₀-Q₇₅ spacing)
+  - Robust outlier detection (Q₅/Q₉₅ vs min/max)
+  - Heavy-tailed vs light-tailed patterns
+- **Advantage**: More comprehensive than IQR alone; captures tail behavior
+
+### Phase 2 Extension: Histogram/Occupancy (3 features)
+
+Characterize state space coverage and occupancy patterns:
+
+**`histogram_entropy`**
+- **Formula**: `H = -Σᵢ pᵢ log(pᵢ)` where `pᵢ = count in bin i / total count`
+- **Range**: 0 to log(num_bins) (default: 0 to log(16) ≈ 2.77)
+- **Interpretation**: Uniformity of state space coverage
+  - 0: All values in single bin (delta distribution)
+  - log(num_bins): Perfectly uniform across bins
+- **Use**: Distinguishes unimodal vs multimodal distributions
+
+**`histogram_peak_fraction`**
+- **Formula**: `max(pᵢ)` - fraction in most populated bin
+- **Range**: 0 to 1
+- **Interpretation**: Concentration in dominant mode
+  - High (>0.5): Strongly concentrated (narrow distribution)
+  - Low (<0.1): Dispersed (broad distribution)
+- **Use**: Detects dominant states vs diffuse patterns
+
+**`histogram_effective_bins`**
+- **Formula**: Count of bins with > 1% of mass
+- **Range**: 1 to num_bins (default: 1 to 16)
+- **Interpretation**: Effective support size
+  - Low (1-3): Few distinct states
+  - High (10-16): Many distinct states
+- **Use**: Quantifies state space utilization
+
+**Note**: Histogram features use 16 bins by default (configurable)
 
 ---
 
@@ -370,9 +424,207 @@ Computed from temporal evolution of trajectories. **Requires T > 1 timesteps.**
 - **Interpretation**: Fluctuations around trend
 - **Use**: Variability after accounting for drift
 
+### Phase 1 Extension: Event Counts (3 features)
+
+Quantify extreme events and threshold crossings:
+
+**`event_count_spikes`**
+- **Formula**: Count of timesteps where `|u(t) - mean| > k * std` (default: k=2.0)
+- **Range**: 0 to T (number of timesteps)
+- **Interpretation**: Number of outlier events
+- **Use**: Detects rare large-amplitude fluctuations
+
+**`event_count_bursts`**
+- **Formula**: Count of sustained periods (≥3 consecutive timesteps) above threshold
+- **Range**: 0 to T/3
+- **Interpretation**: Number of sustained extreme events
+- **Use**: Distinguishes transient spikes from prolonged excursions
+
+**`event_count_zero_crossings`**
+- **Formula**: Count of sign changes in `u(t) - mean`
+- **Range**: 0 to T-1
+- **Interpretation**: Number of oscillation cycles (× 2)
+- **Use**: Detects oscillatory behavior; low = monotonic, high = high-frequency oscillations
+
+### Phase 1 Extension: Time-to-Event (2 features)
+
+Measure time until critical transitions:
+
+**`time_to_event_0.5x`**, **`time_to_event_2.0x`**
+- **Formula**: First timestep where `|u(t)| crosses threshold * u(0)|`
+  - 0.5x: Time to 50% decrease (decay)
+  - 2.0x: Time to 200% increase (growth)
+- **Range**: 1 to T (or T if never crossed)
+- **Interpretation**: Characteristic timescale for transitions
+  - Early crossing: Fast dynamics
+  - Late/no crossing: Slow or stationary dynamics
+- **Use**:
+  - Classify decay vs growth operators
+  - Measure transient vs asymptotic timescales
+  - Detect bifurcations (threshold never crossed)
+
+### Phase 1 Extension: Rolling Windows (18 features)
+
+Multi-timescale analysis across different window sizes:
+
+**Window Sizes**: 5%, 10%, 20% of total trajectory length T
+**Statistics per Window**: mean, std, max, min, range, peak_time
+
+**`rolling_mean_w5`**, **`rolling_mean_w10`**, **`rolling_mean_w20`**
+- **Formula**: Mean of trajectory within sliding window
+- **Range**: Same as field values
+- **Interpretation**: Average behavior at different timescales
+- **Use**: Detects transient vs sustained dynamics
+
+**`rolling_std_w5`**, **`rolling_std_w10`**, **`rolling_std_w20`**
+- **Formula**: Standard deviation within sliding window
+- **Range**: 0 to ∞
+- **Interpretation**: Variability at different timescales
+- **Use**: Identifies bursty vs smooth dynamics
+
+**`rolling_max_w5`**, **`rolling_max_w10`**, **`rolling_max_w20`**
+- **Formula**: Maximum value within sliding window
+- **Range**: Depends on field values
+- **Interpretation**: Peak intensity at different timescales
+- **Use**: Detects extreme events at multiple scales
+
+**`rolling_min_w5`**, **`rolling_min_w10`**, **`rolling_min_w20`**
+- **Formula**: Minimum value within sliding window
+- **Range**: Depends on field values
+- **Interpretation**: Minimum intensity at different timescales
+
+**`rolling_range_w5`**, **`rolling_range_w10`**, **`rolling_range_w20`**
+- **Formula**: `rolling_max - rolling_min` within window
+- **Range**: 0 to ∞
+- **Interpretation**: Dynamic range at different timescales
+- **Use**: Measures volatility/variability at multiple scales
+
+**`rolling_peak_time_w5`**, **`rolling_peak_time_w10`**, **`rolling_peak_time_w20`**
+- **Formula**: Timestep of maximum `rolling_mean` value
+- **Range**: 0 to T-window_size
+- **Interpretation**: When peak activity occurs
+- **Use**: Detects early vs late vs sustained peaks
+
+**Critical Use Case**: Distinguishes transient (early peak in w5) from sustained (late peak in w20) dynamics
+
+### Phase 2 Extension: PACF (10 features)
+
+Partial autocorrelation function isolates direct temporal correlations:
+
+**`pacf_lag_1`** through **`pacf_lag_10`**
+- **Formula**: PACF(k) via Yule-Walker approximation (Levinson-Durbin recursion)
+- **Range**: -1 to +1 (like correlation)
+- **Interpretation**: Direct correlation at lag k (removing intermediate effects)
+  - PACF(1): Same as ACF(1) (direct lag-1 correlation)
+  - PACF(k): Correlation at lag k after removing lags 1..(k-1)
+- **Use**:
+  - Model order selection (PACF cutoff indicates AR order)
+  - Distinguish AR vs MA processes
+  - Detect periodic patterns vs exponential decay
+- **Example**:
+  - AR(1): PACF(1) ≠ 0, PACF(k>1) ≈ 0 (exponential decay)
+  - AR(2): PACF(1), PACF(2) ≠ 0, PACF(k>2) ≈ 0 (oscillations)
+  - White noise: All PACF ≈ 0
+
+**Note**: PACF complements autocorrelation decay time for richer temporal characterization
+
 ---
 
-## Feature Aggregation
+## Nonlinear Dynamics
+
+**Category:** Trajectory-level (requires T>1)
+**Feature Count:** 8 (Phase 1: 5, Phase 2: 1, reserved: 2)
+**Purpose:** Detect complex dynamics, chaos, and hidden temporal patterns
+
+**Note**: All nonlinear features use temporal subsampling (default: factor of 10) to reduce O(T²) computational cost.
+
+### Phase 1: Recurrence Quantification Analysis (4 features)
+
+Analyze recurrence plots to detect hidden periodicities and structures:
+
+**`rqa_recurrence_rate`**
+- **Formula**: `RR = (1/N²) Σᵢⱼ R[i,j]` where R is recurrence matrix
+- **Range**: 0 to 1
+- **Interpretation**: Fraction of recurrent points in phase space
+  - Low (<0.01): Non-recurrent, chaotic
+  - Medium (0.01-0.1): Weakly recurrent
+  - High (>0.1): Strongly recurrent, periodic
+- **Use**: Measures phase space recurrence density
+
+**`rqa_determinism`**
+- **Formula**: `DET = Σ(l≥l_min) l*P(l) / Σ(l≥1) l*P(l)` where P(l) = diagonal line length distribution
+- **Range**: 0 to 1
+- **Interpretation**: Fraction of recurrence points in diagonal structures
+  - High: Deterministic dynamics
+  - Low: Stochastic/chaotic dynamics
+- **Use**: Distinguishes deterministic vs random processes
+
+**`rqa_laminarity`**
+- **Formula**: `LAM = Σ(v≥v_min) v*P(v) / Σ(v≥1) v*P(v)` where P(v) = vertical line length distribution
+- **Range**: 0 to 1
+- **Interpretation**: Fraction of recurrence points in vertical structures
+  - High: Laminar states (trapping regions)
+  - Low: No trapping
+- **Use**: Detects intermittency, trapping in attractors
+
+**`rqa_entropy`**
+- **Formula**: `ENTR = -Σ p(l) log(p(l))` where p(l) = normalized diagonal line distribution
+- **Range**: 0 to ∞ (typically 0-5)
+- **Interpretation**: Shannon entropy of diagonal line lengths
+  - High: Complex recurrence structure
+  - Low: Simple recurrence structure
+- **Use**: Quantifies recurrence pattern complexity
+
+### Phase 1: Correlation Dimension (1 feature)
+
+Estimate attractor complexity via Grassberger-Procaccia algorithm:
+
+**`correlation_dimension`**
+- **Formula**: `D₂ ≈ ∂log(C(r))/∂log(r)` where C(r) = correlation integral
+- **Range**: 0 to embedding_dim (typically 0.5-5)
+- **Interpretation**: Fractal dimension of attractor
+  - D₂ ≈ 0: Fixed point
+  - D₂ ≈ 1: Limit cycle
+  - D₂ ≈ 2-3: Torus, strange attractor
+  - D₂ ≈ embedding_dim: High-dimensional chaos or noise
+- **Use**: Characterizes attractor complexity
+- **Examples**:
+  - Lorenz attractor: D₂ ≈ 2.05
+  - Rössler attractor: D₂ ≈ 1.99
+  - White noise: D₂ → embedding_dim
+
+**Computational Note**: Uses phase space embedding with τ=1, dim=5, subsampled by factor of 10
+
+### Phase 2: Permutation Entropy (1 feature)
+
+Measure ordinal pattern complexity:
+
+**`permutation_entropy`**
+- **Formula**: `H_p = -Σ p(π) log(p(π))` normalized by log(d!) where π = ordinal patterns of length d
+- **Range**: 0 to 1 (normalized)
+- **Interpretation**: Complexity of ordinal patterns
+  - 0: Perfectly regular (constant or monotonic)
+  - ~0.5: Partially predictable
+  - ~1: Random/chaotic (all patterns equally likely)
+- **Use**: Robust entropy measure for noisy data
+- **Advantages**:
+  - Robust to amplitude scaling
+  - Captures temporal ordering structure
+  - Less sensitive to noise than Shannon entropy
+- **Example**:
+  - Sine wave: H_p ≈ 0.2-0.4 (regular pattern)
+  - Chaotic time series: H_p ≈ 0.8-1.0
+  - White noise: H_p ≈ 1.0
+
+**Parameters**: embedding_dim=3 (default), τ=1, subsample_factor=10
+
+---
+
+## Operator Sensitivity
+
+**Category:** Trajectory-level (requires operator access during extraction)
+**Feature Count:** 12 features
+**Purpose:** Characterize neural operator input-output response
 
 ### Realization Aggregation
 

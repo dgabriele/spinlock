@@ -1,0 +1,276 @@
+# =============================================================================
+# Feature Extraction Configuration - Phase 1 + Phase 2 Extensions
+# Test Dataset: test_2k_phase1_phase2
+# Purpose: Extract all Phase 1 + Phase 2 features for validation
+# =============================================================================
+
+metadata:
+  name: "test_2k_phase1_phase2_features"
+  description: |
+    SDF feature extraction with Phase 1 + Phase 2 extensions enabled.
+
+    Phase 1 features (high-impact, enabled by default):
+    - Percentiles: 5 features (5%, 25%, 50%, 75%, 95%)
+    - Event counts: 3 features (spikes, bursts, zero-crossings)
+    - Time-to-event: 2 features (0.5×, 2.0× threshold crossings)
+    - Rolling windows: 18 features (6 stats × 3 windows)
+
+    Phase 2 features (research, opt-in):
+    - PACF: 10 features (partial autocorrelation lags 1-10)
+    - Permutation entropy: 1 feature (ordinal pattern complexity)
+    - Histogram: 3 features (entropy, peak fraction, effective bins)
+
+    Total additional features: 42 (Phase 1: 28, Phase 2: 14)
+  author: "Spinlock Team"
+  created: "2025-12-30"
+  purpose: |
+    Validate Phase 1 and Phase 2 feature extraction on 2K test dataset before
+    applying to full 10K production dataset.
+
+# =============================================================================
+# Root Configuration
+# =============================================================================
+
+input_dataset: "datasets/test_2k_phase1_phase2.h5"
+output_dataset: null  # Write in-place
+
+batch_size: 32
+device: "cuda"
+overwrite: true
+max_samples: null  # All 2000 samples
+
+num_workers: 4
+cache_trajectories: true
+
+# =============================================================================
+# SDF Configuration (v2.0 + Phase 1 + Phase 2)
+# =============================================================================
+
+sdf:
+  # ---------------------------------------------------------------------------
+  # Spatial Statistics (Phase 1 + Phase 2 extensions)
+  # ---------------------------------------------------------------------------
+  spatial:
+    enabled: true
+
+    # v2.0 features (26 features)
+    include_mean: true
+    include_variance: true
+    include_std: true
+    include_skewness: true
+    include_kurtosis: true
+    include_min: true
+    include_max: true
+    include_range: true
+    include_iqr: true
+    include_mad: true
+    include_gradient_magnitude: true
+    include_gradient_x_mean: true
+    include_gradient_y_mean: true
+    include_gradient_anisotropy: true
+    include_laplacian: true
+    include_hessian_trace: false
+    include_hessian_det: false
+
+    # Phase 1: Percentiles (5 features)
+    include_percentiles: true  # NEW
+
+    # Phase 2: Histogram/occupancy (3 features)
+    include_histogram: true  # NEW
+    histogram_num_bins: 16
+
+  # ---------------------------------------------------------------------------
+  # Spectral/Frequency Features
+  # ---------------------------------------------------------------------------
+  spectral:
+    enabled: true
+    num_fft_scales: 5
+    include_fft_power: true
+    include_dominant_freq: true
+    include_dominant_freq_magnitude: true
+    include_spectral_centroid_x: true
+    include_spectral_centroid_y: true
+    include_spectral_bandwidth: true
+    include_low_freq_ratio: true
+    include_mid_freq_ratio: true
+    include_high_freq_ratio: true
+    include_spectral_flatness: true
+    include_spectral_rolloff: true
+    include_spectral_anisotropy: true
+    include_spectral_orientation: false
+
+  # ---------------------------------------------------------------------------
+  # Temporal Dynamics (Phase 1 + Phase 2 extensions)
+  # ---------------------------------------------------------------------------
+  temporal:
+    enabled: true
+
+    # v2.0 features (13 features)
+    include_energy_growth_rate: true
+    include_energy_growth_accel: true
+    include_variance_growth_rate: true
+    include_mean_growth_rate: false
+    include_temporal_freq_dominant: true
+    include_oscillation_amplitude: true
+    include_oscillation_period: true
+    include_autocorr_decay_time: true
+    include_lyapunov_approx: true
+    include_trajectory_smoothness: true
+    include_regime_switches: true
+    include_final_to_initial_ratio: true
+    include_trend_strength: true
+    include_stationarity_test: false
+    include_detrended_variance: true
+    autocorr_max_lag: 20
+
+    # Phase 1: Event counts (3 features)
+    include_event_counts: true  # NEW
+
+    # Phase 1: Time-to-event (2 features)
+    include_time_to_event: true  # NEW
+
+    # Phase 1: Rolling windows (18 features)
+    include_rolling_windows: true  # NEW
+    rolling_window_fractions: [0.05, 0.10, 0.20]
+
+    # Phase 2: PACF (10 features)
+    include_pacf: true  # NEW
+    pacf_max_lag: 10
+
+  # ---------------------------------------------------------------------------
+  # Cross-Channel Interactions
+  # ---------------------------------------------------------------------------
+  cross_channel:
+    enabled: true
+    num_eigen_top: 3
+    include_eigen_values: true
+    include_eigen_trace: true
+    include_condition_number: true
+    include_participation_ratio: true
+    include_corr_mean: true
+    include_corr_max: true
+    include_corr_min: true
+    include_corr_std: true
+    include_mutual_info: true
+    mi_num_bins: 16
+    include_coherence: false
+    max_channels_for_full_corr: 16
+
+  # ---------------------------------------------------------------------------
+  # Causality/Directionality
+  # ---------------------------------------------------------------------------
+  causality:
+    enabled: true
+    complexity_level: "fast"
+    max_lag_correlation: 3
+    max_lag_prediction: 2
+    include_time_irreversibility: true
+    include_spatial_flow: true
+    include_transfer_entropy: false
+    include_granger_causality: false
+
+  # ---------------------------------------------------------------------------
+  # Invariant Drift
+  # ---------------------------------------------------------------------------
+  invariant_drift:
+    enabled: true
+    include_L1_drift: true
+    include_L2_drift: true
+    include_Linf_drift: true
+    include_entropy_drift: true
+    include_tv_drift: true
+    num_scales: 3
+    gaussian_sigma: 2.0
+    entropy_num_bins: 32
+    include_mass_drift: false
+    include_energy_drift: false
+    include_divergence_drift: false
+
+  # ---------------------------------------------------------------------------
+  # Operator Sensitivity
+  # ---------------------------------------------------------------------------
+  operator_sensitivity:
+    enabled: true
+    include_lipschitz: true
+    lipschitz_epsilon_scales: [0.0001, 0.001, 0.01]
+    include_gain_curve: true
+    gain_scale_factors: [0.5, 0.75, 1.25, 1.5]
+    include_linearity_metrics: true
+
+  # ---------------------------------------------------------------------------
+  # Nonlinear Dynamics (Phase 1 + Phase 2 extensions)
+  # ---------------------------------------------------------------------------
+  nonlinear:
+    enabled: true  # Phase 1/2 nonlinear features
+
+    # Phase 1: RQA (4 features)
+    include_recurrence: true
+    rqa_epsilon: 0.1
+    rqa_embedding_dim: 3
+    rqa_tau: 1
+    rqa_subsample_factor: 10  # Every 10th timestep (500→50)
+
+    # Phase 1: Correlation dimension (1 feature)
+    include_correlation_dim: true
+    corr_dim_embedding_dim: 5
+    corr_dim_tau: 1
+    corr_dim_subsample_factor: 10
+
+    # Phase 2: Permutation entropy (1 feature)
+    include_permutation_entropy: true  # NEW
+    perm_entropy_embedding_dim: 3
+    perm_entropy_tau: 1
+    perm_entropy_subsample_factor: 10
+
+  # ---------------------------------------------------------------------------
+  # v1.0 Categories (disabled)
+  # ---------------------------------------------------------------------------
+  distributional:
+    enabled: false
+
+  structural:
+    enabled: false
+
+  physics:
+    enabled: false
+
+  morphological:
+    enabled: false
+
+  multiscale:
+    enabled: false
+
+  # ---------------------------------------------------------------------------
+  # Aggregation Settings
+  # ---------------------------------------------------------------------------
+  per_channel: true
+  temporal_aggregation: ["mean", "std"]
+  realization_aggregation: ["mean", "std", "cv"]
+
+# =============================================================================
+# Expected Feature Count
+# =============================================================================
+#
+# v2.0 baseline: ~174 features
+# Phase 1 additions:
+#   - Spatial percentiles: +5
+#   - Temporal event counts: +3
+#   - Temporal time-to-event: +2
+#   - Temporal rolling windows: +18
+#   - Nonlinear RQA: +4
+#   - Nonlinear correlation dim: +1
+#   Total Phase 1: +33 features
+#
+# Phase 2 additions:
+#   - Spatial histogram: +3
+#   - Temporal PACF: +10
+#   - Nonlinear permutation entropy: +1
+#   Total Phase 2: +14 features
+#
+# Grand total: 174 + 33 + 14 = 221 features
+#
+# Extraction time estimate:
+#   - GPU (batch_size=32): ~15-25 minutes for 2K samples
+#   - Includes expensive nonlinear features with subsampling
+#
+# =============================================================================

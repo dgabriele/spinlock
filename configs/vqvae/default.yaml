@@ -1,0 +1,79 @@
+# Default VQ-VAE Training Configuration
+# This is a template - copy and customize for specific experiments
+
+# Task
+task: "train_vqvae"
+
+# Input/Output
+input_path: null  # Path to HDF5 dataset (required)
+output_dir: null  # Output directory for checkpoints (required)
+
+# Feature Selection
+feature_type: "aggregated"  # "per_timestep", "per_trajectory", or "aggregated"
+feature_family: "sdf"  # Feature family to use (e.g., "sdf")
+
+# Category Discovery
+category_assignment: "auto"  # "auto" (clustering) or "manual"
+num_categories_auto: null  # null = auto-determine via silhouette, or specify K
+min_features_per_category: 3  # Minimum features per category
+max_clusters: 25  # Maximum number of clusters to consider
+orthogonality_target: 0.15  # Target inter-category orthogonality (0-1, lower = more orthogonal)
+
+# Model Architecture
+group_embedding_dim: 64  # Fixed embedding size per category
+group_hidden_dim: 128  # Hidden dimension for category MLPs (typically 2× group_embedding_dim)
+
+# Hierarchical Levels (null = use intelligent defaults)
+factors: null
+# Or explicit override:
+# factors:
+#   - {latent_dim: null, num_tokens: null}  # L0: Coarse (auto-computed)
+#   - {latent_dim: null, num_tokens: null}  # L1: Medium (auto-computed)
+#   - {latent_dim: null, num_tokens: null}  # L2: Fine (auto-computed)
+
+# Training Hyperparameters
+learning_rate: 0.0005
+epochs: 500
+batch_size: 512
+val_batch_size: 512  # Validation batch size (null = same as batch_size)
+val_every_n_epochs: 5  # Validate every N epochs (reduces overhead)
+
+# Early Stopping
+early_stopping_patience: 100
+early_stopping_min_delta: 0.001
+
+# Loss Weights
+commitment_cost: 0.45  # VQ commitment loss weight
+orthogonality_weight: 0.1  # Codebook diversity loss weight
+informativeness_weight: 0.1  # Partial decoder loss weight
+topo_weight: 0.3  # Topographic similarity loss weight
+topo_samples: 512  # Number of samples for topographic loss computation
+
+# Codebook Management
+use_ema: true  # Use EMA for codebook updates
+ema_decay: 0.99  # EMA decay rate
+dead_code_reset_interval: 100  # Reset dead codes every N epochs (0 = disable)
+dead_code_threshold: 10.0  # Percentile threshold for dead code detection (0-100)
+dead_code_max_reset_fraction: 0.25  # Max fraction of codebook to reset at once
+
+# Optimization
+use_torch_compile: true  # Use torch.compile() for JIT compilation (~30-40% speedup)
+
+# Checkpointing
+checkpoint_dir: null  # Directory for checkpoints (null = output_dir/checkpoints)
+save_every: null  # Save checkpoint every N epochs (null = only save best)
+
+# Resuming
+resume_from: null  # Path to checkpoint to resume from (null = train from scratch)
+
+# Normalization
+normalization_method: "standard"  # "standard" (zero-mean, unit-variance) or "robust" (MAD)
+
+# Device
+device: "cuda"  # "cuda" or "cpu"
+
+# Reproducibility
+random_seed: 42
+
+# Logging
+verbose: true

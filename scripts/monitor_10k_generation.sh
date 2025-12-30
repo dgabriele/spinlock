@@ -44,7 +44,7 @@ echo "timestamp,elapsed_sec,ram_used_gb,ram_percent,gpu_mem_mb,gpu_util_percent,
 
 # Start dataset generation in background
 echo "Starting dataset generation..."
-PYTHONUNBUFFERED=1 poetry run python scripts/spinlock.py generate \
+PYTHONUNBUFFERED=1 poetry run python scripts/cli.py generate \
     --config "$CONFIG_FILE" \
     > "$LOG_FILE" 2>&1 &
 

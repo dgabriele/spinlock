@@ -22,6 +22,7 @@ from spinlock.cli import (
     VisualizeCommand,
     VisualizeICTypesCommand,
     ExtractFeaturesCommand,
+    TrainVQVAECommand,
 )
 
 
@@ -67,6 +68,7 @@ For more help on a specific command:
         VisualizeCommand(),
         VisualizeICTypesCommand(),
         ExtractFeaturesCommand(),
+        TrainVQVAECommand(),
     ]
 
     for command in commands:

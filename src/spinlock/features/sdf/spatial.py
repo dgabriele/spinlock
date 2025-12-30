@@ -118,6 +118,17 @@ class SpatialFeatureExtractor:
         if include_all or (config is not None and config.include_mad):
             features['spatial_mad'] = self._compute_mad(fields_flat)
 
+        # Percentiles (distribution shape characterization)
+        if include_all or (config is not None and config.include_percentiles):
+            percentile_features = self._compute_percentiles(fields_flat)
+            features.update(percentile_features)  # Add all percentile_X features
+
+        # Phase 2 extension: Histogram/occupancy (state space coverage)
+        if include_all or (config is not None and config.include_histogram):
+            num_bins = config.histogram_num_bins if config is not None else 16
+            histogram_features = self._compute_histogram_features(fields_flat, num_bins=num_bins)
+            features.update(histogram_features)
+
         # Gradients
         if include_all or (config is not None and config.include_gradient_magnitude):
             grad_mag = self._compute_gradient_magnitude(fields_flat)
@@ -262,6 +273,100 @@ class SpatialFeatureExtractor:
         mad = torch.median(torch.abs(x_flat - median), dim=2).values  # [NT, C]
 
         return mad
+
+    def _compute_percentiles(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Compute distribution percentiles (5%, 25%, 50%, 75%, 95%).
+
+        Returns percentiles as a dictionary for better distribution characterization
+        beyond mean/variance. Useful for detecting asymmetry and tail behavior.
+
+        Args:
+            x: Input tensor [NT, C, H, W]
+
+        Returns:
+            Dictionary mapping percentile names to tensors [NT, C]
+        """
+        # Flatten spatial dimensions
+        x_flat = x.flatten(start_dim=2)  # [NT, C, H*W]
+
+        # Define percentile levels
+        percentiles = [5, 25, 50, 75, 95]
+
+        # Compute all percentiles in one call for efficiency
+        # torch.quantile expects quantiles in [0, 1]
+        quantiles = torch.tensor([p / 100.0 for p in percentiles], device=x.device)
+        # Result shape: [num_quantiles, NT, C]
+        percentile_values = torch.quantile(x_flat, quantiles, dim=2)
+
+        # Build dictionary
+        result = {}
+        for i, p in enumerate(percentiles):
+            result[f'percentile_{p}'] = percentile_values[i]  # [NT, C]
+
+        return result
+
+    def _compute_histogram_features(
+        self,
+        x: torch.Tensor,
+        num_bins: int = 16
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute histogram/occupancy features (state space coverage).
+
+        Measures how values are distributed across bins, capturing:
+        - Histogram entropy: Uniformity of state space coverage
+        - Peak bin fraction: Dominance of most common value range
+        - Effective bins: Number of bins with significant mass
+
+        Args:
+            x: Input tensor [NT, C, H, W]
+            num_bins: Number of histogram bins (default: 16)
+
+        Returns:
+            Dictionary mapping feature names to tensors [NT, C]
+        """
+        NT, C, H, W = x.shape
+
+        # Flatten spatial dimensions
+        x_flat = x.flatten(start_dim=2)  # [NT, C, H*W]
+
+        result = {}
+
+        # Compute histogram for each (n, c) pair
+        for nt in range(NT):
+            for c in range(C):
+                values = x_flat[nt, c]  # [H*W]
+
+                # Compute histogram (bins between min and max)
+                hist = torch.histc(values, bins=num_bins, min=values.min().item(), max=values.max().item())
+                hist = hist / hist.sum()  # Normalize to probabilities
+
+                # 1. Histogram entropy: -sum(p * log(p))
+                # High entropy → uniform distribution, low entropy → peaked distribution
+                nonzero_bins = hist[hist > 1e-10]
+                if len(nonzero_bins) > 0:
+                    entropy = -(nonzero_bins * torch.log(nonzero_bins)).sum()
+                else:
+                    entropy = torch.tensor(0.0, device=x.device)
+
+                # 2. Peak bin fraction: Mass in most populated bin
+                peak_fraction = hist.max()
+
+                # 3. Effective bins: Number of bins with > 1% of mass
+                effective_bins = (hist > 0.01).sum().float()
+
+                # Store features (accumulate across NT, C for efficiency)
+                if nt == 0 and c == 0:
+                    result['histogram_entropy'] = torch.zeros(NT, C, device=x.device)
+                    result['histogram_peak_fraction'] = torch.zeros(NT, C, device=x.device)
+                    result['histogram_effective_bins'] = torch.zeros(NT, C, device=x.device)
+
+                result['histogram_entropy'][nt, c] = entropy
+                result['histogram_peak_fraction'][nt, c] = peak_fraction
+                result['histogram_effective_bins'][nt, c] = effective_bins
+
+        return result
 
     # =========================================================================
     # Gradients

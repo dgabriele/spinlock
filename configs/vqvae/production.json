@@ -1,0 +1,61 @@
+{
+  "_comment": "Production VQ-VAE training config - adapted from unisim agent_training_v1",
+
+  "input_path": "datasets/test_4k_phase1_phase2.h5",
+  "output_dir": "checkpoints/vqvae/production_4k",
+
+  "feature_type": "aggregated",
+  "feature_family": "sdf",
+
+  "checkpoint_use_composite": true,
+  "checkpoint_loss_weight": 1.0,
+  "checkpoint_topo_weight": 0.5,
+  "checkpoint_quality_weight": 0.5,
+
+  "category_assignment": "auto",
+  "num_categories_auto": null,
+  "orthogonality_target": 0.25,
+  "min_features_per_category": 3,
+  "max_clusters": 50,
+
+  "embedding_dim": 126,
+
+  "category_factors": null,
+  "factors": null,
+
+  "learning_rate": 0.0007,
+  "epochs": 410,
+  "batch_size": 1024,
+  "val_batch_size": 1024,
+  "val_every_n_epochs": 5,
+
+  "compression_ratios": "0.5:1:1.5",
+
+  "commitment_cost": 0.5,
+  "orthogonality_weight": 0.1,
+  "informativeness_weight": 0.1,
+  "topo_weight": 0.45,
+  "topo_samples": 1024,
+
+  "use_ema": true,
+  "ema_decay": 0.995,
+  "dead_code_reset_interval": 10000,
+  "dead_code_threshold": 10.0,
+  "dead_code_max_reset_fraction": 0.5,
+
+  "use_torch_compile": true,
+
+  "early_stopping_patience": 250,
+  "early_stopping_min_delta": 0.001,
+
+  "checkpoint_dir": null,
+  "resume_from": null,
+
+  "normalization_method": "standard",
+
+  "device": "cuda",
+
+  "random_seed": 42,
+
+  "verbose": true
+}

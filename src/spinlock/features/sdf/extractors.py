@@ -27,6 +27,7 @@ from spinlock.features.sdf.cross_channel import CrossChannelFeatureExtractor
 from spinlock.features.sdf.causality import CausalityFeatureExtractor
 from spinlock.features.sdf.invariant_drift import InvariantDriftExtractor
 from spinlock.features.sdf.operator_sensitivity import OperatorSensitivityExtractor
+from spinlock.features.sdf.nonlinear import NonlinearFeatureExtractor
 
 if TYPE_CHECKING:
     from spinlock.features.sdf.config import SDFConfig
@@ -80,6 +81,7 @@ class SDFExtractor(FeatureExtractorBase):
         self.cross_channel_extractor: Optional[CrossChannelFeatureExtractor] = None
         self.causality_extractor: Optional[CausalityFeatureExtractor] = None
         self.invariant_drift_extractor: Optional[InvariantDriftExtractor] = None
+        self.nonlinear_extractor: Optional[NonlinearFeatureExtractor] = None  # Phase 1 extension
 
         if config is not None:
             if config.operator_sensitivity is not None and config.operator_sensitivity.enabled:
@@ -97,6 +99,9 @@ class SDFExtractor(FeatureExtractorBase):
 
             if config.invariant_drift is not None and config.invariant_drift.enabled:
                 self.invariant_drift_extractor = InvariantDriftExtractor(device=device)
+
+            if config.nonlinear is not None and config.nonlinear.enabled:
+                self.nonlinear_extractor = NonlinearFeatureExtractor(device=device)
 
         # Initialize feature registry
         self._registry: Optional[FeatureRegistry] = None
@@ -148,6 +153,24 @@ class SDFExtractor(FeatureExtractorBase):
                     description=f"{feat} per-timestep spatial feature"
                 )
 
+            # Phase 1 extension: Percentiles
+            if self.config is None or self.config.spatial.include_percentiles:
+                for percentile in [5, 25, 50, 75, 95]:
+                    registry.register(
+                        f'percentile_{percentile}',
+                        category="spatial",
+                        description=f"{percentile}th percentile per-timestep"
+                    )
+
+            # Phase 2 extension: Histogram/occupancy
+            if self.config is not None and self.config.spatial.include_histogram:
+                for feat in ['histogram_entropy', 'histogram_peak_fraction', 'histogram_effective_bins']:
+                    registry.register(
+                        feat,
+                        category="spatial",
+                        description=f"{feat} (state space coverage)"
+                    )
+
         # Spectral features (per-timestep features, no temporal aggregation)
         if self.config is None or self.config.spectral.enabled:
             # FFT power spectrum (multiscale)
@@ -193,6 +216,46 @@ class SDFExtractor(FeatureExtractorBase):
                     category="temporal",
                     description=f"{feat} per-trajectory temporal feature"
                 )
+
+            # Phase 1 extension: Event counts
+            if self.config is None or self.config.temporal.include_event_counts:
+                for feat in ['num_spikes', 'num_bursts', 'num_zero_crossings']:
+                    registry.register(
+                        feat,
+                        category="temporal",
+                        description=f"{feat} event count feature"
+                    )
+
+            # Phase 1 extension: Time-to-event
+            if self.config is None or self.config.temporal.include_time_to_event:
+                for thresh in [0.5, 2.0]:
+                    registry.register(
+                        f'time_to_{thresh}x',
+                        category="temporal",
+                        description=f"Time to {thresh}× initial value crossing"
+                    )
+
+            # Phase 1 extension: Rolling window statistics
+            if self.config is None or self.config.temporal.include_rolling_windows:
+                window_fractions = self.config.temporal.rolling_window_fractions if self.config else [0.05, 0.10, 0.20]
+                for frac in window_fractions:
+                    window_pct = int(frac * 100)
+                    for stat in ['mean', 'std', 'max', 'min', 'mean_variability', 'std_variability']:
+                        registry.register(
+                            f'rolling_w{window_pct}_{stat}',
+                            category="temporal",
+                            description=f"Rolling window {window_pct}% {stat}"
+                        )
+
+            # Phase 2 extension: PACF (Partial Autocorrelation Function)
+            if self.config is not None and self.config.temporal.include_pacf:
+                max_lag_pacf = self.config.temporal.pacf_max_lag if self.config else 10
+                for lag in range(1, max_lag_pacf + 1):
+                    registry.register(
+                        f'pacf_lag_{lag}',
+                        category="temporal",
+                        description=f"PACF at lag {lag}"
+                    )
 
         # ========== v2.0 Features ==========
 
@@ -384,6 +447,35 @@ class SDFExtractor(FeatureExtractorBase):
                                 description=f"{energy_type} {metric} ({scale}-filtered)"
                             )
 
+        # Nonlinear dynamics (Phase 1 extension, trajectory-level, expensive, opt-in)
+        if self.nonlinear_extractor is not None:
+            config_nonlinear = self.config.nonlinear if self.config else None
+
+            # Recurrence Quantification Analysis (RQA)
+            if config_nonlinear is None or config_nonlinear.include_recurrence:
+                for feat in ['recurrence_rate', 'determinism', 'laminarity', 'entropy_diag_length']:
+                    registry.register(
+                        feat,
+                        category="nonlinear",
+                        description=f"RQA {feat}"
+                    )
+
+            # Correlation dimension
+            if config_nonlinear is None or config_nonlinear.include_correlation_dim:
+                registry.register(
+                    'correlation_dimension',
+                    category="nonlinear",
+                    description="Correlation dimension (attractor complexity)"
+                )
+
+            # Phase 2 extension: Permutation entropy
+            if config_nonlinear is not None and config_nonlinear.include_permutation_entropy:
+                registry.register(
+                    'permutation_entropy',
+                    category="nonlinear",
+                    description="Permutation entropy (ordinal pattern complexity)"
+                )
+
         self._registry = registry
 
     def get_feature_registry(self) -> FeatureRegistry:
@@ -525,6 +617,13 @@ class SDFExtractor(FeatureExtractorBase):
                 config=self.config.invariant_drift if self.config else None
             )
 
+        nonlinear_features = {}
+        if self.nonlinear_extractor is not None:
+            nonlinear_features = self.nonlinear_extractor.extract(
+                trajectories,
+                config=self.config.nonlinear if self.config else None
+            )
+
         # Operator sensitivity features (from inline extraction during generation)
         operator_sensitivity_features = {}
         if metadata is not None and 'operator_sensitivity_features' in metadata:
@@ -536,7 +635,8 @@ class SDFExtractor(FeatureExtractorBase):
         all_trajectory_features = {
             **temporal_features,
             **causality_features,
-            **invariant_drift_features
+            **invariant_drift_features,
+            **nonlinear_features
         }
 
         # Stack features into single tensor following registry order
@@ -547,10 +647,11 @@ class SDFExtractor(FeatureExtractorBase):
         temporal_names = [f.name for f in registry.get_features_by_category('temporal')]
         causality_names = [f.name for f in registry.get_features_by_category('causality')]
         invariant_drift_names = [f.name for f in registry.get_features_by_category('invariant_drift')]
+        nonlinear_names = [f.name for f in registry.get_features_by_category('nonlinear')]
         operator_sensitivity_names = [f.name for f in registry.get_features_by_category('operator_sensitivity')]
 
-        # Post-hoc extracted features (temporal, causality, invariant_drift)
-        feature_names_in_order = temporal_names + causality_names + invariant_drift_names
+        # Post-hoc extracted features (temporal, causality, invariant_drift, nonlinear)
+        feature_names_in_order = temporal_names + causality_names + invariant_drift_names + nonlinear_names
 
         feature_list = []
         for name in feature_names_in_order:
@@ -559,6 +660,10 @@ class SDFExtractor(FeatureExtractorBase):
                 continue
 
             feat = all_trajectory_features[name]
+
+            # Ensure float dtype for aggregation operations
+            if not feat.is_floating_point():
+                feat = feat.float()
 
             if feat.ndim == 3:  # [N, M, C]
                 # Average across channels

@@ -12,6 +12,7 @@ from .validate import ValidateCommand
 from .visualize import VisualizeCommand
 from .visualize_ic_types import VisualizeICTypesCommand
 from .extract_features import ExtractFeaturesCommand
+from .train_vqvae import TrainVQVAECommand
 
 __all__ = [
     "CLICommand",
@@ -22,4 +23,5 @@ __all__ = [
     "VisualizeCommand",
     "VisualizeICTypesCommand",
     "ExtractFeaturesCommand",
+    "TrainVQVAECommand",
 ]

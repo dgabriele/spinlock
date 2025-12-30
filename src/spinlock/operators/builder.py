@@ -14,6 +14,7 @@ Design principles:
 
 import torch
 import torch.nn as nn
+import torch._dynamo
 import numpy as np
 from numpy.typing import NDArray
 from typing import Dict, Any, Type, List, Union
@@ -26,6 +27,9 @@ from .blocks import (
     OutputLayer,
 )
 from .parameters import OperatorParameters
+
+# Module-level flag to prevent repetitive JIT compilation logging
+_JIT_COMPILE_LOGGED = False
 
 
 class OperatorBuilder:
@@ -442,14 +446,29 @@ class NeuralOperator(nn.Module):
             out = operator(x)  # Compiled execution
             ```
 
+        WARNING - GPU Memory Leak with Diverse Architectures:
+            torch.compile() caches compiled kernels in GPU memory. When generating
+            datasets with >64 unique operator architectures (varying channels, layers,
+            kernel sizes), the compilation cache accumulates and causes OOM errors.
+
+            Mitigation strategies:
+            1. Disable compilation for diverse datasets (set performance.compile=False)
+            2. Use periodic cache clearing (torch._dynamo.reset() every 50 operators)
+            3. Reduce cache_size_limit below 64 if using fewer unique architectures
+
+            Symptoms:
+            - GPU memory usage jumps 50%+ and never decreases
+            - OOM errors after processing 50-70 operators
+            - Recompilation limit warnings
+
         Note:
             - Requires PyTorch >= 2.0
             - First forward pass triggers compilation (slow)
             - Subsequent passes are 1.5-2× faster
-            - Compilation is cached for fixed input shapes
+            - Compilation is cached per unique architecture
         """
         if self._compiled:
-            print(f"[INFO] Operator '{self.name}' is already compiled")
+            # Already compiled, skip silently
             return
 
         # Check PyTorch version
@@ -460,6 +479,14 @@ class NeuralOperator(nn.Module):
 
         # Compile the model
         try:
+            global _JIT_COMPILE_LOGGED
+
+            # Configure torch._dynamo for variable operator architectures
+            # This allows operators with different parameter shapes to share compiled graphs
+            # instead of hitting the recompilation limit (default: 8)
+            torch._dynamo.config.force_parameter_static_shapes = False
+            torch._dynamo.config.cache_size_limit = 64  # Increased from default 8
+
             self.model = torch.compile(
                 self.model,
                 mode=mode,
@@ -468,9 +495,14 @@ class NeuralOperator(nn.Module):
             )
             self._compiled = True
             self._compile_mode = mode
-            print(f"[INFO] Enabled torch.compile(mode='{mode}') for operator '{self.name}'")
-            print("       First forward pass will be slow (JIT compilation)")
-            print("       Subsequent passes: 1.5-2× faster")
+
+            # Only log the first time (avoid repetitive logging for multiple operators)
+            if not _JIT_COMPILE_LOGGED:
+                print(f"[INFO] Enabled torch.compile(mode='{mode}') for all operators")
+                print("       Configured for variable architectures (dynamic parameters)")
+                print("       First forward pass will be slow (JIT compilation)")
+                print("       Subsequent passes: 1.5-2× faster")
+                _JIT_COMPILE_LOGGED = True
         except Exception as e:
             print(f"[ERROR] Failed to compile operator '{self.name}': {e}")
             print("        Falling back to eager mode")

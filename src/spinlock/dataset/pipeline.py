@@ -32,6 +32,9 @@ from ..sampling import StratifiedSobolSampler
 from ..operators import OperatorBuilder, NeuralOperator
 from ..execution import ParallelExecutor, AdaptiveBatchSizer, MemoryManager
 from ..config import SpinlockConfig
+from ..features.sdf import SDFExtractor, SDFConfig
+from ..features.storage import HDF5FeatureWriter
+
 
 
 class DatasetGenerationPipeline:
@@ -206,6 +209,10 @@ class DatasetGenerationPipeline:
         self._print_final_statistics()
 
         # Cleanup after generation
+        # Close feature writer if opened
+        if hasattr(self, "_feature_writer") and self._feature_writer is not None:
+            self._feature_writer.__exit__(None, None, None)
+        
         self.cleanup()
 
     def _generate_dataset_batches(
@@ -242,6 +249,17 @@ class DatasetGenerationPipeline:
             print("   Features must be extracted during generation or from memory")
             print("   Dataset size: <10 GB (vs. ~1.2 TB with trajectories)\n")
 
+        # Initialize inline feature extraction
+        sdf_extractor = None
+        feature_writer = None
+        
+        if not store_trajectories:
+            print("Initializing inline feature extractor...")
+            sdf_config = SDFConfig()  # Default: all features
+            sdf_extractor = SDFExtractor(device=self.device, config=sdf_config)
+            print(f"  Feature extractor ready on {self.device}\n")
+            self._sdf_extractor = sdf_extractor
+
         # Create HDF5 writer with actual max grid size (not hardcoded 256)
         with HDF5DatasetWriter(
             output_path=self.config.dataset.output_path,
@@ -257,6 +275,53 @@ class DatasetGenerationPipeline:
             store_trajectories=store_trajectories,  # Feature-only mode support
             num_timesteps=self.config.simulation.num_timesteps,  # Temporal support
         ) as writer:
+
+            # Initialize feature writer for inline extraction
+            if sdf_extractor is not None:
+                from pathlib import Path
+                feature_writer = HDF5FeatureWriter(
+                    dataset_path=Path(self.config.dataset.output_path),
+                    overwrite=False  # Append mode - don't overwrite existing data
+                )
+                feature_writer.__enter__()
+                self._feature_writer = feature_writer
+
+                # Create SDF storage groups
+                registry = sdf_extractor.get_feature_registry()
+                sdf_config = sdf_extractor.config
+
+                # Calculate dimensions for logging
+                # Per-timestep categories: spatial, spectral, cross_channel
+                per_timestep_dim = (
+                    len(registry.get_feature_names(category='spatial')) +
+                    len(registry.get_feature_names(category='spectral')) +
+                    len(registry.get_feature_names(category='cross_channel'))
+                )
+
+                # Per-trajectory categories: temporal, causality, invariant_drift, operator_sensitivity
+                per_trajectory_dim = (
+                    len(registry.get_feature_names(category='temporal')) +
+                    len(registry.get_feature_names(category='causality')) +
+                    len(registry.get_feature_names(category='invariant_drift')) +
+                    len(registry.get_feature_names(category='operator_sensitivity'))
+                )
+
+                feature_writer.create_sdf_group(
+                    num_samples=num_samples,
+                    num_realizations=self.config.simulation.num_realizations,
+                    num_timesteps=self.config.simulation.num_timesteps,
+                    registry=registry,
+                    config=sdf_config,
+                    compression=self.config.dataset.storage.compression,
+                    compression_opts=self.config.dataset.storage.compression_level,
+                    chunk_size=self.config.dataset.storage.chunk_size
+                )
+
+                print(f"Feature storage initialized:")
+                print(f"  Per-timestep: {per_timestep_dim} features")
+                print(f"  Per-trajectory: {per_trajectory_dim} features")
+                print(f"  Aggregated: {per_trajectory_dim * 3} features")
+                print(f"  Total registry size: {registry.num_features} features\n")
 
             # Write metadata
             writer.write_metadata(
@@ -411,6 +476,11 @@ class DatasetGenerationPipeline:
             param_dict.setdefault("output_channels", fixed_output_channels)
             param_dict.setdefault("grid_size", fixed_grid_size)
 
+            # Set seed for deterministic operator initialization
+            # Note: Global seed derived from batch position
+            # For deterministic replay: torch.manual_seed(op_global_idx)
+            torch.manual_seed(hash(str(params)) % (2**31))  # Deterministic per params
+            
             # Build operator
             model = self.operator_builder.build_simple_cnn(param_dict)
             operator = NeuralOperator(model)
@@ -419,8 +489,9 @@ class DatasetGenerationPipeline:
             operator = MemoryManager.optimize_for_inference(operator)
             operator = operator.to(self.device)
 
-            # Enable torch.compile() for 1.5-2.5× speedup (Phase 2 optimization)
-            operator.enable_compile(mode="reduce-overhead")
+            # torch.compile() disabled to reduce GPU memory pressure during inline feature extraction
+            # Enables batch_size=2 instead of batch_size=1 (saves ~30% wall time)
+            # operator.enable_compile(mode="reduce-overhead")
 
             operators.append(operator)
 
@@ -765,6 +836,11 @@ class DatasetGenerationPipeline:
             param_dict["output_channels"] = fixed_output_channels
             param_dict["grid_size"] = grid_size
 
+            # Set seed for deterministic operator initialization
+            # Note: Global seed derived from batch position
+            # For deterministic replay: torch.manual_seed(op_global_idx)
+            torch.manual_seed(hash(str(params)) % (2**31))  # Deterministic per params
+            
             # Build operator
             model = self.operator_builder.build_simple_cnn(param_dict)
             operator = NeuralOperator(model)
@@ -773,8 +849,9 @@ class DatasetGenerationPipeline:
             operator = MemoryManager.optimize_for_inference(operator)
             operator = operator.to(self.device)
 
-            # Enable torch.compile() for 1.5-2.5× speedup (Phase 2 optimization)
-            operator.enable_compile(mode="reduce-overhead")
+            # torch.compile() disabled to reduce GPU memory pressure during inline feature extraction
+            # Enables batch_size=2 instead of batch_size=1 (saves ~30% wall time)
+            # operator.enable_compile(mode="reduce-overhead")
 
             operators.append(operator)
 
@@ -1019,6 +1096,62 @@ class DatasetGenerationPipeline:
             tensor, (pad_left, pad_right, pad_left, pad_right), mode="constant", value=0
         )
 
+
+    def _extract_and_write_features_inline(
+        self,
+        batch_outputs: torch.Tensor,  # [B, M, T, C, H, W]
+        batch_idx_start: int,
+        sdf_extractor,
+        feature_writer
+    ) -> None:
+        """
+        Extract SDF features inline during generation (GPU-optimized).
+        
+        Args:
+            batch_outputs: Trajectory tensors [B, M, T, C, H, W]
+            batch_idx_start: Starting index for this batch in dataset
+            sdf_extractor: SDFExtractor instance
+            feature_writer: HDF5FeatureWriter instance
+        """
+        with torch.no_grad():
+            # Stage 1: Extract per-timestep features (spatial, spectral, cross-channel)
+            # These are computed across all timesteps: [N, T, D_per_timestep]
+            per_timestep_gpu = sdf_extractor.extract_per_timestep(batch_outputs)
+            per_timestep_np = per_timestep_gpu.cpu().numpy()
+            del per_timestep_gpu  # Free GPU memory immediately
+            torch.cuda.empty_cache()
+
+            # Stage 2: Extract per-trajectory features (temporal, causality, drift, sensitivity)
+            # These are computed per realization: [N, M, D_per_trajectory]
+            per_trajectory_gpu = sdf_extractor.extract_per_trajectory(batch_outputs)
+            per_trajectory_np = per_trajectory_gpu.cpu().numpy()
+            del per_trajectory_gpu  # Free GPU memory immediately
+            torch.cuda.empty_cache()
+
+            # Stage 3: Aggregate across realizations (mean, std, cv)
+            # Recompute from trajectories since we freed per_trajectory_gpu
+            # This is cheaper than keeping it in memory
+            per_trajectory_temp = sdf_extractor.extract_per_trajectory(batch_outputs)
+
+            aggregated_list = []
+            for method in ['mean', 'std', 'cv']:
+                agg_gpu = sdf_extractor.aggregate_realizations(per_trajectory_temp, method=method)
+                aggregated_list.append(agg_gpu.cpu())
+                del agg_gpu
+                torch.cuda.empty_cache()
+
+            aggregated_np = torch.cat(aggregated_list, dim=1).numpy()
+            del per_trajectory_temp, aggregated_list
+            torch.cuda.empty_cache()
+
+            # Write batch to HDF5
+            feature_writer.write_sdf_batch(
+                batch_idx=batch_idx_start,
+                per_timestep=per_timestep_np,
+                per_trajectory=per_trajectory_np,
+                aggregated=aggregated_np
+            )
+
     def _write_batch_to_hdf5(
         self,
         writer: HDF5DatasetWriter,
@@ -1039,6 +1172,15 @@ class DatasetGenerationPipeline:
             batch_outputs: Output fields
             metadata: Per-sample metadata
         """
+        # Extract features inline if enabled (GPU-optimized)
+        if hasattr(self, '_sdf_extractor') and self._sdf_extractor is not None:
+            self._extract_and_write_features_inline(
+                batch_outputs=batch_outputs,
+                batch_idx_start=batch_indices[0],  # First index in batch
+                sdf_extractor=self._sdf_extractor,
+                feature_writer=self._feature_writer
+            )
+
         # We need to write to specific indices, not sequential
         # But HDF5DatasetWriter expects sequential writes
         # For now, store temporarily and write sequentially
