@@ -500,9 +500,10 @@ class OperatorRollout:
             total_memory_per_sample = memory_per_sample + trajectory_memory_per_sample
 
             # Calculate truly available memory (accounting for what's already used + fragmentation)
-            # OPTIMIZATION: Use 70% of free memory (increased from 35% for better throughput)
+            # OPTIMIZATION: Use 90% of free memory (Phase 1 optimization for 1.2× throughput)
+            # Increased from 70% to maximize GPU utilization while maintaining stability
             free_memory = total_memory - reserved_memory  # Account for reserved (includes fragmentation)
-            usable_memory = free_memory * 0.70  # 70% safe, 30% margin for fragmentation
+            usable_memory = free_memory * 0.90  # 90% utilization, 10% margin for fragmentation
             safe_batch_size = int(usable_memory / total_memory_per_sample)
 
             # Clamp to reasonable range

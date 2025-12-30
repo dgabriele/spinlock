@@ -419,6 +419,9 @@ class DatasetGenerationPipeline:
             operator = MemoryManager.optimize_for_inference(operator)
             operator = operator.to(self.device)
 
+            # Enable torch.compile() for 1.5-2.5× speedup (Phase 2 optimization)
+            operator.enable_compile(mode="reduce-overhead")
+
             operators.append(operator)
 
         # Generate input fields (all operators have same dimensions in MVP)
@@ -769,6 +772,9 @@ class DatasetGenerationPipeline:
             # Prepare for inference
             operator = MemoryManager.optimize_for_inference(operator)
             operator = operator.to(self.device)
+
+            # Enable torch.compile() for 1.5-2.5× speedup (Phase 2 optimization)
+            operator.enable_compile(mode="reduce-overhead")
 
             operators.append(operator)
 
