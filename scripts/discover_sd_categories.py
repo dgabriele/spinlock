@@ -37,7 +37,7 @@ from spinlock.features.registry import FeatureRegistry
 def discover_categories(
     dataset_path: Path,
     feature_path: str,
-    registry_path: str = "/features/sdf/registry"
+    registry_path: str = "/features/sdf"
 ) -> Dict[str, List[int]]:
     """
     Discover feature categories from dataset.
@@ -45,18 +45,24 @@ def discover_categories(
     Args:
         dataset_path: Path to HDF5 dataset
         feature_path: HDF5 path to aggregated features
-        registry_path: HDF5 path to feature registry JSON
+        registry_path: HDF5 path to SDF group containing registry attribute
 
     Returns:
         Dict mapping category name → list of feature indices
     """
     with h5py.File(dataset_path, 'r') as f:
-        # Load feature registry
+        # Load feature registry from SDF group attributes
         if registry_path not in f:
-            raise ValueError(f"Registry not found at {registry_path} in dataset")
+            raise ValueError(f"SDF group not found at {registry_path} in dataset")
 
-        registry_json = f[registry_path][()].decode('utf-8')
-        print(f"Loaded feature registry from {registry_path}")
+        sdf_group = f[registry_path]
+        if 'feature_registry' not in sdf_group.attrs:
+            raise ValueError(f"feature_registry attribute not found in {registry_path}")
+
+        registry_json = sdf_group.attrs['feature_registry']
+        if isinstance(registry_json, bytes):
+            registry_json = registry_json.decode('utf-8')
+        print(f"Loaded feature registry from {registry_path} attributes")
 
         # Load registry
         registry = FeatureRegistry.from_json(registry_json, family_name="sdf")
@@ -180,8 +186,8 @@ def main():
     parser.add_argument(
         "--registry-path",
         type=str,
-        default="/features/sdf/registry",
-        help="HDF5 path to feature registry JSON"
+        default="/features/sdf",
+        help="HDF5 path to SDF group (registry read from attributes)"
     )
     parser.add_argument(
         "--output",
