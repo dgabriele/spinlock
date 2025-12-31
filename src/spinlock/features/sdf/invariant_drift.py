@@ -55,6 +55,34 @@ class InvariantDriftExtractor:
         self._kernel_sigma = 2.0
         self._kernel_size = 9
 
+    def _adaptive_outlier_clip(
+        self,
+        values: torch.Tensor,
+        iqr_multiplier: float = 10.0
+    ) -> torch.Tensor:
+        """Adaptive outlier clipping based on IQR."""
+        # Convert to float if needed (quantile requires float/double)
+        if not values.is_floating_point():
+            values = values.float()
+
+        values_flat = values.flatten()
+        valid_mask = ~torch.isnan(values_flat)
+        valid_values = values_flat[valid_mask]
+
+        if valid_values.numel() < 4:
+            return values
+
+        q1 = torch.quantile(valid_values, 0.25)
+        q3 = torch.quantile(valid_values, 0.75)
+        iqr = q3 - q1
+
+        lower_bound = q1 - iqr_multiplier * iqr
+        upper_bound = q3 + iqr_multiplier * iqr
+
+        values_clipped = torch.clamp(values, min=lower_bound, max=upper_bound)
+
+        return values_clipped
+
     def extract(
         self,
         trajectories: torch.Tensor,  # [N, M, T, C, H, W]
@@ -138,6 +166,10 @@ class InvariantDriftExtractor:
         if include_all or (config is not None and getattr(config, 'include_scale_specific_dissipation', False)):
             dissipation_features = self._compute_scale_specific_dissipation(multiscale_fields, config)
             features.update(dissipation_features)
+
+        # Apply adaptive outlier clipping to prevent extreme values
+        for key in features:
+            features[key] = self._adaptive_outlier_clip(features[key], iqr_multiplier=10.0)
 
         return features
 

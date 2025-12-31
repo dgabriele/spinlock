@@ -28,6 +28,12 @@ from spinlock.features.sdf.causality import CausalityFeatureExtractor
 from spinlock.features.sdf.invariant_drift import InvariantDriftExtractor
 from spinlock.features.sdf.operator_sensitivity import OperatorSensitivityExtractor
 from spinlock.features.sdf.nonlinear import NonlinearFeatureExtractor
+# Phase 2 extractors (v2.1)
+from spinlock.features.sdf.distributional import DistributionalFeatureExtractor
+from spinlock.features.sdf.structural import StructuralFeatureExtractor
+from spinlock.features.sdf.physics import PhysicsFeatureExtractor
+from spinlock.features.sdf.morphological import MorphologicalFeatureExtractor
+from spinlock.features.sdf.multiscale import MultiscaleFeatureExtractor
 
 if TYPE_CHECKING:
     from spinlock.features.sdf.config import SDFConfig
@@ -83,6 +89,13 @@ class SDFExtractor(FeatureExtractorBase):
         self.invariant_drift_extractor: Optional[InvariantDriftExtractor] = None
         self.nonlinear_extractor: Optional[NonlinearFeatureExtractor] = None  # Phase 1 extension
 
+        # Initialize v2.1 component extractors (Phase 2)
+        self.distributional_extractor: Optional[DistributionalFeatureExtractor] = None
+        self.structural_extractor: Optional[StructuralFeatureExtractor] = None
+        self.physics_extractor: Optional[PhysicsFeatureExtractor] = None
+        self.morphological_extractor: Optional[MorphologicalFeatureExtractor] = None
+        self.multiscale_extractor: Optional[MultiscaleFeatureExtractor] = None
+
         if config is not None:
             if config.operator_sensitivity is not None and config.operator_sensitivity.enabled:
                 self.operator_sensitivity_extractor = OperatorSensitivityExtractor(
@@ -103,6 +116,22 @@ class SDFExtractor(FeatureExtractorBase):
             if config.nonlinear is not None and config.nonlinear.enabled:
                 self.nonlinear_extractor = NonlinearFeatureExtractor(device=device)
 
+            # Initialize v2.1 extractors
+            if config.distributional is not None and config.distributional.enabled:
+                self.distributional_extractor = DistributionalFeatureExtractor(device=device)
+
+            if config.structural is not None and config.structural.enabled:
+                self.structural_extractor = StructuralFeatureExtractor(device=device)
+
+            if config.physics is not None and config.physics.enabled:
+                self.physics_extractor = PhysicsFeatureExtractor(device=device)
+
+            if config.morphological is not None and config.morphological.enabled:
+                self.morphological_extractor = MorphologicalFeatureExtractor(device=device)
+
+            if config.multiscale is not None and config.multiscale.enabled:
+                self.multiscale_extractor = MultiscaleFeatureExtractor(device=device)
+
         # Initialize feature registry
         self._registry: Optional[FeatureRegistry] = None
         self._build_registry()
@@ -115,7 +144,7 @@ class SDFExtractor(FeatureExtractorBase):
     @property
     def version(self) -> str:
         """Feature family version."""
-        return "2.0.0"
+        return "2.1.0"
 
     def _build_registry(self) -> None:
         """
@@ -535,19 +564,83 @@ class SDFExtractor(FeatureExtractorBase):
                 else:
                     raise ValueError(f"Unexpected cross-channel feature shape: {feat.shape}")
 
+        # Extract v2.1 per-timestep features (Phase 2)
+        distributional_features = {}
+        structural_features = {}
+        physics_features = {}
+        morphological_features = {}
+        multiscale_features = {}
+
+        # Reshape for v2.1 extraction: [N*M, T, C, H, W]
+        fields_v21 = trajectories.reshape(N * M, T, C, H, W)
+
+        if self.distributional_extractor is not None:
+            distributional_features = self.distributional_extractor.extract(
+                fields_v21,
+                config=self.config.distributional if self.config else None
+            )
+
+        if self.structural_extractor is not None:
+            structural_features = self.structural_extractor.extract(
+                fields_v21,
+                config=self.config.structural if self.config else None
+            )
+
+        if self.physics_extractor is not None:
+            physics_features = self.physics_extractor.extract(
+                fields_v21,
+                config=self.config.physics if self.config else None
+            )
+
+        if self.morphological_extractor is not None:
+            morphological_features = self.morphological_extractor.extract(
+                fields_v21,
+                config=self.config.morphological if self.config else None
+            )
+
+        if self.multiscale_extractor is not None:
+            multiscale_features = self.multiscale_extractor.extract(
+                fields_v21,
+                config=self.config.multiscale if self.config else None
+            )
+
         # Combine all per-timestep features
-        all_features = {**spatial_features, **spectral_features, **cross_channel_features}
+        all_features = {
+            **spatial_features,
+            **spectral_features,
+            **cross_channel_features,
+            **distributional_features,
+            **structural_features,
+            **physics_features,
+            **morphological_features,
+            **multiscale_features
+        }
 
         # Stack features into single tensor following registry order
         # Each feature has shape [N, M, T, C] or [N, T, C]
         # We need to average across M and C dimensions
 
-        # Get feature names in registry order (spatial + spectral + cross_channel categories)
+        # Get feature names in registry order (all per-timestep categories)
         registry = self.get_feature_registry()
         spatial_names = [f.name for f in registry.get_features_by_category('spatial')]
         spectral_names = [f.name for f in registry.get_features_by_category('spectral')]
         cross_channel_names = [f.name for f in registry.get_features_by_category('cross_channel')]
-        feature_names_in_order = spatial_names + spectral_names + cross_channel_names
+        distributional_names = [f.name for f in registry.get_features_by_category('distributional')]
+        structural_names = [f.name for f in registry.get_features_by_category('structural')]
+        physics_names = [f.name for f in registry.get_features_by_category('physics')]
+        morphological_names = [f.name for f in registry.get_features_by_category('morphological')]
+        multiscale_names = [f.name for f in registry.get_features_by_category('multiscale')]
+
+        feature_names_in_order = (
+            spatial_names +
+            spectral_names +
+            cross_channel_names +
+            distributional_names +
+            structural_names +
+            physics_names +
+            morphological_names +
+            multiscale_names
+        )
 
         feature_list = []
         for name in feature_names_in_order:

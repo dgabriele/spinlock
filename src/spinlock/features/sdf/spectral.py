@@ -43,6 +43,34 @@ class SpectralFeatureExtractor:
         """
         self.device = device
 
+    def _adaptive_outlier_clip(
+        self,
+        values: torch.Tensor,
+        iqr_multiplier: float = 10.0
+    ) -> torch.Tensor:
+        """Adaptive outlier clipping based on IQR."""
+        # Convert to float if needed (quantile requires float/double)
+        if not values.is_floating_point():
+            values = values.float()
+
+        values_flat = values.flatten()
+        valid_mask = ~torch.isnan(values_flat)
+        valid_values = values_flat[valid_mask]
+
+        if valid_values.numel() < 4:
+            return values
+
+        q1 = torch.quantile(valid_values, 0.25)
+        q3 = torch.quantile(valid_values, 0.75)
+        iqr = q3 - q1
+
+        lower_bound = q1 - iqr_multiplier * iqr
+        upper_bound = q3 + iqr_multiplier * iqr
+
+        values_clipped = torch.clamp(values, min=lower_bound, max=upper_bound)
+
+        return values_clipped
+
     def extract(
         self,
         fields: torch.Tensor,  # [N, M, T, C, H, W] or [N, T, C, H, W]
@@ -152,6 +180,10 @@ class SpectralFeatureExtractor:
                 else:
                     features[name] = feat.reshape(N, T, C)
 
+        # Apply adaptive outlier clipping to prevent extreme values
+        for name in features:
+            features[name] = self._adaptive_outlier_clip(features[name], iqr_multiplier=10.0)
+
         return features
 
     # =========================================================================
@@ -217,13 +249,14 @@ class SpectralFeatureExtractor:
             mean_power = band_power.sum(dim=(-2, -1)) / (mask.sum() + 1e-8)
             features[f'fft_power_scale_{scale_idx}_mean'] = mean_power
 
-            # Max power in band
-            max_power = band_power.amax(dim=(-2, -1))
+            # Max power in band (per-bin normalized for grid-size independence)
+            max_power = band_power.amax(dim=(-2, -1)) / (mask.sum() + 1e-8)
+            max_power = torch.clamp(max_power, max=1e6)  # Prevent overflow
             features[f'fft_power_scale_{scale_idx}_max'] = max_power
 
-            # Std of power in band
+            # Std of power in band (normalized by sqrt(N) for grid-size independence)
             power_flat = band_power.flatten(start_dim=2)  # [NT, C, H*W]
-            std_power = power_flat.std(dim=2)
+            std_power = power_flat.std(dim=2) / torch.sqrt(mask.sum() + 1e-8)
             features[f'fft_power_scale_{scale_idx}_std'] = std_power
 
         return features

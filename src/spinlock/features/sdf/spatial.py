@@ -186,6 +186,70 @@ class SpatialFeatureExtractor:
         return features
 
     # =========================================================================
+    # Helper Methods
+    # =========================================================================
+
+    def _adaptive_outlier_clip(
+        self,
+        values: torch.Tensor,
+        iqr_multiplier: float = 10.0
+    ) -> torch.Tensor:
+        """
+        Adaptive outlier clipping based on Interquartile Range (IQR).
+
+        Uses IQR-based bounds that adapt to the actual distribution of values,
+        preserving valid extreme values while clipping numerical errors.
+
+        Args:
+            values: Tensor of feature values [NT, C] or any shape
+            iqr_multiplier: Multiplier for IQR fence (default 10.0)
+                - 1.5: Standard outlier detection (aggressive)
+                - 3.0: Far outlier detection (moderate)
+                - 10.0: Extreme outlier detection (conservative, preserves heavy tails)
+                - 15.0: Very conservative (for features like kurtosis with valid extremes)
+
+        Returns:
+            Clipped values with same shape as input
+
+        Note:
+            - Computes bounds from non-NaN values only
+            - If < 4 non-NaN values, returns values unchanged (can't compute quartiles)
+            - Adapts to actual data distribution (not hardcoded limits)
+        """
+        # Flatten to [N] for percentile computation
+        original_shape = values.shape
+        # Convert to float if needed (quantile requires float/double)
+        if not values.is_floating_point():
+            values = values.float()
+
+        values_flat = values.flatten()
+
+        # Filter out NaN values
+        valid_mask = ~torch.isnan(values_flat)
+        valid_values = values_flat[valid_mask]
+
+        # Need at least 4 values to compute quartiles
+        if valid_values.numel() < 4:
+            return values  # Return unchanged
+
+        # Compute quartiles (robust to outliers)
+        q1 = torch.quantile(valid_values, 0.25)
+        q3 = torch.quantile(valid_values, 0.75)
+        iqr = q3 - q1
+
+        # IQR fence: [Q1 - k*IQR, Q3 + k*IQR]
+        # This adapts to the actual spread of the data
+        # k=10 means we only clip values 10× IQR away from quartiles
+        # (preserves 99.9%+ of valid values, only catches numerical errors)
+        lower_bound = q1 - iqr_multiplier * iqr
+        upper_bound = q3 + iqr_multiplier * iqr
+
+        # Clip values
+        values_clipped = torch.clamp(values, min=lower_bound, max=upper_bound)
+
+        return values_clipped
+
+    # =========================================================================
     # Basic Statistics
     # =========================================================================
 
@@ -215,26 +279,64 @@ class SpatialFeatureExtractor:
 
     def _compute_skewness(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Compute spatial skewness (third standardized moment).
+        Compute spatial skewness (third standardized moment) with robust variance handling.
 
         Skewness measures asymmetry of the distribution.
+        Returns NaN for zero-variance fields (skewness is mathematically undefined).
         """
         mean = x.mean(dim=(-2, -1), keepdim=True)
         std = x.std(dim=(-2, -1), keepdim=True)
-        z = (x - mean) / (std + 1e-8)  # Standardize
+
+        # Variance threshold for numerical stability (prevents overflow from near-zero division)
+        variance_threshold = 1e-4
+        zero_variance_mask = (std < variance_threshold)
+
+        # Standardize with clamped denominator to prevent overflow
+        z = (x - mean) / torch.clamp(std, min=variance_threshold)
         skew = (z ** 3).mean(dim=(-2, -1))  # [NT, C]
+
+        # NaN for mathematically undefined cases (zero-variance fields)
+        skew = torch.where(
+            zero_variance_mask.squeeze(-1).squeeze(-1),
+            torch.tensor(float('nan'), device=x.device, dtype=x.dtype),
+            skew
+        )
+
+        # Adaptive outlier protection: clip extreme numerical errors while preserving valid extremes
+        # Use IQR-based bounds computed from non-NaN values in current batch
+        skew = self._adaptive_outlier_clip(skew, iqr_multiplier=10.0)
+
         return skew
 
     def _compute_kurtosis(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Compute spatial kurtosis (fourth standardized moment - 3).
+        Compute spatial kurtosis (fourth standardized moment - 3) with robust variance handling.
 
         Kurtosis measures tail heaviness. Excess kurtosis is 0 for Gaussian.
+        Returns NaN for zero-variance fields (kurtosis is mathematically undefined).
         """
         mean = x.mean(dim=(-2, -1), keepdim=True)
         std = x.std(dim=(-2, -1), keepdim=True)
-        z = (x - mean) / (std + 1e-8)  # Standardize
-        kurt = (z ** 4).mean(dim=(-2, -1)) - 3.0  # Excess kurtosis
+
+        # Variance threshold for numerical stability (prevents overflow from near-zero division)
+        variance_threshold = 1e-4
+        zero_variance_mask = (std < variance_threshold)
+
+        # Standardize with clamped denominator to prevent overflow
+        z = (x - mean) / torch.clamp(std, min=variance_threshold)
+        kurt = (z ** 4).mean(dim=(-2, -1)) - 3.0  # Excess kurtosis [NT, C]
+
+        # NaN for mathematically undefined cases (zero-variance fields)
+        kurt = torch.where(
+            zero_variance_mask.squeeze(-1).squeeze(-1),
+            torch.tensor(float('nan'), device=x.device, dtype=x.dtype),
+            kurt
+        )
+
+        # Adaptive outlier protection: clip extreme numerical errors while preserving valid extremes
+        # Kurtosis can be very large for heavy-tailed distributions, so use wider multiplier
+        kurt = self._adaptive_outlier_clip(kurt, iqr_multiplier=15.0)
+
         return kurt
 
     # =========================================================================

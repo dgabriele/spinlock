@@ -42,6 +42,34 @@ class TemporalFeatureExtractor:
         """
         self.device = device
 
+    def _adaptive_outlier_clip(
+        self,
+        values: torch.Tensor,
+        iqr_multiplier: float = 10.0
+    ) -> torch.Tensor:
+        """Adaptive outlier clipping based on IQR."""
+        # Convert to float if needed (quantile requires float/double)
+        if not values.is_floating_point():
+            values = values.float()
+
+        values_flat = values.flatten()
+        valid_mask = ~torch.isnan(values_flat)
+        valid_values = values_flat[valid_mask]
+
+        if valid_values.numel() < 4:
+            return values
+
+        q1 = torch.quantile(valid_values, 0.25)
+        q3 = torch.quantile(valid_values, 0.75)
+        iqr = q3 - q1
+
+        lower_bound = q1 - iqr_multiplier * iqr
+        upper_bound = q3 + iqr_multiplier * iqr
+
+        values_clipped = torch.clamp(values, min=lower_bound, max=upper_bound)
+
+        return values_clipped
+
     def extract(
         self,
         trajectories: torch.Tensor,  # [N, M, T, C, H, W]
@@ -182,6 +210,10 @@ class TemporalFeatureExtractor:
                 window_fractions=config.rolling_window_fractions if config is not None else [0.05, 0.10, 0.20]
             )
             features.update(rolling_features)
+
+        # Apply adaptive outlier clipping to prevent extreme values
+        for key in features:
+            features[key] = self._adaptive_outlier_clip(features[key], iqr_multiplier=10.0)
 
         return features
 
@@ -429,8 +461,17 @@ class TemporalFeatureExtractor:
                 # Simplified: PACF[k] ≈ autocorr[k] / sqrt(1 - autocorr[k-1]²)
                 prev_acf = autocorr[:, :, lag_k-1, :]
                 curr_acf = autocorr[:, :, lag_k, :]
-                denominator = torch.sqrt(1.0 - prev_acf**2 + 1e-8)
-                pacf_k = curr_acf / denominator
+
+                # Clamp autocorrelation to prevent sqrt domain errors (when |acf| ≈ 1)
+                prev_acf_clamped = torch.clamp(prev_acf, min=-0.99, max=0.99)
+                denominator = torch.sqrt(1.0 - prev_acf_clamped**2 + 1e-4)
+
+                # Fallback if denominator too small (near-perfect correlation)
+                pacf_k = torch.where(
+                    denominator > 1e-3,
+                    curr_acf / denominator,
+                    torch.zeros_like(curr_acf)  # PACF undefined for perfect correlation
+                )
 
             pacf_values[f'pacf_lag_{lag_k}'] = pacf_k
 
@@ -465,37 +506,46 @@ class TemporalFeatureExtractor:
 
     def _compute_trajectory_smoothness(self, time_series: torch.Tensor) -> torch.Tensor:
         """
-        Compute trajectory smoothness (sum of second time derivatives).
+        Compute trajectory smoothness (mean absolute second derivative, T-normalized).
 
         Smoother trajectories have smaller second derivatives.
+        Normalization ensures feature is intensive (scale-independent) across
+        different trajectory lengths. Works for T ∈ {50, 200, 500, 1000, ...}.
 
         Args:
             time_series: [N, M, T, C]
 
         Returns:
-            Smoothness metric [N, M, C] (smaller = smoother)
+            Smoothness metric [N, M, C] (smaller = smoother, per-timestep roughness)
         """
+        T = time_series.shape[2]  # Actual T from data, NOT hardcoded
+
         # First derivative
         first_deriv = time_series[:, :, 1:, :] - time_series[:, :, :-1, :]
 
         # Second derivative
         second_deriv = first_deriv[:, :, 1:, :] - first_deriv[:, :, :-1, :]
 
-        # Sum of absolute second derivatives (inversely related to smoothness)
-        roughness = second_deriv.abs().sum(dim=2)
+        # Divide by (T-2) to get per-timestep roughness (intensive property)
+        roughness = second_deriv.abs().sum(dim=2) / max(1, T - 2)
 
         return roughness
 
     def _compute_regime_switches(self, time_series: torch.Tensor) -> torch.Tensor:
         """
-        Count regime switches (sign changes in growth rate).
+        Compute regime switch rate (sign changes in growth rate, T-normalized).
+
+        Normalization ensures feature is intensive (scale-independent) across
+        different trajectory lengths. Works for T ∈ {50, 200, 500, 1000, ...}.
 
         Args:
             time_series: [N, M, T, C]
 
         Returns:
-            Number of regime switches [N, M, C]
+            Switch rate [N, M, C] (switches per timestep)
         """
+        T = time_series.shape[2]  # Actual T from data, NOT hardcoded
+
         # First derivative (growth rate)
         growth = time_series[:, :, 1:, :] - time_series[:, :, :-1, :]
 
@@ -505,8 +555,8 @@ class TemporalFeatureExtractor:
         # Sign changes
         sign_changes = (sign[:, :, 1:, :] != sign[:, :, :-1, :]).float()
 
-        # Count switches
-        num_switches = sign_changes.sum(dim=2)
+        # Divide by (T-2) to get switch rate (intensive property)
+        num_switches = sign_changes.sum(dim=2) / max(1, T - 2)
 
         return num_switches
 
@@ -774,8 +824,27 @@ class TemporalFeatureExtractor:
 
             # Also capture variability of the rolling statistics
             # (how much do window stats vary across time?)
-            result[f'{prefix}_mean_variability'] = window_means.std(dim=3)  # [N, M, C]
-            result[f'{prefix}_std_variability'] = window_stds.std(dim=3)    # [N, M, C]
+            # NaN guard: constant fields produce NaN in std(), replace with 0 (physically meaningful)
+            mean_variability = window_means.std(dim=3)
+            mean_variability = torch.where(
+                torch.isnan(mean_variability),
+                torch.zeros_like(mean_variability),  # Zero variability for constant windows
+                mean_variability
+            )
+            result[f'{prefix}_mean_variability'] = mean_variability  # [N, M, C]
+
+            std_variability = window_stds.std(dim=3)
+            std_variability = torch.where(
+                torch.isnan(std_variability),
+                torch.zeros_like(std_variability),  # Zero variability for constant windows
+                std_variability
+            )
+            result[f'{prefix}_std_variability'] = std_variability  # [N, M, C]
+
+        # Apply adaptive clipping to all rolling window features
+        # Use k=10 (conservative) to preserve valid large values
+        for key in result:
+            result[key] = self._adaptive_outlier_clip(result[key], iqr_multiplier=10.0)
 
         return result
 
