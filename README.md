@@ -88,7 +88,7 @@ See [docs/noa-roadmap.md](docs/noa-roadmap.md) for detailed architecture and imp
 ### System Overview
 
 ```mermaid
-flowchart TEMPORAL
+flowchart TD
     NO[Stratified Neural Operators]
     FE[Multi-Modal Feature Extraction<br/>INITIAL + ARCHITECTURE + SUMMARY + TEMPORAL]
     VQVAE[Hierarchical VQ-VAE Tokenization]
