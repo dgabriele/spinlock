@@ -182,7 +182,7 @@ poetry run spinlock train-vqvae --datasets datasets/*.h5
 - **Explore operators:** Use visualization tools to understand operator diversity
 - **Analyze features:** Investigate feature distributions and correlations
 - **Tune VQ-VAE:** Experiment with codebook sizes and category counts
-- **Build ANO:** Use tokens to train Neural Operator Agent (Phase 1+)
+- **Build NOA:** Use tokens to train Neural Operator Agent (Phase 1+)
 
 ## Troubleshooting
 

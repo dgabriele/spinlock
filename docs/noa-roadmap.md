@@ -2,7 +2,7 @@
 
 **A hierarchical, meta-cognitive neural operator system for learning, generating, and reflecting on complex dynamical behaviors.**
 
-This roadmap provides a practical blueprint for building an Agent Neural Operator (ANO) capable of mapping VQ-VAE token sequences to operators and initial conditions, producing rollouts consistent with observed dynamics, and developing self-referential understanding of its own generative behavior.
+This roadmap provides a practical blueprint for building a Neural Operator Agent (NOA) capable of mapping VQ-VAE token sequences to operators and initial conditions, producing rollouts consistent with observed dynamics, and developing self-referential understanding of its own generative behavior.
 
 ## Overview
 
@@ -75,7 +75,7 @@ Establish the data infrastructure and tokenization system that enables behaviora
 
 ---
 
-## Phase 1: Single-Step ANO Mapping
+## Phase 1: Single-Step NOA Mapping
 
 **Status:** 🔄 **IN DEVELOPMENT**
 
@@ -106,7 +106,7 @@ Minimize divergence between generated and target rollouts while preserving codeb
 This phase establishes the **baseline meta-operator mapping** essential before multi-step or self-referential capabilities.
 
 ### Deliverables
-- [ ] ANO architecture implementation
+- [ ] NOA architecture implementation
 - [ ] Hybrid loss function
 - [ ] Training pipeline
 - [ ] Evaluation metrics and benchmarks
@@ -126,7 +126,7 @@ Capture temporal correlations and higher-order operator dependencies across mult
 - **Output:** Contextualized operator parameters conditioned on multi-step patterns
 
 ### Advantages
-- Enables ANO to synthesize operators conditioned on multi-step patterns
+- Enables NOA to synthesize operators conditioned on multi-step patterns
 - Forms **contextualized latent representations** supporting emergent reasoning
 - Attention across sequences enables identification of invariant operator traits over time
 
@@ -155,7 +155,7 @@ Develop meta-dynamical cognitive memory with self-directed exploration capabilit
 - **Optional:** Curriculum learning for gradual complexity increase
 
 ### Outcomes
-ANO develops **meta-dynamical cognitive memory**, capable of:
+NOA develops **meta-dynamical cognitive memory**, capable of:
 - Synthesizing operators expressing inferred latent structures
 - Exploring unknown dynamics with self-directed "curiosity"
 - Generating rollouts reflecting internal understanding of patterns
@@ -176,15 +176,15 @@ This phase is the **first step toward emergent self-referential modeling**—the
 **Status:** 📋 **PLANNED**
 
 ### Objective
-Enable the ANO to model its own generative behavior, forming functional introspection.
+Enable the NOA to model its own generative behavior, forming functional introspection.
 
 ### Mechanism
-- Feed ANO-generated rollouts back through the VQ-VAE
+- Feed NOA-generated rollouts back through the VQ-VAE
 - Summarize internal errors or surprises
-- Encourage ANO to **model its own generative behavior**
+- Encourage NOA to **model its own generative behavior**
 
 ### Internal Model
-Form latent encoding "how I, the ANO, typically behave":
+Form latent encoding "how I, the NOA, typically behave":
 - Predictive consistency of self-generated outputs
 - Error distributions relative to expected behavior
 - Deviations from expected SDFs/tokens

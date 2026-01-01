@@ -6,7 +6,7 @@
 [![Poetry](https://img.shields.io/badge/dependency%20manager-poetry-blue)](https://python-poetry.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A production-ready system for generating stratified neural operator datasets, extracting multi-modal behavioral features (IC+NOP+SDF+TD), and training hierarchical VQ-VAE tokenizers—designed as the data foundation for building Neural Operator Agents with emergent meta-cognitive capabilities.
+A production-ready system for generating stratified neural operator datasets, extracting multi-modal behavioral features (IC+NOP+SDF+TD), and training hierarchical VQ-VAE tokenizers—designed as the data foundation for building a **dynamical cognitive memory system** capable of autonomous reasoning about operator behaviors, with the long-term vision of achieving agency, self-awareness, and meta-cognitive capabilities through Neural Operator Agents.
 
 ---
 
@@ -36,9 +36,13 @@ Spinlock enables systematic exploration of neural operator parameter spaces to b
 - **Multi-Modal Feature Extraction** - Four complementary feature families (IC+NOP+SDF+TD) jointly capturing operator behavior from different perspectives
 - **Hierarchical VQ-VAE Tokenization** - Automatic category discovery via clustering, creating discrete behavioral vocabularies for operator reasoning
 
+### Name Origin
+
+The name "Spinlock" draws inspiration from **quantum field spinlocking**—a phenomenon where coherence emerges from seemingly chaotic quantum fluctuations through the alignment of spin states. Like its quantum counterpart, this system seeks to discover **order arising from apparent chaos**: by systematically exploring stochastic neural operator behaviors, it uncovers stable, reproducible patterns and emergent structures within the high-dimensional parameter space. The metaphor reflects the core philosophy that meaningful behavioral representations can be extracted from the complex, noisy dynamics of neural operators.
+
 ### Design Philosophy
 
-Spinlock is built on the principle that **operators have behaviors, and behaviors can be learned**. By generating diverse operator samples, extracting rich behavioral features, and tokenizing these features into discrete vocabularies, Spinlock provides the foundation for systems that can reason about, generate, and compose dynamical behaviors—essential capabilities for building Neural Operator Agents.
+Spinlock is built on the principle that **operators have behaviors, and behaviors can be learned**. By generating diverse operator samples, extracting rich behavioral features, and tokenizing these features into discrete vocabularies, Spinlock provides the foundation for a **dynamical cognitive memory system**—one that can reason about, generate, and compose dynamical behaviors autonomously. The ultimate vision is to develop systems with genuine **agency and self-awareness**: Neural Operator Agents capable of introspecting on their own generative processes, directing their own exploration, and developing emergent understanding of operator families and dynamical regimes.
 
 ---
 
@@ -96,9 +100,9 @@ flowchart TD
     VQVAE --> Tokens
     Tokens --> NOA
 
-    style NO fill:#e1f5e1
-    style VQVAE fill:#fff4e1
-    style NOA fill:#e1e8f5
+    style NO fill:#e1f5e1,color:#000
+    style VQVAE fill:#fff4e1,color:#000
+    style NOA fill:#e1e8f5,color:#000
 ```
 
 ### Pipeline Stages

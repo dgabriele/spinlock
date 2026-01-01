@@ -168,8 +168,8 @@ flowchart LR
     VQVAE --> Tokens[Behavioral Tokens]
     Tokens --> NOA[Neural Operator Agent]
 
-    style Config fill:#e1f5e1
-    style NOA fill:#e1e8f5
+    style Config fill:#e1f5e1,color:#000
+    style NOA fill:#e1e8f5,color:#000
 ```
 
 ## References
