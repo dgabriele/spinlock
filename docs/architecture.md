@@ -5,31 +5,39 @@
 ## System Overview
 
 ```mermaid
-flowchart TB
+flowchart LR
     subgraph Config["Configuration Layer"]
+        direction TB
         YAML[YAML Config Files]
         Schema[Parameter Schema]
     end
 
     subgraph Sampling["Stratified Sampling"]
+        direction TB
         Sobol[Sobol Sequences]
         Owen[Owen Scrambling]
         Stratify[Stratification]
     end
 
     subgraph Generation["Operator Generation"]
+        direction TB
         Builder[Operator Builder]
         CNN[CNN Construction]
         Params[Parameter Mapping]
     end
 
+    Config --> Sampling
+    Sampling --> Generation
+
     subgraph Execution["Rollout Execution"]
+        direction TB
         INITIAL[Initial Conditions]
         Engine[Rollout Engine]
         Storage[HDF5 Storage]
     end
 
     subgraph Features["Feature Extraction"]
+        direction TB
         ICExt[INITIAL: 42D]
         NOPExt[ARCHITECTURE: 21D]
         SDFExt[SUMMARY: 420-520D]
@@ -37,14 +45,13 @@ flowchart TB
     end
 
     subgraph Encoding["VQ-VAE Tokenization"]
+        direction TB
         Clean[Feature Cleaning]
         Cluster[Category Discovery]
         Train[Hierarchical VQ-VAE]
         Tokens[Behavioral Tokens]
     end
 
-    Config --> Sampling
-    Sampling --> Generation
     Generation --> Execution
     Execution --> Features
     Features --> Encoding
@@ -215,15 +222,24 @@ See [VQ-VAE Training Guide](vqvae/training-guide.md) for details.
 ## Data Flow
 
 ```mermaid
-flowchart LR
-    Config[Config YAML] --> Params[Parameter Vectors]
-    Params --> Operators[Neural Operators]
-    Operators --> Rollouts[Stochastic Rollouts]
-    Rollouts --> Features[Multi-Modal Features]
-    Features --> Cleaned[Cleaned Features]
-    Cleaned --> VQVAE[VQ-VAE Model]
-    VQVAE --> Tokens[Behavioral Tokens]
-    Tokens --> NOA[Neural Operator Agent]
+flowchart TD
+    Config[Config YAML]
+    Params[Parameter Vectors]
+    Operators[Neural Operators]
+
+    Rollouts[Stochastic Rollouts]
+    Features[Multi-Modal Features]
+
+    Cleaned[Cleaned Features]
+    VQVAE[VQ-VAE Model]
+
+    Tokens[Behavioral Tokens]
+    NOA[Neural Operator Agent]
+
+    Config --> Params --> Operators
+    Operators --> Rollouts --> Features
+    Features --> Cleaned --> VQVAE
+    VQVAE --> Tokens --> NOA
 
     style Config fill:#e1f5e1,color:#000
     style NOA fill:#e1e8f5,color:#000
