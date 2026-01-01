@@ -113,14 +113,15 @@ flowchart TD
 - **Stochastic rollout generation** - 500 timesteps × 3 realizations capturing behavioral variability
 
 #### 2. Feature Extraction (4 Complementary Families)
-- **INITIAL** (Initial Condition): 42D hybrid features
-  - 14 manual features: spatial, spectral, information-theoretic, morphological
-  - 28 CNN embeddings: ResNet-3 encoder for learned spatial patterns
-- **ARCHITECTURE** (Neural Operator Parameters): 21D architectural/stochastic/evolution features
+- **INITIAL** (Initial Condition): Hybrid features combining manual and learned spatial patterns
+  - Manual features: spatial, spectral, information-theoretic, morphological
+  - CNN embeddings: ResNet-3 encoder for learned spatial patterns
+- **ARCHITECTURE** (Neural Operator Parameters): Architectural/stochastic/evolution features
   - Direct parameter space features (architecture, stochastic, operator, evolution, stratification)
-- **SUMMARY** (Summary Descriptor Features): 420-520D aggregated behavioral statistics
+- **SUMMARY** (Summary Descriptor Features): Aggregated per-rollout behavioral statistics
   - Spatial, spectral, temporal, cross-channel, causality, invariant drift, operator sensitivity
-- **TEMPORAL** (Temporal Dynamics): Full temporal resolution trajectories [N,M,T,D]
+  - Aggregated across all timesteps and realizations per operator
+- **TEMPORAL** (Temporal Dynamics): Full temporal resolution trajectories
   - Preserves time-series structure for sequential modeling
 
 #### 3. VQ-VAE Tokenization
@@ -142,12 +143,12 @@ See [docs/architecture.md](docs/architecture.md) for detailed system design.
 
 Spinlock extracts **4 complementary feature families** that jointly capture neural operator behavior from different perspectives:
 
-| Family | Dimensions | Captures | Granularity |
-|--------|-----------|----------|-------------|
-| **INITIAL** | 42D | Initial condition characteristics (spatial, spectral, information, morphology) | Per-realization |
-| **ARCHITECTURE** | 21D | Operator parameters (architecture, stochastic, evolution) | Per-operator |
-| **SUMMARY** | 420-520D | Aggregated behavioral statistics (spatial, spectral, temporal, causality) | Scalar summaries |
-| **TEMPORAL** | Variable | Full temporal trajectories preserving time-series structure | Per-timestep |
+| Family | Captures | Granularity |
+|--------|----------|-------------|
+| **INITIAL** | Initial condition characteristics (spatial, spectral, information, morphology) | Per-realization |
+| **ARCHITECTURE** | Operator parameters (architecture, stochastic, evolution) | Per-operator |
+| **SUMMARY** | Aggregated behavioral statistics (spatial, spectral, temporal, causality) | Per-rollout (aggregated across timesteps and realizations) |
+| **TEMPORAL** | Full temporal trajectories preserving time-series structure | Per-timestep |
 
 ### Joint Training
 
