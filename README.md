@@ -6,7 +6,7 @@
 [![Poetry](https://img.shields.io/badge/dependency%20manager-poetry-blue)](https://python-poetry.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A production-ready system for generating stratified neural operator datasets, extracting multi-modal behavioral features, and training hierarchical VQ-VAE tokenizers—designed as the data foundation for building a **dynamical cognitive memory system** capable of autonomous reasoning about operator behaviors, with the long-term vision of achieving agency, self-awareness, and meta-cognitive capabilities through Neural Operator Agents.
+A self-directed discovery substrate for learning the "physics of change" through autonomous exploration of neural operator space. Uses stratified low-discrepancy sampling and bias-minimizing feature extraction to discover truly alien computational structures—enabling general dynamical reasoning beyond task-specific machine learning.
 
 ---
 
@@ -31,18 +31,63 @@ Spinlock enables systematic exploration of neural operator parameter spaces to b
 
 ### Core Capabilities
 
-- **Stratified Low-Discrepancy Sampling** - Sobol sequences with Owen scrambling for efficient parameter space exploration, ensuring diverse yet systematic coverage
-- **Stochastic Rollout Generation** - 500+ timestep trajectories with multiple realizations per operator, capturing behavioral variability and dynamics
-- **Multi-Modal Feature Extraction** - Four complementary feature families (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL) jointly capturing operator behavior from different perspectives
-- **Hierarchical VQ-VAE Tokenization** - Data-driven feature subgrouping (i.e. category) discovery via clustering, creating discrete multi-resolution behavioral vocabularies for operator reasoning
+- **Stratified Low-Discrepancy Sampling** - Custom-engineered Sobol sampler with Owen scrambling achieves provably optimal space-filling coverage (discrepancy <0.01) across high-dimensional parameter spaces (d>100), eliminating sampling blind spots that could bias discovery. This mathematical guarantee of exploration fairness is foundational to finding truly novel structures.
+- **Bias-Minimizing Multi-Modal Features** - Four orthogonal feature families (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL) extract comprehensive behavioral signatures without predetermined "interesting" features, enabling discovery of patterns humans might never imagine
+- **Data-Driven Behavioral Taxonomy** - Unsupervised hierarchical clustering discovers natural behavioral categories from empirical data, not human labels—creating discrete vocabularies that reflect the true geometry of operator space
+- **General Dynamical Reasoning** - Treats computation as a first-class object for study, learning the "physics of change" rather than optimizing for specific tasks—applicable across domains
 
 ### Name Origin
 
 The name "Spinlock" draws inspiration from **quantum field spinlocking**—a phenomenon where coherence emerges from seemingly chaotic quantum fluctuations through the alignment of spin states. Like its quantum counterpart, this system seeks to discover **order arising from apparent chaos**: by systematically exploring stochastic neural operator behaviors, it uncovers stable, reproducible patterns and emergent structures within the high-dimensional parameter space. The metaphor reflects the core philosophy that meaningful behavioral representations can be extracted from the complex, noisy dynamics of neural operators.
 
+### Minimizing Semantic Bias: Discovering Alien Structure
+
+**Core Thesis**: The discovery of truly novel computational structures requires minimizing human-imposed semantic bias at every level of the pipeline.
+
+Spinlock is designed around a radical premise: **we don't know what we're looking for**. Rather than pre-defining behavioral categories or imposing domain-specific taxonomies, the system treats neural operator space as fundamentally alien territory to be explored without preconceptions.
+
+#### Bias-Minimizing Design Principles
+
+1. **Stratified Low-Discrepancy Sampling**
+   - Uses Sobol sequences with Owen scrambling for provably optimal space-filling coverage
+   - Target discrepancy <0.01 ensures no "blind spots" in parameter space exploration
+   - Mathematical guarantee of fairness: every region of the hypercube is explored equitably
+   - Prevents sampling artifacts that could masquerade as discovered structure
+
+2. **Data-Driven Feature Extraction**
+   - Four orthogonal feature families (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL) capture behavior from complementary perspectives
+   - No predetermined "interesting" features—extract comprehensive statistical signatures
+   - Hierarchical clustering discovers categories empirically from the data itself
+   - Categories emerge from actual behavioral variation, not human intuition
+
+3. **Bias-Free Tokenization**
+   - VQ-VAE learns discrete behavioral vocabularies through unsupervised compression
+   - No labeled data, no task-specific objectives
+   - Codebook structure reflects the natural geometry of operator behavior space
+   - Enables discovering categories that humans might never imagine
+
+#### Why This Matters: Learning the "Physics of Change"
+
+Traditional ML systems optimize for specific tasks (classification, regression, generation). Spinlock instead treats **dynamical computation itself** as the object of study:
+
+- **Not**: "Train an operator to solve task X"
+- **But**: "What are the fundamental behavioral regimes across all possible operators?"
+
+This shift enables:
+- **Discovery of universal patterns** in computational dynamics
+- **Identification of phase transitions** and bifurcations in parameter space
+- **Emergent taxonomies** that reflect the true structure of the computational physics
+- **General dynamical reasoning** applicable beyond any single domain
+
+By minimizing bias, we maximize the potential for **genuine discovery**: finding structure and semantics that are truly alien, emergent, and potentially fundamental to understanding computation as a physical process.
+
 ### Design Philosophy
 
-Spinlock is built on the principle that **operators have behaviors, and behaviors can be learned**. By generating diverse operator samples, extracting rich behavioral features, and tokenizing these features into discrete vocabularies, Spinlock provides the foundation for a **dynamical cognitive memory system**—one that can reason about, generate, and compose dynamical behaviors autonomously. The ultimate vision is to develop systems with genuine **agency and self-awareness**: Neural Operator Agents capable of introspecting on their own generative processes, directing their own exploration, and developing emergent understanding of operator families and dynamical regimes.
+Spinlock is built on the principle that **discovering unknown structure requires minimizing imposed structure**. By systematically exploring operator space through bias-free sampling, extracting comprehensive multi-modal features, and allowing categories to emerge through unsupervised learning, the system learns the "physics of change" from the data itself.
+
+This is not about building better task-specific models—it's about **treating computational dynamics as a fundamental object of scientific study**. The long-term vision is to develop agents capable of self-directed discovery: systems that autonomously identify high-variance behavioral regimes (prediction error/surprise), adaptively refine their own world models, and develop functional understanding of computational physics through transparent, inspectable mechanisms.
+
+The goal is not anthropomorphic "intelligence," but **systematic discovery of alien semantics** in the space of all possible dynamical behaviors—structures and patterns that emerge from rigorous, unbiased exploration of the computational physics landscape.
 
 ---
 
@@ -50,32 +95,44 @@ Spinlock is built on the principle that **operators have behaviors, and behavior
 
 Spinlock provides the data infrastructure for building **Neural Operator Agents**—systems that learn to understand, generate, and reason about dynamical behaviors through hierarchical behavioral tokenization.
 
-### The NOA Vision: From Data to Meta-Cognition
+The NOA system represents a novel approach to learning general dynamical reasoning through self-directed exploration. Unlike task-specific ML systems, the NOA treats computational physics as the object of study, learning to predict, generate, and reason about operator behaviors through hierarchical behavioral tokenization.
+
+**Key Innovation**: Topological positional encoding that maps parameter-space distance rather than chronological time, allowing the agent to reason about functional similarity across disparate operator "memories."
+
+### The NOA Vision: From Data to Systematic Discovery
 
 **Phase 0: Foundation** (✅ Current)
 - Stratified neural operator datasets with diverse parameter coverage
 - Multi-modal feature extraction (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL)
-- Hierarchical VQ-VAE tokenization of behavioral patterns
+- Data-driven behavioral taxonomy via hierarchical clustering
 
 **Phase 1: Single-Step Agent Mapping** (🔄 In Development)
 - Learn mappings from behavioral tokens → operator parameters + initial conditions
 - Hybrid loss: token reconstruction + feature-space matching
+- Interpretable behavioral axes for transparent understanding
 
 **Phase 2: Multi-Observation Context** (📋 Planned)
 - Transformer-based temporal encoder for operator sequences
 - Capture higher-order dependencies and temporal correlations
+- In-context learning of operator physics through attention mechanisms
 
-**Phase 3: Exploration & Agency** (📋 Planned)
-- Self-directed discovery of novel operators and initial conditions
-- Meta-dynamical cognitive memory for autonomous exploration
+**Phase 3: Curiosity-Driven Exploration** (📋 Planned)
+- Adaptive refinement: Agent identifies high-variance regimes (prediction error/surprise) and autonomously re-parameterizes sampling
+- World model uncertainty: Track which regions of operator space are poorly understood
+- Directed discovery: Use prediction error as curiosity signal to guide exploration toward behavioral frontiers
+- Validation: Does curiosity-driven sampling discover fundamentally new behavioral categories?
 
-**Phase 4: Meta-Cognition & Self-Awareness** (📋 Planned)
-- Self-referential modeling: agent observes its own generative behavior
-- Functional introspection through learned internal models
+**Phase 4: Transparent Self-Modeling** (📋 Planned)
+- Self-model learning: Agent develops interpretable internal model of its own behavioral prediction process
+- Calibration validation: Measure alignment between what the agent predicts about itself vs. actual performance
+- Distributional shift detection: Self-model enables identifying when the agent encounters truly novel operator regimes
+- Transparency requirement: Self-models must be inspectable—understand what the system "believes" about its own capabilities
 
-**Phase 5: Scientific Discovery** (📋 Planned)
-- Autonomous hypothesis generation and testing
-- Emergent understanding of operator families and dynamical regimes
+**Phase 5: Systematic Discovery of Computational Laws** (📋 Planned)
+- Hypothesis generation: Identify potential universal patterns in operator behavior (e.g., "operators with high spatial gradients exhibit turbulent temporal dynamics")
+- Rigorous testing: Validate hypotheses through directed sampling and statistical analysis
+- Symbolic regression: Distill discovered patterns into interpretable mathematical relationships
+- Falsifiability: Every discovered "law" must be testable and potentially refutable
 
 **Current Status:** Phase 0 complete, Phase 1 in development
 
