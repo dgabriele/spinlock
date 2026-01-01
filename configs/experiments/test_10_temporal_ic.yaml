@@ -1,0 +1,108 @@
+version: "1.0"
+
+metadata:
+  name: "test_10_temporal_ic"
+  description: "Minimal test (10 samples) for IC feature extraction validation"
+  author: "Spinlock Team"
+  created: "2025-12-31"
+
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 3]
+    base_channels:
+      type: integer
+      bounds: [16, 32]
+    kernel_size:
+      type: choice
+      choices: [3, 5]
+    activation:
+      type: choice
+      choices: ["gelu"]
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.2]
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian"]
+    noise_scale:
+      type: continuous
+      bounds: [0.001, 0.1]
+      log_scale: true
+    noise_schedule:
+      type: choice
+      choices: ["constant"]
+    spatial_correlation:
+      type: continuous
+      bounds: [0.0, 0.2]
+
+  operator:
+    normalization:
+      type: choice
+      choices: ["instance"]
+    grid_size:
+      type: choice
+      choices: [128]
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["residual"]
+
+sampling:
+  strategy: "sobol_stratified"
+  sobol:
+    scramble: true
+    seed: 42
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 2
+    min_samples_per_stratum: 2
+  validation:
+    check_discrepancy: false
+    check_correlation: false
+  total_samples: 10  # Minimum for stratification
+  batch_size: 2
+
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "sampled"
+    ic_type_weights:
+      gaussian_random_field_v2: 0.5
+      structured: 0.5
+
+    gaussian_random_field_v2:
+      length_scale: 0.05
+      variance: 1.0
+
+    structured:
+      num_structures: 3
+      structure_types: ["stripe"]
+
+  precision: "float16"
+  num_realizations: 3
+  num_timesteps: 20  # Very short for quick test
+
+  extract_operator_features: false  # Skip for speed
+
+dataset:
+  output_path: "./datasets/test_10_temporal_ic.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 1
+    chunk_size: 5
+    store_trajectories: true
+
+logging:
+  level: "INFO"
