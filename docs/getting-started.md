@@ -196,16 +196,23 @@ poetry run spinlock visualize-dataset \
 If you already have rollouts and want to extract features:
 
 ```python
-from spinlock.features.ic import ICFeatureExtractor
-from spinlock.features.sdf import SDFFeatureExtractor
+from spinlock.features.initial import InitialExtractor, InitialConfig
+from spinlock.features.summary import SummaryExtractor, SummaryConfig
+import torch
+
+# Configure and create INITIAL extractor
+initial_config = InitialConfig()
+initial_extractor = InitialExtractor(initial_config, device=torch.device('cuda'))
 
 # Extract INITIAL features
-ic_extractor = ICFeatureExtractor()
-ic_features = ic_extractor.extract(initial_conditions)  # [N, M, 42]
+initial_features = initial_extractor.extract_all(initial_conditions)  # [N, M, 42]
+
+# Configure and create SUMMARY extractor
+summary_config = SummaryConfig()
+summary_extractor = SummaryExtractor(summary_config, device=torch.device('cuda'))
 
 # Extract SUMMARY features
-sdf_extractor = SDFFeatureExtractor()
-sdf_features = sdf_extractor.extract(rollouts)  # [N, M, 420-520]
+summary_features = summary_extractor.extract_all(rollouts)  # [N, 420-520]
 ```
 
 ## Configuration
@@ -242,10 +249,10 @@ parameter_space:
     # ... more parameters
 
 features:
-  ic: true
-  nop: true
-  sdf: true
-  td: true
+  initial: true
+  architecture: true
+  summary: true
+  temporal: true
 ```
 
 ## Common Workflows
