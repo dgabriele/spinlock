@@ -84,13 +84,70 @@ Four complementary feature families:
 
 See [Feature Families](features/README.md) for details.
 
-### 5. VQ-VAE Tokenization
+## Multi-Modal Integration for Interpretability
+
+### Why Four Feature Families?
+
+The decomposition into INITIAL, ARCHITECTURE, SUMMARY, and TEMPORAL is not arbitrary—each family answers distinct questions about operator behavior:
+
+| Family | Question Answered | Interpretability Value |
+|--------|------------------|----------------------|
+| **INITIAL** | How do input characteristics influence behavior? | Identifies sensitivity to initial conditions |
+| **ARCHITECTURE** | Which design choices determine behavioral regimes? | Links structure to function explicitly |
+| **SUMMARY** | What are the observable signatures of behavior? | Provides statistical evidence of patterns |
+| **TEMPORAL** | How do behaviors evolve and transition? | Reveals dynamical mechanisms |
+
+### Cross-Validation Through Multiple Perspectives
+
+Multi-modal training enables **consistency checking**:
+- If ARCHITECTURE suggests chaotic behavior, do SUMMARY entropy features confirm this?
+- If TEMPORAL shows period-doubling bifurcations, do SUMMARY spectral features detect harmonics?
+- If INITIAL indicates smooth inputs, does SUMMARY show expected spatial autocorrelation?
+
+This cross-validation improves confidence that discovered categories reflect genuine behavioral differences, not statistical artifacts.
+
+### Transparent Behavioral Taxonomy
+
+The VQ-VAE codebook learns to compress behavior across all four perspectives simultaneously. This creates tokens that:
+1. **Integrate evidence** from structure, statistics, and dynamics
+2. **Are interpretable** through feature-space attribution
+3. **Enable validation** by reconstructing interpretable features
+
+Unlike end-to-end learned representations, this approach maintains a **transparent chain of reasoning**:
+```
+Raw dynamics → Interpretable features → Hierarchical clustering → Discrete tokens
+     ↓              ↓                         ↓                        ↓
+Observable    Statistical/    Data-driven      Discrete behavioral
+behavior      structural      categories       vocabulary
+              semantics       (inspectable)    (interpretable)
+```
+
+### 5. Data-Driven Behavioral Taxonomy
 **Location:** `src/spinlock/encoding/`
 
 - **Automatic feature cleaning:** NaN removal, variance filtering, deduplication
 - **Category discovery:** Hierarchical clustering across all feature families
 - **Hierarchical VQ:** 3-level discrete latent space (coarse → medium → fine)
 - **Joint training:** Unified representations across INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL
+
+#### Interpretability Properties
+
+The hierarchical clustering approach provides several transparency advantages:
+
+1. **Inspectable Categories**: Unlike end-to-end learned embeddings, clusters can be characterized by:
+   - Feature-space centroids (what defines each behavioral category?)
+   - Feature attribution (which features distinguish categories?)
+   - Hierarchical relationships (how do fine-grained behaviors relate to coarse categories?)
+
+2. **Validation Pathways**:
+   - Cluster quality metrics (silhouette score, Davies-Bouldin index)
+   - Inter-cluster distances (are categories well-separated?)
+   - Utilization rates (are all tokens meaningful, or are some unused?)
+
+3. **Human-Interpretable Discoveries**:
+   - Behavioral categories emerge from data, but can be validated by domain experts
+   - Feature decomposition enables understanding *why* certain operators cluster together
+   - Hierarchical structure reveals natural behavioral taxonomies
 
 See [VQ-VAE Training Guide](vqvae/training-guide.md) for details.
 
