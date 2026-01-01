@@ -15,17 +15,17 @@ Spinlock extracts **4 complementary feature families** that jointly capture neur
 
 ### Initial Condition (INITIAL) Features
 
-**Location:** `src/spinlock/features/ic/`
+**Location:** `src/spinlock/features/initial/`
 
 42-dimensional hybrid features combining:
 - **14 manual features:** Spatial, spectral, information-theoretic, and morphological characteristics
 - **28 CNN embeddings:** ResNet-3 encoder extracting learned spatial patterns
 
-For detailed documentation, see [ic.md](ic.md).
+See [Feature Reference](feature-reference.md) for complete feature specifications.
 
 ### Neural Operator Parameter (ARCHITECTURE) Features
 
-**Location:** `src/spinlock/features/nop/`
+**Location:** `src/spinlock/features/architecture/`
 
 21+ dimensional features directly from the parameter space:
 - Architecture features (6D): Layer counts, kernel sizes, channels
@@ -34,11 +34,11 @@ For detailed documentation, see [ic.md](ic.md).
 - Evolution features (3D): Update policies, integration parameters
 - Stratification features (4D): Parameter space location
 
-For detailed documentation, see [nop.md](nop.md).
+See [Feature Reference](feature-reference.md) for complete feature specifications.
 
 ### Summary Descriptor Features (SUMMARY)
 
-**Location:** `src/spinlock/features/sdf/`
+**Location:** `src/spinlock/features/summary/`
 
 420-520 dimensional aggregated behavioral statistics:
 
@@ -53,18 +53,18 @@ For detailed documentation, see [nop.md](nop.md).
 - Causality metrics (15D): Temporal information flow
 - Invariant drift (64D): Long-term behavioral evolution
 
-For detailed documentation, see [sdf.md](sdf.md).
+See [Feature Reference](feature-reference.md) for complete feature specifications.
 
 ### Temporal Dynamics (TEMPORAL) Features
 
-**Location:** `src/spinlock/features/td/`
+**Location:** `src/spinlock/features/temporal/`
 
 Variable-dimensional temporal features preserving time-series structure:
 - Per-timestep feature vectors [N, M, T, D]
 - Derived temporal curves (growth rates, curvature, oscillation)
 - 1D CNN encoder for temporal pattern extraction
 
-For detailed documentation, see [td.md](td.md).
+See [Feature Reference](feature-reference.md) for complete feature specifications.
 
 ## Joint Training
 
