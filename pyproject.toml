@@ -31,6 +31,9 @@ pyright = "^1.1.407"
 [tool.poetry.group.optional.dependencies]
 zarr = "^2.16.0"
 
+[tool.poetry.scripts]
+spinlock = "spinlock.cli:main"
+
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
