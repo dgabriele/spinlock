@@ -143,22 +143,31 @@ This will:
 
 ```python
 import torch
-from spinlock.encoding import CategoricalHierarchicalVQVAE
+import yaml
+from pathlib import Path
+from spinlock.encoding import CategoricalHierarchicalVQVAE, CategoricalVQVAEConfig
 
-# Load trained model
+# Load VQ-VAE configuration
+with open("checkpoints/vqvae/config.yaml") as f:
+    config_dict = yaml.safe_load(f)
+
+# Construct model from config
+config = CategoricalVQVAEConfig(**config_dict["model"])
+model = CategoricalHierarchicalVQVAE(config)
+
+# Load trained weights
 checkpoint = torch.load("checkpoints/vqvae/best_model.pt")
-model = CategoricalHierarchicalVQVAE.from_checkpoint(checkpoint)
+model.load_state_dict(checkpoint["model_state_dict"])
+model.eval()
 
 # Load features for new operators
 features = ...  # Shape: [N, D] where D is total feature dimension
 
 # Extract behavioral tokens
 with torch.no_grad():
-    tokens_coarse, tokens_medium, tokens_fine = model.get_tokens(features)
-
-# tokens_coarse: [N] - Coarse behavioral category
-# tokens_medium: [N] - Medium-grained behavior
-# tokens_fine: [N] - Fine-grained behavior pattern
+    # Returns [N, num_categories * num_levels] token tensor
+    # Organized as [category_1_L0, category_1_L1, category_1_L2, category_2_L0, ...]
+    tokens = model.get_tokens(features)
 ```
 
 ## Tutorials

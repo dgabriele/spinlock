@@ -250,15 +250,27 @@ poetry run spinlock train-vqvae \
 
 ```python
 import torch
-from spinlock.encoding import CategoricalHierarchicalVQVAE
+import yaml
+from pathlib import Path
+from spinlock.encoding import CategoricalHierarchicalVQVAE, CategoricalVQVAEConfig
 
-# Load trained model
+# Load VQ-VAE configuration
+with open("checkpoints/vqvae/config.yaml") as f:
+    config_dict = yaml.safe_load(f)
+
+# Construct model from config
+config = CategoricalVQVAEConfig(**config_dict["model"])
+model = CategoricalHierarchicalVQVAE(config)
+
+# Load trained weights
 checkpoint = torch.load("checkpoints/vqvae/best_model.pt")
-model = CategoricalHierarchicalVQVAE.from_checkpoint(checkpoint)
+model.load_state_dict(checkpoint["model_state_dict"])
+model.eval()
 
 # Extract behavioral tokens from new operators
 with torch.no_grad():
-    tokens_coarse, tokens_medium, tokens_fine = model.get_tokens(features)
+    # features: [N, D] tensor of operator features
+    tokens = model.get_tokens(features)  # [N, num_categories * num_levels]
 ```
 
 See [docs/getting-started.md](docs/getting-started.md) for tutorials and examples.
