@@ -55,7 +55,7 @@ Spinlock is designed around a radical premise: **we don't know what we're lookin
    - Prevents sampling artifacts that could masquerade as discovered structure
 
 2. **Data-Driven Feature Extraction**
-   - Four orthogonal feature families (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL) capture behavior from complementary perspectives
+   - A broad spectrum of features covering initial conditions, operator architecture, multiscale summary statistics and spatiotemporal dynamics that aim to capture rollout behavior from complementary perspectives
    - No predetermined "interesting" features—extract comprehensive statistical signatures
    - Hierarchical clustering discovers categories empirically from the data itself
    - Categories emerge from actual behavioral variation, not human intuition
