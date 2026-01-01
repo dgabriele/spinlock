@@ -46,6 +46,16 @@ Production Configuration:
   Uses proven hyperparameters from unisim's agent_training_v1 pipeline.
   Single-stage training with high quality and utilization targets.
 
+Feature Cleaning (enabled by default):
+  Before training, features are automatically cleaned using a 4-step pipeline:
+  1. Remove zero-variance features (std < 1e-8)
+  2. Deduplicate highly correlated features (|corr| > 0.99)
+  3. Replace NaN values with feature median
+  4. Cap outliers using MAD (Median Absolute Deviation)
+
+  This ensures numerical stability and clean categorical clustering.
+  Disable with: clean_features: false in config.
+
 Examples:
   # Train with production config
   spinlock train-vqvae --config configs/vqvae/production.json
@@ -273,6 +283,13 @@ Output:
         print(f"  Type:   {config.get('feature_type', 'aggregated')}")
         print(f"  Family: {config.get('feature_family', 'sdf')}")
 
+        print(f"\nFeature Cleaning:")
+        print(f"  Enabled: {config.get('clean_features', True)}")
+        if config.get('clean_features', True):
+            print(f"  Variance threshold:     {config.get('variance_threshold', 1e-8)}")
+            print(f"  Deduplicate threshold:  {config.get('deduplicate_threshold', 0.99)}")
+            print(f"  MAD outlier threshold:  {config.get('mad_threshold', 5.0)}")
+
         print(f"\nCategory Discovery:")
         print(f"  Assignment: {config.get('category_assignment', 'auto')}")
         if config.get("category_assignment") == "auto":
@@ -338,6 +355,28 @@ Output:
 
         if verbose:
             print(f"Loaded {features.shape[0]} samples with {features.shape[1]} features")
+
+        # Clean features (remove NaN, zero-variance, duplicates, cap outliers)
+        if config.get("clean_features", True):  # Default: enabled
+            if verbose:
+                print("\nCleaning features...")
+
+            from spinlock.encoding import FeatureProcessor
+
+            processor = FeatureProcessor(
+                variance_threshold=config.get("variance_threshold", 1e-8),
+                deduplicate_threshold=config.get("deduplicate_threshold", 0.99),
+                mad_threshold=config.get("mad_threshold", 5.0),
+                verbose=verbose,
+            )
+
+            features, feature_mask, feature_names = processor.clean(features, feature_names)
+
+            if verbose:
+                print(f"After cleaning: {features.shape[0]} samples × {features.shape[1]} features")
+        else:
+            if verbose:
+                print("Feature cleaning disabled (clean_features=false in config)")
 
         # Auto-discover categories (if needed)
         if config.get("category_assignment") == "auto" and config.get("resume_from") is None:

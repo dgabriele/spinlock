@@ -62,6 +62,7 @@ from .normalization import (
     save_normalization_stats,
     load_normalization_stats,
 )
+from .feature_processor import FeatureProcessor
 from .latent_dim_defaults import (
     compute_default_latent_dims,
     compute_default_num_tokens,
@@ -97,6 +98,8 @@ __all__ = [
     "apply_standard_normalization",
     "save_normalization_stats",
     "load_normalization_stats",
+    # Feature preprocessing
+    "FeatureProcessor",
     # Latent dimension defaults
     "compute_default_latent_dims",
     "compute_default_num_tokens",
