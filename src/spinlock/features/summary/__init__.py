@@ -1,5 +1,5 @@
 """
-Summary Descriptor Features (SDF) v2.1.
+SUMMARY Features v2.1.
 
 Comprehensive feature extraction covering 12 scientific domains:
 

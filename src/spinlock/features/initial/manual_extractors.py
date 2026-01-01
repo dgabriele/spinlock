@@ -17,7 +17,7 @@ from typing import Dict
 from scipy import ndimage
 
 
-class ICManualExtractor:
+class InitialManualExtractor:
     """Extract manual IC features in PyTorch."""
 
     def __init__(self, device: torch.device = torch.device('cpu')):

@@ -1,16 +1,16 @@
 """
-IC (Initial Condition) feature family.
+INITIAL (Initial Condition) feature family.
 
 Hybrid architecture combining hand-crafted and learned features:
 - Manual: 14D interpretable features (spatial, spectral, information, morphological)
 - CNN: 28D learned embeddings (ResNet-3 encoder)
-- Total: 42D per IC
+- Total: 42D per initial condition
 
 Designed for bidirectional use:
-1. Analysis: Extract features from existing ICs
-2. Generation: Construct ICs from embeddings (VAE mode)
+1. Analysis: Extract features from existing initial conditions
+2. Generation: Construct initial conditions from embeddings (VAE mode)
 
-This enables the NOA to both understand and construct IC+NO pairs
+This enables the NOA to both understand and construct INITIAL+ARCHITECTURE pairs
 that embody its "thoughts".
 """
 
@@ -19,7 +19,8 @@ from .config import (
     InitialManualConfig,
     InitialCNNConfig,
 )
-from .manual_extractors import ICManualExtractor
+from .extractors import InitialExtractor
+from .manual_extractors import InitialManualExtractor
 from .cnn_encoder import (
     InitialCNNEncoder,
     InitialCNNDecoder,
@@ -33,7 +34,8 @@ __all__ = [
     'InitialManualConfig',
     'InitialCNNConfig',
     # Extractors
-    'ICManualExtractor',
+    'InitialExtractor',
+    'InitialManualExtractor',
     # CNN components
     'InitialCNNEncoder',
     'InitialCNNDecoder',

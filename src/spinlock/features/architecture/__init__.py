@@ -1,5 +1,5 @@
 """
-NOP (Neural Operator Parameter) feature family.
+ARCHITECTURE (Neural Operator Parameter) feature family.
 
 Extracts parameter-derived features from [0,1]^P unit hypercube
 and mapped operator configurations.

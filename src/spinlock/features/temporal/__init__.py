@@ -1,11 +1,11 @@
-"""TD (Temporal Dynamics) feature family.
+"""TEMPORAL feature family.
 
-Temporal encoding of operator behavior during rollout. Unlike SDF which aggregates
-trajectories to scalar summaries, TD preserves full time series information for
+Temporal encoding of operator behavior during rollout. Unlike SUMMARY which aggregates
+trajectories to scalar summaries, TEMPORAL preserves full time series information for
 VQ-VAE tokenization via 1D CNN encoder.
 
 Features:
-- Per-timestep features: Loaded from SDF's existing per_timestep extraction
+- Per-timestep features: Loaded from SUMMARY's existing per_timestep extraction
 - Derived temporal curves: Energy, variance, smoothness trajectories
 - Output shape: [N, M, T, D_td] full time series
 

@@ -6,7 +6,7 @@
 [![Poetry](https://img.shields.io/badge/dependency%20manager-poetry-blue)](https://python-poetry.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A production-ready system for generating stratified neural operator datasets, extracting multi-modal behavioral features (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL), and training hierarchical VQ-VAE tokenizers—designed as the data foundation for building a **dynamical cognitive memory system** capable of autonomous reasoning about operator behaviors, with the long-term vision of achieving agency, self-awareness, and meta-cognitive capabilities through Neural Operator Agents.
+A production-ready system for generating stratified neural operator datasets, extracting multi-modal behavioral features, and training hierarchical VQ-VAE tokenizers—designed as the data foundation for building a **dynamical cognitive memory system** capable of autonomous reasoning about operator behaviors, with the long-term vision of achieving agency, self-awareness, and meta-cognitive capabilities through Neural Operator Agents.
 
 ---
 
@@ -34,7 +34,7 @@ Spinlock enables systematic exploration of neural operator parameter spaces to b
 - **Stratified Low-Discrepancy Sampling** - Sobol sequences with Owen scrambling for efficient parameter space exploration, ensuring diverse yet systematic coverage
 - **Stochastic Rollout Generation** - 500+ timestep trajectories with multiple realizations per operator, capturing behavioral variability and dynamics
 - **Multi-Modal Feature Extraction** - Four complementary feature families (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL) jointly capturing operator behavior from different perspectives
-- **Hierarchical VQ-VAE Tokenization** - Automatic category discovery via clustering, creating discrete behavioral vocabularies for operator reasoning
+- **Hierarchical VQ-VAE Tokenization** - Data-driven feature subgrouping (i.e. category) discovery via clustering, creating discrete multi-resolution behavioral vocabularies for operator reasoning
 
 ### Name Origin
 

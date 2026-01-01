@@ -7,7 +7,7 @@ Builds feature registry and coordinates extraction pipeline.
 
 import torch
 from typing import Dict, Tuple, Optional
-from .manual_extractors import ICManualExtractor
+from .manual_extractors import InitialManualExtractor
 from .cnn_encoder import InitialCNNEncoder, InitialVAE
 from .config import InitialConfig
 from ..registry import FeatureRegistry
@@ -47,9 +47,9 @@ class InitialExtractor:
         self.device = device
 
         # Initialize manual extractor
-        self.manual_extractor: Optional[ICManualExtractor] = None
+        self.manual_extractor: Optional[InitialManualExtractor] = None
         if config.manual.enabled:
-            self.manual_extractor = ICManualExtractor(device=device)
+            self.manual_extractor = InitialManualExtractor(device=device)
 
         # Initialize CNN encoder or VAE
         self.cnn_encoder: Optional[torch.nn.Module] = None
