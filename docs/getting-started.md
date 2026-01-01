@@ -32,7 +32,96 @@ View dataset contents:
 - Feature dimensions (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL)
 - Metadata (INITIAL types, evolution policies, parameter stratification)
 
-### 3. Train VQ-VAE Tokenizer
+### 3. Understanding Feature Semantics
+
+The four feature families provide complementary perspectives on operator behavior. Understanding what each feature measures enables interpretable discovery and validation:
+
+```python
+import h5py
+import numpy as np
+from pathlib import Path
+
+# Load dataset
+with h5py.File("datasets/my_operators.h5", "r") as f:
+    initial_features = f["features/initial"][:]      # [N, M, 42]
+    arch_features = f["features/architecture"][:]    # [N, 21+]
+    summary_features = f["features/summary"][:]      # [N, 420-520]
+    temporal_features = f["features/temporal"][:]    # [N, M, T, D]
+
+    # Feature metadata
+    initial_names = f["features/initial"].attrs["feature_names"]
+    summary_names = f["features/summary"].attrs["feature_names"]
+
+# Example 1: Interpret spatial characteristics (INITIAL features)
+# High spatial gradient → sharp interfaces or localized structures
+spatial_gradient_idx = list(initial_names).index("ic_spatial_gradient_mean")
+spatial_gradients = initial_features[:, :, spatial_gradient_idx].mean(axis=1)
+
+print("Operators with high spatial gradients (sharp structures):")
+high_gradient_ops = np.where(spatial_gradients > np.percentile(spatial_gradients, 90))[0]
+print(f"  Found {len(high_gradient_ops)} operators in top 10%")
+
+# Example 2: Cross-validate ARCHITECTURE and SUMMARY features
+# Do high-noise operators show high SUMMARY entropy?
+noise_scale_idx = 0  # First parameter in architecture features
+noise_scales = arch_features[:, noise_scale_idx]
+
+# Find SUMMARY entropy feature
+entropy_idx = [i for i, name in enumerate(summary_names) if "entropy" in name][0]
+summary_entropy = summary_features[:, entropy_idx]
+
+correlation = np.corrcoef(noise_scales, summary_entropy)[0, 1]
+print(f"\nNoise scale vs. SUMMARY entropy correlation: {correlation:.3f}")
+print("  High correlation confirms features capture related behavioral aspects")
+
+# Example 3: Identify behavioral regimes via SUMMARY spectral features
+# Strong spectral peaks → periodic or quasi-periodic behavior
+spectral_peak_indices = [i for i, name in enumerate(summary_names)
+                         if "spectral" in name and "peak" in name]
+spectral_strength = summary_features[:, spectral_peak_indices].max(axis=1)
+
+print(f"\nOperators with strong periodic components:")
+periodic_ops = np.where(spectral_strength > np.percentile(spectral_strength, 80))[0]
+print(f"  Found {len(periodic_ops)} operators in top 20%")
+
+# Example 4: Temporal evolution patterns
+# Examine how variance evolves over time
+variance_trajectory = temporal_features[:, :, :, 0]  # Assuming first feature is variance
+mean_variance_trajectory = variance_trajectory.mean(axis=1)  # Average across realizations
+
+# Classify temporal behaviors
+early_variance = mean_variance_trajectory[:, :50].mean(axis=1)
+late_variance = mean_variance_trajectory[:, -50:].mean(axis=1)
+variance_growth = (late_variance - early_variance) / (early_variance + 1e-8)
+
+print(f"\nTemporal behavior classification:")
+print(f"  Growing operators (variance increases): {(variance_growth > 0.5).sum()}")
+print(f"  Stable operators (variance constant): {(np.abs(variance_growth) < 0.5).sum()}")
+print(f"  Decaying operators (variance decreases): {(variance_growth < -0.5).sum()}")
+```
+
+**Interpretation Tips:**
+
+| Feature Family | High Values Indicate | Low Values Indicate |
+|---------------|---------------------|-------------------|
+| **INITIAL spatial gradients** | Sharp interfaces, localized structures | Smooth, diffuse initial conditions |
+| **INITIAL spectral peaks** | Periodic initial patterns | Broadband or noisy initial conditions |
+| **ARCHITECTURE noise scale** | High stochasticity, variability | Deterministic or low-noise dynamics |
+| **SUMMARY entropy** | Chaotic or irregular dynamics | Ordered or simple patterns |
+| **SUMMARY spectral power** | Periodic or quasi-periodic behavior | Aperiodic or chaotic behavior |
+| **SUMMARY spatial variance** | Heterogeneous spatial patterns | Homogeneous or uniform states |
+| **TEMPORAL growth rates** | Expanding or unstable dynamics | Contracting or stable dynamics |
+
+**Cross-Validation Strategy:**
+
+Multi-modal features enable consistency checking across perspectives:
+- If **ARCHITECTURE** suggests chaotic behavior (high noise), do **SUMMARY** entropy features confirm?
+- If **TEMPORAL** shows period-doubling, do **SUMMARY** spectral features detect harmonics?
+- If **INITIAL** indicates smooth inputs, does **SUMMARY** show expected spatial autocorrelation?
+
+This cross-validation increases confidence that discovered categories reflect genuine behavioral differences, not statistical artifacts.
+
+### 4. Train VQ-VAE Tokenizer
 
 ```bash
 poetry run spinlock train-vqvae \
@@ -50,7 +139,7 @@ This will:
 
 **Expected time:** ~2-6 hours on GPU
 
-### 4. Tokenize Operators
+### 5. Tokenize Operators
 
 ```python
 import torch
