@@ -5,56 +5,64 @@
 ## System Overview
 
 ```mermaid
-flowchart LR
-    subgraph Config["Configuration Layer"]
-        direction TB
-        YAML[YAML Config Files]
-        Schema[Parameter Schema]
+flowchart TD
+    subgraph Row1[" "]
+        direction LR
+        subgraph Config["Configuration Layer"]
+            direction TB
+            YAML[YAML Config Files]
+            Schema[Parameter Schema]
+        end
+
+        subgraph Sampling["Stratified Sampling"]
+            direction TB
+            Sobol[Sobol Sequences]
+            Owen[Owen Scrambling]
+            Stratify[Stratification]
+        end
+
+        subgraph Generation["Operator Generation"]
+            direction TB
+            Builder[Operator Builder]
+            CNN[CNN Construction]
+            Params[Parameter Mapping]
+        end
     end
 
-    subgraph Sampling["Stratified Sampling"]
-        direction TB
-        Sobol[Sobol Sequences]
-        Owen[Owen Scrambling]
-        Stratify[Stratification]
-    end
+    subgraph Row2[" "]
+        direction LR
+        subgraph Execution["Rollout Execution"]
+            direction TB
+            INITIAL[Initial Conditions]
+            Engine[Rollout Engine]
+            Storage[HDF5 Storage]
+        end
 
-    subgraph Generation["Operator Generation"]
-        direction TB
-        Builder[Operator Builder]
-        CNN[CNN Construction]
-        Params[Parameter Mapping]
+        subgraph Features["Feature Extraction"]
+            direction TB
+            ICExt[INITIAL: 42D]
+            NOPExt[ARCHITECTURE: 21D]
+            SDFExt[SUMMARY: 420-520D]
+            TDExt[TEMPORAL: Variable]
+        end
+
+        subgraph Encoding["VQ-VAE Tokenization"]
+            direction TB
+            Clean[Feature Cleaning]
+            Cluster[Category Discovery]
+            Train[Hierarchical VQ-VAE]
+            Tokens[Behavioral Tokens]
+        end
     end
 
     Config --> Sampling
     Sampling --> Generation
-
-    subgraph Execution["Rollout Execution"]
-        direction TB
-        INITIAL[Initial Conditions]
-        Engine[Rollout Engine]
-        Storage[HDF5 Storage]
-    end
-
-    subgraph Features["Feature Extraction"]
-        direction TB
-        ICExt[INITIAL: 42D]
-        NOPExt[ARCHITECTURE: 21D]
-        SDFExt[SUMMARY: 420-520D]
-        TDExt[TEMPORAL: Variable]
-    end
-
-    subgraph Encoding["VQ-VAE Tokenization"]
-        direction TB
-        Clean[Feature Cleaning]
-        Cluster[Category Discovery]
-        Train[Hierarchical VQ-VAE]
-        Tokens[Behavioral Tokens]
-    end
-
     Generation --> Execution
     Execution --> Features
     Features --> Encoding
+
+    style Row1 fill:none,stroke:none
+    style Row2 fill:none,stroke:none
 ```
 
 ## Core Components
