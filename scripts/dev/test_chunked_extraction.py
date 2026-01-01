@@ -8,8 +8,8 @@ Verifies that chunked processing:
 
 import torch
 import numpy as np
-from spinlock.features.sdf.extractors import SDFExtractor
-from spinlock.features.sdf.config import SDFConfig
+from spinlock.features.summary.extractors import SummaryExtractor
+from spinlock.features.summary.config import SummaryConfig
 from spinlock.dataset.pipeline import FeatureExtractionPipeline
 
 
@@ -31,8 +31,8 @@ def test_chunked_extraction_correctness():
     print(f"Memory footprint: {batch_outputs.numel() * 4 / 1e6:.1f} MB (FP32)\n")
 
     # Initialize extractor (use default config which includes all features)
-    sdf_config = SDFConfig()
-    sdf_extractor = SDFExtractor(device=device, config=sdf_config)
+    sdf_config = SummaryConfig()
+    sdf_extractor = SummaryExtractor(device=device, config=sdf_config)
 
     # Extract with chunked pipeline
     pipeline = FeatureExtractionPipeline(
@@ -76,8 +76,8 @@ def test_memory_usage():
     print(f"Rollout data: {rollout_memory_mb:.1f} MB\n")
 
     # Initialize extractor with default config
-    sdf_config = SDFConfig()
-    sdf_extractor = SDFExtractor(device=device, config=sdf_config)
+    sdf_config = SummaryConfig()
+    sdf_extractor = SummaryExtractor(device=device, config=sdf_config)
     pipeline = FeatureExtractionPipeline(sdf_extractor=sdf_extractor, device=device)
 
     # Extract features and track memory
@@ -110,8 +110,8 @@ def test_batch_size_scaling():
     device = torch.device('cuda')
 
     # Initialize extractor with default config
-    sdf_config = SDFConfig()
-    sdf_extractor = SDFExtractor(device=device, config=sdf_config)
+    sdf_config = SummaryConfig()
+    sdf_extractor = SummaryExtractor(device=device, config=sdf_config)
     pipeline = FeatureExtractionPipeline(sdf_extractor=sdf_extractor, device=device)
 
     # Test different batch sizes

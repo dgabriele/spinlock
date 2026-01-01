@@ -9,8 +9,8 @@ Tests that new features can be extracted without errors:
 """
 
 import torch
-from spinlock.features.sdf.config import SDFConfig
-from spinlock.features.sdf.extractors import SDFExtractor
+from spinlock.features.summary.config import SummaryConfig
+from spinlock.features.summary.extractors import SummaryExtractor
 
 def test_phase1_features():
     """Test Phase 1 feature extraction on synthetic data."""
@@ -35,7 +35,7 @@ def test_phase1_features():
     print("Test 1: All Phase 1 features enabled (nonlinear disabled)")
     print("-" * 70)
 
-    config = SDFConfig()
+    config = SummaryConfig()
     # Enable new temporal features (already default)
     config.temporal.include_event_counts = True
     config.temporal.include_time_to_event = True
@@ -52,7 +52,7 @@ def test_phase1_features():
     config.causality.enabled = False
     config.invariant_drift.enabled = False
 
-    extractor = SDFExtractor(device=device, config=config)
+    extractor = SummaryExtractor(device=device, config=config)
 
     # Extract per-timestep features
     print("Extracting per-timestep features (spatial, spectral, cross-channel)...")
@@ -94,7 +94,7 @@ def test_phase1_features():
     print("Test 2: Nonlinear features enabled (expensive, subsampled)")
     print("-" * 70)
 
-    config2 = SDFConfig()
+    config2 = SummaryConfig()
     config2.nonlinear.enabled = True
     config2.nonlinear.include_recurrence = True
     config2.nonlinear.include_correlation_dim = True
@@ -108,7 +108,7 @@ def test_phase1_features():
     config2.invariant_drift.enabled = False
     config2.temporal.include_rolling_windows = False  # Skip expensive rolling windows
 
-    extractor2 = SDFExtractor(device=device, config=config2)
+    extractor2 = SummaryExtractor(device=device, config=config2)
 
     print("Extracting nonlinear features (RQA, correlation dimension)...")
     # Extract only trajectory-level features

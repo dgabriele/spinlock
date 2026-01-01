@@ -71,10 +71,10 @@ def test_feature_extraction():
     print("SDF v2.1 Direct Feature Extraction Test")
     print("="*70)
 
-    from spinlock.features.sdf import SDFExtractor, SDFConfig
+    from spinlock.features.summary import SummaryExtractor, SummaryConfig
 
     # Create config with all extractors enabled
-    config = SDFConfig()
+    config = SummaryConfig()
 
     # Enable Phase 2 extractors explicitly
     config.distributional.enabled = True
@@ -91,7 +91,7 @@ def test_feature_extraction():
 
     # Initialize extractor
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    extractor = SDFExtractor(device=device, config=config)
+    extractor = SummaryExtractor(device=device, config=config)
 
     print(f"✓ Initialized SDF extractor on {device}")
 

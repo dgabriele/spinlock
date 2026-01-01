@@ -1,0 +1,97 @@
+# NOP (Neural Operator Parameter) Feature Extraction Configuration
+# For extracting parameter-derived features from existing datasets
+
+# Input dataset (replace with your dataset path)
+input_dataset: "datasets/vqvae_baseline_10k_temporal.h5"
+
+# Extraction settings
+batch_size: 100  # NOP extraction is very fast (no GPU needed)
+device: "cpu"    # NOP extraction doesn't need GPU
+overwrite: false # Set to true to overwrite existing NOP features
+max_samples: null  # null = extract from all samples
+
+# NOP feature family configuration
+architecture:
+  version: "1.0.0"
+
+  # Architecture features (from neural network parameters)
+  architecture:
+    enabled: true
+    include_depth: true              # num_layers
+    include_width: true              # base_channels
+    include_kernel_size: true        # Kernel size
+    include_activation_encoding: true # One-hot encoding of activation type
+    include_dropout_rate: true       # Dropout probability
+    include_total_parameters: true   # Log10 of estimated parameter count
+
+  # Stochastic features (from noise parameters)
+  stochastic:
+    enabled: true
+    include_noise_scale_log: true           # Log10 of noise scale
+    include_noise_schedule_encoding: true   # One-hot: constant/annealing/periodic
+    include_spatial_correlation: true       # Spatial correlation length
+    include_noise_type_encoding: true       # One-hot: gaussian/laplace
+    include_stochasticity_score: true       # Combined stochasticity metric
+
+  # Operator features (from operator configuration)
+  operator:
+    enabled: true
+    include_normalization_encoding: true  # One-hot: batch/instance/none
+    include_grid_size: true               # Grid resolution (64/128/256)
+    include_grid_size_class: true         # One-hot encoding of grid size
+
+  # Evolution features (from temporal evolution policy)
+  evolution:
+    enabled: true
+    include_update_policy_encoding: true  # One-hot: residual/convex/autoregressive
+    include_dt_log: false                 # Log10 of integration timestep (if dt parameter exists)
+    include_alpha: false                  # Mixing parameter (if alpha parameter exists)
+
+  # Stratification features (from Sobol sampling metadata)
+  stratification:
+    enabled: true
+    include_stratum_ids: true         # Per-dimension stratum ID
+    include_stratum_hash: true        # Composite stratum identifier
+    include_distance_to_boundary: true # Min distance to [0,1]^P edges
+    include_extremeness_score: true   # L2 distance from hypercube center
+
+  # Future extensibility
+  include_learned_embeddings: false  # PCA/clustering not yet implemented
+
+# =============================================================================
+# Expected Output
+# =============================================================================
+#
+# Features will be stored in /features/nop/ group:
+#   /features/nop/
+#     @version: "1.0.0"
+#     @feature_registry: JSON registry with all feature names
+#     @num_features: ~24 features (depends on parameter space)
+#     /features [N, D_nop] - Per-operator features (no time/realization dims)
+#
+# Feature count breakdown (for vqvae_baseline_10k_temporal):
+#   - Architecture: 7 features (depth, width, kernel_size, activation_gelu, dropout, total_params_log)
+#   - Stochastic: 6 features (noise_scale_log, schedule_constant, spatial_corr, noise_gaussian, stoch_score)
+#   - Operator: 2 features (norm_instance, grid_128)
+#   - Evolution: 2 features (policy_residual, policy_convex) - no dt/alpha in that dataset
+#   - Stratification: ~17 features (14 stratum_ids + hash + boundary_dist + extremeness)
+#   Total: ~34 features
+#
+# =============================================================================
+# Usage
+# =============================================================================
+#
+# Extract NOP features from existing dataset:
+#   poetry run spinlock extract-features \
+#     --config configs/features/nop_extraction.yaml
+#
+# Verify extraction:
+#   poetry run spinlock info --dataset datasets/vqvae_baseline_10k_temporal.h5
+#
+# Load features in Python:
+#   from spinlock.features.storage import HDF5FeatureReader
+#   with HDF5FeatureReader(Path("datasets/vqvae_baseline_10k_temporal.h5")) as reader:
+#       nop_features = reader.get_nop_features()  # [N, D_nop]
+#       registry = reader.get_nop_registry()
+#       print(f"NOP features: {nop_features.shape}")
+#       print(f"Feature names: {[f.name for f in registry.features_in_order()]}")

@@ -21,9 +21,9 @@ import numpy as np
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from spinlock.features.sdf.spatial import SpatialFeatureExtractor
-from spinlock.features.sdf.spectral import SpectralFeatureExtractor
-from spinlock.features.sdf.invariant_drift import InvariantDriftExtractor
+from spinlock.features.summary.spatial import SpatialFeatureExtractor
+from spinlock.features.summary.spectral import SpectralFeatureExtractor
+from spinlock.features.summary.invariant_drift import InvariantDriftExtractor
 
 
 def test_harmonic_response_to_nonlinearity():

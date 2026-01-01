@@ -1,0 +1,79 @@
+# IC + NOP VQ-VAE Training Config
+# Demonstrates IC CNN encoder trained end-to-end with VQ-VAE
+# (NO pre-trained CNN features)
+
+# Dataset with IC manual features + NOP features
+dataset_path: "datasets/vqvae_baseline_10k_temporal.h5"
+
+# Feature Families
+families:
+  architecture:
+    # NOP (31D parameter features): Identity encoder (already good)
+    encoder: IdentityEncoder
+    encoder_params:
+      input_dim: 31
+
+  ic_manual:
+    # IC manual features (14D): Identity encoder
+    encoder: IdentityEncoder
+    encoder_params:
+      input_dim: 14
+
+# Note: IC CNN features are NOT pre-extracted!
+# Instead, we train the CNN encoder end-to-end within the VQ-VAE.
+# To do this, you would need to:
+# 1. Load raw IC grids [N, M, 1, 128, 128] from dataset
+# 2. Pass through ICCNNEncoder during training
+# 3. Concatenate with NOP and IC manual features
+#
+# For now, this config uses only manual features + NOP.
+# Full IC CNN integration requires updating the training pipeline
+# to handle raw spatial inputs alongside feature vectors.
+
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 32
+  group_hidden_dim: 64
+
+  # Simpler hierarchy for small feature set
+  levels:
+    - latent_dim: 16
+      num_tokens: 64
+    - latent_dim: 8
+      num_tokens: 32
+
+  commitment_cost: 0.25
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+
+# Training
+training:
+  batch_size: 64
+  learning_rate: 0.0003
+  num_epochs: 50
+  optimizer: "adam"
+  scheduler: "step"
+
+  checkpoint_dir: "checkpoints/ic_nop_vqvae"
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 50
+
+# Future Work: Full IC CNN Integration
+# To enable end-to-end IC CNN training:
+# 1. Update training pipeline to handle mixed inputs (features + spatial data)
+# 2. Load IC grids: /inputs/initial_conditions [N, M, 1, 128, 128]
+# 3. Add ICCNNEncoder to families config:
+#    families:
+#      ic_spatial:
+#        encoder: ICCNNEncoder
+#        encoder_params:
+#          embedding_dim: 28
+# 4. Concatenate: [NOP(31) + IC_manual(14) + IC_CNN(28)] = 73D
+# 5. VQ-VAE tokenizes the 73D representation

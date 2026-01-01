@@ -6,7 +6,7 @@ input_path: datasets/vqvae_baseline_10k_temporal.h5
 output_dir: checkpoints/vqvae_10k_temporal_full
 
 # Feature configuration
-feature_family: sdf
+feature_family: summary
 feature_type: aggregated  # 183 aggregated features from temporal rollouts
 
 # Category discovery (auto-clustering with adaptive codebook sizing)

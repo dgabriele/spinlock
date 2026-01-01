@@ -18,10 +18,10 @@ from typing import Dict, List
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from spinlock.features.sdf.spatial import SpatialFeatureExtractor
-from spinlock.features.sdf.spectral import SpectralFeatureExtractor
-from spinlock.features.sdf.invariant_drift import InvariantDriftExtractor
-from spinlock.features.sdf.cross_channel import CrossChannelFeatureExtractor
+from spinlock.features.summary.spatial import SpatialFeatureExtractor
+from spinlock.features.summary.spectral import SpectralFeatureExtractor
+from spinlock.features.summary.invariant_drift import InvariantDriftExtractor
+from spinlock.features.summary.cross_channel import CrossChannelFeatureExtractor
 
 
 def create_test_data(N=2, M=3, T=10, C=3, H=64, W=64, device='cuda'):

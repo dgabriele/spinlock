@@ -7,8 +7,8 @@ Each feature family (SDF, NOP, IC) can specify its own encoder in config.
 Available Encoders:
 - IdentityEncoder: Pass-through (no transformation)
 - MLPEncoder: MLP with configurable hidden layers
-- ICCNNEncoder: ResNet-3 CNN for initial condition spatial processing
-- TDCNNEncoder: ResNet-1D CNN for temporal dynamics encoding
+- InitialCNNEncoder: ResNet-3 CNN for initial condition spatial processing
+- TemporalCNNEncoder: ResNet-1D CNN for temporal dynamics encoding
 
 Example Config:
     families:
@@ -18,7 +18,7 @@ Example Config:
           hidden_dims: [128, 64]
 
       ic:
-        encoder: ICCNNEncoder
+        encoder: InitialCNNEncoder
         encoder_params:
           embedding_dim: 28
 """
@@ -29,8 +29,8 @@ from typing import Dict, Type, Any
 from .base import BaseEncoder
 from .identity import IdentityEncoder
 from .mlp import MLPEncoder
-from .ic_cnn import ICCNNEncoder
-from .td_cnn import TDCNNEncoder
+from .ic_cnn import InitialCNNEncoder
+from .td_cnn import TemporalCNNEncoder
 
 
 # Encoder Registry
@@ -39,10 +39,10 @@ _ENCODER_REGISTRY: Dict[str, Type[BaseEncoder]] = {
     "IdentityEncoder": IdentityEncoder,
     "mlp": MLPEncoder,
     "MLPEncoder": MLPEncoder,
-    "ic_cnn": ICCNNEncoder,
-    "ICCNNEncoder": ICCNNEncoder,
-    "td_cnn": TDCNNEncoder,
-    "TDCNNEncoder": TDCNNEncoder,
+    "ic_cnn": InitialCNNEncoder,
+    "InitialCNNEncoder": InitialCNNEncoder,
+    "td_cnn": TemporalCNNEncoder,
+    "TemporalCNNEncoder": TemporalCNNEncoder,
 }
 
 
@@ -85,8 +85,8 @@ __all__ = [
     "BaseEncoder",
     "IdentityEncoder",
     "MLPEncoder",
-    "ICCNNEncoder",
-    "TDCNNEncoder",
+    "InitialCNNEncoder",
+    "TemporalCNNEncoder",
     "register_encoder",
     "get_encoder",
 ]

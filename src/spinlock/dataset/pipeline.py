@@ -35,7 +35,7 @@ from ..sampling import StratifiedSobolSampler
 from ..operators import OperatorBuilder, NeuralOperator
 from ..execution import ParallelExecutor, AdaptiveBatchSizer, MemoryManager
 from ..config import SpinlockConfig
-from ..features.sdf import SDFExtractor, SDFConfig
+from ..features.sdf import SummaryExtractor, SummaryConfig
 from ..features.storage import HDF5FeatureWriter
 
 
@@ -142,7 +142,7 @@ class FeatureExtractionPipeline:
     and eliminates wasteful recomputation.
     """
     
-    def __init__(self, sdf_extractor: SDFExtractor, device: torch.device):
+    def __init__(self, sdf_extractor: SummaryExtractor, device: torch.device):
         """
         Initialize feature extraction pipeline.
         
@@ -427,8 +427,8 @@ class DatasetGenerationPipeline:
         
         if not store_trajectories:
             print("Initializing inline feature extractor...")
-            sdf_config = SDFConfig()  # Default: all features
-            sdf_extractor = SDFExtractor(device=self.device, config=sdf_config)
+            sdf_config = SummaryConfig()  # Default: all features
+            sdf_extractor = SummaryExtractor(device=self.device, config=sdf_config)
             print(f"  Feature extractor ready on {self.device}\n")
             self._sdf_extractor = sdf_extractor
 

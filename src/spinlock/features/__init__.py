@@ -8,7 +8,7 @@ for future feature families.
 Main Components:
     - FeatureRegistry: Maps feature names to integer indices
     - FeatureExtractor: Main orchestrator for feature extraction
-    - SDFExtractor: Summary Descriptor Features implementation
+    - SummaryExtractor: Summary Descriptor Features implementation
     - HDF5FeatureWriter: Stores features in HDF5 format
 
 Example:
@@ -17,7 +17,7 @@ Example:
     >>>
     >>> config = FeatureExtractionConfig(
     ...     input_dataset="datasets/benchmark_10k.h5",
-    ...     sdf=SDFConfig()
+    ...     sdf=SummaryConfig()
     ... )
     >>> extractor = FeatureExtractor(config)
     >>> extractor.extract()

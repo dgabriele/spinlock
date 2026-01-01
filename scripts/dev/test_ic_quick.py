@@ -8,8 +8,8 @@ import torch
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from spinlock.features.ic.config import ICConfig
-from spinlock.features.ic.extractors import ICExtractor
+from spinlock.features.initial.config import InitialConfig
+from spinlock.features.initial.extractors import InitialExtractor
 
 def test_ic_extraction():
     """Test IC extraction pipeline."""
@@ -24,8 +24,8 @@ def test_ic_extraction():
 
     # Create config
     print("Initializing IC extractor...")
-    config = ICConfig()
-    extractor = ICExtractor(config=config, device=torch.device('cpu'))
+    config = InitialConfig()
+    extractor = InitialExtractor(config=config, device=torch.device('cpu'))
 
     print(f"  Manual extractor: {'enabled' if extractor.manual_extractor else 'disabled'}")
     print(f"  CNN extractor: {'enabled' if extractor.cnn_encoder else 'disabled'}")
@@ -74,9 +74,9 @@ def test_ic_extraction():
 
     # Test VAE mode
     print("Testing VAE mode (generative)...")
-    config_vae = ICConfig()
+    config_vae = InitialConfig()
     config_vae.cnn.use_vae = True
-    extractor_vae = ICExtractor(config=config_vae, device=torch.device('cpu'))
+    extractor_vae = InitialExtractor(config=config_vae, device=torch.device('cpu'))
     print(f"  Generative mode: {extractor_vae.is_generative}")
 
     # Sample ICs

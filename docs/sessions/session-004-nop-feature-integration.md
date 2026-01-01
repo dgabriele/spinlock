@@ -1,8 +1,8 @@
-# NOP Feature Family Integration - Complete ✅
+# ARCHITECTURE Feature Family Integration - Complete ✅
 
 ## Overview
 
-Successfully integrated **NOP (Neural Operator Parameter)** features as a sibling family to SDF, enabling parameter-derived feature extraction from existing datasets without regeneration.
+Successfully integrated **ARCHITECTURE (Neural Operator Parameter)** features as a sibling family to SUMMARY, enabling parameter-derived feature extraction from existing datasets without regeneration.
 
 **Status**: Post-hoc extraction fully functional (7/8 tasks complete)
 **Performance**: ~5,074 samples/sec on CPU
@@ -39,8 +39,8 @@ Successfully integrated **NOP (Neural Operator Parameter)** features as a siblin
 ### ✅ Phase 3: HDF5 Storage
 - Modified `src/spinlock/features/storage.py`:
   - `HDF5FeatureWriter.create_nop_group()`: Creates `/features/nop/` structure
-  - `HDF5FeatureWriter.write_nop_batch()`: Writes NOP features [B, D_nop]
-  - `HDF5FeatureReader.has_nop()`: Checks for NOP features
+  - `HDF5FeatureWriter.write_nop_batch()`: Writes ARCHITECTURE features [B, D_nop]
+  - `HDF5FeatureReader.has_nop()`: Checks for ARCHITECTURE features
   - `HDF5FeatureReader.get_nop_registry()`: Loads feature registry
   - `HDF5FeatureReader.get_nop_features()`: Loads features [N, D_nop]
 
@@ -59,13 +59,13 @@ Successfully integrated **NOP (Neural Operator Parameter)** features as a siblin
 
 ### ✅ Phase 4B: Post-Hoc Extraction
 - Modified `src/spinlock/features/extractor.py`:
-  - `FeatureExtractor.__init__()`: Initializes NOP extractor from dataset metadata
+  - `FeatureExtractor.__init__()`: Initializes ARCHITECTURE extractor from dataset metadata
   - `FeatureExtractor._extract_nop_features()`: Batch extraction from stored parameters
-  - NOP-only mode: Works on feature-only datasets (no trajectories needed)
+  - ARCHITECTURE-only mode: Works on feature-only datasets (no trajectories needed)
   - Reads from `/parameters/params [N, P]` in HDF5
 
 ### ✅ Phase 5: Configuration Examples
-- Created `configs/features/nop_extraction.yaml`: Full NOP extraction config
+- Created `configs/features/nop_extraction.yaml`: Full ARCHITECTURE extraction config
 - Created `configs/features/test_nop.yaml`: Test config for validation
 - Both configs include:
   - All 5 category configs with feature toggles
@@ -74,10 +74,10 @@ Successfully integrated **NOP (Neural Operator Parameter)** features as a siblin
 
 ### ✅ Phase 6: CLI Documentation
 - Updated `src/spinlock/cli/extract_features.py`:
-  - Module docstring: Mentions SDF and NOP
+  - Module docstring: Mentions SUMMARY and ARCHITECTURE
   - Class docstring: Lists both feature families
-  - `description` property: Comprehensive examples for SDF and NOP
-  - `_print_config_summary()`: Displays NOP config when enabled
+  - `description` property: Comprehensive examples for SUMMARY and ARCHITECTURE
+  - `_print_config_summary()`: Displays ARCHITECTURE config when enabled
 
 ### ✅ Phase 7: Testing & Validation
 - Created `test_nop_extraction.py`: End-to-end test script
@@ -92,7 +92,7 @@ Successfully integrated **NOP (Neural Operator Parameter)** features as a siblin
 
 ## Usage Guide
 
-### Quick Start: Extract NOP Features
+### Quick Start: Extract ARCHITECTURE Features
 
 ```bash
 # Extract from existing dataset (recommended config)
@@ -112,8 +112,8 @@ poetry run python scripts/cli.py extract-features \
 Create a YAML config:
 ```yaml
 input_dataset: "datasets/your_dataset.h5"
-batch_size: 100  # NOP is fast, can use large batches
-device: "cpu"    # NOP doesn't need GPU
+batch_size: 100  # ARCHITECTURE is fast, can use large batches
+device: "cpu"    # ARCHITECTURE doesn't need GPU
 overwrite: false
 
 nop:
@@ -162,13 +162,13 @@ nop:
 from spinlock.features.storage import HDF5FeatureReader
 from pathlib import Path
 
-# Load NOP features
+# Load ARCHITECTURE features
 with HDF5FeatureReader(Path("datasets/your_dataset.h5")) as reader:
-    # Check if NOP features exist
+    # Check if ARCHITECTURE features exist
     if reader.has_nop():
         # Get features
         nop_features = reader.get_nop_features()  # [N, D_nop]
-        print(f"NOP features shape: {nop_features.shape}")
+        print(f"ARCHITECTURE features shape: {nop_features.shape}")
 
         # Get registry
         registry = reader.get_nop_registry()
@@ -207,12 +207,12 @@ poetry run python scripts/cli.py extract-features \
 ## Key Design Decisions
 
 ### 1. Separate Family Structure
-- **NOP** stored in `/features/nop/` (not mixed with SDF)
+- **ARCHITECTURE** stored in `/features/nop/` (not mixed with SUMMARY)
 - Independent registries, configs, versions
-- Can extract SDF-only, NOP-only, or both
+- Can extract SUMMARY-only, ARCHITECTURE-only, or both
 
 ### 2. Parameter-Based Extraction
-- NOP extractor takes `parameters [N, P]` as input (not trajectories)
+- ARCHITECTURE extractor takes `parameters [N, P]` as input (not trajectories)
 - Supports both inline and post-hoc extraction (parameters stored at `/parameters/params`)
 - **Enables full operator replay**: Parameters + config → reconstruct any operator
 
@@ -229,7 +229,7 @@ poetry run python scripts/cli.py extract-features \
 ### 5. Category-Based Organization
 - 5 categories: architecture, stochastic, operator, evolution, stratification
 - Each category has independent config and extraction logic
-- Mirrors SDF's category-based pattern
+- Mirrors SUMMARY's category-based pattern
 
 ---
 
@@ -253,8 +253,8 @@ poetry run python scripts/cli.py extract-features \
 **Status**: Not implemented (post-hoc extraction is sufficient)
 **Effort**: ~2-3 hours
 **Files to modify**:
-- `src/spinlock/dataset/pipeline.py`: Add NOP extraction to generation loop
-- Would enable extracting NOP features during dataset generation
+- `src/spinlock/dataset/pipeline.py`: Add ARCHITECTURE extraction to generation loop
+- Would enable extracting ARCHITECTURE features during dataset generation
 - **Recommendation**: Skip this - post-hoc extraction is fast enough (<2s for 10K)
 
 ### Future Extensions (Documented, Not Implemented)
@@ -274,7 +274,7 @@ Workflow:
 3. Transform each sample to learned embedding: [N, n_components]
 4. Store learned features alongside raw features
 
-Would create new category "learned" in NOP registry.
+Would create new category "learned" in ARCHITECTURE registry.
 
 #### Adaptive Stratification Refinement
 Track which strata have high/low density:
@@ -296,8 +296,8 @@ Could guide future dataset generation via curiosity-driven sampling.
 
 ### Modified Files (5)
 5. `src/spinlock/features/config.py` - Added `nop: Optional[NOPConfig]`
-6. `src/spinlock/features/storage.py` - Added NOP read/write methods
-7. `src/spinlock/features/extractor.py` - Added NOP post-hoc extraction
+6. `src/spinlock/features/storage.py` - Added ARCHITECTURE read/write methods
+7. `src/spinlock/features/extractor.py` - Added ARCHITECTURE post-hoc extraction
 8. `src/spinlock/cli/extract_features.py` - Updated CLI documentation
 9. `test_nop_extraction.py` - Test script (117 lines)
 
@@ -325,14 +325,14 @@ Could guide future dataset generation via curiosity-driven sampling.
 ============================================================
 ✓ ALL TESTS PASSED
 ============================================================
-Extracting NOP features: 100%|██████████| 5/5 [00:00<00:00, 5074.16it/s]
+Extracting ARCHITECTURE features: 100%|██████████| 5/5 [00:00<00:00, 5074.16it/s]
 ```
 
 ---
 
 ## Summary
 
-The NOP feature family is now fully integrated as a sibling to SDF, with:
+The ARCHITECTURE feature family is now fully integrated as a sibling to SUMMARY, with:
 
 - ✅ **Independent architecture**: Separate configs, extractors, storage
 - ✅ **Post-hoc extraction**: Works on existing datasets without regeneration
@@ -348,10 +348,10 @@ The NOP feature family is now fully integrated as a sibling to SDF, with:
 
 ## Usage Recommendation
 
-Extract NOP features from `vqvae_baseline_10k_temporal.h5`:
+Extract ARCHITECTURE features from `vqvae_baseline_10k_temporal.h5`:
 
 ```bash
-# Extract NOP features (should take ~2 seconds)
+# Extract ARCHITECTURE features (should take ~2 seconds)
 poetry run python scripts/cli.py extract-features \
   --dataset datasets/vqvae_baseline_10k_temporal.h5 \
   --config configs/features/nop_extraction.yaml \
@@ -362,4 +362,4 @@ poetry run python scripts/cli.py info \
   --dataset datasets/vqvae_baseline_10k_temporal.h5
 ```
 
-Then you can use both SDF and NOP features for downstream analysis, VQ-VAE training, and automated discovery!
+Then you can use both SUMMARY and ARCHITECTURE features for downstream analysis, VQ-VAE training, and automated discovery!

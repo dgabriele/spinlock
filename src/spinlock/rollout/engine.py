@@ -27,7 +27,7 @@ from .trajectory import TrajectoryWriter
 
 # Optional: Import for operator feature extraction
 try:
-    from spinlock.features.sdf.operator_sensitivity import OperatorSensitivityExtractor
+    from spinlock.features.summary.operator_sensitivity import OperatorSensitivityExtractor
     OPERATOR_FEATURES_AVAILABLE = True
 except ImportError:
     OPERATOR_FEATURES_AVAILABLE = False
@@ -102,7 +102,7 @@ class OperatorRollout:
             clamp_range: Optional (min, max) clamping range
             compute_metrics: Whether to compute trajectory metrics
             extract_operator_features: Whether to extract operator sensitivity features during rollout
-            operator_feature_config: SDFOperatorSensitivityConfig (optional)
+            operator_feature_config: SummaryOperatorSensitivityConfig (optional)
             device: Torch device (cuda or cpu)
             precision: Precision mode ("float32", "float16", "bfloat16")
                       Defaults to "float16" for 2× speedup on modern GPUs

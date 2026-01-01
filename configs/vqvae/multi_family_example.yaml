@@ -10,7 +10,7 @@ dataset_path: "datasets/vqvae_baseline_10k_temporal.h5"
 #   - encoder: Encoder class name (MLPEncoder, ICCNNEncoder, IdentityEncoder)
 #   - encoder_params: Encoder-specific parameters
 families:
-  sdf:
+  summary:
     # SDF (trajectory features): Use MLP encoder
     encoder: MLPEncoder
     encoder_params:
@@ -20,7 +20,7 @@ families:
       activation: "relu"
       batch_norm: true
 
-  nop:
+  architecture:
     # NOP (parameter features): Use simpler MLP
     encoder: MLPEncoder
     encoder_params:
@@ -30,7 +30,7 @@ families:
       activation: "relu"
       batch_norm: true
 
-  ic:
+  initial:
     # IC (initial conditions): Use CNN encoder trained end-to-end
     encoder: ICCNNEncoder
     encoder_params:
@@ -38,7 +38,7 @@ families:
       in_channels: 1
       architecture: "resnet3"
 
-  td:
+  temporal:
     # TD (temporal dynamics): Use 1D CNN encoder for time series
     encoder: TDCNNEncoder
     encoder_params:

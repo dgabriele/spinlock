@@ -6,7 +6,7 @@
 [![Poetry](https://img.shields.io/badge/dependency%20manager-poetry-blue)](https://python-poetry.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A production-ready system for generating stratified neural operator datasets, extracting multi-modal behavioral features (IC+NOP+SDF+TD), and training hierarchical VQ-VAE tokenizers—designed as the data foundation for building a **dynamical cognitive memory system** capable of autonomous reasoning about operator behaviors, with the long-term vision of achieving agency, self-awareness, and meta-cognitive capabilities through Neural Operator Agents.
+A production-ready system for generating stratified neural operator datasets, extracting multi-modal behavioral features (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL), and training hierarchical VQ-VAE tokenizers—designed as the data foundation for building a **dynamical cognitive memory system** capable of autonomous reasoning about operator behaviors, with the long-term vision of achieving agency, self-awareness, and meta-cognitive capabilities through Neural Operator Agents.
 
 ---
 
@@ -33,7 +33,7 @@ Spinlock enables systematic exploration of neural operator parameter spaces to b
 
 - **Stratified Low-Discrepancy Sampling** - Sobol sequences with Owen scrambling for efficient parameter space exploration, ensuring diverse yet systematic coverage
 - **Stochastic Rollout Generation** - 500+ timestep trajectories with multiple realizations per operator, capturing behavioral variability and dynamics
-- **Multi-Modal Feature Extraction** - Four complementary feature families (IC+NOP+SDF+TD) jointly capturing operator behavior from different perspectives
+- **Multi-Modal Feature Extraction** - Four complementary feature families (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL) jointly capturing operator behavior from different perspectives
 - **Hierarchical VQ-VAE Tokenization** - Automatic category discovery via clustering, creating discrete behavioral vocabularies for operator reasoning
 
 ### Name Origin
@@ -54,7 +54,7 @@ Spinlock provides the data infrastructure for building **Neural Operator Agents*
 
 **Phase 0: Foundation** (✅ Current)
 - Stratified neural operator datasets with diverse parameter coverage
-- Multi-modal feature extraction (IC, NOP, SDF, TD)
+- Multi-modal feature extraction (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL)
 - Hierarchical VQ-VAE tokenization of behavioral patterns
 
 **Phase 1: Single-Step Agent Mapping** (🔄 In Development)
@@ -88,9 +88,9 @@ See [docs/noa-roadmap.md](docs/noa-roadmap.md) for detailed architecture and imp
 ### System Overview
 
 ```mermaid
-flowchart TD
+flowchart TEMPORAL
     NO[Stratified Neural Operators]
-    FE[Multi-Modal Feature Extraction<br/>IC + NOP + SDF + TD]
+    FE[Multi-Modal Feature Extraction<br/>INITIAL + ARCHITECTURE + SUMMARY + TEMPORAL]
     VQVAE[Hierarchical VQ-VAE Tokenization]
     Tokens[Behavioral Token Vocabulary]
     NOA[Neural Operator Agent<br/>Future: Phases 1-5]
@@ -113,18 +113,18 @@ flowchart TD
 - **Stochastic rollout generation** - 500 timesteps × 3 realizations capturing behavioral variability
 
 #### 2. Feature Extraction (4 Complementary Families)
-- **IC** (Initial Condition): 42D hybrid features
+- **INITIAL** (Initial Condition): 42D hybrid features
   - 14 manual features: spatial, spectral, information-theoretic, morphological
   - 28 CNN embeddings: ResNet-3 encoder for learned spatial patterns
-- **NOP** (Neural Operator Parameters): 21D architectural/stochastic/evolution features
+- **ARCHITECTURE** (Neural Operator Parameters): 21D architectural/stochastic/evolution features
   - Direct parameter space features (architecture, stochastic, operator, evolution, stratification)
-- **SDF** (Summary Descriptor Features): 420-520D aggregated behavioral statistics
+- **SUMMARY** (Summary Descriptor Features): 420-520D aggregated behavioral statistics
   - Spatial, spectral, temporal, cross-channel, causality, invariant drift, operator sensitivity
-- **TD** (Temporal Dynamics): Full temporal resolution trajectories [N,M,T,D]
+- **TEMPORAL** (Temporal Dynamics): Full temporal resolution trajectories [N,M,T,D]
   - Preserves time-series structure for sequential modeling
 
 #### 3. VQ-VAE Tokenization
-- **Joint training across all feature families** (IC+NOP+SDF+TD)
+- **Joint training across all feature families** (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL)
 - **Automatic category discovery** via hierarchical clustering (~8-15 categories)
 - **Multi-level discrete latent space** (coarse → medium → fine)
 - **Feature cleaning** - NaN removal, variance filtering, deduplication, outlier capping
@@ -144,18 +144,18 @@ Spinlock extracts **4 complementary feature families** that jointly capture neur
 
 | Family | Dimensions | Captures | Granularity |
 |--------|-----------|----------|-------------|
-| **IC** | 42D | Initial condition characteristics (spatial, spectral, information, morphology) | Per-realization |
-| **NOP** | 21D | Operator parameters (architecture, stochastic, evolution) | Per-operator |
-| **SDF** | 420-520D | Aggregated behavioral statistics (spatial, spectral, temporal, causality) | Scalar summaries |
-| **TD** | Variable | Full temporal trajectories preserving time-series structure | Per-timestep |
+| **INITIAL** | 42D | Initial condition characteristics (spatial, spectral, information, morphology) | Per-realization |
+| **ARCHITECTURE** | 21D | Operator parameters (architecture, stochastic, evolution) | Per-operator |
+| **SUMMARY** | 420-520D | Aggregated behavioral statistics (spatial, spectral, temporal, causality) | Scalar summaries |
+| **TEMPORAL** | Variable | Full temporal trajectories preserving time-series structure | Per-timestep |
 
 ### Joint Training
 
 The VQ-VAE jointly trains on all 4 families simultaneously, learning unified representations that span:
-- **IC**: How initial conditions influence operator dynamics
-- **NOP**: How architectural choices determine behavioral regimes
-- **SDF**: Statistical signatures of emergent patterns
-- **TD**: Temporal evolution and regime transitions
+- **INITIAL**: How initial conditions influence operator dynamics
+- **ARCHITECTURE**: How architectural choices determine behavioral regimes
+- **SUMMARY**: Statistical signatures of emergent patterns
+- **TEMPORAL**: Temporal evolution and regime transitions
 
 This multi-modal training enables the model to discover behavioral categories that integrate structural, dynamical, and temporal characteristics—essential for NOA systems that reason about operator behavior.
 
@@ -229,7 +229,7 @@ For detailed installation instructions, platform-specific guides, and troublesho
 
 - [**NOA Roadmap**](docs/noa-roadmap.md) - 5-phase development plan for Neural Operator Agents
 - [**Architecture**](docs/architecture.md) - Detailed system design and implementation
-- [**Feature Families**](docs/features/README.md) - IC, NOP, SDF, TD feature definitions and extraction
+- [**Feature Families**](docs/features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL feature definitions and extraction
 - [**Getting Started**](docs/getting-started.md) - Tutorials and end-to-end examples
 - [**Installation**](docs/installation.md) - Platform-specific installation guides
 

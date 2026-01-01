@@ -6,11 +6,11 @@ multiple feature families (SDF, and future families like temporal_series, spatia
 
 Example:
     >>> from spinlock.features.config import FeatureExtractionConfig
-    >>> from spinlock.features.sdf.config import SDFConfig
+    >>> from spinlock.features.summary.config import SummaryConfig
     >>>
     >>> config = FeatureExtractionConfig(
     ...     input_dataset=Path("datasets/benchmark_10k.h5"),
-    ...     sdf=SDFConfig()
+    ...     sdf=SummaryConfig()
     ... )
 """
 
@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 from pathlib import Path
 
 if TYPE_CHECKING:
-    from spinlock.features.sdf.config import SDFConfig
+    from spinlock.features.summary.config import SummaryConfig
 
 
 class FeatureExtractionConfig(BaseModel):
@@ -39,10 +39,10 @@ class FeatureExtractionConfig(BaseModel):
         cache_trajectories: Cache full trajectories in memory vs streaming
 
     Example:
-        >>> from spinlock.features.sdf.config import SDFConfig
+        >>> from spinlock.features.summary.config import SummaryConfig
         >>> config = FeatureExtractionConfig(
         ...     input_dataset=Path("datasets/benchmark_10k.h5"),
-        ...     sdf=SDFConfig(),
+        ...     sdf=SummaryConfig(),
         ...     batch_size=32,
         ...     device="cuda"
         ... )
@@ -53,7 +53,7 @@ class FeatureExtractionConfig(BaseModel):
     output_dataset: Optional[Path] = None  # If None, writes to input_dataset
 
     # Feature families to extract
-    sdf: Optional['SDFConfig'] = None  # TYPE_CHECKING import avoids circular dependency
+    sdf: Optional['SummaryConfig'] = None  # TYPE_CHECKING import avoids circular dependency
     # Future: temporal_series, spatial_tokens, etc.
 
     # Extraction settings
@@ -95,14 +95,14 @@ class FeatureExtractionConfig(BaseModel):
         return v
 
 
-# Rebuild model after SDFConfig is imported to resolve forward references
+# Rebuild model after SummaryConfig is imported to resolve forward references
 def _rebuild_model():
-    """Rebuild FeatureExtractionConfig after SDFConfig is defined."""
+    """Rebuild FeatureExtractionConfig after SummaryConfig is defined."""
     try:
-        from spinlock.features.sdf.config import SDFConfig  # noqa: F401
+        from spinlock.features.summary.config import SummaryConfig  # noqa: F401
         FeatureExtractionConfig.model_rebuild()
     except ImportError:
-        # SDFConfig not yet available (during initial import)
+        # SummaryConfig not yet available (during initial import)
         pass
 
 

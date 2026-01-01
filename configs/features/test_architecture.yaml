@@ -1,0 +1,41 @@
+# Test NOP extraction on small dataset
+input_dataset: "datasets/test_1k_v2_1_validation.h5"
+batch_size: 50
+device: "cpu"
+overwrite: true
+max_samples: 10  # Test on just 10 samples
+
+architecture:
+  version: "1.0.0"
+  architecture:
+    enabled: true
+    include_depth: true
+    include_width: true
+    include_kernel_size: true
+    include_activation_encoding: true
+    include_dropout_rate: true
+    include_total_parameters: true
+  stochastic:
+    enabled: true
+    include_noise_scale_log: true
+    include_noise_schedule_encoding: true
+    include_spatial_correlation: true
+    include_noise_type_encoding: true
+    include_stochasticity_score: true
+  operator:
+    enabled: true
+    include_normalization_encoding: true
+    include_grid_size: true
+    include_grid_size_class: true
+  evolution:
+    enabled: true
+    include_update_policy_encoding: true
+    include_dt_log: false
+    include_alpha: false
+  stratification:
+    enabled: true
+    include_stratum_ids: true
+    include_stratum_hash: true
+    include_distance_to_boundary: true
+    include_extremeness_score: true
+  include_learned_embeddings: false

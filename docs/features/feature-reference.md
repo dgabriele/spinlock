@@ -1,6 +1,6 @@
-# SDF Feature Reference v2.0 + Phase 1/2 Extensions
+# SUMMARY Feature Reference v2.0 + Phase 1/2 Extensions
 
-Complete reference for all Summary Descriptor Features (SDF) computed by Spinlock.
+Complete reference for all Summary Descriptor Features (SUMMARY) computed by Spinlock.
 
 **Total Features**: 221 (baseline 174 + Phase 1: 33 + Phase 2: 14)
 

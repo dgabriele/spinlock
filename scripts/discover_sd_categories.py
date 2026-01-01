@@ -15,7 +15,7 @@ So each category's features are replicated 3× in the aggregated feature tensor.
 Usage:
     python scripts/discover_sd_categories.py \\
         --dataset datasets/test_1k_inline_features.h5 \\
-        --feature-path "/features/sdf/aggregated/features" \\
+        --feature-path "/features/summary/aggregated/features" \\
         --output configs/vqvae/sd_category_mapping.json
 """
 
@@ -65,7 +65,7 @@ def discover_categories(
         print(f"Loaded feature registry from {registry_path} attributes")
 
         # Load registry
-        registry = FeatureRegistry.from_json(registry_json, family_name="sdf")
+        registry = FeatureRegistry.from_json(registry_json, family_name="summary")
         print(f"\nFeature Registry:")
         print(f"  Total features: {registry.num_features}")
         print(f"  Categories: {', '.join(registry.categories)}")
@@ -180,7 +180,7 @@ def main():
     parser.add_argument(
         "--feature-path",
         type=str,
-        default="/features/sdf/aggregated/features",
+        default="/features/summary/aggregated/features",
         help="HDF5 path to aggregated features"
     )
     parser.add_argument(

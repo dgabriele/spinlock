@@ -1,0 +1,27 @@
+input_dataset: "./datasets/test_5_samples.h5"
+output_dataset: null  # Write back to same file
+
+# IC feature extraction
+initial:
+  version: "1.0.0"
+
+  manual:
+    enabled: true
+    # All 14 features enabled by default
+
+  cnn:
+    enabled: true
+    embedding_dim: 28
+    architecture: "resnet3"
+    use_vae: false  # Encoder-only mode for analysis
+    freeze_encoder: false
+
+  store_manual_separate: true
+  store_cnn_separate: true
+  store_combined: true
+
+# Execution settings
+batch_size: 5
+device: "cuda"
+overwrite: true
+max_samples: null

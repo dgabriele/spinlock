@@ -24,16 +24,16 @@ flowchart TB
     end
 
     subgraph Execution["Rollout Execution"]
-        IC[Initial Conditions]
+        INITIAL[Initial Conditions]
         Engine[Rollout Engine]
         Storage[HDF5 Storage]
     end
 
     subgraph Features["Feature Extraction"]
-        ICExt[IC: 42D]
-        NOPExt[NOP: 21D]
-        SDFExt[SDF: 420-520D]
-        TDExt[TD: Variable]
+        ICExt[INITIAL: 42D]
+        NOPExt[ARCHITECTURE: 21D]
+        SDFExt[SUMMARY: 420-520D]
+        TDExt[TEMPORAL: Variable]
     end
 
     subgraph Encoding["VQ-VAE Tokenization"]
@@ -69,7 +69,7 @@ flowchart TB
 ### 3. Rollout Execution
 **Location:** `src/spinlock/rollout/`
 
-- **Initial conditions:** 28 IC types across 5 diversity tiers
+- **Initial conditions:** 28 INITIAL types across 5 diversity tiers
 - **Stochastic rollouts:** 500 timesteps × 3 realizations per operator
 - **Execution engine:** Batched GPU execution with memory optimization
 
@@ -77,10 +77,10 @@ flowchart TB
 **Location:** `src/spinlock/features/`
 
 Four complementary feature families:
-- **IC (Initial Condition):** 42D hybrid features
-- **NOP (Neural Operator Parameters):** 21D+ parameter features
-- **SDF (Summary Descriptor Features):** 420-520D aggregated statistics
-- **TD (Temporal Dynamics):** Variable temporal resolution features
+- **INITIAL (Initial Condition):** 42D hybrid features
+- **ARCHITECTURE (Neural Operator Parameters):** 21D+ parameter features
+- **SUMMARY (Summary Descriptor Features):** 420-520D aggregated statistics
+- **TEMPORAL (Temporal Dynamics):** Variable temporal resolution features
 
 See [Feature Families](features/README.md) for details.
 
@@ -90,7 +90,7 @@ See [Feature Families](features/README.md) for details.
 - **Automatic feature cleaning:** NaN removal, variance filtering, deduplication
 - **Category discovery:** Hierarchical clustering across all feature families
 - **Hierarchical VQ:** 3-level discrete latent space (coarse → medium → fine)
-- **Joint training:** Unified representations across IC+NOP+SDF+TD
+- **Joint training:** Unified representations across INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL
 
 See [VQ-VAE Training Guide](vqvae/training-guide.md) for details.
 
@@ -98,7 +98,7 @@ See [VQ-VAE Training Guide](vqvae/training-guide.md) for details.
 **Location:** `src/spinlock/dataset/`
 
 - **HDF5 format:** Efficient storage with compression
-- **Metadata tracking:** IC types, evolution policies, parameter stratification
+- **Metadata tracking:** INITIAL types, evolution policies, parameter stratification
 - **Chunked I/O:** Optimized for large-scale dataset generation
 
 ### 7. Visualization
@@ -119,11 +119,11 @@ See [VQ-VAE Training Guide](vqvae/training-guide.md) for details.
 
 ### Feature Extraction
 - **Inline extraction:** Features computed during rollout generation
-- **GPU acceleration:** Batch processing for IC, SDF, TD features
+- **GPU acceleration:** Batch processing for INITIAL, SUMMARY, TEMPORAL features
 - **Memory optimization:** Streaming computation for large datasets
 
 ### VQ-VAE Training
-- **Input features:** ~500-600D after cleaning (IC+NOP+SDF+TD concatenation)
+- **Input features:** ~500-600D after cleaning (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL concatenation)
 - **Categories:** ~8-15 automatically discovered via clustering
 - **Codebook sizes:** Configurable (typically 128-512 codes per level)
 - **Training time:** ~2-6 hours for 10K dataset (GPU)
@@ -175,6 +175,6 @@ flowchart LR
 ## References
 
 - [NOA Roadmap](noa-roadmap.md) - 5-phase development plan
-- [Feature Families](features/README.md) - IC, NOP, SDF, TD documentation
+- [Feature Families](features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL documentation
 - [Getting Started](getting-started.md) - Usage tutorials
 - [Installation](installation.md) - Setup instructions

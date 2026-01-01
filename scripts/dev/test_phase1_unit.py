@@ -18,7 +18,7 @@ def test_kurtosis_overflow_fix():
     print("TEST: Kurtosis Zero-Variance Handling")
     print("="*70)
 
-    from spinlock.features.sdf.spatial import SpatialFeatureExtractor
+    from spinlock.features.summary.spatial import SpatialFeatureExtractor
 
     extractor = SpatialFeatureExtractor(device='cpu')
 
@@ -53,10 +53,10 @@ def test_fft_power_normalization():
     print("TEST: FFT Power Per-Bin Normalization")
     print("="*70)
 
-    from spinlock.features.sdf.spectral import SpectralFeatureExtractor
-    from spinlock.features.sdf.config import SDFSpectralConfig
+    from spinlock.features.summary.spectral import SpectralFeatureExtractor
+    from spinlock.features.summary.config import SummarySpectralConfig
 
-    config = SDFSpectralConfig()
+    config = SummarySpectralConfig()
     extractor = SpectralFeatureExtractor(device='cpu')
 
     # Test on 128×128 grid - need [N, M, T, C, H, W] for full extractor
@@ -86,7 +86,7 @@ def test_t_normalization():
     print("TEST: T-Normalization (trajectory_smoothness)")
     print("="*70)
 
-    from spinlock.features.sdf.temporal import TemporalFeatureExtractor
+    from spinlock.features.summary.temporal import TemporalFeatureExtractor
 
     extractor = TemporalFeatureExtractor(device='cpu')
 
@@ -120,7 +120,7 @@ def test_pacf_stability():
     print("TEST: PACF Numerical Stability")
     print("="*70)
 
-    from spinlock.features.sdf.temporal import TemporalFeatureExtractor
+    from spinlock.features.summary.temporal import TemporalFeatureExtractor
 
     extractor = TemporalFeatureExtractor(device='cpu')
 
@@ -158,7 +158,7 @@ def test_rolling_window_nan_guard():
     print("TEST: Rolling Window NaN Guard")
     print("="*70)
 
-    from spinlock.features.sdf.temporal import TemporalFeatureExtractor
+    from spinlock.features.summary.temporal import TemporalFeatureExtractor
 
     extractor = TemporalFeatureExtractor(device='cpu')
 

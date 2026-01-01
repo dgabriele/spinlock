@@ -6,7 +6,7 @@ input_path: datasets/test_1k_inline_features.h5
 output_dir: checkpoints/vqvae_1k_full_integrated_metrics
 
 # Feature configuration
-feature_family: sdf
+feature_family: summary
 feature_type: aggregated
 
 # Category discovery (auto-clustering with adaptive codebook sizing)

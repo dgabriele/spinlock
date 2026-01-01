@@ -33,7 +33,7 @@ def register_all_sdf_features() -> FeatureRegistry:
     Returns:
         FeatureRegistry with all SDF features registered
     """
-    registry = FeatureRegistry(family_name="sdf")
+    registry = FeatureRegistry(family_name="summary")
 
     # =========================================================================
     # SPATIAL FEATURES (27 features)

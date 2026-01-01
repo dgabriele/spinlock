@@ -6,7 +6,7 @@ HDF5 schema pattern. Supports multiple feature families with separate groups.
 
 Schema (extends /features/ group in dataset):
     /features/
-        @family_versions - {"sdf": "1.0", ...}
+        @family_versions - {"summary": "1.0", ...}
         @extraction_timestamp - ISO timestamp
         @extraction_config - JSON config used
         /sdf/
@@ -137,7 +137,7 @@ class HDF5FeatureWriter:
             num_timesteps: Number of timesteps (T)
             num_realizations: Number of realizations (M)
             registry: Feature registry with name-to-index mapping
-            config: SDF configuration (SDFConfig)
+            config: SDF configuration (SummaryConfig)
             compression: Compression algorithm ("gzip", "lzf", "none")
             compression_opts: Compression level (0-9 for gzip)
             chunk_size: Chunk size for HDF5
@@ -483,31 +483,31 @@ class HDF5FeatureReader:
         features_group = cast(h5py.Group, self.file['features'])
         return [key for key in features_group.keys() if isinstance(features_group[key], h5py.Group)]
 
-    def has_sdf(self) -> bool:
-        """Check if dataset has SDF features."""
-        return 'sdf' in self.get_feature_families()
+    def has_summary(self) -> bool:
+        """Check if dataset has SUMMARY features."""
+        return 'summary' in self.get_feature_families()
 
-    def get_sdf_registry(self) -> Optional[FeatureRegistry]:
+    def get_summary_registry(self) -> Optional[FeatureRegistry]:
         """
-        Get SDF feature registry.
+        Get SUMMARY feature registry.
 
         Returns:
-            FeatureRegistry if SDF features exist, None otherwise
+            FeatureRegistry if SUMMARY features exist, None otherwise
         """
         if self.file is None:
             raise RuntimeError("File not opened")
 
-        if not self.has_sdf():
+        if not self.has_summary():
             return None
 
-        sdf_group = cast(h5py.Group, self.file['features/sdf'])
-        registry_json_str = str(sdf_group.attrs['feature_registry'])
+        summary_group = cast(h5py.Group, self.file['features/summary'])
+        registry_json_str = str(summary_group.attrs['feature_registry'])
 
-        return FeatureRegistry.from_json(registry_json_str, family_name='sdf')
+        return FeatureRegistry.from_json(registry_json_str, family_name='summary')
 
-    def get_sdf_per_timestep(self, idx: Optional[slice] = None) -> Optional[np.ndarray]:
+    def get_summary_per_timestep(self, idx: Optional[slice] = None) -> Optional[np.ndarray]:
         """
-        Get per-timestep SDF features.
+        Get per-timestep SUMMARY features.
 
         Args:
             idx: Optional slice or index
@@ -518,19 +518,19 @@ class HDF5FeatureReader:
         if self.file is None:
             raise RuntimeError("File not opened")
 
-        sdf_group = cast(h5py.Group, self.file['features/sdf']) if self.has_sdf() else None
-        if sdf_group is None or 'per_timestep' not in sdf_group:
+        summary_group = cast(h5py.Group, self.file['features/summary']) if self.has_summary() else None
+        if summary_group is None or 'per_timestep' not in summary_group:
             return None
 
-        dataset = cast(h5py.Dataset, sdf_group['per_timestep/features'])
+        dataset = cast(h5py.Dataset, summary_group['per_timestep/features'])
 
         if idx is None:
             return dataset[:]
         return dataset[idx]
 
-    def get_sdf_per_trajectory(self, idx: Optional[slice] = None) -> Optional[np.ndarray]:
+    def get_summary_per_trajectory(self, idx: Optional[slice] = None) -> Optional[np.ndarray]:
         """
-        Get per-trajectory SDF features.
+        Get per-trajectory SUMMARY features.
 
         Args:
             idx: Optional slice or index
@@ -541,19 +541,19 @@ class HDF5FeatureReader:
         if self.file is None:
             raise RuntimeError("File not opened")
 
-        sdf_group = cast(h5py.Group, self.file['features/sdf']) if self.has_sdf() else None
-        if sdf_group is None or 'per_trajectory' not in sdf_group:
+        summary_group = cast(h5py.Group, self.file['features/summary']) if self.has_summary() else None
+        if summary_group is None or 'per_trajectory' not in summary_group:
             return None
 
-        dataset = cast(h5py.Dataset, sdf_group['per_trajectory/features'])
+        dataset = cast(h5py.Dataset, summary_group['per_trajectory/features'])
 
         if idx is None:
             return dataset[:]
         return dataset[idx]
 
-    def get_sdf_aggregated(self, idx: Optional[slice] = None) -> Optional[np.ndarray]:
+    def get_summary_aggregated(self, idx: Optional[slice] = None) -> Optional[np.ndarray]:
         """
-        Get aggregated SDF features.
+        Get aggregated SUMMARY features.
 
         Args:
             idx: Optional slice or index
@@ -564,11 +564,11 @@ class HDF5FeatureReader:
         if self.file is None:
             raise RuntimeError("File not opened")
 
-        sdf_group = cast(h5py.Group, self.file['features/sdf']) if self.has_sdf() else None
-        if sdf_group is None or 'aggregated' not in sdf_group:
+        summary_group = cast(h5py.Group, self.file['features/summary']) if self.has_summary() else None
+        if summary_group is None or 'aggregated' not in summary_group:
             return None
 
-        dataset = cast(h5py.Dataset, sdf_group['aggregated/features'])
+        dataset = cast(h5py.Dataset, summary_group['aggregated/features'])
 
         if idx is None:
             return dataset[:]

@@ -6,14 +6,14 @@ Spinlock extracts **4 complementary feature families** that jointly capture neur
 
 | Family | Dimensions | Captures | Granularity |
 |--------|-----------|----------|-------------|
-| **IC** | 42D | Initial condition characteristics (spatial, spectral, information, morphology) | Per-realization |
-| **NOP** | 21D+ | Operator parameters (architecture, stochastic, evolution) | Per-operator |
-| **SDF** | 420-520D | Aggregated behavioral statistics (spatial, spectral, temporal, causality) | Scalar summaries |
-| **TD** | Variable | Full temporal trajectories preserving time-series structure | Per-timestep |
+| **INITIAL** | 42D | Initial condition characteristics (spatial, spectral, information, morphology) | Per-realization |
+| **ARCHITECTURE** | 21D+ | Operator parameters (architecture, stochastic, evolution) | Per-operator |
+| **SUMMARY** | 420-520D | Aggregated behavioral statistics (spatial, spectral, temporal, causality) | Scalar summaries |
+| **TEMPORAL** | Variable | Full temporal trajectories preserving time-series structure | Per-timestep |
 
 ## Feature Family Details
 
-### Initial Condition (IC) Features
+### Initial Condition (INITIAL) Features
 
 **Location:** `src/spinlock/features/ic/`
 
@@ -23,7 +23,7 @@ Spinlock extracts **4 complementary feature families** that jointly capture neur
 
 For detailed documentation, see [ic.md](ic.md).
 
-### Neural Operator Parameter (NOP) Features
+### Neural Operator Parameter (ARCHITECTURE) Features
 
 **Location:** `src/spinlock/features/nop/`
 
@@ -36,7 +36,7 @@ For detailed documentation, see [ic.md](ic.md).
 
 For detailed documentation, see [nop.md](nop.md).
 
-### Summary Descriptor Features (SDF)
+### Summary Descriptor Features (SUMMARY)
 
 **Location:** `src/spinlock/features/sdf/`
 
@@ -55,7 +55,7 @@ For detailed documentation, see [nop.md](nop.md).
 
 For detailed documentation, see [sdf.md](sdf.md).
 
-### Temporal Dynamics (TD) Features
+### Temporal Dynamics (TEMPORAL) Features
 
 **Location:** `src/spinlock/features/td/`
 
@@ -71,32 +71,32 @@ For detailed documentation, see [td.md](td.md).
 The VQ-VAE jointly trains on all 4 feature families simultaneously. Rather than treating each family independently, hierarchical clustering discovers natural groupings that span multiple feature types, enabling holistic operator behavioral patterns.
 
 This multi-modal approach allows the model to learn representations that integrate:
-- How initial conditions influence operator dynamics (IC)
-- How architectural choices determine behavioral regimes (NOP)
-- Statistical signatures of emergent patterns (SDF)
-- Temporal evolution and regime transitions (TD)
+- How initial conditions influence operator dynamics (INITIAL)
+- How architectural choices determine behavioral regimes (ARCHITECTURE)
+- Statistical signatures of emergent patterns (SUMMARY)
+- Temporal evolution and regime transitions (TEMPORAL)
 
 ## Feature Extraction Pipeline
 
 ```mermaid
 flowchart LR
     Rollout[Neural Operator<br/>Rollout Data]
-    IC[IC Extraction<br/>42D]
-    NOP[NOP Extraction<br/>21D]
-    SDF[SDF Extraction<br/>420-520D]
-    TD[TD Extraction<br/>Variable]
+    INITIAL[INITIAL Extraction<br/>42D]
+    ARCHITECTURE[ARCHITECTURE Extraction<br/>21D]
+    SUMMARY[SUMMARY Extraction<br/>420-520D]
+    TEMPORAL[TEMPORAL Extraction<br/>Variable]
     Concat[Feature<br/>Concatenation]
     Clean[Feature<br/>Cleaning]
     VQVAE[VQ-VAE<br/>Tokenization]
 
-    Rollout --> IC
-    Rollout --> NOP
-    Rollout --> SDF
-    Rollout --> TD
-    IC --> Concat
-    NOP --> Concat
-    SDF --> Concat
-    TD --> Concat
+    Rollout --> INITIAL
+    Rollout --> ARCHITECTURE
+    Rollout --> SUMMARY
+    Rollout --> TEMPORAL
+    INITIAL --> Concat
+    ARCHITECTURE --> Concat
+    SUMMARY --> Concat
+    TEMPORAL --> Concat
     Concat --> Clean
     Clean --> VQVAE
 ```

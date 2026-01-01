@@ -10,11 +10,11 @@ Coordinates the end-to-end feature extraction pipeline:
 Example:
     >>> from spinlock.features.extractor import FeatureExtractor
     >>> from spinlock.features.config import FeatureExtractionConfig
-    >>> from spinlock.features.sdf.config import SDFConfig
+    >>> from spinlock.features.summary.config import SummaryConfig
     >>>
     >>> config = FeatureExtractionConfig(
     ...     input_dataset=Path("datasets/benchmark_10k.h5"),
-    ...     sdf=SDFConfig()
+    ...     sdf=SummaryConfig()
     ... )
     >>> extractor = FeatureExtractor(config)
     >>> extractor.extract(verbose=True)
@@ -30,8 +30,8 @@ from tqdm import tqdm
 
 from spinlock.features.config import FeatureExtractionConfig
 from spinlock.features.storage import HDF5FeatureWriter, HDF5FeatureReader
-from spinlock.features.sdf.extractors import SDFExtractor
-from spinlock.features.sdf.config import SDFConfig
+from spinlock.features.summary.extractors import SummaryExtractor
+from spinlock.features.summary.config import SummaryConfig
 
 
 class FeatureExtractor:
@@ -57,10 +57,10 @@ class FeatureExtractor:
         self.device = torch.device(config.device)
 
         # Initialize family-specific extractors
-        self.sdf_extractor: Optional[SDFExtractor] = None
+        self.sdf_extractor: Optional[SummaryExtractor] = None
 
         if config.sdf is not None:
-            self.sdf_extractor = SDFExtractor(
+            self.sdf_extractor = SummaryExtractor(
                 device=self.device,
                 config=config.sdf
             )
@@ -137,7 +137,7 @@ class FeatureExtractor:
                 print("Extracting SDF features...")
                 print()
 
-            self._extract_sdf_features(
+            self._extract_summary(
                 num_samples=num_samples,
                 num_realizations=num_realizations,
                 num_timesteps=num_timesteps,
@@ -148,7 +148,7 @@ class FeatureExtractor:
         if verbose:
             print("\n✓ Feature extraction complete!")
 
-    def _extract_sdf_features(
+    def _extract_summary(
         self,
         num_samples: int,
         num_realizations: int,

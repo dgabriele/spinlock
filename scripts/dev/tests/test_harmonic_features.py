@@ -15,7 +15,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from spinlock.features.sdf.spectral import SpectralFeatureExtractor
+from spinlock.features.summary.spectral import SpectralFeatureExtractor
 
 
 def test_harmonic_features():

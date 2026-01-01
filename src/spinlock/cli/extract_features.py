@@ -40,7 +40,7 @@ dynamics. Features are extracted at multiple temporal granularities:
   - Per-trajectory: Aggregated over time for each realization
   - Aggregated: Final summary across all realizations
 
-Extracted features are stored in the dataset's /features/sdf/ group.
+Extracted features are stored in the dataset's /features/summary/ group.
 
 Examples:
   # Extract SDF features with default settings
@@ -225,11 +225,11 @@ Examples:
     def _create_default_config(self, args: Namespace):
         """Create default feature extraction config."""
         from spinlock.features.config import FeatureExtractionConfig
-        from spinlock.features.sdf.config import SDFConfig
+        from spinlock.features.summary.config import SummaryConfig
 
         return FeatureExtractionConfig(
             input_dataset=args.dataset,
-            sdf=SDFConfig(),  # All defaults enabled
+            sdf=SummaryConfig(),  # All defaults enabled
             batch_size=args.batch_size,
             device=args.device,
             overwrite=args.overwrite,

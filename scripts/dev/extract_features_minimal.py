@@ -8,20 +8,20 @@ categories (distributional, structural, physics, morphological, multiscale).
 
 from pathlib import Path
 from spinlock.features.config import FeatureExtractionConfig
-from spinlock.features.sdf.config import SDFConfig
+from spinlock.features.summary.config import SummaryConfig
 from spinlock.features.extractor import FeatureExtractor
 
 def main():
     # Configure SDF with only v2.0 categories
-    sdf_config = SDFConfig(
+    sdf_config = SummaryConfig(
         # v2.0 core categories (enabled)
-        spatial=SDFConfig.model_fields['spatial'].default_factory(),
-        spectral=SDFConfig.model_fields['spectral'].default_factory(),
-        temporal=SDFConfig.model_fields['temporal'].default_factory(),
-        cross_channel=SDFConfig.model_fields['cross_channel'].default_factory(),
-        causality=SDFConfig.model_fields['causality'].default_factory(),
-        invariant_drift=SDFConfig.model_fields['invariant_drift'].default_factory(),
-        operator_sensitivity=SDFConfig.model_fields['operator_sensitivity'].default_factory(),
+        spatial=SummaryConfig.model_fields['spatial'].default_factory(),
+        spectral=SummaryConfig.model_fields['spectral'].default_factory(),
+        temporal=SummaryConfig.model_fields['temporal'].default_factory(),
+        cross_channel=SummaryConfig.model_fields['cross_channel'].default_factory(),
+        causality=SummaryConfig.model_fields['causality'].default_factory(),
+        invariant_drift=SummaryConfig.model_fields['invariant_drift'].default_factory(),
+        operator_sensitivity=SummaryConfig.model_fields['operator_sensitivity'].default_factory(),
     )
 
     # Disable expensive v1.0 categories

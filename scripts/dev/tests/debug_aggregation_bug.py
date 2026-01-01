@@ -7,8 +7,8 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
-from spinlock.features.sdf.extractors import SDFExtractor
-from spinlock.features.sdf.config import SDFConfig
+from spinlock.features.summary.extractors import SummaryExtractor
+from spinlock.features.summary.config import SummaryConfig
 
 def test_fft_feature_extraction():
     """Test FFT feature extraction through the full pipeline."""
@@ -31,8 +31,8 @@ def test_fft_feature_extraction():
                 trajectories[n, m, t, :, :, :] += wave.unsqueeze(0) * 0.5
 
     # Create extractor
-    sdf_config = SDFConfig()
-    extractor = SDFExtractor(device, sdf_config)
+    sdf_config = SummaryConfig()
+    extractor = SummaryExtractor(device, sdf_config)
 
     print("=" * 80)
     print("STAGE 1: Extract per-timestep features")

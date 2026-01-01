@@ -16,7 +16,7 @@ This will:
 - Sample 10,000 operator parameter vectors using Sobol stratification
 - Construct CNN-based neural operators
 - Generate 500-timestep stochastic rollouts (3 realizations each)
-- Extract IC, NOP, SDF, TD features inline
+- Extract INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL features inline
 - Store everything in HDF5 format
 
 **Expected time:** ~12 hours on GPU
@@ -29,8 +29,8 @@ poetry run spinlock inspect datasets/my_operators.h5
 
 View dataset contents:
 - Number of operators
-- Feature dimensions (IC, NOP, SDF, TD)
-- Metadata (IC types, evolution policies, parameter stratification)
+- Feature dimensions (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL)
+- Metadata (INITIAL types, evolution policies, parameter stratification)
 
 ### 3. Train VQ-VAE Tokenizer
 
@@ -42,7 +42,7 @@ poetry run spinlock train-vqvae \
 ```
 
 This will:
-- Load and concatenate all feature families (IC+NOP+SDF+TD)
+- Load and concatenate all feature families (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL)
 - Automatically clean features (NaN removal, variance filtering, deduplication)
 - Discover ~8-15 categories via hierarchical clustering
 - Train 3-level hierarchical VQ-VAE
@@ -101,11 +101,11 @@ If you already have rollouts and want to extract features:
 from spinlock.features.ic import ICFeatureExtractor
 from spinlock.features.sdf import SDFFeatureExtractor
 
-# Extract IC features
+# Extract INITIAL features
 ic_extractor = ICFeatureExtractor()
 ic_features = ic_extractor.extract(initial_conditions)  # [N, M, 42]
 
-# Extract SDF features
+# Extract SUMMARY features
 sdf_extractor = SDFFeatureExtractor()
 sdf_features = sdf_extractor.extract(rollouts)  # [N, M, 420-520]
 ```
@@ -204,6 +204,6 @@ poetry run spinlock train-vqvae --datasets datasets/*.h5
 ## References
 
 - [Architecture](architecture.md) - System design details
-- [Feature Families](features/README.md) - IC, NOP, SDF, TD documentation
+- [Feature Families](features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL documentation
 - [VQ-VAE Training](vqvae/training-guide.md) - Tokenization pipeline
 - [NOA Roadmap](noa-roadmap.md) - Future development plan

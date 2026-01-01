@@ -15,7 +15,7 @@ def test_adaptive_clipping():
     print("TEST: Adaptive IQR-Based Outlier Clipping")
     print("="*70)
 
-    from spinlock.features.sdf.spatial import SpatialFeatureExtractor
+    from spinlock.features.summary.spatial import SpatialFeatureExtractor
 
     extractor = SpatialFeatureExtractor(device='cpu')
 

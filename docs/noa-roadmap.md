@@ -56,16 +56,16 @@ Establish the data infrastructure and tokenization system that enables behaviora
 - Balanced diversity to avoid codebook allocation bias
 
 **Features:**
-- **IC** (Initial Condition): 42D hybrid features (14 manual + 28 CNN)
-- **NOP** (Neural Operator Parameters): 21D architectural/stochastic/evolution features
-- **SDF** (Summary Descriptor Features): 420-520D aggregated behavioral statistics
+- **INITIAL** (Initial Condition): 42D hybrid features (14 manual + 28 CNN)
+- **ARCHITECTURE** (Neural Operator Parameters): 21D architectural/stochastic/evolution features
+- **SUMMARY** (Summary Descriptor Features): 420-520D aggregated behavioral statistics
   - Spatial, temporal, spectral, cross-channel, and invariant drift axes
-- **TD** (Temporal Dynamics): Full temporal resolution features
+- **TEMPORAL** (Temporal Dynamics): Full temporal resolution features
 
 **Key Emphasis:**
-- IC diversity balanced to avoid biasing codebook allocation
-- Neutral priors ensuring tokenization reflects operator semantics, not IC frequency
-- Joint training across all 4 feature families (IC+NOP+SDF+TD)
+- INITIAL diversity balanced to avoid biasing codebook allocation
+- Neutral priors ensuring tokenization reflects operator semantics, not INITIAL frequency
+- Joint training across all 4 feature families (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL)
 
 ### Deliverables
 - ✅ Stratified neural operator dataset generator
@@ -85,13 +85,13 @@ Establish baseline meta-operator mapping from tokens to operators and initial co
 ### Architecture
 - MLP or lightweight feedforward network
 - **Input:** Token sequence for a single rollout
-- **Output:** Parameters of a neural operator + IC to reconstruct that rollout
+- **Output:** Parameters of a neural operator + INITIAL to reconstruct that rollout
 
 ### Training
 
 **Loss Function (Hybrid):**
 1. **Token sequence reconstruction** - Discrete VQ-VAE alignment
-2. **Feature-space reconstruction** - Continuous SDF matching
+2. **Feature-space reconstruction** - Continuous SUMMARY matching
 
 **Training Objective:**
 Minimize divergence between generated and target rollouts while preserving codebook semantics.
@@ -99,7 +99,7 @@ Minimize divergence between generated and target rollouts while preserving codeb
 **Evaluation Metrics:**
 - Token reconstruction accuracy
 - Feature-space error (MSE on SDFs)
-- Stability of operator assignments across IC regimes
+- Stability of operator assignments across INITIAL regimes
 - Codebook utilization and coverage
 
 ### Key Emphasis
@@ -209,7 +209,7 @@ Enable autonomous scientific exploration and hypothesis generation.
 
 ### Evaluation Metrics
 - Token reproducibility and codebook coverage
-- Feature-space error stability across IC types
+- Feature-space error stability across INITIAL types
 - Mutual information between generated operator behavior and input tokens
 - Emergent compositionality and abstraction in generated operators
 

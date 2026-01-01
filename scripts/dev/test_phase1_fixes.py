@@ -20,7 +20,7 @@ import numpy as np
 import h5py
 from typing import Dict, Tuple
 
-from spinlock.features.sdf import SDFExtractor, SDFConfig
+from spinlock.features.summary import SummaryExtractor, SummaryConfig
 
 
 def load_test_dataset(dataset_path: str = "datasets/test_1k_inline_features.h5") -> Tuple[torch.Tensor, np.ndarray]:
@@ -127,7 +127,7 @@ def test_nan_reduction(features: torch.Tensor, original_features: np.ndarray) ->
     return {"nan_reduction": passed}
 
 
-def test_t_normalization(extractor: SDFExtractor, base_trajectory: torch.Tensor) -> Dict[str, bool]:
+def test_t_normalization(extractor: SummaryExtractor, base_trajectory: torch.Tensor) -> Dict[str, bool]:
     """Test that T-normalization works across different trajectory lengths."""
     print("\n" + "="*70)
     print("TEST 3: T-Normalization (trajectory_smoothness, regime_switches)")
@@ -178,7 +178,7 @@ def test_t_normalization(extractor: SDFExtractor, base_trajectory: torch.Tensor)
     return {"t_normalization": passed}
 
 
-def test_grid_size_normalization(extractor: SDFExtractor, base_trajectory: torch.Tensor) -> Dict[str, bool]:
+def test_grid_size_normalization(extractor: SummaryExtractor, base_trajectory: torch.Tensor) -> Dict[str, bool]:
     """Test that grid-size normalization works (FFT power per-bin normalization)."""
     print("\n" + "="*70)
     print("TEST 4: Grid-Size Normalization (FFT power per-bin)")
@@ -246,8 +246,8 @@ def main():
     trajectories, original_features = load_test_dataset()
 
     # Initialize extractor with all categories enabled (like original)
-    config = SDFConfig()
-    extractor = SDFExtractor(device='cuda' if torch.cuda.is_available() else 'cpu', config=config)
+    config = SummaryConfig()
+    extractor = SummaryExtractor(device='cuda' if torch.cuda.is_available() else 'cpu', config=config)
 
     print(f"\n✓ Initialized SDF extractor on {extractor.device}")
 

@@ -15,7 +15,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from spinlock.features.sdf.invariant_drift import InvariantDriftExtractor
+from spinlock.features.summary.invariant_drift import InvariantDriftExtractor
 
 
 def test_dissipation_features():

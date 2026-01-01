@@ -18,8 +18,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from spinlock.rollout.engine import OperatorRollout
-from spinlock.features.sdf.config import SDFConfig, SDFOperatorSensitivityConfig
-from spinlock.features.sdf.extractors import SDFExtractor
+from spinlock.features.summary.config import SummaryConfig, SummaryOperatorSensitivityConfig
+from spinlock.features.summary.extractors import SummaryExtractor
 
 
 class DummyOperator(nn.Module):
@@ -50,7 +50,7 @@ def test_operator_sensitivity_extraction():
     IC = torch.randn(3, 64, 64, device=device)
 
     # Configure operator sensitivity extraction
-    ops_config = SDFOperatorSensitivityConfig(
+    ops_config = SummaryOperatorSensitivityConfig(
         enabled=True,
         include_lipschitz=True,
         include_gain_curve=True,
@@ -115,10 +115,10 @@ def test_operator_sensitivity_extraction():
     print("=" * 70)
 
     # Create SDF config with operator sensitivity enabled
-    sdf_config = SDFConfig(operator_sensitivity=ops_config)
+    sdf_config = SummaryConfig(operator_sensitivity=ops_config)
 
     # Create SDF extractor
-    extractor = SDFExtractor(device=device, config=sdf_config)
+    extractor = SummaryExtractor(device=device, config=sdf_config)
 
     # Prepare trajectories for extraction [N, M, T, C, H, W]
     trajectories_batch = trajectories.unsqueeze(0)  # [1, 5, 10, 3, 64, 64]
