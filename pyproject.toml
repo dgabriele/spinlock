@@ -8,7 +8,7 @@ packages = [{include = "spinlock", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"
-torch = "^2.1.0"
+torch = ">=2.5.0"
 numpy = "^1.24.0"
 scipy = "^1.11.0"
 h5py = "^3.10.0"
@@ -17,7 +17,7 @@ pydantic-yaml = "^1.2.0"
 pyyaml = "^6.0"
 tqdm = "^4.66.0"
 matplotlib = "^3.8.0"
-torchvision = "^0.16.0"
+torchvision = ">=0.20.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
