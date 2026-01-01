@@ -36,6 +36,73 @@ flowchart LR
 
 ---
 
+## Design Principles: Bias-Minimizing Discovery Architecture
+
+The NOA is designed around a radical premise: **we don't know what we're looking for**. The architecture prioritizes discovering truly novel structure over optimizing predetermined objectives.
+
+### 1. Mathematical Guarantees Against Sampling Bias
+
+**Problem**: Random sampling creates "blind spots" where lucky draws dominate, and unlucky regions remain unexplored.
+
+**Solution**: Stratified Sobol sequences with Owen scrambling
+- **Discrepancy <0.01**: Mathematical guarantee of fair exploration across the entire parameter hypercube
+- **High-dimensional coverage** (d>100): No region left unsampled, no artifacts mistaken for structure
+- **Independent contribution**: Custom-engineered sampler achieving provably optimal space-filling properties
+
+**Why it matters**: Prevents "discovering" patterns that are actually sampling artifacts. Every region explored equitably.
+
+### 2. Bias-Free Feature Extraction: Learning Without Prejudice
+
+Rather than choosing "interesting" features based on human intuition, extract **comprehensive statistical signatures**:
+
+- **INITIAL**: All spatial/spectral/information characteristics, not cherry-picked
+- **ARCHITECTURE**: Complete parameter space mapping, not designer-selected hyperparameters
+- **SUMMARY**: Full statistical profile (spatial, spectral, temporal, causal, topological) without filtering
+- **TEMPORAL**: Entire time series preserved, no predetermined "important" timesteps
+
+**Principle**: If we don't extract it, we can't discover it. Cast the widest possible net.
+
+### 3. Data-Driven Taxonomy: Categories Emerge, Not Imposed
+
+Behavioral categories discovered through **unsupervised hierarchical clustering**:
+- No labeled data (labels impose human bias)
+- No task-specific objectives (tasks constrain discovery space)
+- Categories reflect the natural geometry of operator behavior, potentially revealing alien semantics
+
+**Validation**: Cluster quality metrics (silhouette, Davies-Bouldin) ensure structure is genuine, not forced
+
+### 4. Topological Positional Encoding: Reasoning About Functional Similarity
+
+**Innovation**: Positional encoding based on **parameter-space distance**, not chronological time
+
+**Standard Transformer**: Position = sequence order (temporal)
+**NOA Transformer**: Position = behavioral similarity (topological)
+
+Enables the agent to reason: "This operator I've never seen is similar to these three I have seen, based on parameter proximity."
+
+**Why it matters**: In-context learning of operator physics—the attention mechanism performs implicit regression over parameter-behavior relationships.
+
+### 5. Curiosity-Driven Adaptive Refinement: Closing the Loop
+
+**Phase 3 Innovation**: Agent actively directs its own exploration
+
+- **Prediction error** as curiosity signal: High-variance regions = poor understanding
+- **Autonomous re-parameterization**: Agent refines sampling to explore behavioral frontiers
+- **Self-directed discovery**: System identifies gaps in its world model and fills them
+
+**This is the "meta" in meta-cognitive**: Not just learning from data, but learning *what to learn about*.
+
+### 6. Transparent Mechanisms at Every Level
+
+Even advanced phases maintain interpretability:
+- **Feature → Token mapping**: Inspectable through attribution analysis
+- **Self-models**: Must be analyzable—track what the system "believes" about itself
+- **Discovered laws**: Expressed as testable, falsifiable mathematical relationships
+
+**Goal**: Discovery of alien semantics, but through transparent, validatable mechanisms
+
+---
+
 ## Phase 0: Foundation – Data and Tokens
 
 **Status:** ✅ **COMPLETE**
@@ -105,6 +172,23 @@ Minimize divergence between generated and target rollouts while preserving codeb
 ### Key Emphasis
 This phase establishes the **baseline meta-operator mapping** essential before multi-step or self-referential capabilities.
 
+### Validation Methodology
+
+**Interpretability Metrics**:
+- **Feature-token alignment**: Do tokens capture feature-space structure?
+- **Reconstruction fidelity**: Can we recover interpretable features from tokens?
+- **Category coherence**: Are discovered clusters semantically meaningful?
+
+**Transparency Mechanisms**:
+- **Codebook inspection**: Visualize what each token represents in feature space
+- **Attribution analysis**: Which features contribute most to each token assignment?
+- **Failure case analysis**: When does the mapping break down and why?
+
+**Success Criteria** (Phase 1 → Phase 2):
+- Token reconstruction achieves <10% feature-space error
+- Manual inspection confirms behavioral categories are interpretable
+- Stability analysis shows consistent token assignments across runs
+
 ### Deliverables
 - [ ] NOA architecture implementation
 - [ ] Hybrid loss function
@@ -141,95 +225,129 @@ Attention across sequences is critical for eventual **self-modeling**—the agen
 
 ---
 
-## Phase 3: Exploration and Agency
+## Phase 3: Curiosity-Driven Exploration
 
 **Status:** 📋 **PLANNED**
 
 ### Objective
-Develop meta-dynamical cognitive memory with self-directed exploration capabilities.
+Close the loop: agent actively directs its own exploration by identifying knowledge gaps and adaptively refining sampling.
 
-### Directive Framework
-- **Task:** Explore novel ICs or operators probing underrepresented/uncertain dynamics
-- **Feedback loop:** Compare generated rollouts against predicted tokens or SDFs
-- **Optimization:** Novelty, diversity, or reduction of internal uncertainty
-- **Optional:** Curriculum learning for gradual complexity increase
+### Core Mechanism: Adaptive Refinement
+- **Prediction error as curiosity signal**: High-variance regions indicate poor understanding
+- **World model uncertainty**: Track which regions of operator space are poorly understood
+- **Autonomous re-parameterization**: Agent refines sampling to explore behavioral frontiers
+- **Directed discovery**: Use prediction error to guide exploration toward novel regimes
 
-### Outcomes
-NOA develops **meta-dynamical cognitive memory**, capable of:
-- Synthesizing operators expressing inferred latent structures
-- Exploring unknown dynamics with self-directed "curiosity"
-- Generating rollouts reflecting internal understanding of patterns
+### Why This Matters
+This is the **"meta" in meta-cognitive**: Not just learning from data, but learning *what to learn about*.
+
+The NOA doesn't just model existing data—it actively identifies gaps in its world model and fills them through targeted exploration. This transforms the system from passive learner to active discoverer.
+
+### Validation Questions
+- Does curiosity-driven sampling discover fundamentally new behavioral categories?
+- Are identified "knowledge gaps" semantically meaningful?
+- Does adaptive refinement improve coverage of operator space more efficiently than uniform sampling?
 
 ### Key Emphasis
-This phase is the **first step toward emergent self-referential modeling**—the agent begins to treat its own operator generation as part of the environment it can learn about.
+This phase closes the discovery loop: the NOA becomes self-directed, autonomously identifying behavioral frontiers and adapting its exploration strategy.
 
 ### Deliverables
-- [ ] Exploration policy implementation
-- [ ] Novelty/diversity metrics
-- [ ] Uncertainty quantification
-- [ ] Curriculum learning framework
+- [ ] Prediction error-based curiosity metric
+- [ ] World model uncertainty quantification
+- [ ] Adaptive sampling re-parameterization
+- [ ] Discovery validation framework
 
 ---
 
-## Phase 4: Self-Referential Meta-Cognition
+## Phase 4: Transparent Self-Modeling
 
 **Status:** 📋 **PLANNED**
 
-### Objective
-Enable the NOA to model its own generative behavior, forming functional introspection.
+### Research Question
+Can an agent develop interpretable internal models of its own generative processes?
 
-### Mechanism
-- Feed NOA-generated rollouts back through the VQ-VAE
-- Summarize internal errors or surprises
-- Encourage NOA to **model its own generative behavior**
+### Core Mechanism
+The NOA learns a **self-model**: a function mapping from internal state → predicted behavioral outcomes. This is not "self-awareness" in an anthropomorphic sense, but rather:
+- A learned approximation of the agent's own input-output mapping
+- An inspectable representation of what the system "expects" itself to do
+- A tool for detecting distributional shift in the agent's own behavior
 
-### Internal Model
-Form latent encoding "how I, the NOA, typically behave":
-- Predictive consistency of self-generated outputs
-- Error distributions relative to expected behavior
-- Deviations from expected SDFs/tokens
+### Transparency Requirements
+
+1. **Inspectable self-models**: The learned self-representation should be analyzable
+   - Can we visualize what the agent "believes" about its own behavior?
+   - Are self-model predictions calibrated with actual outcomes?
+
+2. **Validation against ground truth**: Compare self-model predictions to actual behavior
+   - Measure alignment: does the agent accurately predict its own outputs?
+   - Identify blind spots: where does the self-model fail?
+
+3. **Interpretable discrepancies**: When self-model diverges from reality, understand why
+   - Distribution shift detection
+   - Novel scenario identification
+   - Failure mode analysis
+
+### Scientific Validation
+- **Hypothesis**: Self-modeling improves exploration efficiency by identifying knowledge gaps
+- **Test**: Compare exploration in agents with/without self-models
+- **Interpretability check**: Are identified "knowledge gaps" semantically meaningful?
 
 ### Key Emphasis
-This is where **self-perspective emerges**—not through symbolic identity but as a **learned internal model of its own dynamics**, the functional equivalent of introspection.
+This approach treats self-modeling as a **mechanistic tool** for understanding and improving agent behavior, not as a mystical property. The self-model must be transparent and inspectable.
 
 ### Deliverables
-- [ ] Self-observation loop implementation
-- [ ] Internal consistency metrics
-- [ ] Self-model evaluation framework
-- [ ] Introspection analysis tools
+- [ ] Self-model learning architecture
+- [ ] Calibration validation metrics
+- [ ] Distributional shift detection
+- [ ] Interpretability analysis tools
 
 ---
 
-## Phase 5: Scientific Discovery and Evaluation
+## Phase 5: Systematic Discovery of Computational Laws
 
 **Status:** 📋 **PLANNED**
 
 ### Objective
-Enable autonomous scientific exploration and hypothesis generation.
+Move from behavioral categorization to discovering fundamental principles governing the "physics of change" in computational systems.
 
-### Evaluation Metrics
-- Token reproducibility and codebook coverage
-- Feature-space error stability across INITIAL types
-- Mutual information between generated operator behavior and input tokens
-- Emergent compositionality and abstraction in generated operators
+### Core Research Goal
+Identify universal patterns and relationships in operator behavior that can be expressed as testable, falsifiable mathematical statements.
 
-### Applications
-- **Meta-learning of operators:** Learn families of operators with shared structure
-- **Interpretable dynamics generation:** Generate reusable, understandable dynamics
-- **Autonomous scientific exploration:** Self-directed hypothesis generation and testing
-- **Emergent understanding:** Discover operator families and dynamical regimes
+### Hypothesis Generation
+- Identify potential universal patterns in operator behavior
+- Example: "Operators with high spatial gradients exhibit turbulent temporal dynamics"
+- Example: "Parameter regions near bifurcation points show high sensitivity to initial conditions"
+- Generate candidate relationships between ARCHITECTURE parameters and SUMMARY behavioral signatures
+
+### Rigorous Testing
+- **Directed sampling**: Generate operators specifically designed to test hypotheses
+- **Statistical validation**: Use rigorous hypothesis testing (not just correlation)
+- **Falsification**: Actively search for counter-examples
+- **Replication**: Verify discoveries hold across independent datasets
+
+### Symbolic Regression
+- Distill discovered patterns into interpretable mathematical relationships
+- Express laws as symbolic equations, not black-box models
+- Enable human understanding and verification of discoveries
+
+### Falsifiability Requirement
+Every discovered "law" must be:
+- Expressed precisely enough to be testable
+- Potentially refutable through counter-examples
+- Validated through independent experiments
 
 ### Key Capabilities
-- Formulate hypotheses about operator behavior
-- Design experiments to test hypotheses
-- Analyze results and refine understanding
-- Generate new operators targeting specific behaviors
+- **Autonomous hypothesis generation**: Formulate testable conjectures about operator families
+- **Experimental design**: Create targeted operator configurations to test specific hypotheses
+- **Statistical rigor**: Apply proper hypothesis testing methodology
+- **Interpretable discoveries**: Express findings as human-understandable mathematical relationships
 
 ### Deliverables
 - [ ] Hypothesis generation framework
-- [ ] Experimental design system
-- [ ] Automated analysis pipeline
-- [ ] Discovery metrics and evaluation
+- [ ] Directed experimental design system
+- [ ] Statistical validation pipeline
+- [ ] Symbolic regression tools
+- [ ] Falsifiability verification framework
 
 ---
 
