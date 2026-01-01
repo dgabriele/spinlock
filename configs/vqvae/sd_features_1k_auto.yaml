@@ -1,0 +1,69 @@
+# VQ-VAE Training Config for SD Features (1K dataset) - AUTO CATEGORY DISCOVERY
+#
+# Trains categorical hierarchical VQ-VAE on aggregated SDF v2.0 features
+# using automatic clustering-based category discovery (like unisim).
+#
+# This config uses the proven encoder architecture from unisim's U token training.
+
+# Dataset configuration
+input_path: "datasets/test_1k_inline_features.h5"
+output_dir: "checkpoints/vqvae_sd_1k_auto"
+
+# Feature selection
+feature_type: "aggregated"  # Use aggregated features (120 trajectory × 3 aggregations)
+feature_family: "sdf"  # SDF v2.0 features
+
+# Category assignment - AUTOMATIC via clustering
+category_assignment: "auto"
+num_categories_auto: null  # null = auto-determine via silhouette score (like unisim)
+orthogonality_target: 0.15  # Target max correlation between categories (like unisim)
+min_features_per_category: 3  # Minimum features per category
+max_clusters: 25  # Maximum clusters to explore (allows 12-15 like unisim)
+
+# VQ-VAE architecture (GroupedFeatureExtractor from unisim)
+group_embedding_dim: 64  # Embedding dimension for each category
+group_hidden_dim: 128    # Hidden dimension for category MLPs
+
+# Hierarchical levels (uniform across categories)
+# Based on unisim's proven 3-level hierarchy
+# Latent dims will be auto-computed if not specified
+factors:
+  - {latent_dim: 32, num_tokens: 128}  # Level 0: Coarse
+  - {latent_dim: 16, num_tokens: 256}  # Level 1: Medium
+  - {latent_dim: 8, num_tokens: 512}   # Level 2: Fine
+
+# Training hyperparameters (from unisim production config)
+epochs: 410
+batch_size: 1024
+learning_rate: 0.0007
+device: "cuda"
+
+# Loss weights (from unisim agent_training_v1)
+commitment_cost: 0.45          # VQ-VAE commitment cost
+orthogonality_weight: 0.1      # Encourage orthogonal categories
+informativeness_weight: 0.1    # Each token should be independently useful
+topo_weight: 0.02              # Topographic organization (weak)
+topo_samples: 64               # Samples for topographic loss
+
+# EMA configuration
+use_ema: true
+decay: 0.99
+
+# Callbacks
+early_stopping_patience: 100         # Stop if no improvement for 100 epochs
+early_stopping_min_delta: 0.01       # Minimum improvement threshold
+dead_code_reset_interval: 100        # Reset dead codes every 100 epochs (helps utilization)
+dead_code_threshold: 10.0            # 10th percentile threshold
+dead_code_max_reset_fraction: 0.25   # Max 25% of codebook reset at once
+
+# Validation
+val_every_n_epochs: 5  # Validate every 5 epochs
+
+# Performance
+use_torch_compile: false  # Disable for now (can enable if GPU memory allows)
+
+# Random seed
+random_seed: 42
+
+# Verbose output
+verbose: true

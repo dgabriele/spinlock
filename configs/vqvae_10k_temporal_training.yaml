@@ -1,0 +1,50 @@
+# VQ-VAE Training Configuration for 10K Temporal Dataset
+# Designed for datasets/vqvae_baseline_10k_temporal.h5 (500 timesteps)
+
+# Dataset
+input_path: datasets/vqvae_baseline_10k_temporal.h5
+output_dir: checkpoints/vqvae_10k_temporal_full
+
+# Feature configuration
+feature_family: sdf
+feature_type: aggregated  # 183 aggregated features from temporal rollouts
+
+# Category discovery (auto-clustering with adaptive codebook sizing)
+category_assignment: auto
+min_features_per_category: 3
+max_clusters: 30  # for 183 features (vs 360 for 1K dataset)
+
+# Model architecture
+group_embedding_dim: 64
+group_hidden_dim: 128
+
+# Training (full training to convergence)
+epochs: 500
+batch_size: 512
+learning_rate: 0.0007
+val_every_n_epochs: 5
+random_seed: 42
+
+# VQ-VAE hyperparameters (matching unisim production)
+commitment_cost: 0.45
+use_ema: true
+decay: 0.995
+
+# Loss weights (matching unisim exactly)
+orthogonality_weight: 0.1
+informativeness_weight: 0.1
+orthogonality_target: 0.15
+topo_weight: 0.3
+topo_samples: 512
+
+# Callbacks
+early_stopping_patience: 200
+early_stopping_min_delta: 0.01
+dead_code_reset_interval: 1000
+dead_code_threshold: 10.0
+dead_code_max_reset_fraction: 0.25
+
+# Optimization
+use_torch_compile: false  # Disable for stability during first run
+device: cuda
+verbose: true

@@ -1,0 +1,107 @@
+# Multi-Family VQ-VAE Training Config
+# Demonstrates modular encoder system where each feature family
+# (SDF, NOP, IC) can specify its own encoder.
+
+# Dataset
+dataset_path: "datasets/vqvae_baseline_10k_temporal.h5"
+
+# Feature Families to Include
+# Each family can specify:
+#   - encoder: Encoder class name (MLPEncoder, ICCNNEncoder, IdentityEncoder)
+#   - encoder_params: Encoder-specific parameters
+families:
+  sdf:
+    # SDF (trajectory features): Use MLP encoder
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [256, 128]
+      output_dim: 64
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
+
+  nop:
+    # NOP (parameter features): Use simpler MLP
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [128, 64]
+      output_dim: 64
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
+
+  ic:
+    # IC (initial conditions): Use CNN encoder trained end-to-end
+    encoder: ICCNNEncoder
+    encoder_params:
+      embedding_dim: 64  # Match other families
+      in_channels: 1
+      architecture: "resnet3"
+
+  td:
+    # TD (temporal dynamics): Use 1D CNN encoder for time series
+    encoder: TDCNNEncoder
+    encoder_params:
+      input_dim: 56  # Per-timestep features (46) + derived (10)
+      embedding_dim: 64  # Match other families
+      architecture: "resnet1d_3"
+
+# VQ-VAE Architecture
+model:
+  # Global embedding dimension (can be overridden per family via encoder_params)
+  group_embedding_dim: 64
+  group_hidden_dim: 128
+
+  # Hierarchical levels (uniform across families)
+  # Or use category_levels for per-family customization
+  levels:
+    - latent_dim: 32
+      num_tokens: 128
+    - latent_dim: 24
+      num_tokens: 64
+    - latent_dim: 16
+      num_tokens: 32
+
+  # VQ-VAE hyperparameters
+  commitment_cost: 0.25
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+
+# Training
+training:
+  batch_size: 32
+  learning_rate: 0.0001
+  num_epochs: 100
+  optimizer: "adam"
+  scheduler: "cosine"
+  warmup_epochs: 5
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+
+  # Checkpointing
+  save_every: 10
+  checkpoint_dir: "checkpoints/multi_family_vqvae"
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+
+# Notes:
+# - IC CNN encoder is trained end-to-end with VQ-VAE (NOT pre-trained)
+# - TD 1D CNN encoder processes full temporal sequences (T=500 timesteps)
+# - SDF and NOP use MLP encoders with different complexities
+# - All encoders output to same embedding_dim (64) for uniformity
+# - Hierarchical levels are shared across categories (3 levels each)
+# - Total tokens: n_categories × 3 levels where n_categories = auto-discovered from feature registries
+#   Example: SDF (5 cats) + NOP (1 cat) + IC (2 cats) + TD (2 cats) = 10 categories × 3 levels = 30 tokens
