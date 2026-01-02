@@ -26,6 +26,7 @@ from .latent_dim_defaults import (
     compute_default_latent_dims,
     fill_missing_num_tokens,
     compute_default_num_tokens,
+    parse_compression_ratios,
 )
 
 
@@ -66,6 +67,17 @@ class CategoricalVQVAEConfig:
 
     def __post_init__(self):
         """Validate configuration and set defaults."""
+        # Parse compression_ratios string to List[float] if provided
+        parsed_compression_ratios = None
+        if self.compression_ratios is not None:
+            if isinstance(self.compression_ratios, str):
+                # Assume 3 levels if parsing from string
+                parsed_compression_ratios = parse_compression_ratios(
+                    self.compression_ratios, num_levels=3
+                )
+            elif isinstance(self.compression_ratios, list):
+                parsed_compression_ratios = self.compression_ratios
+
         # Derive categories from provided config
         if self.category_levels is not None:
             self.categories = list(self.category_levels.keys())
@@ -105,6 +117,7 @@ class CategoricalVQVAEConfig:
                     group_embedding_dim=category_feature_dim,
                     n_samples=10000,  # Fallback
                     category_name=cat,
+                    compression_ratios=parsed_compression_ratios,
                 )
 
                 # Validate all levels have required fields

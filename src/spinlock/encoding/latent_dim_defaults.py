@@ -275,6 +275,7 @@ def fill_missing_latent_dims(
     group_embedding_dim: int,
     n_samples: int = 10000,
     category_name: Optional[str] = None,
+    compression_ratios: Optional[List[float]] = None,
 ) -> List[Dict[str, Any]]:
     """Fill missing 'latent_dim' fields in level configs.
 
@@ -285,6 +286,7 @@ def fill_missing_latent_dims(
         group_embedding_dim: Embedding dimension from GroupedFeatureExtractor
         n_samples: Number of samples in dataset
         category_name: Optional category name (for logging)
+        compression_ratios: Optional compression ratios for latent_dim computation
 
     Returns:
         Updated levels with all latent_dims filled
@@ -309,6 +311,7 @@ def fill_missing_latent_dims(
         num_tokens_per_level=num_tokens_per_level,
         n_samples=n_samples,
         category_name=category_name,
+        compression_ratios=compression_ratios,
     )
 
     # Fill missing latent_dims, preserve explicit ones
