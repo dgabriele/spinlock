@@ -39,24 +39,24 @@ class CategoricalVQVAEConfig:
         group_indices: Dict mapping category -> feature indices
         group_embedding_dim: Embedding dimension for each category
         group_hidden_dim: Hidden dimension for category MLPs
-        levels: List of level configs (uniform across categories)
-        category_levels: Dict mapping category -> list of levels (overrides 'levels')
+        levels: Per-category level configs (category_name -> list of level dicts)
+                Each level can specify num_tokens and/or latent_dim
+                If omitted, they are auto-computed using compression_ratios
         commitment_cost: VQ-VAE commitment cost
         orthogonality_weight: Weight for orthogonality loss
         informativeness_weight: Weight for informativeness loss
         use_ema: Whether to use EMA for codebook updates
         decay: EMA decay rate
         dropout: Dropout rate
+        compression_ratios: Latent_dim scaling ratios [L0:L1:L2] relative to feature count
+                           E.g. "0.5:1:1.5" means L0=feats×0.5, L1=feats×1.0, L2=feats×1.5
     """
 
     input_dim: int
     group_indices: Dict[str, List[int]]
     group_embedding_dim: int = 64
     group_hidden_dim: int = 128
-    levels: Optional[List[Dict]] = None  # Uniform levels across categories
-    category_levels: Optional[
-        Dict[str, List[Dict]]
-    ] = None  # Per-category levels (overrides 'levels')
+    levels: Optional[Dict[str, List[Dict]]] = None  # Per-category levels
     commitment_cost: float = 0.25
     orthogonality_weight: float = 0.1
     informativeness_weight: float = 0.1
@@ -78,128 +78,75 @@ class CategoricalVQVAEConfig:
             elif isinstance(self.compression_ratios, list):
                 parsed_compression_ratios = self.compression_ratios
 
-        # Derive categories from provided config
-        if self.category_levels is not None:
-            self.categories = list(self.category_levels.keys())
-        elif self.group_indices is not None:
-            self.categories = list(self.group_indices.keys())
-        else:
-            raise ValueError("Must provide either category_levels or group_indices")
+        # Derive categories from group_indices
+        if self.group_indices is None:
+            raise ValueError("Must provide group_indices")
+        self.categories = list(self.group_indices.keys())
 
-        # Handle category_levels if provided
-        if self.category_levels is not None:
+        # Initialize per-category levels if not provided
+        if self.levels is None:
+            # Auto-create empty levels for each category (will be filled by auto-scaling)
+            self.levels = {cat: [] for cat in self.categories}
+        else:
             # Validate all categories are specified
             for cat in self.categories:
-                if cat not in self.category_levels:
-                    raise ValueError(f"Missing category in category_levels: {cat}")
+                if cat not in self.levels:
+                    raise ValueError(f"Missing category '{cat}' in levels config")
 
-            # Fill missing latent_dims and num_tokens for each category
-            for cat in self.categories:
-                cat_levels = self.category_levels[cat]
-                if not cat_levels or len(cat_levels) == 0:
-                    raise ValueError(f"Category '{cat}' must have at least one level")
+        # Fill missing latent_dims and num_tokens for each category
+        for cat in self.categories:
+            cat_levels = self.levels[cat]
 
-                # Use configured embedding dimension consistently across all categories
-                # (not feature count which causes latent dimension collapse for small categories)
-                category_feature_dim = self.group_embedding_dim
+            # If empty, create default 3-level structure
+            if not cat_levels or len(cat_levels) == 0:
+                cat_levels = [
+                    {'num_tokens': None, 'latent_dim': None},
+                    {'num_tokens': None, 'latent_dim': None},
+                    {'num_tokens': None, 'latent_dim': None},
+                ]
 
-                # Fill missing num_tokens FIRST
-                self.category_levels[cat] = fill_missing_num_tokens(
-                    levels=cat_levels,
-                    group_embedding_dim=category_feature_dim,
-                    n_samples=10000,  # Fallback
-                    category_name=cat,
-                )
-
-                # Fill missing latent_dims SECOND
-                self.category_levels[cat] = fill_missing_latent_dims(
-                    levels=self.category_levels[cat],
-                    group_embedding_dim=category_feature_dim,
-                    n_samples=10000,  # Fallback
-                    category_name=cat,
-                    compression_ratios=parsed_compression_ratios,
-                )
-
-                # Validate all levels have required fields
-                for level in self.category_levels[cat]:
-                    if "latent_dim" not in level or "num_tokens" not in level:
-                        raise ValueError(
-                            f"Each level must have 'latent_dim' and 'num_tokens'"
-                        )
-        elif self.levels is None:
-            # Default 3-level hierarchy (uniform across categories)
-            default_num_tokens = compute_default_num_tokens(
-                num_levels=3,
-                group_embedding_dim=self.group_embedding_dim,
-                n_samples=10000,
-            )
-            default_latent_dims = compute_default_latent_dims(
-                num_levels=3,
-                group_embedding_dim=self.group_embedding_dim,
-                num_tokens_per_level=default_num_tokens,
-                category_name=None,
-                compression_ratios=self.compression_ratios,
-            )
-            self.levels = [
-                {
-                    "latent_dim": default_latent_dims[0],
-                    "num_tokens": default_num_tokens[0],
-                },  # L0
-                {
-                    "latent_dim": default_latent_dims[1],
-                    "num_tokens": default_num_tokens[1],
-                },  # L1
-                {
-                    "latent_dim": default_latent_dims[2],
-                    "num_tokens": default_num_tokens[2],
-                },  # L2
-            ]
-
-        # Validate uniform levels if used
-        if self.levels is not None:
-            if len(self.levels) == 0:
-                raise ValueError("Must specify at least one level")
+            # Use feature count for this category to scale latent dimensions
+            # Compression ratios apply per-category: latent_dim = feature_count × ratio
+            # This makes each category's latent space scale with its complexity
+            category_feature_dim = len(self.group_indices[cat])
 
             # Fill missing num_tokens FIRST
-            self.levels = fill_missing_num_tokens(
-                levels=self.levels,
-                group_embedding_dim=self.group_embedding_dim,
-                n_samples=10000,
-                category_name=None,
+            self.levels[cat] = fill_missing_num_tokens(
+                levels=cat_levels,
+                group_embedding_dim=category_feature_dim,
+                n_samples=10000,  # Fallback
+                category_name=cat,
             )
 
             # Fill missing latent_dims SECOND
-            self.levels = fill_missing_latent_dims(
-                levels=self.levels,
-                group_embedding_dim=self.group_embedding_dim,
-                n_samples=10000,
-                category_name=None,
+            self.levels[cat] = fill_missing_latent_dims(
+                levels=self.levels[cat],
+                group_embedding_dim=category_feature_dim,
+                n_samples=10000,  # Fallback
+                category_name=cat,
+                compression_ratios=parsed_compression_ratios,
             )
 
             # Validate all levels have required fields
-            for level in self.levels:
+            for level in self.levels[cat]:
                 if "latent_dim" not in level or "num_tokens" not in level:
-                    raise ValueError("Each level must have 'latent_dim' and 'num_tokens'")
+                    raise ValueError(
+                        f"Each level must have 'latent_dim' and 'num_tokens'"
+                    )
 
     def get_category_levels(self, category: str) -> List[Dict]:
         """Get levels for a specific category."""
-        if self.category_levels is not None:
-            return self.category_levels[category]
-        else:
-            return self.levels
+        return self.levels[category]
 
     @property
     def num_levels(self) -> int:
         """Number of hierarchical levels (same across all categories)."""
-        if self.category_levels is not None:
-            level_counts = [len(levels) for levels in self.category_levels.values()]
-            if len(set(level_counts)) > 1:
-                raise ValueError(
-                    f"All categories must have same number of levels. Got: {level_counts}"
-                )
-            return level_counts[0]
-        else:
-            return len(self.levels)
+        level_counts = [len(levels) for levels in self.levels.values()]
+        if len(set(level_counts)) > 1:
+            raise ValueError(
+                f"All categories must have same number of levels. Got: {level_counts}"
+            )
+        return level_counts[0]
 
     @property
     def num_categories(self) -> int:
@@ -214,14 +161,11 @@ class CategoricalVQVAEConfig:
     @property
     def total_latent_dim(self) -> int:
         """Total latent dimension (sum of all latent vectors)."""
-        if self.category_levels is not None:
-            total = 0
-            for category in self.categories:
-                cat_levels = self.category_levels[category]
-                total += sum(level["latent_dim"] for level in cat_levels)
-            return total
-        else:
-            return sum(level["latent_dim"] for level in self.levels) * self.num_categories
+        total = 0
+        for category in self.categories:
+            cat_levels = self.levels[category]
+            total += sum(level["latent_dim"] for level in cat_levels)
+        return total
 
 
 class CategoricalHierarchicalVQVAE(nn.Module):
@@ -255,19 +199,11 @@ class CategoricalHierarchicalVQVAE(nn.Module):
         )
 
         # Categorical projector (N embeddings → N×L latent vectors)
-        if config.category_levels is not None:
-            self.projector = CategoricalProjector(
-                group_embedding_dim=config.group_embedding_dim,
-                category_levels=config.category_levels,
-                dropout=config.dropout,
-            )
-        else:
-            self.projector = CategoricalProjector(
-                group_embedding_dim=config.group_embedding_dim,
-                levels=config.levels,
-                categories=config.categories,
-                dropout=config.dropout,
-            )
+        self.projector = CategoricalProjector(
+            group_embedding_dim=config.group_embedding_dim,
+            category_levels=config.levels,  # Per-category levels dict
+            dropout=config.dropout,
+        )
 
         # N×L VectorQuantizers (one per category-level pair)
         self.vq_layers = nn.ModuleList()

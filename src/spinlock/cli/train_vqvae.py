@@ -993,10 +993,8 @@ Output:
                 "group_hidden_dim": model.config.group_hidden_dim,
             }
 
-            # Add levels
-            if hasattr(model.config, "category_levels") and model.config.category_levels:
-                config_dict["category_levels"] = model.config.category_levels
-            elif hasattr(model.config, "levels") and model.config.levels:
+            # Add per-category levels
+            if hasattr(model.config, "levels") and model.config.levels:
                 config_dict["levels"] = model.config.levels
 
             checkpoint["model_config"] = config_dict

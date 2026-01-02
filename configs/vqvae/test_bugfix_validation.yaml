@@ -1,0 +1,80 @@
+# Test config to validate bug fix on auto-computed latent dimensions
+# This config uses category_levels WITHOUT explicit latent_dim values
+# to trigger the auto-computation path that was buggy in V7
+
+dataset:
+  path: datasets/baseline_10k.h5
+  feature_families:
+    - architecture
+    - summary
+
+training:
+  num_epochs: 100  # Shorter for testing
+  batch_size: 512
+  learning_rate: 0.001
+  optimizer: adam
+  device: cuda
+  use_torch_compile: true
+
+  # Loss weights (same as V7/V8)
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  commitment_cost: 0.5
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.45
+  topo_samples: 1024
+
+  # Validation
+  validation_split: 0.1
+  validation_frequency: 10
+
+  # Callbacks
+  early_stopping_patience: 50
+  use_smart_reset: true
+  dead_code_reset_interval: 100
+  dead_code_threshold_percentile: 10.0
+
+feature_cleaning:
+  enabled: true
+  variance_threshold: 1.0e-8
+  deduplicate_threshold: 0.99
+  mad_outlier_threshold: 5.0
+
+normalization:
+  method: standard
+  robust: false
+
+model:
+  group_embedding_dim: 256
+  group_hidden_dim: 512
+
+  # CRITICAL: Use category_levels WITHOUT explicit latent_dim
+  # This triggers auto-computation using the buggy/fixed code path
+  category_discovery:
+    assignment: auto
+    categories: auto
+    orthogonality_target: 0.15
+
+  # Per-category levels with auto-computed latent_dim
+  # Each category gets 3 levels with num_tokens specified but latent_dim omitted
+  # This will trigger the bug fix comparison:
+  # - V7 (buggy): latent_dim = feature_count × compression_ratio
+  # - V8 (fixed): latent_dim = group_embedding_dim × compression_ratio
+  category_levels_template:
+    # Template applied to all discovered categories
+    levels:
+      - num_tokens: null  # Auto-compute
+        # latent_dim: OMITTED - triggers auto-computation
+      - num_tokens: null
+        # latent_dim: OMITTED
+      - num_tokens: null
+        # latent_dim: OMITTED
+
+    # Use compression ratios for auto-computation
+    compression_ratios: "0.5:1:1.5"  # L0=0.5x, L1=1x, L2=1.5x
+
+output:
+  checkpoint_dir: checkpoints/test/bugfix_validation
+  save_best_only: false
+  save_final_model: true
