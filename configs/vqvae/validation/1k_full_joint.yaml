@@ -1,0 +1,88 @@
+# VQ-VAE Training Config - Full Joint Training (All 4 Families, 1K Validation)
+
+# Dataset configuration
+dataset_path: "datasets/baseline_10k.h5"
+max_samples: 1000
+
+# Feature Families (all 4 families - joint training)
+families:
+  architecture:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [128, 64]
+      output_dim: 64
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
+
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [256, 128]
+      output_dim: 64
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
+
+  initial:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [128, 64]
+      output_dim: 64
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
+
+  temporal:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [256, 128]
+      output_dim: 64
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
+
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 64
+  group_hidden_dim: 128
+
+  # Hierarchical levels
+  levels:
+    - {latent_dim: 32, num_tokens: 128}
+    - {latent_dim: 24, num_tokens: 64}
+    - {latent_dim: 16, num_tokens: 32}
+
+  commitment_cost: 0.25
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+
+# Training
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  num_epochs: 200  # More epochs for full complexity
+  optimizer: "adam"
+  scheduler: "cosine"
+  warmup_epochs: 5
+
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+
+  save_every: 10
+  checkpoint_dir: "checkpoints/validation/1k_full_joint"
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+
+# Random seed
+random_seed: 42

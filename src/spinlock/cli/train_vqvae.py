@@ -526,6 +526,7 @@ Output:
         dataset_path = config["input_path"]
         feature_type = config.get("feature_type", "aggregated")
         feature_family = config.get("feature_family", "sdf")
+        max_samples = config.get("max_samples")
 
         with h5py.File(dataset_path, "r") as f:
             # Navigate to features group
@@ -539,8 +540,11 @@ Output:
 
             group = f[features_path]
 
-            # Load features
-            features = np.array(group["features"])
+            # Load features (with optional sample limit)
+            if max_samples is not None and max_samples > 0:
+                features = np.array(group["features"][:max_samples])
+            else:
+                features = np.array(group["features"])
 
             # Load feature names
             if "feature_names" in group.attrs:
@@ -641,15 +645,20 @@ Output:
         from spinlock.encoding import CategoricalHierarchicalVQVAE, CategoricalVQVAEConfig
         import torch
 
+        # Get factors from config - empty list triggers autoscaling (convert to None)
+        factors = config.get("factors")
+        if factors is not None and len(factors) == 0:
+            factors = None  # Empty list = autoscaling
+
         vqvae_config = CategoricalVQVAEConfig(
             input_dim=features.shape[1],
             group_indices=group_indices,
             group_embedding_dim=config.get("group_embedding_dim", 64),
             group_hidden_dim=config.get("group_hidden_dim", 128),
-            levels=config.get("factors"),  # None = auto-compute
+            levels=factors,  # None = auto-compute
             commitment_cost=config.get("commitment_cost", 0.45),
             use_ema=config.get("use_ema", True),
-            ema_decay=config.get("ema_decay", 0.99),
+            decay=config.get("ema_decay", 0.99),  # Config uses "ema_decay", model uses "decay"
         )
 
         model = CategoricalHierarchicalVQVAE(vqvae_config)
@@ -666,8 +675,19 @@ Output:
     def _create_data_loaders(self, features: np.ndarray, config: Dict[str, Any]):
         """Create train/val data loaders."""
         import torch
-        from torch.utils.data import TensorDataset, DataLoader
+        from torch.utils.data import Dataset, DataLoader
         import numpy as np
+
+        # Simple dataset that returns dicts
+        class FeatureDataset(Dataset):
+            def __init__(self, features):
+                self.features = torch.from_numpy(features).float()
+
+            def __len__(self):
+                return len(self.features)
+
+            def __getitem__(self, idx):
+                return {"features": self.features[idx]}
 
         # Split into train/val (90/10)
         n_samples = len(features)
@@ -680,11 +700,8 @@ Output:
         train_indices = indices[:n_train]
         val_indices = indices[n_train:]
 
-        train_features = torch.from_numpy(features[train_indices]).float()
-        val_features = torch.from_numpy(features[val_indices]).float()
-
-        train_dataset = TensorDataset(train_features)
-        val_dataset = TensorDataset(val_features)
+        train_dataset = FeatureDataset(features[train_indices])
+        val_dataset = FeatureDataset(features[val_indices])
 
         batch_size = config.get("batch_size", 512)
         val_batch_size = config.get("val_batch_size", batch_size)

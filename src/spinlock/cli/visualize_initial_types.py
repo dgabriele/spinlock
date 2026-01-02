@@ -94,11 +94,11 @@ IC_TIERS = {
 }
 
 
-class VisualizeICTypesCommand(CLICommand):
+class VisualizeInitialTypesCommand(CLICommand):
     """
-    Command to visualize all available IC types.
+    Command to visualize all available initial condition types.
 
-    Generates multiple variations of each IC type and displays them
+    Generates multiple variations of each initial condition type and displays them
     in a grid layout for easy comparison and understanding of the
     diversity of initial conditions available.
     """

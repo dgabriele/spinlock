@@ -75,6 +75,14 @@ class VQVAETrainer:
             val_every_n_epochs: Validate every N epochs
             verbose: Whether to print progress
         """
+        # Configure logging if verbose
+        if verbose and not logger.handlers:
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(message)s',
+                force=True
+            )
+
         # Configure CUDA optimizations
         if device == "cuda":
             # Enable TensorFloat32 for faster matmul on Ampere+ GPUs
@@ -221,9 +229,28 @@ class VQVAETrainer:
         Returns:
             Dict with utilization metric
         """
-        # Simple utilization metric for now
-        # Can be extended with quality, perplexity, etc.
-        return {"utilization": 0.0}  # Placeholder
+        from .metrics import compute_per_category_metrics
+
+        # Compute detailed metrics on validation set
+        detailed_metrics = compute_per_category_metrics(
+            self.model,
+            self.val_loader,
+            device=self.device,
+            max_batches=None  # Use full val set
+        )
+
+        # Extract average utilization across all category-levels
+        utilization_metrics = [
+            v for k, v in detailed_metrics.items()
+            if "utilization" in k and "level" in k
+        ]
+
+        if utilization_metrics:
+            avg_utilization = sum(utilization_metrics) / len(utilization_metrics)
+        else:
+            avg_utilization = 0.0
+
+        return {"utilization": avg_utilization}
 
     def train(self, epochs: int):
         """Train for specified number of epochs.

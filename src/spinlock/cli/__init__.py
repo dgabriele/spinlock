@@ -13,7 +13,7 @@ from .generate import GenerateCommand
 from .info import InfoCommand
 from .validate import ValidateCommand
 from .visualize import VisualizeCommand
-from .visualize_ic_types import VisualizeICTypesCommand
+from .visualize_initial_types import VisualizeInitialTypesCommand
 from .extract_features import ExtractFeaturesCommand
 from .train_vqvae import TrainVQVAECommand
 
@@ -24,7 +24,7 @@ __all__ = [
     "InfoCommand",
     "ValidateCommand",
     "VisualizeCommand",
-    "VisualizeICTypesCommand",
+    "VisualizeInitialTypesCommand",
     "ExtractFeaturesCommand",
     "TrainVQVAECommand",
     "main",
@@ -71,7 +71,7 @@ For more help on a specific command:
         InfoCommand(),
         ValidateCommand(),
         VisualizeCommand(),
-        VisualizeICTypesCommand(),
+        VisualizeInitialTypesCommand(),
         ExtractFeaturesCommand(),
         TrainVQVAECommand(),
     ]

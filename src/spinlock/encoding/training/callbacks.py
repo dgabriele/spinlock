@@ -121,8 +121,11 @@ class DeadCodeReset:
         """
         if self.interval > 0 and epoch > 0 and epoch % self.interval == 0:
             n_reset = model.reset_dead_codes(training_batch, self.threshold)
-            if self.verbose and n_reset > 0:
-                logger.info(f"  [DeadCodeReset] Epoch {epoch}: Reset {n_reset} dead codes")
+            if self.verbose:
+                if n_reset > 0:
+                    logger.info(f"  [DeadCodeReset] Epoch {epoch}: Reset {n_reset} dead codes")
+                else:
+                    logger.info(f"  [DeadCodeReset] Epoch {epoch}: No dead codes found")
             return n_reset
         return 0
 

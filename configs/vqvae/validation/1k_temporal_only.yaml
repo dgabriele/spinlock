@@ -1,0 +1,60 @@
+# VQ-VAE Training Config - TEMPORAL Family Only (1K Validation)
+
+# Dataset configuration
+input_path: "datasets/baseline_10k.h5"
+output_dir: "checkpoints/validation/1k_temporal"
+max_samples: 1000
+
+# Feature selection
+feature_type: "aggregated"  # Averaged across timesteps
+feature_family: "temporal"  # Temporal dynamics features
+
+# Category assignment
+category_assignment: "auto"
+num_categories_auto: null
+orthogonality_target: 0.15
+min_features_per_category: 3
+max_clusters: 15
+
+# VQ-VAE architecture (larger for temporal complexity)
+group_embedding_dim: 128
+group_hidden_dim: 256
+
+# Hierarchical levels (empty for autoscaling)
+factors: []
+
+# Training hyperparameters
+epochs: 150
+batch_size: 16  # Smaller batch for potential memory constraints
+learning_rate: 0.001
+device: "cuda"
+
+# Loss weights
+commitment_cost: 0.25
+orthogonality_weight: 0.1
+informativeness_weight: 0.1
+topo_weight: 0.02
+topo_samples: 64
+
+# EMA configuration
+use_ema: true
+ema_decay: 0.99
+
+# Callbacks
+early_stopping_patience: 20
+early_stopping_min_delta: 0.01
+dead_code_reset_interval: 50
+dead_code_threshold: 10.0
+dead_code_max_reset_fraction: 0.25
+
+# Validation
+val_every_n_epochs: 5
+
+# Performance
+use_torch_compile: false
+
+# Random seed
+random_seed: 42
+
+# Verbose output
+verbose: true

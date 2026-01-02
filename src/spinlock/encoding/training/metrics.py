@@ -47,7 +47,7 @@ def compute_per_category_metrics(
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
-            if batch_idx >= max_batches:
+            if max_batches is not None and batch_idx >= max_batches:
                 break
 
             # Extract features from batch (handle both dict and tuple formats)
@@ -68,7 +68,7 @@ def compute_per_category_metrics(
             idx = 0
             for cat_name in category_names:
                 # Get number of levels for this category
-                cat_levels = model.config.category_levels[cat_name]
+                cat_levels = model.config.get_category_levels(cat_name)
                 num_levels = len(cat_levels)
 
                 # Average across all levels for this category
@@ -96,7 +96,7 @@ def compute_per_category_metrics(
 
     idx = 0
     for cat_name in category_names:
-        cat_levels = model.config.category_levels[cat_name]
+        cat_levels = model.config.get_category_levels(cat_name)
         for level_idx, level_config in enumerate(cat_levels):
             # Extract tokens for this category-level
             level_tokens = all_tokens[:, idx]
@@ -153,7 +153,7 @@ def compute_category_correlation(
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
-            if batch_idx >= max_batches:
+            if max_batches is not None and batch_idx >= max_batches:
                 break
 
             # Extract features from batch (handle both dict and tuple formats)
@@ -169,7 +169,7 @@ def compute_category_correlation(
             # Collect latent vectors per category (average across levels)
             idx = 0
             for cat_name in category_names:
-                cat_levels = model.config.category_levels[cat_name]
+                cat_levels = model.config.get_category_levels(cat_name)
                 num_levels = len(cat_levels)
 
                 # Concatenate across levels within this category (handles variable latent dims)
