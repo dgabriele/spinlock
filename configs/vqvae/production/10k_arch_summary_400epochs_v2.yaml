@@ -29,8 +29,9 @@ model:
   group_embedding_dim: 256  # Kept at 256
   group_hidden_dim: 512
 
-  # Hierarchical levels (empty for autoscaling)
-  levels: []
+  # Hierarchical levels (auto-discovered categories with auto-scaled dimensions)
+  # Leave as null to auto-create per-category levels based on compression_ratios
+  levels: null
 
   # VQ-VAE hyperparameters
   commitment_cost: 0.5  # Increased from 0.25 (prevent codebook collapse)
@@ -51,9 +52,12 @@ training:
   scheduler: null
   warmup_epochs: 0
 
-  # Compression ratios for latent_dim autoscaling (from unisim)
-  # Ratios [L0:L1:L2] relative to group_embedding_dim
-  # E.g., "0.5:1:1.5" with embedding_dim=256 → [128, 256, 384] latent_dims
+  # Compression ratios for latent_dim autoscaling (per-category)
+  # Ratios [L0:L1:L2] relative to each category's feature_count
+  # E.g., "0.5:1:1.5":
+  #   - Category with 7 features:  L0=4D,  L1=8D,  L2=12D
+  #   - Category with 71 features: L0=36D, L1=72D, L2=108D
+  # This makes latent space scale with category complexity
   compression_ratios: "0.5:1:1.5"
 
   # Category discovery (auto mode)
@@ -105,24 +109,26 @@ logging:
 # Random seed
 random_seed: 42
 
-# Expected Performance (V3 - Fixed with unisim-style config):
+# Expected Performance (V3 - Per-category latent dimension scaling):
 # - GPU utilization: 70-90%
-# - Model parameters: ~20M
+# - Model parameters: ~5-20M (depends on auto-discovered categories)
 # - Training time: ~15-20 minutes
 #
-# Key Fixes vs V2:
-# 1. compression_ratios="0.5:1:1.5" → proper latent_dim scaling
-#    - V2: [652, 328, 164] latent_dims (way too large!)
-#    - V3: [128, 256, 384] latent_dims (appropriate)
-# 2. commitment_cost=0.5 (vs 0.25) → prevent codebook collapse
-# 3. topo_weight=0.45 (vs 0.02) → better topology preservation
+# Key Design Choices:
+# 1. compression_ratios="0.5:1:1.5" → per-category scaling
+#    - Each category's latent_dim = feature_count × compression_ratio
+#    - Smaller categories get smaller latent spaces (e.g., 7 feat → 4D/8D/12D)
+#    - Larger categories get larger latent spaces (e.g., 71 feat → 36D/72D/108D)
+#    - Latent space scales with category complexity (not uniform!)
+# 2. commitment_cost=0.5 (vs 0.25 default) → prevent codebook collapse
+# 3. topo_weight=0.45 (vs 0.02 default) → better topology preservation
 # 4. SmartDeadCodeReset improvements:
 #    - Detects catastrophic collapse (>5% decline in 10 epochs)
 #    - Emergency reset when util <15%
 #    - Resets on stable low utilization (not just declining)
 #
 # Target Metrics:
-#   - Quality: >0.90 (vs 0.30 in V2 - major fix needed!)
-#   - Codebook utilization: >30% (vs 12.98% in V2)
+#   - Quality: >0.90 (composite: reconstruction + utilization + balance)
+#   - Codebook utilization: >40% (healthy codebook usage)
 #   - Category orthogonality: <0.25
 #   - Topographic correlation: >0.60
