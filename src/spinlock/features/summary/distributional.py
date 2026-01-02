@@ -127,15 +127,47 @@ class DistributionalFeatureExtractor:
         if include_all or (config is not None and config.include_approximate_entropy):
             features['approximate_entropy'] = self._compute_approximate_entropy(fields_flat)
 
+        # OPTIMIZATION: Compute SVD once for all SVD-based features
+        # Three features use SVD: svd_entropy, participation_ratio, pca_compression_ratio
+        need_svd = (
+            include_all or
+            (config is not None and (
+                config.include_svd_entropy or
+                config.include_participation_ratio or
+                config.include_compression_ratio_pca
+            ))
+        )
+
+        if need_svd:
+            # Compute SVD once: reshape to [NT*C, H, W]
+            x_batched = fields_flat.reshape(NT * C, H, W)
+            try:
+                U, S, Vh = torch.linalg.svd(x_batched, full_matrices=False)
+                svd_available = True
+            except Exception:
+                # SVD failed - features will use fallback
+                U, S, Vh = None, None, None
+                svd_available = False
+        else:
+            U, S, Vh = None, None, None
+            svd_available = False
+
+        # SVD-based features (reuse cached SVD)
         if include_all or (config is not None and config.include_svd_entropy):
-            features['svd_entropy'] = self._compute_svd_entropy(fields_flat)
+            features['svd_entropy'] = self._compute_svd_entropy(
+                fields_flat, cached_svd=(U, S, Vh) if svd_available else None
+            )
 
         # Dimensionality measures
         if include_all or (config is not None and config.include_participation_ratio):
-            features['participation_ratio'] = self._compute_participation_ratio(fields_flat)
+            features['participation_ratio'] = self._compute_participation_ratio(
+                fields_flat, cached_svd=(U, S, Vh) if svd_available else None
+            )
 
         if include_all or (config is not None and config.include_compression_ratio_pca):
-            features['pca_compression_ratio'] = self._compute_pca_compression_ratio(fields_flat)
+            features['pca_compression_ratio'] = self._compute_pca_compression_ratio(
+                fields_flat, cached_svd=(U, S, Vh) if svd_available else None
+            )
 
         # Multiscale entropy (controlled by num_entropy_scales)
         if include_all or (config is not None and config.include_entropy and config.num_entropy_scales > 1):
@@ -287,7 +319,11 @@ class DistributionalFeatureExtractor:
 
         return entropy
 
-    def _compute_svd_entropy(self, x: torch.Tensor) -> torch.Tensor:
+    def _compute_svd_entropy(
+        self,
+        x: torch.Tensor,
+        cached_svd: Optional[tuple] = None
+    ) -> torch.Tensor:
         """
         Compute SVD entropy (entropy of singular value spectrum).
 
@@ -296,33 +332,36 @@ class DistributionalFeatureExtractor:
 
         Args:
             x: [NT, C, H, W] input fields
+            cached_svd: Optional tuple (U, S, Vh) from pre-computed SVD
 
         Returns:
             SVD entropy [NT, C]
         """
         NT, C, H, W = x.shape
 
-        entropy = torch.zeros(NT, C, device=self.device)
+        try:
+            if cached_svd is not None:
+                # Use cached SVD results
+                U, S, Vh = cached_svd
+            else:
+                # Compute SVD: reshape to [NT*C, H, W]
+                x_batched = x.reshape(NT * C, H, W)
+                U, S, Vh = torch.linalg.svd(x_batched, full_matrices=False)
 
-        for i in range(NT):
-            for c in range(C):
-                # Get field
-                field = x[i, c, :, :]  # [H, W]
+            # S: [NT*C, min(H,W)]
+            # Normalize singular values to probability distribution
+            S_norm = S / (S.sum(dim=1, keepdim=True) + 1e-8)
 
-                # Compute SVD
-                try:
-                    U, S, Vh = torch.linalg.svd(field, full_matrices=False)
+            # Shannon entropy (vectorized)
+            ent = -(S_norm * torch.log(S_norm + 1e-8)).sum(dim=1)
+            entropy = torch.clamp(ent, min=0.0, max=10.0)
 
-                    # Normalize singular values to probability distribution
-                    S_norm = S / (S.sum() + 1e-8)
+            # Reshape back to [NT, C]
+            entropy = entropy.reshape(NT, C)
 
-                    # Shannon entropy
-                    ent = -(S_norm * torch.log(S_norm + 1e-8)).sum()
-                    entropy[i, c] = torch.clamp(ent, min=0.0, max=10.0)
-
-                except Exception:
-                    # SVD failed (e.g., NaN in field)
-                    entropy[i, c] = 0.0
+        except Exception:
+            # SVD failed - fallback to zeros
+            entropy = torch.zeros(NT, C, device=self.device)
 
         return entropy
 
@@ -330,7 +369,11 @@ class DistributionalFeatureExtractor:
     # Dimensionality Measures
     # =========================================================================
 
-    def _compute_participation_ratio(self, x: torch.Tensor) -> torch.Tensor:
+    def _compute_participation_ratio(
+        self,
+        x: torch.Tensor,
+        cached_svd: Optional[tuple] = None
+    ) -> torch.Tensor:
         """
         Compute participation ratio (effective dimensionality).
 
@@ -339,45 +382,52 @@ class DistributionalFeatureExtractor:
 
         Args:
             x: [NT, C, H, W] input fields
+            cached_svd: Optional tuple (U, S, Vh) from pre-computed SVD
 
         Returns:
             Participation ratio [NT, C], normalized by min(H, W)
         """
         NT, C, H, W = x.shape
 
-        pr = torch.zeros(NT, C, device=self.device)
+        try:
+            if cached_svd is not None:
+                # Use cached SVD results
+                U, S, Vh = cached_svd
+            else:
+                # Compute SVD: reshape to [NT*C, H, W]
+                x_batched = x.reshape(NT * C, H, W)
+                U, S, Vh = torch.linalg.svd(x_batched, full_matrices=False)
 
-        for i in range(NT):
-            for c in range(C):
-                # Get field
-                field = x[i, c, :, :]  # [H, W]
+            # S: [NT*C, min(H,W)]
+            # Eigenvalues = squared singular values
+            eigenvalues = S ** 2  # [NT*C, min(H,W)]
 
-                # Compute covariance matrix via SVD
-                try:
-                    U, S, Vh = torch.linalg.svd(field, full_matrices=False)
+            # Participation ratio (vectorized)
+            sum_eig = eigenvalues.sum(dim=1)  # [NT*C]
+            sum_eig_sq = (eigenvalues ** 2).sum(dim=1)  # [NT*C]
 
-                    # Eigenvalues = squared singular values
-                    eigenvalues = S ** 2
+            # Avoid division by zero
+            pr_val = torch.where(
+                sum_eig_sq > 1e-8,
+                (sum_eig ** 2) / sum_eig_sq,
+                torch.zeros_like(sum_eig)
+            )
 
-                    # Participation ratio
-                    sum_eig = eigenvalues.sum()
-                    sum_eig_sq = (eigenvalues ** 2).sum()
+            # Normalize by max possible (min(H, W))
+            pr = pr_val / min(H, W)
 
-                    if sum_eig_sq > 1e-8:
-                        pr_val = (sum_eig ** 2) / sum_eig_sq
-                        # Normalize by max possible (min(H, W))
-                        pr[i, c] = pr_val / min(H, W)
-                    else:
-                        pr[i, c] = 0.0
+            # Reshape back to [NT, C]
+            pr = pr.reshape(NT, C)
 
-                except Exception:
-                    pr[i, c] = 0.0
+        except Exception:
+            pr = torch.zeros(NT, C, device=self.device)
 
         return pr
 
     def _compute_pca_compression_ratio(
         self,
         x: torch.Tensor,
+        cached_svd: Optional[tuple] = None,
         variance_threshold: float = 0.9
     ) -> torch.Tensor:
         """
@@ -388,6 +438,7 @@ class DistributionalFeatureExtractor:
 
         Args:
             x: [NT, C, H, W] input fields
+            cached_svd: Optional tuple (U, S, Vh) from pre-computed SVD
             variance_threshold: Variance to capture (default 0.9)
 
         Returns:
@@ -395,34 +446,36 @@ class DistributionalFeatureExtractor:
         """
         NT, C, H, W = x.shape
 
-        compression = torch.zeros(NT, C, device=self.device)
+        try:
+            if cached_svd is not None:
+                # Use cached SVD results
+                U, S, Vh = cached_svd
+            else:
+                # Compute SVD: reshape to [NT*C, H, W]
+                x_batched = x.reshape(NT * C, H, W)
+                U, S, Vh = torch.linalg.svd(x_batched, full_matrices=False)
 
-        for i in range(NT):
-            for c in range(C):
-                # Get field
-                field = x[i, c, :, :]  # [H, W]
+            # S: [NT*C, min(H,W)]
+            # Eigenvalues = squared singular values
+            eigenvalues = S ** 2  # [NT*C, min(H,W)]
 
-                # Compute SVD
-                try:
-                    U, S, Vh = torch.linalg.svd(field, full_matrices=False)
+            # Cumulative variance explained (vectorized)
+            total_var = eigenvalues.sum(dim=1, keepdim=True)  # [NT*C, 1]
+            cumsum_var = torch.cumsum(eigenvalues, dim=1)  # [NT*C, min(H,W)]
+            frac_var = cumsum_var / (total_var + 1e-8)  # [NT*C, min(H,W)]
 
-                    # Eigenvalues = squared singular values
-                    eigenvalues = S ** 2
+            # Find number of components needed for threshold (vectorized)
+            num_components = (frac_var < variance_threshold).sum(dim=1) + 1  # [NT*C]
+            total_components = eigenvalues.shape[1]
 
-                    # Cumulative variance explained
-                    total_var = eigenvalues.sum()
-                    cumsum_var = torch.cumsum(eigenvalues, dim=0)
-                    frac_var = cumsum_var / (total_var + 1e-8)
+            # Compression ratio (lower = more compressible)
+            compression = num_components.float() / total_components
 
-                    # Find number of components needed for threshold
-                    num_components = (frac_var < variance_threshold).sum() + 1
-                    total_components = len(eigenvalues)
+            # Reshape back to [NT, C]
+            compression = compression.reshape(NT, C)
 
-                    # Compression ratio (lower = more compressible)
-                    compression[i, c] = num_components.float() / total_components
-
-                except Exception:
-                    compression[i, c] = 1.0  # No compression
+        except Exception:
+            compression = torch.ones(NT, C, device=self.device)  # No compression
 
         return compression
 
