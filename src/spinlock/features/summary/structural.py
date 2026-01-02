@@ -18,6 +18,37 @@ if TYPE_CHECKING:
     from spinlock.features.summary.config import SummaryStructuralConfig
 
 
+def _process_connected_components_worker(args):
+    """
+    Worker function for parallel connected component processing.
+
+    Must be at module level for pickle serialization in ProcessPoolExecutor.
+
+    Args:
+        args: Tuple of (binary_image, H, W)
+
+    Returns:
+        Tuple of (num_components, largest_size, mean_size, std_size)
+    """
+    binary, H, W = args
+    from scipy import ndimage
+
+    # scipy's optimized C implementation
+    labeled, num_cc = ndimage.label(binary, structure=np.ones((3, 3)))
+
+    if num_cc > 0:
+        sizes = np.bincount(labeled.ravel())[1:]  # Exclude background
+        largest = max(sizes) / (H * W)
+        mean = np.mean(sizes)
+        std = np.std(sizes) if len(sizes) > 1 else 0.0
+    else:
+        largest = 0.0
+        mean = 0.0
+        std = 0.0
+
+    return (num_cc, largest, mean, std)
+
+
 class StructuralFeatureExtractor:
     """
     Extract structural and topological features from 2D fields.
@@ -168,7 +199,7 @@ class StructuralFeatureExtractor:
         Compute connected component statistics.
 
         Uses thresholding to create binary image, then counts connected regions.
-        OPTIMIZED: Batch binarization on GPU, minimize CPU transfers.
+        OPTIMIZED: Batch binarization on GPU, single CPU transfer, scipy processing.
 
         Args:
             x: [NT, C, H, W] input fields
@@ -192,23 +223,23 @@ class StructuralFeatureExtractor:
         thresh_vals = median_vals + threshold * std_vals
         binary_batch = (x_flat > thresh_vals).cpu().numpy().astype(np.uint8)  # [NT*C, H, W]
 
-        # Process with scipy sequentially (GIL prevents thread parallelism)
+        # Process with scipy (single-threaded but fast C implementation)
         num_components = torch.zeros(NT, C, device=self.device)
         largest_size = torch.zeros(NT, C, device=self.device)
         mean_size = torch.zeros(NT, C, device=self.device)
         std_size = torch.zeros(NT, C, device=self.device)
 
         for idx in range(NT * C):
-            labeled, num_cc, sizes = self._label_connected_components(binary_batch[idx])
+            num_cc, largest, mean, std = _process_connected_components_worker(
+                (binary_batch[idx], H, W)
+            )
 
             i = idx // C
             c = idx % C
             num_components[i, c] = num_cc
-
-            if num_cc > 0:
-                largest_size[i, c] = max(sizes) / (H * W)
-                mean_size[i, c] = np.mean(sizes)
-                std_size[i, c] = np.std(sizes) if len(sizes) > 1 else 0.0
+            largest_size[i, c] = largest
+            mean_size[i, c] = mean
+            std_size[i, c] = std
 
         return {
             'num_connected_components': num_components,
@@ -217,35 +248,6 @@ class StructuralFeatureExtractor:
             'component_size_std': std_size
         }
 
-    def _label_connected_components(self, binary: np.ndarray):
-        """
-        GPU-accelerated connected component labeling.
-
-        Uses scipy (CPU) for now as it's still 100-1000x faster than Python flood fill.
-        GPU labeling would require custom CUDA kernel for max speedup.
-
-        Args:
-            binary: [H, W] binary image
-
-        Returns:
-            labeled: [H, W] labeled image
-            num_components: Number of components
-            sizes: List of component sizes
-        """
-        from scipy import ndimage
-
-        # Scipy uses fast C implementation (~1ms vs 25ms for Python flood fill)
-        # For full GPU acceleration, would need kornia or custom CUDA kernel
-        labeled, num_components = ndimage.label(binary, structure=np.ones((3,3)))
-
-        # Compute component sizes efficiently using vectorized bincount
-        if num_components > 0:
-            sizes = np.bincount(labeled.ravel())[1:]  # Exclude background (label 0)
-            sizes = sizes.tolist()
-        else:
-            sizes = []
-
-        return labeled, num_components, sizes
 
     # =========================================================================
     # Edge Features
