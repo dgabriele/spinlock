@@ -69,6 +69,92 @@ def compute_quality_score(reconstruction_error: float, max_error: float = 1.0) -
     return max(0.0, min(1.0, 1.0 - (reconstruction_error / max_error)))
 
 
+def compute_category_balance(per_category_errors: Dict[str, float]) -> float:
+    """Compute Gini coefficient of per-category reconstruction errors.
+
+    Lower Gini = more balanced errors across categories.
+
+    Args:
+        per_category_errors: Dict mapping category names to reconstruction MSE
+
+    Returns:
+        Gini coefficient in [0, 1]: 0 = perfect balance, 1 = complete inequality
+    """
+    import numpy as np
+
+    if not per_category_errors:
+        return 0.0
+
+    errors = np.array(list(per_category_errors.values()))
+    n = len(errors)
+
+    if n == 0:
+        return 0.0
+
+    # Sort errors
+    sorted_errors = np.sort(errors)
+
+    # Compute Gini: (2 * sum(i * x_i)) / (n * sum(x_i)) - (n+1)/n
+    index = np.arange(1, n + 1)
+    gini = (2 * np.sum(index * sorted_errors)) / (n * np.sum(sorted_errors) + 1e-8) - (n + 1) / n
+
+    return float(max(0.0, min(1.0, gini)))
+
+
+def compute_quality_score_3factor(
+    reconstruction_error: float,
+    utilization: float,
+    category_balance: float,
+    max_error: float = 1.0
+) -> Dict[str, float]:
+    """Compute comprehensive 3-factor quality score (inspired by unisim).
+
+    Combines three factors using geometric mean:
+    1. Reconstruction quality (lower error is better)
+    2. Utilization quality (healthy codebook usage, optimal range 30-70%)
+    3. Balance quality (low variance across categories)
+
+    Args:
+        reconstruction_error: MSE reconstruction error
+        utilization: Average codebook utilization [0-1]
+        category_balance: Gini coefficient of per-category MSE [0-1]
+        max_error: Maximum error for normalization (default: 1.0)
+
+    Returns:
+        Dict with:
+            - reconstruction_quality: 1 - error/max_error [0-1]
+            - utilization_quality: sigmoid-weighted utilization [0-1]
+            - balance_quality: 1 - Gini coefficient [0-1]
+            - composite_quality: geometric mean of 3 factors [0-1]
+            - target_met: bool (composite >= 0.90)
+    """
+    import numpy as np
+
+    # Factor 1: Reconstruction quality (existing metric)
+    recon_quality = max(0.0, min(1.0, 1.0 - (reconstruction_error / max_error)))
+
+    # Factor 2: Utilization quality (sigmoid penalty for low utilization)
+    # Optimal range: 30-70% (avoid overfitting to few codes or dead codes)
+    # Sigmoid centered at 25% utilization with steep penalty below
+    util_quality = 1.0 / (1.0 + np.exp(-20 * (utilization - 0.25)))
+
+    # Factor 3: Category balance (avoid catastrophic failure in any category)
+    # Lower Gini = more balanced errors across categories = better
+    balance_quality = 1.0 - category_balance
+
+    # Composite: Geometric mean (penalizes weakest factor)
+    # Cannot compensate low utilization with high reconstruction
+    composite = (recon_quality * util_quality * balance_quality) ** (1/3)
+
+    return {
+        "reconstruction_quality": float(recon_quality),
+        "utilization_quality": float(util_quality),
+        "balance_quality": float(balance_quality),
+        "composite_quality": float(composite),
+        "target_met": composite >= 0.90
+    }
+
+
 def compute_per_category_metrics(
     model,
     dataloader: DataLoader,
