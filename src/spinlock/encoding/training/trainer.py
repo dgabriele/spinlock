@@ -244,13 +244,18 @@ class VQVAETrainer:
         """Compute validation metrics.
 
         Returns:
-            Dict with utilization metric
+            Dict with utilization and detailed per-category metrics
         """
         from .metrics import compute_per_category_metrics
 
+        # Unwrap compiled model if using torch.compile
+        model_for_metrics = self.model
+        if hasattr(self.model, '_orig_mod'):
+            model_for_metrics = self.model._orig_mod
+
         # Compute detailed metrics on validation set
         detailed_metrics = compute_per_category_metrics(
-            self.model,
+            model_for_metrics,
             self.val_loader,
             device=self.device,
             max_batches=None  # Use full val set
@@ -267,7 +272,11 @@ class VQVAETrainer:
         else:
             avg_utilization = 0.0
 
-        return {"utilization": avg_utilization}
+        # Return both aggregate and detailed metrics
+        result = {"utilization": avg_utilization}
+        result.update(detailed_metrics)  # Include all detailed metrics
+
+        return result
 
     def train(self, epochs: int):
         """Train for specified number of epochs.
@@ -328,6 +337,11 @@ class VQVAETrainer:
                     msg += f", val_loss={val_loss:.6f}"
                 else:
                     msg += f", val_loss={last_val_loss:.6f} (cached)"
+
+                # Add utilization to log
+                util = metrics.get("utilization", 0.0)
+                msg += f", util={util:.1%}"
+
                 logger.info(msg)
 
             # Callbacks
