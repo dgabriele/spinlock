@@ -87,8 +87,9 @@ class CategoricalVQVAEConfig:
                 if not cat_levels or len(cat_levels) == 0:
                     raise ValueError(f"Category '{cat}' must have at least one level")
 
-                # Compute per-category embedding dim from actual feature count
-                category_feature_dim = len(self.group_indices[cat])
+                # Use configured embedding dimension consistently across all categories
+                # (not feature count which causes latent dimension collapse for small categories)
+                category_feature_dim = self.group_embedding_dim
 
                 # Fill missing num_tokens FIRST
                 self.category_levels[cat] = fill_missing_num_tokens(
