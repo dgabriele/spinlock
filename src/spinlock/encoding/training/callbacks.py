@@ -176,14 +176,16 @@ class SmartDeadCodeReset:
         self.val_loss_history = []
         self.reset_count = 0
 
-    def should_reset(self, epoch: int, current_util: float, current_val_loss: float, early_stopping_counter: int) -> bool:
+    def should_reset(self, epoch: int, current_util: float, current_val_loss: float, early_stopping_counter: int, per_category_utils: dict = None, per_category_feature_counts: dict = None) -> bool:
         """Determine if reset is beneficial based on training state.
 
         Args:
             epoch: Current epoch
-            current_util: Current codebook utilization
+            current_util: Current average codebook utilization
             current_val_loss: Current validation loss
             early_stopping_counter: Current early stopping counter
+            per_category_utils: Optional dict of per-category utilization (e.g., {"cluster_1": 0.15, ...})
+            per_category_feature_counts: Optional dict of feature counts per category (e.g., {"cluster_1": 10, ...})
 
         Returns:
             True if reset should be performed
@@ -192,40 +194,119 @@ class SmartDeadCodeReset:
         self.utilization_history.append(current_util)
         self.val_loss_history.append(current_val_loss)
 
+        # CRITICAL: Check per-category utilization if provided
+        # Reset if ANY category is critically low (considering feature count)
+        if per_category_utils is not None:
+            # Use adaptive interval for category resets
+            adaptive_interval = self._get_adaptive_interval(epoch)
+            min_interval_category = max(adaptive_interval // 2, 25)  # At least 25 epochs
+
+            if epoch - self.last_reset_epoch >= min_interval_category:
+                # Check each category with size-aware threshold
+                for category, util in per_category_utils.items():
+                    # Get feature count for this category (if available)
+                    feature_count = None
+                    if per_category_feature_counts is not None:
+                        feature_count = per_category_feature_counts.get(category)
+
+                    # Compute adaptive threshold based on feature count
+                    # Small categories (3-5 features): 5% threshold
+                    # Medium categories (10-20 features): 10% threshold
+                    # Large categories (50+ features): 15% threshold
+                    if feature_count is not None:
+                        if feature_count <= 5:
+                            threshold = 0.05
+                        elif feature_count <= 15:
+                            # Interpolate: 5 → 0.05, 15 → 0.10
+                            threshold = 0.05 + (feature_count - 5) * 0.005
+                        elif feature_count <= 50:
+                            # Interpolate: 15 → 0.10, 50 → 0.15
+                            threshold = 0.10 + (feature_count - 15) * 0.0014
+                        else:
+                            threshold = 0.15
+                    else:
+                        # Fallback: fixed 10% threshold
+                        threshold = 0.10
+
+                    # Check if this category is below its adaptive threshold
+                    if util < threshold:
+                        if self.verbose:
+                            logger.info(
+                                f"  [SmartReset] CATEGORY EMERGENCY: '{category}' at {util:.3f} util "
+                                f"(threshold={threshold:.3f}, {feature_count or '?'} features)"
+                            )
+                        return True
+
+        # CRITICAL: Detect catastrophic collapse (rapid sustained decline)
+        # Override all other conditions if collapse detected
+        if len(self.utilization_history) >= 20 and epoch > 20:
+            # Check for sustained decline over last 20 epochs
+            recent_20 = self.utilization_history[-20:]
+            first_10_avg = sum(recent_20[:10]) / 10
+            last_10_avg = sum(recent_20[10:]) / 10
+            decline = first_10_avg - last_10_avg
+
+            # Catastrophic collapse: >5% absolute decline in 10 epochs
+            if decline > 0.05:
+                # Respect minimum interval of 10 epochs during collapse
+                if epoch - self.last_reset_epoch >= 10:
+                    if self.verbose:
+                        logger.info(
+                            f"  [SmartReset] CATASTROPHIC COLLAPSE detected: "
+                            f"util declined {decline:.3f} ({first_10_avg:.3f} → {last_10_avg:.3f})"
+                        )
+                    return True
+
         # Condition 1: Respect minimum interval since last reset
         epochs_since_reset = epoch - self.last_reset_epoch
         adaptive_interval = self._get_adaptive_interval(epoch)
         if epochs_since_reset < adaptive_interval:
             return False
 
-        # Condition 2: Utilization is low
+        # Condition 2: Utilization is critically low (<15% is emergency)
+        if current_util < 0.15:
+            # Emergency reset for critically low utilization
+            if self.verbose:
+                logger.info(f"  [SmartReset] EMERGENCY: Critically low utilization ({current_util:.3f})")
+            return True
+
+        # Condition 3: Utilization is low (but not critical)
         if current_util > self.utilization_threshold:
             if self.verbose and epochs_since_reset >= adaptive_interval:
                 logger.debug(f"  [SmartReset] Skip: Utilization healthy ({current_util:.3f} > {self.utilization_threshold})")
             return False
 
-        # Condition 3: Utilization is declining (not stable low)
+        # Condition 4: Utilization is declining OR stable low (changed from AND)
+        # We want to reset when low AND (declining OR stable)
+        # Previously required declining - now we reset on stable low too
         if len(self.utilization_history) >= 2 * self.lookback_window:
             recent_util = sum(self.utilization_history[-self.lookback_window:]) / self.lookback_window
             prev_util = sum(self.utilization_history[-2*self.lookback_window:-self.lookback_window]) / self.lookback_window
-            if recent_util >= prev_util - 0.01:  # Not meaningfully declining
+
+            # If stable low, still proceed (removed the early return)
+            is_declining = recent_util < prev_util - 0.01
+            is_stable_low = recent_util < self.utilization_threshold and abs(recent_util - prev_util) < 0.01
+
+            if not is_declining and not is_stable_low:
                 if self.verbose:
-                    logger.debug(f"  [SmartReset] Skip: Utilization stable ({recent_util:.3f} vs {prev_util:.3f})")
+                    logger.debug(f"  [SmartReset] Skip: Utilization improving ({recent_util:.3f} vs {prev_util:.3f})")
                 return False
 
-        # Condition 4: Training is not actively improving
+        # Condition 5: Training is not actively improving
         if len(self.val_loss_history) >= 2 * self.lookback_window:
             recent_losses = self.val_loss_history[-self.lookback_window:]
             prev_losses = self.val_loss_history[-2*self.lookback_window:-self.lookback_window]
             recent_avg = sum(recent_losses) / len(recent_losses)
             prev_avg = sum(prev_losses) / len(prev_losses)
             improvement = prev_avg - recent_avg
-            if improvement > 0.01:  # Still improving significantly
+
+            # Relaxed threshold: 0.005 instead of 0.01
+            if improvement > 0.005:  # Still improving significantly
                 if self.verbose:
                     logger.debug(f"  [SmartReset] Skip: Still improving (Δloss={improvement:.4f})")
                 return False
 
-        # Condition 5: Not in late convergence (would be disruptive)
+        # Condition 6: Not in late convergence (would be disruptive)
         if early_stopping_counter > 30:
             if self.verbose:
                 logger.debug(f"  [SmartReset] Skip: In late convergence (ES counter={early_stopping_counter})")
@@ -268,7 +349,7 @@ class SmartDeadCodeReset:
         else:
             return self.base_threshold * 0.5  # e.g., 5.0 (bottom 5%)
 
-    def __call__(self, model, training_batch, epoch: int, current_util: float, current_val_loss: float, early_stopping_counter: int) -> int:
+    def __call__(self, model, training_batch, epoch: int, current_util: float, current_val_loss: float, early_stopping_counter: int, per_category_utils: dict = None, per_category_feature_counts: dict = None) -> int:
         """Conditionally reset dead codes based on training state.
 
         Args:
@@ -278,6 +359,8 @@ class SmartDeadCodeReset:
             current_util: Current codebook utilization
             current_val_loss: Current validation loss
             early_stopping_counter: Current early stopping counter
+            per_category_utils: Optional dict of per-category utilization
+            per_category_feature_counts: Optional dict of feature counts per category
 
         Returns:
             Number of dead codes reset
@@ -286,7 +369,7 @@ class SmartDeadCodeReset:
             return 0
 
         # Check if reset is beneficial
-        if not self.should_reset(epoch, current_util, current_val_loss, early_stopping_counter):
+        if not self.should_reset(epoch, current_util, current_val_loss, early_stopping_counter, per_category_utils, per_category_feature_counts):
             return 0
 
         # Perform reset with adaptive threshold

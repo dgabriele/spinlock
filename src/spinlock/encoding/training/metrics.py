@@ -10,6 +10,65 @@ from typing import Dict, List
 from torch.utils.data import DataLoader
 
 
+def compute_reconstruction_error(
+    model,
+    dataloader: DataLoader,
+    device: str = "cuda"
+) -> float:
+    """Compute reconstruction error on dataset.
+
+    Args:
+        model: CategoricalHierarchicalVQVAE model
+        dataloader: DataLoader for evaluation
+        device: Device to use
+
+    Returns:
+        Mean reconstruction error (MSE)
+    """
+    model.eval()
+    total_error = 0.0
+    n_samples = 0
+
+    with torch.no_grad():
+        for batch in dataloader:
+            # Extract features from batch (handle both dict and tuple formats)
+            if isinstance(batch, dict):
+                features = batch["features"].to(device)
+            else:
+                features = batch[0].to(device)
+
+            # Forward pass
+            outputs = model(features)
+
+            # Features reconstruction error
+            # outputs["reconstruction"] is a dict with "features" key
+            reconstruction = outputs["reconstruction"]
+            if isinstance(reconstruction, dict):
+                reconstruction = reconstruction["features"]
+            error = F.mse_loss(reconstruction, features)
+
+            total_error += error.item() * features.size(0)
+            n_samples += features.size(0)
+
+    return total_error / n_samples
+
+
+def compute_quality_score(reconstruction_error: float, max_error: float = 1.0) -> float:
+    """Compute quality score from reconstruction error.
+
+    Quality = 1 - (error / max_error), clamped to [0, 1].
+    Higher is better (1.0 = perfect reconstruction, 0.0 = worst).
+
+    Args:
+        reconstruction_error: MSE reconstruction error
+        max_error: Maximum error for normalization (default 1.0)
+
+    Returns:
+        Quality score in [0, 1]
+    """
+    return max(0.0, min(1.0, 1.0 - (reconstruction_error / max_error)))
+
+
 def compute_per_category_metrics(
     model,
     dataloader: DataLoader,

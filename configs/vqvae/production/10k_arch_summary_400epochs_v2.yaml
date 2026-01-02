@@ -11,13 +11,9 @@ dataset_path: "datasets/baseline_10k.h5"
 # Feature Families
 families:
   architecture:
-    encoder: MLPEncoder
+    encoder: IdentityEncoder
     encoder_params:
-      hidden_dims: [256, 128]  # Increased from [128, 64] for high-GPU mode
-      output_dim: 128  # Increased from 64
-      dropout: 0.1
-      activation: "relu"
-      batch_norm: true
+      input_dim: 31  # ARCHITECTURE parameter features
 
   summary:
     encoder: MLPEncoder
@@ -30,14 +26,14 @@ families:
 
 # VQ-VAE Architecture
 model:
-  group_embedding_dim: 256  # Increased from 64 (4× larger for high-GPU mode)
-  group_hidden_dim: 512  # Increased from 128 (4× larger)
+  group_embedding_dim: 256  # Kept at 256
+  group_hidden_dim: 512
 
   # Hierarchical levels (empty for autoscaling)
   levels: []
 
   # VQ-VAE hyperparameters
-  commitment_cost: 0.25
+  commitment_cost: 0.5  # Increased from 0.25 (prevent codebook collapse)
   use_ema: true
   decay: 0.99
   dropout: 0.1
@@ -55,20 +51,25 @@ training:
   scheduler: null
   warmup_epochs: 0
 
+  # Compression ratios for latent_dim autoscaling (from unisim)
+  # Ratios [L0:L1:L2] relative to group_embedding_dim
+  # E.g., "0.5:1:1.5" with embedding_dim=256 → [128, 256, 384] latent_dims
+  compression_ratios: "0.5:1:1.5"
+
   # Category discovery (auto mode)
   category_assignment: "auto"
   num_categories_auto: null  # Auto-determine via silhouette score
   orthogonality_target: 0.15
   min_features_per_category: 3
-  max_clusters: 25
+  max_clusters: 18  # Balanced: not too many (25) or too few (12)
 
   # Loss weights
   reconstruction_weight: 1.0
   vq_weight: 1.0
   orthogonality_weight: 0.1
   informativeness_weight: 0.1
-  topo_weight: 0.02
-  topo_samples: 512  # Increased from 64 (8× larger for better topographic loss)
+  topo_weight: 0.45  # Increased from 0.02 (match unisim for better topology preservation)
+  topo_samples: 1024  # Increased from 512 (match unisim)
 
   # Checkpointing
   save_every: 50  # Save checkpoint every 50 epochs
@@ -104,13 +105,24 @@ logging:
 # Random seed
 random_seed: 42
 
-# Expected Performance (V2):
-# - GPU utilization: 70-90% (vs 60-80% in V1 due to larger batch)
-# - Model parameters: ~20M (same as V1)
-# - Training time: ~15-20 minutes (faster due to larger batch, no disruptive resets)
-# - Target metrics:
-#   - Reconstruction quality: >0.90
-#   - Codebook utilization: >25%
+# Expected Performance (V3 - Fixed with unisim-style config):
+# - GPU utilization: 70-90%
+# - Model parameters: ~20M
+# - Training time: ~15-20 minutes
+#
+# Key Fixes vs V2:
+# 1. compression_ratios="0.5:1:1.5" → proper latent_dim scaling
+#    - V2: [652, 328, 164] latent_dims (way too large!)
+#    - V3: [128, 256, 384] latent_dims (appropriate)
+# 2. commitment_cost=0.5 (vs 0.25) → prevent codebook collapse
+# 3. topo_weight=0.45 (vs 0.02) → better topology preservation
+# 4. SmartDeadCodeReset improvements:
+#    - Detects catastrophic collapse (>5% decline in 10 epochs)
+#    - Emergency reset when util <15%
+#    - Resets on stable low utilization (not just declining)
+#
+# Target Metrics:
+#   - Quality: >0.90 (vs 0.30 in V2 - major fix needed!)
+#   - Codebook utilization: >30% (vs 12.98% in V2)
 #   - Category orthogonality: <0.25
 #   - Topographic correlation: >0.60
-# - Key improvement: No harmful resets after convergence (~epoch 100)

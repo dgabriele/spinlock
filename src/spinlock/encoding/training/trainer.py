@@ -244,14 +244,26 @@ class VQVAETrainer:
         """Compute validation metrics.
 
         Returns:
-            Dict with utilization and detailed per-category metrics
+            Dict with utilization, quality, and detailed per-category metrics
         """
-        from .metrics import compute_per_category_metrics
+        from .metrics import (
+            compute_per_category_metrics,
+            compute_reconstruction_error,
+            compute_quality_score
+        )
 
         # Unwrap compiled model if using torch.compile
         model_for_metrics = self.model
         if hasattr(self.model, '_orig_mod'):
             model_for_metrics = self.model._orig_mod
+
+        # Compute reconstruction error and quality
+        reconstruction_error = compute_reconstruction_error(
+            model_for_metrics,
+            self.val_loader,
+            device=self.device
+        )
+        quality = compute_quality_score(reconstruction_error)
 
         # Compute detailed metrics on validation set
         detailed_metrics = compute_per_category_metrics(
@@ -273,7 +285,11 @@ class VQVAETrainer:
             avg_utilization = 0.0
 
         # Return both aggregate and detailed metrics
-        result = {"utilization": avg_utilization}
+        result = {
+            "utilization": avg_utilization,
+            "reconstruction_error": reconstruction_error,
+            "quality": quality
+        }
         result.update(detailed_metrics)  # Include all detailed metrics
 
         return result
@@ -338,9 +354,10 @@ class VQVAETrainer:
                 else:
                     msg += f", val_loss={last_val_loss:.6f} (cached)"
 
-                # Add utilization to log
+                # Add utilization and quality to log
                 util = metrics.get("utilization", 0.0)
-                msg += f", util={util:.1%}"
+                quality = metrics.get("quality", 0.0)
+                msg += f", util={util:.1%}, quality={quality:.4f}"
 
                 logger.info(msg)
 
@@ -350,13 +367,44 @@ class VQVAETrainer:
                 # Check if using SmartDeadCodeReset (needs additional params)
                 if isinstance(self.dead_code_reset, SmartDeadCodeReset):
                     current_util = metrics.get("utilization", 0.0)
+
+                    # Extract per-category utilization for smarter resets
+                    per_category_utils = {}
+                    for key, val in metrics.items():
+                        if "/utilization" in key and "/level_" in key:
+                            # Extract category name from "cluster_1/level_0/utilization"
+                            category = key.split("/")[0]
+                            if category not in per_category_utils:
+                                per_category_utils[category] = []
+                            per_category_utils[category].append(val)
+
+                    # Average utilization across levels for each category
+                    per_category_utils = {
+                        cat: sum(utils) / len(utils)
+                        for cat, utils in per_category_utils.items()
+                    }
+
+                    # Extract feature counts per category from model config
+                    per_category_feature_counts = {}
+                    if hasattr(self.model, 'config') and hasattr(self.model.config, 'group_indices'):
+                        # Unwrap compiled model if needed
+                        model_for_config = self.model
+                        if hasattr(self.model, '_orig_mod'):
+                            model_for_config = self.model._orig_mod
+
+                        if hasattr(model_for_config.config, 'group_indices'):
+                            for category, feature_indices in model_for_config.config.group_indices.items():
+                                per_category_feature_counts[category] = len(feature_indices)
+
                     self.dead_code_reset(
                         self.model,
                         last_batch,
                         epoch,
                         current_util,
                         val_loss,
-                        self.early_stopping.counter
+                        self.early_stopping.counter,
+                        per_category_utils,
+                        per_category_feature_counts
                     )
                 else:
                     # Legacy DeadCodeReset (fixed interval)

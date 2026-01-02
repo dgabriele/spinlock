@@ -62,6 +62,7 @@ class CategoricalVQVAEConfig:
     use_ema: bool = True
     decay: float = 0.99
     dropout: float = 0.1
+    compression_ratios: Optional[List[float]] = None  # Latent_dim ratios for autoscaling
 
     def __post_init__(self):
         """Validate configuration and set defaults."""
@@ -123,6 +124,7 @@ class CategoricalVQVAEConfig:
                 group_embedding_dim=self.group_embedding_dim,
                 num_tokens_per_level=default_num_tokens,
                 category_name=None,
+                compression_ratios=self.compression_ratios,
             )
             self.levels = [
                 {

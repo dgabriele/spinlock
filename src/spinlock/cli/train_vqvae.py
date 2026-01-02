@@ -847,12 +847,19 @@ Output:
     ):
         """Build VQ-VAE model."""
         from spinlock.encoding import CategoricalHierarchicalVQVAE, CategoricalVQVAEConfig
+        from spinlock.encoding.latent_dim_defaults import parse_compression_ratios
         import torch
 
         # Get factors from config - empty list triggers autoscaling (convert to None)
         factors = config.get("factors")
         if factors is not None and len(factors) == 0:
             factors = None  # Empty list = autoscaling
+
+        # Parse compression_ratios from config (e.g., "0.5:1:1.5" → [0.5, 1.0, 1.5])
+        compression_ratios_str = config.get("compression_ratios")
+        compression_ratios = None
+        if compression_ratios_str is not None:
+            compression_ratios = parse_compression_ratios(compression_ratios_str)
 
         vqvae_config = CategoricalVQVAEConfig(
             input_dim=features.shape[1],
@@ -863,6 +870,7 @@ Output:
             commitment_cost=config.get("commitment_cost", 0.45),
             use_ema=config.get("use_ema", True),
             decay=config.get("ema_decay", 0.99),  # Config uses "ema_decay", model uses "decay"
+            compression_ratios=compression_ratios,
         )
 
         model = CategoricalHierarchicalVQVAE(vqvae_config)
