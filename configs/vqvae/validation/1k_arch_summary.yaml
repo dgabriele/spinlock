@@ -1,10 +1,11 @@
-# VQ-VAE Training Config - ARCHITECTURE + SUMMARY Joint (1K Validation)
+# Stage 2A: ARCHITECTURE + SUMMARY Joint Training (1K Validation)
+# Progressive validation: Testing joint feature family training
 
-# Dataset configuration
+# Dataset
 dataset_path: "datasets/baseline_10k.h5"
 max_samples: 1000
 
-# Feature Families (joint training)
+# Feature Families
 families:
   architecture:
     encoder: MLPEncoder
@@ -29,11 +30,8 @@ model:
   group_embedding_dim: 64
   group_hidden_dim: 128
 
-  # Hierarchical levels
-  levels:
-    - {latent_dim: 32, num_tokens: 128}
-    - {latent_dim: 24, num_tokens: 64}
-    - {latent_dim: 16, num_tokens: 32}
+  # Hierarchical levels (empty for autoscaling)
+  levels: []
 
   # VQ-VAE hyperparameters
   commitment_cost: 0.25
@@ -51,24 +49,43 @@ training:
   learning_rate: 0.001
   num_epochs: 150
   optimizer: "adam"
-  scheduler: "cosine"
-  warmup_epochs: 5
+  scheduler: null  # No scheduler for now
+  warmup_epochs: 0
 
   # Loss weights
   reconstruction_weight: 1.0
   vq_weight: 1.0
   orthogonality_weight: 0.1
   informativeness_weight: 0.1
+  topo_weight: 0.02
+  topo_samples: 64
 
   # Checkpointing
   save_every: 10
   checkpoint_dir: "checkpoints/validation/1k_arch_summary"
+
+  # Callbacks
+  early_stopping_patience: 20
+  early_stopping_min_delta: 0.01
+  dead_code_reset_interval: 50
+  dead_code_threshold: 10.0
+  dead_code_max_reset_fraction: 0.25
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: false
 
 # Logging
 logging:
   wandb: false
   log_interval: 100
   eval_interval: 500
+  verbose: true
 
 # Random seed
 random_seed: 42
+
+# Note: Currently using simple feature concatenation for validation.
+# Modular encoder system (ICCNNEncoder, TDCNNEncoder) to be implemented later.

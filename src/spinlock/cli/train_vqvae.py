@@ -199,7 +199,8 @@ Output:
             return self.error(f"Invalid configuration: {e}")
 
         # Validate input dataset exists
-        if not self.validate_file_exists(config["input_path"], "Dataset"):
+        dataset_path = config.get("input_path") or config.get("dataset_path")
+        if not self.validate_file_exists(dataset_path, "Dataset"):
             return 1
 
         # Print configuration summary
@@ -257,13 +258,16 @@ Output:
 
     def _validate_config(self, config: Dict[str, Any]) -> None:
         """Validate configuration has required fields."""
-        required_fields = ["input_path", "output_dir"]
-        for field in required_fields:
-            if field not in config or config[field] is None:
-                raise ValueError(f"Missing required field: {field}")
+        # Check for dataset path (either input_path or dataset_path)
+        if "input_path" not in config and "dataset_path" not in config:
+            raise ValueError("Missing required field: input_path or dataset_path")
+
+        # Ensure we have either output_dir or checkpoint_dir
+        if "output_dir" not in config and "checkpoint_dir" not in config and "training" not in config:
+            raise ValueError("Missing required field: output_dir or checkpoint_dir")
 
         # Validate paths are Path objects or strings
-        for path_field in ["input_path", "output_dir", "resume_from", "checkpoint_dir"]:
+        for path_field in ["input_path", "dataset_path", "output_dir", "resume_from", "checkpoint_dir"]:
             if path_field in config and config[path_field] is not None:
                 config[path_field] = Path(config[path_field])
 
@@ -273,8 +277,10 @@ Output:
         print("VQ-VAE TRAINING CONFIGURATION")
         print("=" * 70)
 
-        print(f"\nDataset: {config['input_path']}")
-        print(f"Output:  {config['output_dir']}")
+        dataset_path = config.get("input_path") or config.get("dataset_path")
+        output_dir = config.get("output_dir") or config.get("checkpoint_dir", "checkpoints/vqvae")
+        print(f"\nDataset: {dataset_path}")
+        print(f"Output:  {output_dir}")
 
         if config.get("resume_from"):
             print(f"Resume:  {config['resume_from']}")
@@ -343,9 +349,47 @@ Output:
 
         start_time = time.time()
 
+        # Flatten nested config structure if needed (new multi-family format)
+        if "model" in config or "training" in config:
+            flat_config = {}
+            # Copy top-level keys
+            for k, v in config.items():
+                if k not in ["model", "training", "logging", "families"]:
+                    flat_config[k] = v
+
+            # Flatten model section
+            if "model" in config:
+                for k, v in config["model"].items():
+                    flat_config[k] = v
+
+            # Flatten training section
+            if "training" in config:
+                for k, v in config["training"].items():
+                    # Map num_epochs → epochs
+                    if k == "num_epochs":
+                        flat_config["epochs"] = v
+                    else:
+                        flat_config[k] = v
+
+            # Flatten logging section
+            if "logging" in config:
+                for k, v in config["logging"].items():
+                    flat_config[k] = v
+
+            # Keep families dict
+            if "families" in config:
+                flat_config["families"] = config["families"]
+
+            config = flat_config
+
+        # Set default category_assignment if not specified
+        if "category_assignment" not in config and "resume_from" not in config:
+            config["category_assignment"] = "auto"
+
         # Create output directory
-        output_dir = Path(config["output_dir"])
+        output_dir = Path(config.get("output_dir") or config.get("checkpoint_dir", "checkpoints/vqvae"))
         output_dir.mkdir(parents=True, exist_ok=True)
+        config["output_dir"] = str(output_dir)  # Ensure it's set
 
         if verbose:
             print("Loading dataset and features...")
@@ -519,41 +563,72 @@ Output:
         return 0
 
     def _load_features(self, config: Dict[str, Any]) -> tuple:
-        """Load features from HDF5 dataset."""
+        """Load features from HDF5 dataset.
+
+        Supports both single family and multi-family (concatenated) loading.
+        """
         import h5py
         import numpy as np
 
-        dataset_path = config["input_path"]
+        # Handle both old and new config formats
+        dataset_path = config.get("input_path") or config.get("dataset_path")
         feature_type = config.get("feature_type", "aggregated")
-        feature_family = config.get("feature_family", "sdf")
         max_samples = config.get("max_samples")
 
+        # Check for multi-family vs single-family
+        # New format: families dict (extract keys)
+        # Old format: feature_families list or feature_family string
+        feature_families = config.get("feature_families")
+        if feature_families is None and "families" in config:
+            # Extract family names from families dict
+            feature_families = list(config["families"].keys())
+        if feature_families is None:
+            feature_families = [config.get("feature_family", "sdf")]
+
+        all_features = []
+        all_feature_names = []
+
         with h5py.File(dataset_path, "r") as f:
-            # Navigate to features group
-            features_path = f"/features/{feature_family}/{feature_type}"
+            for family_idx, feature_family in enumerate(feature_families):
+                # Navigate to features group
+                features_path = f"/features/{feature_family}/{feature_type}"
 
-            if features_path not in f:
-                raise ValueError(
-                    f"Features not found at {features_path}. "
-                    f"Run 'spinlock extract-features' first."
-                )
+                if features_path not in f:
+                    raise ValueError(
+                        f"Features not found at {features_path}. "
+                        f"Available families: {list(f['/features'].keys())}"
+                    )
 
-            group = f[features_path]
+                group = f[features_path]
 
-            # Load features (with optional sample limit)
-            if max_samples is not None and max_samples > 0:
-                features = np.array(group["features"][:max_samples])
-            else:
-                features = np.array(group["features"])
+                # Load features (with optional sample limit)
+                if max_samples is not None and max_samples > 0:
+                    family_features = np.array(group["features"][:max_samples])
+                else:
+                    family_features = np.array(group["features"])
 
-            # Load feature names
-            if "feature_names" in group.attrs:
-                feature_names = [name.decode() if isinstance(name, bytes) else name
-                               for name in group.attrs["feature_names"]]
-            else:
-                feature_names = [f"feature_{i}" for i in range(features.shape[1])]
+                # Load feature names
+                if "feature_names" in group.attrs:
+                    family_names = [name.decode() if isinstance(name, bytes) else name
+                                   for name in group.attrs["feature_names"]]
+                else:
+                    family_names = [f"{feature_family}_feature_{i}"
+                                   for i in range(family_features.shape[1])]
 
-        return features, feature_names
+                # Prefix feature names with family name (for multi-family)
+                if len(feature_families) > 1:
+                    family_names = [f"{feature_family}::{name}" for name in family_names]
+
+                all_features.append(family_features)
+                all_feature_names.extend(family_names)
+
+        # Concatenate features if multiple families
+        if len(all_features) > 1:
+            features = np.concatenate(all_features, axis=1)
+        else:
+            features = all_features[0]
+
+        return features, all_feature_names
 
     def _load_category_mapping(self, mapping_file: Path) -> Dict[str, list]:
         """Load category mapping from JSON file."""

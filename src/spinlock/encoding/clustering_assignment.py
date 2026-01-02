@@ -5,8 +5,8 @@ optimal feature groupings. Uses Ward linkage with correlation distance (1 - |cor
 
 Auto-determines optimal number of clusters via silhouette score maximization.
 
-Adapted from unisim.system.models.clustering_assignment (CUDA acceleration removed,
-can be re-added later if needed for large datasets).
+Automatically uses GPU acceleration (CUDA) when available for faster correlation
+matrix computation.
 """
 
 from typing import List, Dict, Optional
@@ -18,6 +18,16 @@ from sklearn.metrics import silhouette_score
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Check for CUDA availability
+try:
+    from .clustering_cuda import compute_correlation_matrix_cuda, CUPY_AVAILABLE
+    USE_CUDA = CUPY_AVAILABLE
+    if USE_CUDA:
+        logger.debug("CUDA acceleration enabled for clustering")
+except ImportError:
+    USE_CUDA = False
+    logger.debug("CUDA acceleration not available for clustering")
 
 
 def compute_correlation_matrix_cpu(
@@ -93,13 +103,20 @@ def auto_determine_num_clusters(
     logger.info(f"  Mean (avg): {features.mean(axis=0).mean():.4f}")
     logger.info(f"  Std (avg): {features.std(axis=0).mean():.4f}")
 
-    # Compute correlation and distance matrix
-    logger.info("Computing correlation matrix (CPU)")
-    corr_matrix, condensed_dist = compute_correlation_matrix_cpu(
-        features, subsample_size=subsample_size
-    )
-    distance_matrix = 1.0 - np.abs(corr_matrix)
-    np.fill_diagonal(distance_matrix, 0.0)
+    # Compute correlation and distance matrix (use CUDA if available)
+    if USE_CUDA:
+        logger.info("Computing correlation matrix (CUDA)")
+        corr_matrix = compute_correlation_matrix_cuda(features, subsample_size=subsample_size)
+        distance_matrix = 1.0 - np.abs(corr_matrix)
+        np.fill_diagonal(distance_matrix, 0.0)
+        condensed_dist = squareform(distance_matrix, checks=False)
+    else:
+        logger.info("Computing correlation matrix (CPU)")
+        corr_matrix, condensed_dist = compute_correlation_matrix_cpu(
+            features, subsample_size=subsample_size
+        )
+        distance_matrix = 1.0 - np.abs(corr_matrix)
+        np.fill_diagonal(distance_matrix, 0.0)
 
     off_diag = corr_matrix[np.triu_indices_from(corr_matrix, k=1)]
     logger.info(f"\nCorrelation distribution:")
@@ -232,10 +249,21 @@ def hierarchical_clustering_assignment(
             subsample_size=subsample_size,
         )
 
-    # Compute correlation matrix
-    corr_matrix, condensed_dist = compute_correlation_matrix_cpu(
-        features, subsample_size=subsample_size
-    )
+    # Compute correlation matrix (use CUDA if available)
+    if USE_CUDA:
+        logger.info("Computing correlation matrix (CUDA)")
+        corr_matrix_only = compute_correlation_matrix_cuda(features, subsample_size=subsample_size)
+        # Convert to distance and condensed form for scipy
+        distance_matrix = 1.0 - np.abs(corr_matrix_only)
+        np.fill_diagonal(distance_matrix, 0.0)
+        condensed_dist = squareform(distance_matrix, checks=False)
+        corr_matrix = corr_matrix_only
+    else:
+        logger.info("Computing correlation matrix (CPU)")
+        corr_matrix, condensed_dist = compute_correlation_matrix_cpu(
+            features, subsample_size=subsample_size
+        )
+
     linkage_matrix = sch.linkage(condensed_dist, method="ward")
 
     # Cut dendrogram to get cluster labels
