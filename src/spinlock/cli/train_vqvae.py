@@ -199,7 +199,7 @@ Output:
             return self.error(f"Invalid configuration: {e}")
 
         # Validate input dataset exists
-        dataset_path = config.get("input_path") or config.get("dataset_path")
+        dataset_path = config.get("dataset_path")
         if not self.validate_file_exists(dataset_path, "Dataset"):
             return 1
 
@@ -236,95 +236,203 @@ Output:
         return config
 
     def _apply_cli_overrides(self, config: Dict[str, Any], args: Namespace) -> Dict[str, Any]:
-        """Apply CLI argument overrides to config."""
+        """Apply CLI argument overrides to config (assumes new nested format)."""
         if args.input:
-            config["input_path"] = args.input
+            config["dataset_path"] = args.input
         if args.output:
-            config["output_dir"] = args.output
+            config["training"]["checkpoint_dir"] = args.output
         if args.epochs:
-            config["epochs"] = args.epochs
+            config["training"]["num_epochs"] = args.epochs
         if args.batch_size:
-            config["batch_size"] = args.batch_size
+            config["training"]["batch_size"] = args.batch_size
         if args.learning_rate:
-            config["learning_rate"] = args.learning_rate
+            config["training"]["learning_rate"] = args.learning_rate
         if args.resume_from:
             config["resume_from"] = args.resume_from
         if args.device:
             config["device"] = args.device
         if args.no_torch_compile:
-            config["use_torch_compile"] = False
+            config["training"]["use_torch_compile"] = False
 
         return config
 
     def _validate_config(self, config: Dict[str, Any]) -> None:
-        """Validate configuration has required fields."""
-        # Check for dataset path (either input_path or dataset_path)
-        if "input_path" not in config and "dataset_path" not in config:
-            raise ValueError("Missing required field: input_path or dataset_path")
+        """Validate configuration has required fields and uses new nested format."""
 
-        # Ensure we have either output_dir or checkpoint_dir
-        if "output_dir" not in config and "checkpoint_dir" not in config and "training" not in config:
-            raise ValueError("Missing required field: output_dir or checkpoint_dir")
+        # Require multi-family nested format
+        if "families" not in config:
+            raise ValueError(
+                "Missing required section: 'families'\n\n"
+                "Example:\n"
+                "  families:\n"
+                "    summary:\n"
+                "      encoder: MLPEncoder\n"
+                "      encoder_params:\n"
+                "        hidden_dims: [256, 128]\n"
+                "        output_dim: 64\n\n"
+                "See configs/vqvae/default.yaml for full template."
+            )
+
+        if "model" not in config:
+            raise ValueError(
+                "Missing required section: 'model'\n\n"
+                "Example:\n"
+                "  model:\n"
+                "    group_embedding_dim: 64\n"
+                "    group_hidden_dim: 128\n"
+                "    levels: []\n\n"
+                "See configs/vqvae/default.yaml for full template."
+            )
+
+        if "training" not in config:
+            raise ValueError(
+                "Missing required section: 'training'\n\n"
+                "Example:\n"
+                "  training:\n"
+                "    batch_size: 512\n"
+                "    learning_rate: 0.001\n"
+                "    num_epochs: 500\n"
+                "    checkpoint_dir: 'checkpoints/vqvae'\n\n"
+                "See configs/vqvae/default.yaml for full template."
+            )
+
+        # Validate families structure
+        if not isinstance(config["families"], dict) or len(config["families"]) == 0:
+            raise ValueError(
+                "Invalid 'families' section: must be a non-empty dictionary.\n"
+                "Each family must specify 'encoder' and 'encoder_params'."
+            )
+
+        for family_name, family_config in config["families"].items():
+            if "encoder" not in family_config:
+                raise ValueError(f"Family '{family_name}': missing required field 'encoder'")
+            if "encoder_params" not in family_config:
+                raise ValueError(f"Family '{family_name}': missing required field 'encoder_params'")
+
+        # Validate training section has required fields
+        required_training_fields = ["num_epochs", "batch_size", "checkpoint_dir"]
+        for field in required_training_fields:
+            if field not in config["training"]:
+                raise ValueError(
+                    f"Missing required field in training section: '{field}'\n"
+                    "See configs/vqvae/default.yaml for full template."
+                )
+
+        # Check for dataset path
+        if "dataset_path" not in config:
+            raise ValueError(
+                "Missing required field: 'dataset_path'\n"
+                "Please specify the path to your HDF5 dataset."
+            )
 
         # Validate paths are Path objects or strings
-        for path_field in ["input_path", "dataset_path", "output_dir", "resume_from", "checkpoint_dir"]:
+        for path_field in ["dataset_path", "resume_from"]:
             if path_field in config and config[path_field] is not None:
                 config[path_field] = Path(config[path_field])
 
+        # Validate training.checkpoint_dir
+        if config["training"]["checkpoint_dir"] is not None:
+            config["training"]["checkpoint_dir"] = Path(config["training"]["checkpoint_dir"])
+
     def _print_config_summary(self, config: Dict[str, Any], args: Namespace) -> None:
-        """Print configuration summary."""
+        """Print configuration summary (assumes new nested format)."""
         print("\n" + "=" * 70)
         print("VQ-VAE TRAINING CONFIGURATION")
         print("=" * 70)
 
-        dataset_path = config.get("input_path") or config.get("dataset_path")
-        output_dir = config.get("output_dir") or config.get("checkpoint_dir", "checkpoints/vqvae")
+        # Dataset and output
+        dataset_path = config.get("dataset_path")
+        checkpoint_dir = config["training"]["checkpoint_dir"]
         print(f"\nDataset: {dataset_path}")
-        print(f"Output:  {output_dir}")
+        print(f"Output:  {checkpoint_dir}")
+
+        if config.get("max_samples"):
+            print(f"Samples: {config['max_samples']} (limited)")
 
         if config.get("resume_from"):
             print(f"Resume:  {config['resume_from']}")
 
-        print(f"\nFeature Selection:")
-        print(f"  Type:   {config.get('feature_type', 'aggregated')}")
-        print(f"  Family: {config.get('feature_family', 'sdf')}")
+        # Feature families
+        print(f"\nFeature Families:")
+        for family_name, family_config in config["families"].items():
+            encoder = family_config.get("encoder", "MLPEncoder")
+            params = family_config.get("encoder_params", {})
+            hidden = params.get("hidden_dims", [])
+            output = params.get("output_dim", 64)
+            print(f"  {family_name}:")
+            print(f"    Encoder: {encoder}")
+            print(f"    Hidden:  {hidden} → {output}")
 
+        # Feature cleaning
         print(f"\nFeature Cleaning:")
-        print(f"  Enabled: {config.get('clean_features', True)}")
-        if config.get('clean_features', True):
+        clean = config.get("clean_features", True)
+        print(f"  Enabled: {clean}")
+        if clean:
             print(f"  Variance threshold:     {config.get('variance_threshold', 1e-8)}")
             print(f"  Deduplicate threshold:  {config.get('deduplicate_threshold', 0.99)}")
             print(f"  MAD outlier threshold:  {config.get('mad_threshold', 5.0)}")
 
+        # Normalization method
+        print(f"\nNormalization:")
+        normalization_method = config.get("normalization_method", "standard")
+        if normalization_method == "mad":
+            print(f"  Method: MAD (Median Absolute Deviation)")
+            print(f"  Robust to outliers: Yes")
+        else:
+            print(f"  Method: Standard (mean/std)")
+            print(f"  Robust to outliers: No")
+
+        # Category discovery
         print(f"\nCategory Discovery:")
-        print(f"  Assignment: {config.get('category_assignment', 'auto')}")
-        if config.get("category_assignment") == "auto":
-            num_cat = config.get("num_categories_auto")
+        category_assignment = config["training"].get("category_assignment", "auto")
+        print(f"  Assignment: {category_assignment}")
+        if category_assignment == "auto":
+            num_cat = config["training"].get("num_categories_auto")
             print(f"  Categories: {num_cat if num_cat else 'auto-determine'}")
-            print(f"  Orthogonality target: {config.get('orthogonality_target', 0.15)}")
+            print(f"  Orthogonality target: {config['training'].get('orthogonality_target', 0.15)}")
+        elif category_assignment == "manual":
+            mapping_file = config["training"].get("category_mapping_file", "N/A")
+            print(f"  Mapping file: {mapping_file}")
 
+        # Model architecture
         print(f"\nModel Architecture:")
-        print(f"  Group embedding dim: {config.get('group_embedding_dim', 64)}")
-        print(f"  Group hidden dim:    {config.get('group_hidden_dim', 128)}")
-        print(f"  Hierarchical levels: {config.get('factors', 'auto-computed')}")
+        print(f"  Group embedding dim: {config['model']['group_embedding_dim']}")
+        print(f"  Group hidden dim:    {config['model']['group_hidden_dim']}")
+        levels = config['model'].get('levels', [])
+        if levels:
+            print(f"  Hierarchical levels: {len(levels)} levels")
+            for i, level in enumerate(levels):
+                print(f"    L{i}: latent_dim={level.get('latent_dim')}, num_tokens={level.get('num_tokens')}")
+        else:
+            print(f"  Hierarchical levels: auto-computed")
 
+        # Training
         print(f"\nTraining:")
-        print(f"  Epochs:        {config.get('epochs', 500)}")
-        print(f"  Batch size:    {config.get('batch_size', 512)}")
-        print(f"  Learning rate: {config.get('learning_rate', 0.0005)}")
-        print(f"  Device:        {config.get('device', 'cuda')}")
-        print(f"  torch.compile: {config.get('use_torch_compile', True)}")
+        print(f"  Epochs:        {config['training']['num_epochs']}")
+        print(f"  Batch size:    {config['training']['batch_size']}")
+        print(f"  Learning rate: {config['training']['learning_rate']}")
+        print(f"  Optimizer:     {config['training'].get('optimizer', 'adam')}")
+        device = config.get("device", "cuda")
+        print(f"  Device:        {device}")
+        use_compile = config['training'].get('use_torch_compile', False)
+        print(f"  torch.compile: {use_compile}")
 
+        # Loss weights
         print(f"\nLoss Weights:")
-        print(f"  Commitment:      {config.get('commitment_cost', 0.45)}")
-        print(f"  Orthogonality:   {config.get('orthogonality_weight', 0.1)}")
-        print(f"  Informativeness: {config.get('informativeness_weight', 0.1)}")
-        print(f"  Topographic:     {config.get('topo_weight', 0.3)}")
+        print(f"  Reconstruction:  {config['training'].get('reconstruction_weight', 1.0)}")
+        print(f"  VQ:              {config['training'].get('vq_weight', 1.0)}")
+        print(f"  Commitment:      {config['model'].get('commitment_cost', 0.25)}")
+        print(f"  Orthogonality:   {config['training'].get('orthogonality_weight', 0.1)}")
+        print(f"  Informativeness: {config['training'].get('informativeness_weight', 0.1)}")
+        print(f"  Topographic:     {config['training'].get('topo_weight', 0.02)}")
+        print(f"  Topo samples:    {config['training'].get('topo_samples', 64)}")
 
+        # Callbacks
         print(f"\nCallbacks:")
-        print(f"  Early stopping patience: {config.get('early_stopping_patience', 100)}")
-        print(f"  Dead code reset interval: {config.get('dead_code_reset_interval', 100)}")
-        print(f"  Dead code threshold: {config.get('dead_code_threshold', 10.0)}th percentile")
+        print(f"  Early stopping patience:  {config['training'].get('early_stopping_patience', 100)}")
+        print(f"  Dead code reset interval: {config['training'].get('dead_code_reset_interval', 100)}")
+        print(f"  Dead code threshold:      {config['training'].get('dead_code_threshold', 10.0)}th percentile")
+        print(f"  Validation every:         {config['training'].get('val_every_n_epochs', 5)} epochs")
 
         print("=" * 70 + "\n")
 
@@ -349,47 +457,49 @@ Output:
 
         start_time = time.time()
 
-        # Flatten nested config structure if needed (new multi-family format)
-        if "model" in config or "training" in config:
-            flat_config = {}
-            # Copy top-level keys
-            for k, v in config.items():
-                if k not in ["model", "training", "logging", "families"]:
+        # Flatten nested config structure for internal training code
+        # NOTE: This is an internal implementation detail. The training code
+        # expects a flat structure, so we flatten the validated nested config here.
+        flat_config = {}
+
+        # Copy top-level keys
+        for k, v in config.items():
+            if k not in ["model", "training", "logging", "families"]:
+                flat_config[k] = v
+
+        # Flatten model section
+        if "model" in config:
+            for k, v in config["model"].items():
+                flat_config[k] = v
+
+        # Flatten training section
+        if "training" in config:
+            for k, v in config["training"].items():
+                # Map num_epochs → epochs for internal use
+                if k == "num_epochs":
+                    flat_config["epochs"] = v
+                else:
                     flat_config[k] = v
 
-            # Flatten model section
-            if "model" in config:
-                for k, v in config["model"].items():
-                    flat_config[k] = v
+        # Flatten logging section
+        if "logging" in config:
+            for k, v in config["logging"].items():
+                flat_config[k] = v
 
-            # Flatten training section
-            if "training" in config:
-                for k, v in config["training"].items():
-                    # Map num_epochs → epochs
-                    if k == "num_epochs":
-                        flat_config["epochs"] = v
-                    else:
-                        flat_config[k] = v
+        # Keep families dict
+        if "families" in config:
+            flat_config["families"] = config["families"]
 
-            # Flatten logging section
-            if "logging" in config:
-                for k, v in config["logging"].items():
-                    flat_config[k] = v
-
-            # Keep families dict
-            if "families" in config:
-                flat_config["families"] = config["families"]
-
-            config = flat_config
+        config = flat_config
 
         # Set default category_assignment if not specified
         if "category_assignment" not in config and "resume_from" not in config:
             config["category_assignment"] = "auto"
 
         # Create output directory
-        output_dir = Path(config.get("output_dir") or config.get("checkpoint_dir", "checkpoints/vqvae"))
+        output_dir = Path(config.get("checkpoint_dir", "checkpoints/vqvae"))
         output_dir.mkdir(parents=True, exist_ok=True)
-        config["output_dir"] = str(output_dir)  # Ensure it's set
+        config["output_dir"] = str(output_dir)  # Set for internal use
 
         if verbose:
             print("Loading dataset and features...")
@@ -570,20 +680,13 @@ Output:
         import h5py
         import numpy as np
 
-        # Handle both old and new config formats
-        dataset_path = config.get("input_path") or config.get("dataset_path")
+        # Extract configuration (assumes new nested format, flattened above)
+        dataset_path = config.get("dataset_path")
         feature_type = config.get("feature_type", "aggregated")
         max_samples = config.get("max_samples")
 
-        # Check for multi-family vs single-family
-        # New format: families dict (extract keys)
-        # Old format: feature_families list or feature_family string
-        feature_families = config.get("feature_families")
-        if feature_families is None and "families" in config:
-            # Extract family names from families dict
-            feature_families = list(config["families"].keys())
-        if feature_families is None:
-            feature_families = [config.get("feature_family", "sdf")]
+        # Extract family names from families dict (required by validation)
+        feature_families = list(config["families"].keys())
 
         all_features = []
         all_feature_names = []
@@ -686,30 +789,56 @@ Output:
         """Normalize features per category."""
         from spinlock.encoding import (
             compute_normalization_stats,
+            compute_robust_normalization_stats,
             apply_standard_normalization,
+            apply_robust_normalization,
         )
         import numpy as np
+
+        # Get normalization method from config (default: standard)
+        normalization_method = config.get("normalization_method", "standard")
 
         normalized = features.copy()
         stats_dict = {}
 
         for category, indices in group_indices.items():
             cat_features = features[:, indices]
-            stats = compute_normalization_stats(cat_features)
-            normalized[:, indices] = apply_standard_normalization(cat_features, stats)
+
+            if normalization_method == "mad":
+                # Use robust MAD-based normalization
+                stats = compute_robust_normalization_stats(cat_features)
+                normalized[:, indices] = apply_robust_normalization(cat_features, stats)
+            else:
+                # Use standard mean/std normalization
+                stats = compute_normalization_stats(cat_features)
+                normalized[:, indices] = apply_standard_normalization(cat_features, stats)
+
             stats_dict[category] = stats
 
         return normalized, stats_dict
 
     def _save_normalization_stats(self, stats_dict: Dict[str, Any], path: Path) -> None:
         """Save normalization stats to .npz file."""
+        from spinlock.encoding import NormalizationStats, RobustNormalizationStats
         import numpy as np
 
         # Convert stats objects to numpy arrays
         save_dict = {}
         for category, stats in stats_dict.items():
-            save_dict[f"{category}_mean"] = stats.mean
-            save_dict[f"{category}_std"] = stats.std
+            if isinstance(stats, RobustNormalizationStats):
+                save_dict[f"{category}_median"] = stats.median
+                save_dict[f"{category}_mad"] = stats.mad
+            else:  # NormalizationStats
+                save_dict[f"{category}_mean"] = stats.mean
+                save_dict[f"{category}_std"] = stats.std
+
+        # Add type marker to indicate which normalization method was used
+        if stats_dict:
+            first_stats = next(iter(stats_dict.values()))
+            if isinstance(first_stats, RobustNormalizationStats):
+                save_dict["_normalization_method"] = np.array(["mad"])
+            else:
+                save_dict["_normalization_method"] = np.array(["standard"])
 
         np.savez(path, **save_dict)
 
@@ -814,6 +943,7 @@ Output:
             dead_code_reset_interval=config.get("dead_code_reset_interval", 100),
             dead_code_threshold=config.get("dead_code_threshold", 10.0),
             dead_code_max_reset_fraction=config.get("dead_code_max_reset_fraction", 0.25),
+            use_smart_reset=config.get("use_smart_reset", False),
             checkpoint_dir=checkpoint_dir,
             use_torch_compile=config.get("use_torch_compile", True),
             val_every_n_epochs=config.get("val_every_n_epochs", 5),

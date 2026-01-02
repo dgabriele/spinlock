@@ -240,10 +240,15 @@ poetry run spinlock inspect datasets/my_operators.h5
 ### Train VQ-VAE Tokenizer
 
 ```bash
+# Train on full dataset with ARCHITECTURE + SUMMARY features
 poetry run spinlock train-vqvae \
-    --dataset datasets/my_operators.h5 \
-    --config configs/vqvae/production.yaml \
-    --output checkpoints/vqvae/
+    --config configs/vqvae/production/10k_arch_summary_400epochs.yaml \
+    --verbose
+
+# Or train on validation dataset (1K samples) for testing
+poetry run spinlock train-vqvae \
+    --config configs/vqvae/validation/1k_arch_summary.yaml \
+    --verbose
 ```
 
 ### Extract Behavioral Tokens

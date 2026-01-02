@@ -52,31 +52,41 @@ Extended existing CLI to support loading pre-computed category mappings from JSO
 
 Production-ready config for training categorical hierarchical VQ-VAE on SD features.
 
-**Configuration**:
+**Configuration** (New Multi-Family Nested Format):
 ```yaml
 # Dataset
-input_path: "datasets/test_1k_inline_features.h5"
-feature_type: "aggregated"  # 120 trajectory × 3 aggregations
-feature_family: "sdf"
+dataset_path: "datasets/test_1k_inline_features.h5"
 
-# Category mapping (from discover_sd_categories.py)
-category_mapping_file: "configs/vqvae/sd_category_mapping.json"
+# Feature Families
+families:
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [256, 128]
+      output_dim: 64
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
 
-# VQ-VAE architecture (GroupedFeatureExtractor from unisim)
-group_embedding_dim: 64
-group_hidden_dim: 128
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 64
+  group_hidden_dim: 128
+  levels:
+    - {latent_dim: 32, num_tokens: 128}  # Coarse
+    - {latent_dim: 16, num_tokens: 256}  # Medium
+    - {latent_dim: 8, num_tokens: 512}   # Fine
+  commitment_cost: 0.45
+  use_ema: true
+  decay: 0.99
 
-# Hierarchical levels (3-level proven architecture)
-factors:
-  - {latent_dim: 32, num_tokens: 128}  # Coarse
-  - {latent_dim: 16, num_tokens: 256}  # Medium
-  - {latent_dim: 8, num_tokens: 512}   # Fine
-
-# Training (from unisim agent_training_v1)
-epochs: 410
-batch_size: 1024
-learning_rate: 0.0007
-commitment_cost: 0.45
+# Training
+training:
+  num_epochs: 410
+  batch_size: 1024
+  learning_rate: 0.0007
+  category_mapping_file: "configs/vqvae/summary_category_mapping.json"
+  checkpoint_dir: "checkpoints/vqvae_summary_1k"
 ```
 
 **Design Decisions**:

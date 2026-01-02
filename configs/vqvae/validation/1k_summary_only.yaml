@@ -1,60 +1,79 @@
-# VQ-VAE Training Config - SUMMARY Family Only (1K Validation)
+# Stage 1B: SUMMARY Family Only (1K Validation)
+# Progressive validation: Testing SUMMARY feature family
 
-# Dataset configuration
-input_path: "datasets/baseline_10k.h5"
-output_dir: "checkpoints/validation/1k_summary"
+# Dataset
+dataset_path: "datasets/baseline_10k.h5"
 max_samples: 1000
 
-# Feature selection
-feature_type: "aggregated"
-feature_family: "summary"  # 420-520D aggregated statistics
+# Feature Families
+families:
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [256, 128]  # Larger for high-dimensional features (420-520D)
+      output_dim: 64
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
 
-# Category assignment
-category_assignment: "auto"
-num_categories_auto: null
-orthogonality_target: 0.15
-min_features_per_category: 3
-max_clusters: 15
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 128  # Larger for high-dimensional features
+  group_hidden_dim: 256
 
-# VQ-VAE architecture (larger for higher-D features)
-group_embedding_dim: 128
-group_hidden_dim: 256
+  # Hierarchical levels (empty for autoscaling)
+  levels: []
 
-# Hierarchical levels (empty for autoscaling)
-factors: []
+  # VQ-VAE hyperparameters
+  commitment_cost: 0.25
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
 
-# Training hyperparameters
-epochs: 150
-batch_size: 32
-learning_rate: 0.001
-device: "cuda"
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
 
-# Loss weights
-commitment_cost: 0.25
-orthogonality_weight: 0.1
-informativeness_weight: 0.1
-topo_weight: 0.02
-topo_samples: 64
+# Training
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  num_epochs: 150
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 0
 
-# EMA configuration
-use_ema: true
-ema_decay: 0.99
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.02
+  topo_samples: 64
 
-# Callbacks
-early_stopping_patience: 20
-early_stopping_min_delta: 0.01
-dead_code_reset_interval: 50
-dead_code_threshold: 10.0
-dead_code_max_reset_fraction: 0.25
+  # Checkpointing
+  save_every: 10
+  checkpoint_dir: "checkpoints/validation/1k_summary"
 
-# Validation
-val_every_n_epochs: 5
+  # Callbacks
+  early_stopping_patience: 20
+  early_stopping_min_delta: 0.01
+  dead_code_reset_interval: 50
+  dead_code_threshold: 10.0
+  dead_code_max_reset_fraction: 0.25
 
-# Performance
-use_torch_compile: false
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: false
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
 
 # Random seed
 random_seed: 42
-
-# Verbose output
-verbose: true

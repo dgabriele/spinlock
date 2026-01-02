@@ -1,0 +1,106 @@
+# Production Training V3: ARCHITECTURE + SUMMARY Joint Training (Full 10K Dataset, 400 Epochs)
+# IMPROVEMENTS OVER V2:
+# - MAD normalization: Robust to outliers (28% better val_loss on 1K, 3.4× faster training)
+# - Spearman clustering: Robust rank correlation for category discovery
+# - Smart dead code resets: Condition-based instead of fixed-interval
+# - Larger batch size: 512 for better GPU utilization
+
+# Dataset
+dataset_path: "datasets/baseline_10k.h5"
+# No max_samples limit - use full dataset
+
+# Normalization method
+normalization_method: "mad"  # V3: MAD-based robust normalization
+
+# Feature Families
+families:
+  architecture:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [256, 128]
+      output_dim: 128
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
+
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [512, 256]
+      output_dim: 128
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
+
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 256
+  group_hidden_dim: 512
+  levels: []  # Auto-computed
+  commitment_cost: 0.25
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+
+# Training
+training:
+  batch_size: 512  # V2: Increased from 256 for better GPU utilization
+  learning_rate: 0.001
+  num_epochs: 400
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 0
+
+  # Category discovery (auto mode with Spearman clustering)
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+  max_clusters: 25
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.02
+  topo_samples: 512
+
+  # Checkpointing
+  save_every: 50
+  checkpoint_dir: "checkpoints/production/10k_arch_summary_400epochs_v3"
+
+  # Callbacks
+  early_stopping_patience: 50
+  early_stopping_min_delta: 0.01
+  use_smart_reset: true  # V2: Enable intelligent SmartDeadCodeReset
+  dead_code_threshold: 10.0
+
+  # Validation
+  val_every_n_epochs: 10
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Expected Performance (V3 based on 1K experiments):
+# - GPU utilization: 70-90%
+# - Model parameters: ~20M
+# - Training time: ~4-5 minutes (vs 14 min V2, 3× faster due to MAD)
+# - Target val_loss: ~0.34 (vs 0.50 V2, 28% better due to MAD)
+# - Key improvements:
+#   1. MAD normalization: Robust to outliers in operator features
+#   2. Spearman clustering: Robust category discovery
+#   3. Smart resets: No harmful resets after convergence
+#   4. Faster convergence: MAD enables better gradient dynamics

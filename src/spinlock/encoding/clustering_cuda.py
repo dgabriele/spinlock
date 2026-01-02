@@ -29,8 +29,10 @@ def compute_correlation_matrix_cuda(
 ) -> np.ndarray:
     """Compute feature correlation matrix using GPU acceleration.
 
-    Uses efficient matrix operations on GPU for O(N_features² * N_samples) computation
-    that's much faster than CPU nested loops.
+    Uses MAD (Median Absolute Deviation) normalization before computing
+    Pearson correlation for robustness to outliers.
+
+    Implementation: MAD-normalize data on GPU, then compute Pearson correlation.
 
     Args:
         features: [N_samples, N_features] feature data (numpy array)
@@ -53,23 +55,38 @@ def compute_correlation_matrix_cuda(
     # Transfer to GPU
     features_gpu = cp.asarray(features, dtype=cp.float32)
 
-    # Center each feature (zero mean) - compute in-place to save memory
-    mean = cp.mean(features_gpu, axis=0, keepdims=True)
-    features_gpu -= mean  # In-place subtraction
-    del mean  # Free memory
+    # MAD-normalize each feature column for robustness to outliers
+    normalized_gpu = cp.zeros_like(features_gpu)
+    for j in range(N_features):
+        col = features_gpu[:, j]
+        # Compute median
+        median = cp.median(col)
+        # Compute MAD (Median Absolute Deviation)
+        mad = cp.median(cp.abs(col - median)) * 1.4826
+        mad = cp.maximum(mad, 1e-8)  # Avoid division by zero
+        # Normalize
+        normalized_gpu[:, j] = (col - median) / mad
 
-    # Compute standard deviations on centered data
-    std = cp.std(features_gpu, axis=0)
-    std = cp.where(std < 1e-8, 1.0, std)  # Avoid division by zero
+    del features_gpu  # Free original data
 
-    # Normalize by std - in-place division to save memory
-    features_gpu /= std[cp.newaxis, :]  # In-place division
-    del std  # Free memory
+    # Now compute Pearson correlation on MAD-normalized features
+    # Center each feature (zero mean)
+    mean = cp.mean(normalized_gpu, axis=0, keepdims=True)
+    normalized_gpu -= mean
+    del mean
+
+    # Compute standard deviations
+    std = cp.std(normalized_gpu, axis=0)
+    std = cp.where(std < 1e-8, 1.0, std)
+
+    # Normalize by std
+    normalized_gpu /= std[cp.newaxis, :]
+    del std
 
     # Correlation matrix via matrix multiplication: (1/N) * X^T @ X
-    # where X is now normalized (centered + standardized) features
-    corr_matrix = (1.0 / (N_samples - 1)) * cp.dot(features_gpu.T, features_gpu)
-    del features_gpu  # Free largest memory block
+    # where X is now normalized (centered + standardized)
+    corr_matrix = (1.0 / (N_samples - 1)) * cp.dot(normalized_gpu.T, normalized_gpu)
+    del normalized_gpu
 
     # Ensure diagonal is exactly 1.0 and clamp to [-1, 1]
     cp.fill_diagonal(corr_matrix, 1.0)
@@ -77,7 +94,7 @@ def compute_correlation_matrix_cuda(
 
     # Transfer back to CPU
     result = cp.asnumpy(corr_matrix).astype(np.float64)
-    del corr_matrix  # Free GPU memory before returning
+    del corr_matrix
 
     return result
 

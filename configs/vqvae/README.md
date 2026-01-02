@@ -2,67 +2,135 @@
 
 This directory contains configuration files for training the Categorical Hierarchical VQ-VAE tokenizer on operator behavioral features.
 
-## Production Training Configuration
+## Configuration Format
 
-The VQ-VAE is trained using a **single-stage production configuration** that has been proven effective in the unisim project for learning high-quality discrete token representations.
+All VQ-VAE training configs use a **multi-family nested format** for clarity and modularity.
 
-**Config**: `production.json`
-**Duration**: ~8-12 hours (4K dataset), ~2-3 days (50K dataset)
-**Goal**: Learn discrete token representations with high reconstruction quality and codebook utilization
+### Multi-Family Nested Format
 
-### Key Parameters
+```yaml
+# Dataset
+dataset_path: "datasets/baseline_10k.h5"
+max_samples: null  # Optional: limit dataset size
 
-**Model Architecture**:
-- `embedding_dim: 126` - Fixed embedding size (unisim production default)
-- `compression_ratios: "0.5:1:1.5"` - Hierarchical compression across 3 levels
-- Auto-computed latent dimensions and token counts based on dataset size
+# Feature Families
+families:
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [256, 128]
+      output_dim: 64
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
 
-**Training**:
-- `epochs: 410` - Proven convergence point from unisim production runs
-- `batch_size: 1024` - Large batch for stable training
-- `learning_rate: 0.0007` - Conservative LR for quality convergence
+  architecture:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [128, 64]
+      output_dim: 64
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
 
-**Loss Weights**:
-- `commitment_cost: 0.5` - VQ commitment loss
-- `orthogonality_weight: 0.1` - Codebook diversity (low emphasis)
-- `informativeness_weight: 0.1` - Partial decoder quality
-- `topo_weight: 0.45` - Topographic similarity (high emphasis)
-- `topo_samples: 1024` - Large sample set for stable topology
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 64
+  group_hidden_dim: 128
+  levels: []  # Empty for auto-scaling
+  commitment_cost: 0.25
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
 
-**Category Discovery**:
-- `category_assignment: "auto"` - Hierarchical clustering on feature correlations
-- `num_categories_auto: null` - Auto-determine optimal K via silhouette
-- `orthogonality_target: 0.25` - Target inter-category orthogonality
-- `max_clusters: 50` - Maximum categories to consider
+# Training
+training:
+  batch_size: 512
+  learning_rate: 0.001
+  num_epochs: 500
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 0
 
-**Codebook Management**:
-- `dead_code_reset_interval: 10000` - Infrequent resets (stable learning)
-- `dead_code_threshold: 10.0` - Percentile threshold for dead code detection
-- `ema_decay: 0.995` - High momentum for stable codebook updates
+  # Category discovery
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+  max_clusters: 25
 
-**Checkpointing**:
-- `checkpoint_use_composite: true` - Composite metric (loss + topo + quality)
-- `checkpoint_loss_weight: 1.0`
-- `checkpoint_topo_weight: 0.5`
-- `checkpoint_quality_weight: 0.5`
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.3
+  topo_samples: 512
 
-**Early Stopping**:
-- `early_stopping_patience: 250` - High patience for thorough training
-- `early_stopping_min_delta: 0.001` - Tight convergence threshold
+  # Checkpointing
+  checkpoint_dir: "checkpoints/vqvae"
+  save_every: null
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.001
+  dead_code_reset_interval: 100
+  dead_code_threshold: 10.0
+  dead_code_max_reset_fraction: 0.25
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+```
+
+See `default.yaml` for complete template with all options documented.
+
+## Available Configurations
+
+### Validation Configs
+
+Progressive validation configs for testing feature families:
+
+- **`validation/1k_initial_only.yaml`** - INITIAL features (42D IC features)
+- **`validation/1k_architecture_only.yaml`** - ARCHITECTURE features (21D operator structure)
+- **`validation/1k_summary_only.yaml`** - SUMMARY features (275D aggregated statistics)
+- **`validation/1k_arch_summary.yaml`** - Joint ARCHITECTURE + SUMMARY training
+- **`validation/1k_arch_summary_highgpu.yaml`** - High-GPU-utilization version (8× batch, 4× model)
+
+### Production Configs
+
+- **`default.yaml`** - Template configuration (all options documented)
+- **`summary_1k.yaml`** - SUMMARY features with manual category mapping
+- **`summary_1k_auto.yaml`** - SUMMARY features with auto category discovery
 
 ## Usage
 
 ### Training from Scratch
 
 ```bash
-# Train VQ-VAE on 4K dataset
-poetry run spinlock train-vqvae --config configs/vqvae/production.json
-
-# Train on larger dataset (50K)
+# Train VQ-VAE on validation dataset (1K samples)
 poetry run spinlock train-vqvae \
-    --config configs/vqvae/production.json \
-    --input datasets/benchmark_50k.h5 \
-    --output checkpoints/vqvae/production_50k
+  --config configs/vqvae/validation/1k_arch_summary.yaml \
+  --verbose
+
+# Train on full dataset
+poetry run spinlock train-vqvae \
+  --config configs/vqvae/production/10k_arch_summary_400epochs.yaml \
+  --verbose
 ```
 
 ### Resuming Training
@@ -70,8 +138,8 @@ poetry run spinlock train-vqvae \
 ```bash
 # Resume from checkpoint
 poetry run spinlock train-vqvae \
-    --config configs/vqvae/production.json \
-    --resume-from checkpoints/vqvae/production_4k/best_model.pt
+  --config configs/vqvae/validation/1k_arch_summary.yaml \
+  --resume-from checkpoints/validation/1k_arch_summary/best_model.pt
 ```
 
 ### Configuration Overrides
@@ -79,10 +147,10 @@ poetry run spinlock train-vqvae \
 ```bash
 # Override specific parameters via CLI
 poetry run spinlock train-vqvae \
-    --config configs/vqvae/production.json \
-    --epochs 500 \
-    --batch-size 512 \
-    --learning-rate 0.001
+  --config configs/vqvae/validation/1k_arch_summary.yaml \
+  --epochs 200 \
+  --batch-size 128 \
+  --learning-rate 0.0005
 ```
 
 ### Dry Run
@@ -90,19 +158,19 @@ poetry run spinlock train-vqvae \
 ```bash
 # Validate configuration without training
 poetry run spinlock train-vqvae \
-    --config configs/vqvae/production.json \
-    --dry-run \
-    --verbose
+  --config configs/vqvae/validation/1k_arch_summary.yaml \
+  --dry-run \
+  --verbose
 ```
 
 ## Custom Configuration
 
-Copy `default.yaml` or `production.json` and customize:
+Copy `default.yaml` and customize:
 
 ```bash
-cp configs/vqvae/production.json configs/vqvae/my_experiment.json
-# Edit my_experiment.json with your parameters
-poetry run spinlock train-vqvae --config configs/vqvae/my_experiment.json
+cp configs/vqvae/default.yaml configs/vqvae/my_experiment.yaml
+# Edit my_experiment.yaml with your parameters
+poetry run spinlock train-vqvae --config configs/vqvae/my_experiment.yaml
 ```
 
 ## Expected Outputs
@@ -110,11 +178,12 @@ poetry run spinlock train-vqvae --config configs/vqvae/my_experiment.json
 After training, the output directory contains:
 
 ```
-checkpoints/vqvae/production_4k/
-├── best_model.pt              # Best model checkpoint (composite metric)
+checkpoints/vqvae/my_experiment/
+├── best_model.pt              # Best model checkpoint
 ├── normalization_stats.npz    # Per-category normalization stats
 ├── training_history.json      # Training metrics history
-└── config.yaml               # Resolved configuration (with auto-filled defaults)
+├── config.yaml               # Resolved configuration
+└── checkpoint_epoch_*.pt      # Periodic checkpoints (if save_every set)
 ```
 
 ### Checkpoint Contents
@@ -136,68 +205,59 @@ The `best_model.pt` checkpoint contains:
 Production targets after full training:
 
 - **Reconstruction Quality**: >0.90 (MSE-based reconstruction accuracy)
-- **Codebook Utilization**: >0.80 (fraction of codebook vectors used)
+- **Codebook Utilization**: >25% (fraction of codebook vectors used)
 - **Inter-Category Orthogonality**: <0.25 (cosine similarity between category centroids)
-- **Topographic Correlation**: >0.85 (input-latent distance correlation)
+- **Topographic Correlation**: >0.60 (input-latent distance correlation)
 
 ## Troubleshooting
 
 ### Poor Reconstruction Quality
 
-- Increase `epochs` (try 500-600)
-- Reduce `orthogonality_weight` temporarily
-- Check feature normalization stats
+- Increase `training.num_epochs` (try 500-600)
+- Reduce `training.orthogonality_weight` temporarily
+- Check normalization stats
 - Verify dataset quality
 
 ### Low Codebook Utilization
 
-- Reduce `dead_code_threshold` (more aggressive reset, e.g., 8.0)
-- Decrease `dead_code_reset_interval` (more frequent, e.g., 5000)
-- Increase `commitment_cost` (e.g., 0.6)
+- Reduce `training.dead_code_threshold` (more aggressive reset, e.g., 8.0)
+- Decrease `training.dead_code_reset_interval` (more frequent, e.g., 50)
+- Increase `model.commitment_cost` (e.g., 0.35)
 
 ### Slow Training
 
-- Enable `use_torch_compile: true` (~30-40% speedup, enabled by default)
-- Increase `val_every_n_epochs` to reduce validation overhead (e.g., 10)
-- Use larger `batch_size` if GPU memory allows (e.g., 2048)
+- Enable `training.use_torch_compile: true` (~30-40% speedup, enabled by default)
+- Increase `training.val_every_n_epochs` to reduce validation overhead (e.g., 10)
+- Use larger `training.batch_size` if GPU memory allows
 
 ### Categories Not Sufficiently Orthogonal
 
-- Increase `orthogonality_weight` (e.g., 0.15-0.2)
-- Extend training (`epochs: 500-600`)
-- Reduce `orthogonality_target` to be more strict (e.g., 0.20)
+- Increase `training.orthogonality_weight` (e.g., 0.15-0.2)
+- Extend training (`training.num_epochs: 500-600`)
+- Reduce `training.orthogonality_target` to be more strict (e.g., 0.10)
 
 ## Design Rationale
 
-This configuration is based on unisim's production `stage_1_ukr_tokens.json`, which has been validated on 50K+ CA trajectories across multiple token families (U-tokens, K-tokens, R-tokens). Key adaptations for Spinlock:
+The multi-family nested format was adopted to:
 
-1. **Removed Token Families**: Spinlock has a single feature family (operator behavioral features), unlike unisim's U/K/R separation
-2. **Removed Family Stratification**: No need for multi-family balancing
-3. **Simplified Category Assignment**: Auto-discovery only (no manual/hybrid modes initially)
-4. **Adapted Feature Loading**: Spinlock uses HDF5 SDF features, not CA trajectory features
-5. **Preserved Core Hyperparameters**: Learning rate, loss weights, EMA decay, etc. proven in production
+1. **Support Multiple Feature Families**: Train on combinations of ARCHITECTURE, SUMMARY, INITIAL, TEMPORAL features
+2. **Modular Encoders**: Each family can use specialized encoders (MLP, CNN, etc.)
+3. **Clear Organization**: Separate model, training, and logging concerns
+4. **Better Validation**: Explicit structure enables better error messages
+5. **Future Extensibility**: Easy to add new families and encoder types
 
 ## References
 
-- **Source Config**: `/home/daniel/projects/unisim/config/production/agent_training_v1/stage_1_ukr_tokens.json`
 - **Architecture**: Categorical Hierarchical VQ-VAE with 3-level quantization
 - **Category Discovery**: Hierarchical clustering with silhouette-optimized K
 - **Normalization**: Per-category zero-mean, unit-variance normalization
+- **Multi-Family Format**: See `docs/vqvae/multi-family-encoders.md`
 
 ## Next Steps
 
 After training VQ-VAE:
 
-1. **Encode Dataset**: Convert features to discrete tokens
-   ```bash
-   poetry run spinlock encode-to-tokens \
-       --dataset datasets/test_4k_phase1_phase2.h5 \
-       --vqvae-model checkpoints/vqvae/production_4k/best_model.pt \
-       --output datasets/test_4k_tokens.h5
-   ```
-
-2. **Train ANO (Atomic Neural Operator)**: Map tokens → operator parameters
-
-3. **Evaluate Token Quality**: Discriminability, compression ratio, reconstruction error
-
+1. **Analyze Results**: Use analysis scripts to evaluate codebook quality
+2. **Encode Dataset**: Convert features to discrete tokens
+3. **Train Downstream Models**: Use tokens for neural operator training
 4. **Visualize Codebooks**: t-SNE/UMAP visualization of learned categories

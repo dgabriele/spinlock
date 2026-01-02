@@ -54,11 +54,14 @@ from .clustering_assignment import (
 from .vector_quantizer import VectorQuantizer, compute_codebook_metrics
 from .normalization import (
     NormalizationStats,
+    RobustNormalizationStats,
     standard_normalize,
     robust_normalize,
     l2_normalize,
     compute_normalization_stats,
+    compute_robust_normalization_stats,
     apply_standard_normalization,
+    apply_robust_normalization,
     save_normalization_stats,
     load_normalization_stats,
 )
@@ -91,11 +94,14 @@ __all__ = [
     "compute_codebook_metrics",
     # Normalization
     "NormalizationStats",
+    "RobustNormalizationStats",
     "standard_normalize",
     "robust_normalize",
     "l2_normalize",
     "compute_normalization_stats",
+    "compute_robust_normalization_stats",
     "apply_standard_normalization",
+    "apply_robust_normalization",
     "save_normalization_stats",
     "load_normalization_stats",
     # Feature preprocessing

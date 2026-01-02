@@ -34,6 +34,23 @@ class NormalizationStats:
         return cls(mean=data["mean"], std=data["std"])
 
 
+@dataclass
+class RobustNormalizationStats:
+    """Statistics for robust (MAD-based) normalization."""
+
+    median: np.ndarray
+    mad: np.ndarray  # Median Absolute Deviation × 1.4826
+
+    def to_dict(self):
+        """Convert to dictionary for serialization."""
+        return {"median": self.median, "mad": self.mad}
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        """Load from dictionary."""
+        return cls(median=data["median"], mad=data["mad"])
+
+
 def standard_normalize(
     x: Union[np.ndarray, torch.Tensor], eps: float = 1e-8
 ) -> Union[np.ndarray, torch.Tensor]:
@@ -156,28 +173,97 @@ def apply_standard_normalization(
         return (data - stats.mean) / stats.std
 
 
-def save_normalization_stats(stats: NormalizationStats, path: Path):
+def compute_robust_normalization_stats(
+    data: Union[np.ndarray, torch.Tensor]
+) -> RobustNormalizationStats:
+    """Compute robust normalization statistics (median and MAD).
+
+    Args:
+        data: Input data [N, D]
+
+    Returns:
+        RobustNormalizationStats with median and MAD per dimension
+
+    Note:
+        MAD = median(|x - median(x)|) * 1.4826
+        The 1.4826 factor makes MAD comparable to std for normal distributions.
+    """
+    if isinstance(data, torch.Tensor):
+        median = data.median(dim=0).values.cpu().numpy()
+        mad = torch.median(torch.abs(data - torch.from_numpy(median).to(data.device)), dim=0).values.cpu().numpy() * 1.4826
+    else:
+        median = np.median(data, axis=0)
+        mad = np.median(np.abs(data - median), axis=0) * 1.4826
+
+    # Avoid division by zero for constant dimensions
+    mad = np.where(mad < 1e-8, 1.0, mad)
+
+    return RobustNormalizationStats(median=median, mad=mad)
+
+
+def apply_robust_normalization(
+    data: Union[np.ndarray, torch.Tensor], stats: RobustNormalizationStats
+) -> Union[np.ndarray, torch.Tensor]:
+    """Apply pre-computed robust normalization statistics.
+
+    Args:
+        data: Input data [N, D]
+        stats: Pre-computed robust normalization statistics
+
+    Returns:
+        Normalized data [N, D]
+    """
+    if isinstance(data, torch.Tensor):
+        median_t = torch.from_numpy(stats.median).to(data.device).float()
+        mad_t = torch.from_numpy(stats.mad).to(data.device).float()
+        return (data - median_t) / mad_t
+    else:
+        return (data - stats.median) / stats.mad
+
+
+def save_normalization_stats(
+    stats: Union[NormalizationStats, RobustNormalizationStats], path: Path
+):
     """Save normalization statistics to disk.
 
     Args:
-        stats: Normalization statistics
+        stats: Normalization statistics (standard or robust)
         path: Output path (.npz format)
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(path, **stats.to_dict())
+
+    # Add type marker for loading
+    save_dict = stats.to_dict()
+    if isinstance(stats, RobustNormalizationStats):
+        save_dict["_type"] = np.array(["robust"])
+    else:
+        save_dict["_type"] = np.array(["standard"])
+
+    np.savez(path, **save_dict)
 
 
-def load_normalization_stats(path: Path) -> NormalizationStats:
+def load_normalization_stats(
+    path: Path
+) -> Union[NormalizationStats, RobustNormalizationStats]:
     """Load normalization statistics from disk.
 
     Args:
         path: Path to .npz file
 
     Returns:
-        NormalizationStats instance
+        NormalizationStats or RobustNormalizationStats instance
     """
     data = np.load(path)
-    return NormalizationStats.from_dict(
-        {"mean": data["mean"], "std": data["std"]}
-    )
+
+    # Check type marker (default to standard for backward compatibility)
+    stats_type = str(data.get("_type", ["standard"])[0])
+
+    if stats_type == "robust":
+        return RobustNormalizationStats.from_dict(
+            {"median": data["median"], "mad": data["mad"]}
+        )
+    else:
+        return NormalizationStats.from_dict(
+            {"mean": data["mean"], "std": data["std"]}
+        )

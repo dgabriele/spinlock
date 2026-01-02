@@ -35,6 +35,9 @@ def compute_correlation_matrix_cpu(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute correlation and distance matrices using CPU.
 
+    Uses MAD (Median Absolute Deviation) normalization before computing
+    Pearson correlation for robustness to outliers.
+
     Args:
         features: [N_samples, N_features] data
         subsample_size: Optional subsampling for large datasets
@@ -49,9 +52,19 @@ def compute_correlation_matrix_cpu(
     if subsample_size is not None and subsample_size < N_samples:
         indices = np.random.choice(N_samples, subsample_size, replace=False)
         features = features[indices]
+        N_samples = subsample_size
 
-    # Compute correlation matrix
-    corr_matrix = np.corrcoef(features.T)  # [N_features, N_features]
+    # MAD-normalize each feature for robustness to outliers
+    normalized_features = np.zeros_like(features, dtype=np.float64)
+    for j in range(N_features):
+        col = features[:, j]
+        median = np.median(col)
+        mad = np.median(np.abs(col - median)) * 1.4826
+        mad = max(mad, 1e-8)  # Avoid division by zero
+        normalized_features[:, j] = (col - median) / mad
+
+    # Compute Pearson correlation matrix on MAD-normalized features
+    corr_matrix = np.corrcoef(normalized_features.T)  # [N_features, N_features]
 
     # Convert to distance: d = 1 - |correlation|
     distance_matrix = 1.0 - np.abs(corr_matrix)

@@ -82,9 +82,12 @@ class EarlyStopping:
 
 
 class DeadCodeReset:
-    """Dead code reset callback.
+    """Dead code reset callback (legacy fixed-interval version).
 
     Resets unused codebook entries to high-error samples using EMA percentile thresholds.
+
+    NOTE: This is the legacy fixed-interval version. For production training,
+    use SmartDeadCodeReset instead which adapts to training dynamics.
     """
 
     def __init__(
@@ -128,6 +131,182 @@ class DeadCodeReset:
                     logger.info(f"  [DeadCodeReset] Epoch {epoch}: No dead codes found")
             return n_reset
         return 0
+
+
+class SmartDeadCodeReset:
+    """Intelligent dead code reset callback.
+
+    Unlike fixed-interval resets, this callback only resets when beneficial:
+    - Utilization is actually low and declining
+    - Training is not actively improving
+    - Respects adaptive intervals (longer as training progresses)
+    - Uses gentler reset magnitudes in late training
+    - Stops resetting if model has converged
+
+    This prevents the destructive resets that occur with fixed intervals
+    when the model has already converged.
+    """
+
+    def __init__(
+        self,
+        base_threshold: float = 10.0,
+        utilization_threshold: float = 0.25,
+        min_interval: int = 50,
+        lookback_window: int = 10,
+        verbose: bool = True,
+    ):
+        """Initialize smart dead code reset.
+
+        Args:
+            base_threshold: Base percentile threshold for dead code detection
+            utilization_threshold: Minimum utilization to trigger reset consideration
+            min_interval: Minimum epochs between resets
+            lookback_window: Number of epochs to look back for trend analysis
+            verbose: Whether to print messages
+        """
+        self.base_threshold = base_threshold
+        self.utilization_threshold = utilization_threshold
+        self.min_interval = min_interval
+        self.lookback_window = lookback_window
+        self.verbose = verbose
+
+        # State tracking
+        self.last_reset_epoch = 0
+        self.utilization_history = []
+        self.val_loss_history = []
+        self.reset_count = 0
+
+    def should_reset(self, epoch: int, current_util: float, current_val_loss: float, early_stopping_counter: int) -> bool:
+        """Determine if reset is beneficial based on training state.
+
+        Args:
+            epoch: Current epoch
+            current_util: Current codebook utilization
+            current_val_loss: Current validation loss
+            early_stopping_counter: Current early stopping counter
+
+        Returns:
+            True if reset should be performed
+        """
+        # Track history
+        self.utilization_history.append(current_util)
+        self.val_loss_history.append(current_val_loss)
+
+        # Condition 1: Respect minimum interval since last reset
+        epochs_since_reset = epoch - self.last_reset_epoch
+        adaptive_interval = self._get_adaptive_interval(epoch)
+        if epochs_since_reset < adaptive_interval:
+            return False
+
+        # Condition 2: Utilization is low
+        if current_util > self.utilization_threshold:
+            if self.verbose and epochs_since_reset >= adaptive_interval:
+                logger.debug(f"  [SmartReset] Skip: Utilization healthy ({current_util:.3f} > {self.utilization_threshold})")
+            return False
+
+        # Condition 3: Utilization is declining (not stable low)
+        if len(self.utilization_history) >= 2 * self.lookback_window:
+            recent_util = sum(self.utilization_history[-self.lookback_window:]) / self.lookback_window
+            prev_util = sum(self.utilization_history[-2*self.lookback_window:-self.lookback_window]) / self.lookback_window
+            if recent_util >= prev_util - 0.01:  # Not meaningfully declining
+                if self.verbose:
+                    logger.debug(f"  [SmartReset] Skip: Utilization stable ({recent_util:.3f} vs {prev_util:.3f})")
+                return False
+
+        # Condition 4: Training is not actively improving
+        if len(self.val_loss_history) >= 2 * self.lookback_window:
+            recent_losses = self.val_loss_history[-self.lookback_window:]
+            prev_losses = self.val_loss_history[-2*self.lookback_window:-self.lookback_window]
+            recent_avg = sum(recent_losses) / len(recent_losses)
+            prev_avg = sum(prev_losses) / len(prev_losses)
+            improvement = prev_avg - recent_avg
+            if improvement > 0.01:  # Still improving significantly
+                if self.verbose:
+                    logger.debug(f"  [SmartReset] Skip: Still improving (Δloss={improvement:.4f})")
+                return False
+
+        # Condition 5: Not in late convergence (would be disruptive)
+        if early_stopping_counter > 30:
+            if self.verbose:
+                logger.debug(f"  [SmartReset] Skip: In late convergence (ES counter={early_stopping_counter})")
+            return False
+
+        # All conditions met - reset is beneficial
+        return True
+
+    def _get_adaptive_interval(self, epoch: int) -> int:
+        """Get adaptive minimum interval based on training progress.
+
+        Args:
+            epoch: Current epoch
+
+        Returns:
+            Minimum epochs between resets
+        """
+        if epoch < 100:
+            return self.min_interval  # e.g., 50 early
+        elif epoch < 200:
+            return self.min_interval * 2  # e.g., 100 mid
+        else:
+            return self.min_interval * 4  # e.g., 200 late
+
+    def _get_adaptive_threshold(self, epoch: int) -> float:
+        """Get adaptive reset threshold based on training progress.
+
+        Gentler resets (higher percentile threshold) as training progresses.
+
+        Args:
+            epoch: Current epoch
+
+        Returns:
+            Percentile threshold for dead code detection
+        """
+        if epoch < 100:
+            return self.base_threshold  # e.g., 10.0 (bottom 10%)
+        elif epoch < 200:
+            return self.base_threshold * 0.7  # e.g., 7.0 (bottom 7%)
+        else:
+            return self.base_threshold * 0.5  # e.g., 5.0 (bottom 5%)
+
+    def __call__(self, model, training_batch, epoch: int, current_util: float, current_val_loss: float, early_stopping_counter: int) -> int:
+        """Conditionally reset dead codes based on training state.
+
+        Args:
+            model: CategoricalHierarchicalVQVAE model
+            training_batch: Recent training batch [batch, input_dim]
+            epoch: Current epoch
+            current_util: Current codebook utilization
+            current_val_loss: Current validation loss
+            early_stopping_counter: Current early stopping counter
+
+        Returns:
+            Number of dead codes reset
+        """
+        if epoch == 0:
+            return 0
+
+        # Check if reset is beneficial
+        if not self.should_reset(epoch, current_util, current_val_loss, early_stopping_counter):
+            return 0
+
+        # Perform reset with adaptive threshold
+        adaptive_threshold = self._get_adaptive_threshold(epoch)
+        n_reset = model.reset_dead_codes(training_batch, adaptive_threshold)
+
+        # Update state
+        self.last_reset_epoch = epoch
+        self.reset_count += 1
+
+        if self.verbose:
+            if n_reset > 0:
+                logger.info(
+                    f"  [SmartReset] Epoch {epoch}: Reset {n_reset} dead codes "
+                    f"(util={current_util:.3f}, threshold={adaptive_threshold:.1f}%)"
+                )
+            else:
+                logger.info(f"  [SmartReset] Epoch {epoch}: No dead codes found")
+
+        return n_reset
 
 
 class Checkpointer:

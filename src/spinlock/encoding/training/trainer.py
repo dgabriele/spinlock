@@ -20,7 +20,7 @@ import logging
 
 from ..categorical_vqvae import CategoricalHierarchicalVQVAE
 from .losses import compute_total_loss
-from .callbacks import EarlyStopping, DeadCodeReset, Checkpointer
+from .callbacks import EarlyStopping, DeadCodeReset, SmartDeadCodeReset, Checkpointer
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,7 @@ class VQVAETrainer:
         dead_code_reset_interval: int = 100,
         dead_code_threshold: float = 10.0,
         dead_code_max_reset_fraction: float = 0.25,
+        use_smart_reset: bool = False,
         checkpoint_dir: Optional[Path] = None,
         # Optimization
         use_torch_compile: bool = True,
@@ -67,9 +68,10 @@ class VQVAETrainer:
             topo_samples: Number of samples for topographic loss
             early_stopping_patience: Patience for early stopping
             early_stopping_min_delta: Min delta for early stopping
-            dead_code_reset_interval: Interval for dead code reset (0 to disable)
+            dead_code_reset_interval: Interval for dead code reset (0 to disable, only for legacy mode)
             dead_code_threshold: Percentile threshold for dead code detection
             dead_code_max_reset_fraction: Max fraction of codebook to reset at once
+            use_smart_reset: Use intelligent SmartDeadCodeReset instead of fixed-interval resets
             checkpoint_dir: Directory for checkpoints (None to disable)
             use_torch_compile: Use torch.compile() for JIT compilation
             val_every_n_epochs: Validate every N epochs
@@ -127,12 +129,27 @@ class VQVAETrainer:
             min_delta=early_stopping_min_delta,
             verbose=verbose,
         )
-        self.dead_code_reset = DeadCodeReset(
-            interval=dead_code_reset_interval,
-            threshold=dead_code_threshold,
-            max_reset_fraction=dead_code_max_reset_fraction,
-            verbose=verbose,
-        )
+
+        # Dead code reset: use smart reset if requested, otherwise legacy
+        if use_smart_reset:
+            self.dead_code_reset = SmartDeadCodeReset(
+                base_threshold=dead_code_threshold,
+                utilization_threshold=0.25,
+                min_interval=50,
+                lookback_window=10,
+                verbose=verbose,
+            )
+            if verbose:
+                logger.info("Using SmartDeadCodeReset (intelligent, condition-based)")
+        else:
+            self.dead_code_reset = DeadCodeReset(
+                interval=dead_code_reset_interval,
+                threshold=dead_code_threshold,
+                max_reset_fraction=dead_code_max_reset_fraction,
+                verbose=verbose,
+            )
+            if verbose:
+                logger.info(f"Using DeadCodeReset (legacy, fixed interval={dead_code_reset_interval})")
         self.checkpointer = (
             Checkpointer(checkpoint_dir, verbose=verbose)
             if checkpoint_dir is not None
@@ -316,7 +333,20 @@ class VQVAETrainer:
             # Callbacks
             # 1. Dead code reset
             if last_batch is not None:
-                self.dead_code_reset(self.model, last_batch, epoch)
+                # Check if using SmartDeadCodeReset (needs additional params)
+                if isinstance(self.dead_code_reset, SmartDeadCodeReset):
+                    current_util = metrics.get("utilization", 0.0)
+                    self.dead_code_reset(
+                        self.model,
+                        last_batch,
+                        epoch,
+                        current_util,
+                        val_loss,
+                        self.early_stopping.counter
+                    )
+                else:
+                    # Legacy DeadCodeReset (fixed interval)
+                    self.dead_code_reset(self.model, last_batch, epoch)
 
             # 2. Checkpointing (only when we validated)
             if should_validate and self.checkpointer is not None:
