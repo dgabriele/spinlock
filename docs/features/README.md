@@ -1,15 +1,15 @@
 # Feature Families
 
-Spinlock extracts **4 complementary feature families** that jointly capture neural operator behavior from different perspectives.
+Spinlock extracts **4 complementary feature families** that jointly capture neural operator behavior from different perspectives. This multi-modal representation provides a foundation for studying compositional reasoning, working memory dynamics, and episodic encoding in the controlled domain of dynamical systems.
 
 ## Overview
 
-| Family | Dimensions | Captures | Granularity |
-|--------|-----------|----------|-------------|
-| **INITIAL** | 42D | Initial condition characteristics (spatial, spectral, information, morphology) | Per-realization |
-| **ARCHITECTURE** | 21D+ | Operator parameters (architecture, stochastic, evolution) | Per-operator |
-| **SUMMARY** | 420-520D | Aggregated behavioral statistics (spatial, spectral, temporal, causality) | Scalar summaries |
-| **TEMPORAL** | Variable | Full temporal trajectories preserving time-series structure | Per-timestep |
+| Family | Dimensions | Captures | Granularity | Cognitive Role |
+|--------|-----------|----------|-------------|----------------|
+| **INITIAL** | 42D | Initial condition characteristics (spatial, spectral, information, morphology) | Per-realization | Input encoding |
+| **ARCHITECTURE** | 21D+ | Operator parameters (architecture, stochastic, evolution) | Per-operator | Structural priors |
+| **SUMMARY** | 420-520D | Aggregated behavioral statistics (spatial, spectral, temporal, causality) | Scalar summaries | Episodic compression |
+| **TEMPORAL** | Variable | Full temporal trajectories preserving time-series structure | Per-timestep | Working memory |
 
 ## Feature Family Details
 
@@ -71,10 +71,24 @@ See [Feature Reference](feature-reference.md) for complete feature specification
 The VQ-VAE jointly trains on all 4 feature families simultaneously. Rather than treating each family independently, hierarchical clustering discovers natural groupings that span multiple feature types, enabling holistic operator behavioral patterns.
 
 This multi-modal approach allows the model to learn representations that integrate:
-- How initial conditions influence operator dynamics (INITIAL)
-- How architectural choices determine behavioral regimes (ARCHITECTURE)
-- Statistical signatures of emergent patterns (SUMMARY)
-- Temporal evolution and regime transitions (TEMPORAL)
+- How initial conditions influence operator dynamics (INITIAL → input encoding)
+- How architectural choices determine behavioral regimes (ARCHITECTURE → structural priors)
+- Statistical signatures of emergent patterns (SUMMARY → episodic compression)
+- Temporal evolution and regime transitions (TEMPORAL → working memory sequences)
+
+### Cognitive Architecture Analogues
+
+The four-family decomposition provides measurable analogues to cognitive processing:
+
+**Input Encoding (INITIAL)**: Like sensory encoding in biological systems, INITIAL features characterize the "perceptual" properties of inputs that the operator will process. This enables studying how different input statistics influence downstream behavioral trajectories.
+
+**Structural Priors (ARCHITECTURE)**: Analogous to innate biases or learned schemas, ARCHITECTURE features encode the operator's intrinsic computational structure—independent of specific inputs. This supports research into how architectural inductive biases shape behavioral regimes.
+
+**Episodic Compression (SUMMARY)**: Similar to how episodic memory compresses experiences into gist representations, SUMMARY features aggregate temporal trajectories into statistical signatures. This compression is testable—can agents reconstruct or predict behaviors from compressed summaries?
+
+**Working Memory (TEMPORAL)**: The distinction between SUMMARY (compressed) and TEMPORAL (sequential) mirrors the psychological distinction between long-term memory consolidation and working memory maintenance. Studying this trade-off reveals memory capacity constraints and what information is worth preserving vs. discarding.
+
+These analogues are not metaphorical—they provide concrete, measurable frameworks for studying memory, compression, and representation in a domain without the confounds of natural perception.
 
 ## Feature Extraction Pipeline
 

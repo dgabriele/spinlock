@@ -2,8 +2,16 @@
 
 Complete reference for SUMMARY and TEMPORAL feature families computed by Spinlock.
 
-**SUMMARY Features**: ~221 aggregated behavioral descriptors
-**TEMPORAL Features**: 63 per-timestep time series features
+**SUMMARY Features**: ~221 aggregated behavioral descriptors (episodic compression)
+**TEMPORAL Features**: 63 per-timestep time series features (working memory sequences)
+
+## Cognitive Interpretation
+
+These features provide complementary views of operator behavior:
+- **SUMMARY**: Compressed episodic representations—statistical signatures that capture behavioral "gist" without temporal details. Tests episodic memory compression: can agents reconstruct or predict full trajectories from these summaries?
+- **TEMPORAL**: Sequential working memory representations—preserving full temporal resolution for studying capacity constraints and attention mechanisms.
+
+The SUMMARY/TEMPORAL distinction mirrors cognitive systems that trade off between compressed long-term storage (episodic summaries) and high-fidelity short-term maintenance (working memory). This enables studying memory capacity constraints, information bottlenecks, and what temporal information is worth preserving vs. discarding.
 
 ## Table of Contents
 
