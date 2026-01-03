@@ -1,6 +1,8 @@
 # Spinlock Architecture
 
-**Stratified neural operator dataset generation and hierarchical VQ-VAE tokenization system.**
+**Stratified neural operator dataset generation and hierarchical VQ-VAE tokenization system for behavioral representation learning.**
+
+This document describes the core infrastructure for generating diverse operator datasets and extracting multi-modal behavioral representations. The resulting tokenized representations serve as the foundation for Neural Operator Agent (NOA) research, including potential applications to meta-learning, compositional reasoning, and memory-based prediction.
 
 ## System Overview
 
@@ -105,12 +107,14 @@ See [Feature Families](features/README.md) for details.
 
 The decomposition into INITIAL, ARCHITECTURE, SUMMARY, and TEMPORAL is not arbitrary—each family answers distinct questions about operator behavior:
 
-| Family | Question Answered | Interpretability Value |
-|--------|------------------|----------------------|
-| **INITIAL** | How do input characteristics influence behavior? | Identifies sensitivity to initial conditions |
-| **ARCHITECTURE** | Which design choices determine behavioral regimes? | Links structure to function explicitly |
-| **SUMMARY** | What are the observable signatures of behavior? | Provides statistical evidence of patterns |
-| **TEMPORAL** | How do behaviors evolve and transition? | Reveals dynamical mechanisms |
+| Family | Question Answered | Interpretability Value | Cognitive Analogue |
+|--------|------------------|----------------------|-------------------|
+| **INITIAL** | How do input characteristics influence behavior? | Identifies sensitivity to initial conditions | Input encoding |
+| **ARCHITECTURE** | Which design choices determine behavioral regimes? | Links structure to function explicitly | Structural priors |
+| **SUMMARY** | What are the observable signatures of behavior? | Provides statistical evidence of patterns | Episodic summaries |
+| **TEMPORAL** | How do behaviors evolve and transition? | Reveals dynamical mechanisms | Sequential processing |
+
+This multi-modal decomposition mirrors cognitive architectures that integrate information across multiple timescales and representations—though here applied to learning operator behavior rather than perceptual tasks.
 
 ### Cross-Validation Through Multiple Perspectives
 
@@ -226,6 +230,20 @@ See [VQ-VAE Training Guide](vqvae/training-guide.md) for details.
 - Stratified sampling for parameter space coverage
 - Deterministic rollouts (seeded randomness)
 - Comprehensive metadata tracking
+
+## Research Applications
+
+While the primary focus is scientific simulation and operator reasoning, the architecture provides infrastructure for investigating several cognitive capabilities in the controlled domain of dynamical systems:
+
+**Compositional Generalization**: The factored parameter space enables testing whether learned representations can predict behaviors of novel operator configurations through compositional combination of known components.
+
+**Few-Shot Adaptation**: Behavioral tokens and multi-modal features support research into in-context learning—can agents adapt to new operator families with minimal examples?
+
+**Memory-Based Prediction**: The distinction between SUMMARY (aggregated) and TEMPORAL (sequential) features provides a natural testbed for studying working memory constraints and episodic retrieval strategies.
+
+**Metacognitive Monitoring**: Uncertainty quantification over learned behavioral representations offers a framework for studying calibrated confidence and capability boundary detection.
+
+These applications are secondary to the core goal of understanding operator behavior, but the infrastructure naturally supports such investigations through its multi-modal, hierarchical design.
 
 ## Data Flow
 
