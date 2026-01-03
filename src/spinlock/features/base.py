@@ -25,7 +25,9 @@ class FeatureExtractorBase(ABC):
     """
     Abstract base class for feature extractors.
 
-    Subclasses implement specific feature families (SDF, temporal_series, etc.).
+    Two sibling feature families:
+    - TEMPORAL: Per-timestep time series [N, T, D] (spatial, spectral, cross_channel)
+    - SUMMARY: Aggregated scalars [N, D] (temporal dynamics, causality, invariant_drift)
 
     The extraction pipeline follows a three-stage process:
     1. Per-timestep extraction: Features for each evolution step
@@ -42,7 +44,7 @@ class FeatureExtractorBase(ABC):
         Feature family name.
 
         Returns:
-            Family identifier (e.g., 'sdf', 'temporal_series', 'spatial_tokens')
+            Family identifier (e.g., 'temporal', 'summary')
         """
         pass
 
@@ -183,7 +185,7 @@ class HDF5FeatureWriter(ABC):
 
         Args:
             h5file: Open h5py.File handle
-            family_name: Feature family identifier (e.g., 'sdf')
+            family_name: Feature family identifier (e.g., 'temporal', 'summary')
             num_samples: Number of samples in dataset (N)
             num_timesteps: Number of evolution timesteps (T)
             num_realizations: Number of stochastic realizations (M)

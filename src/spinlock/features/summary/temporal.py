@@ -125,14 +125,25 @@ class TemporalFeatureExtractor:
         else:
             include_all = False
 
+        # OPTIMIZATION: Cache energy computation (was computed 5x, now 1x)
+        # Energy is used by: growth_rate, growth_accel, freq_dominant, amplitude, period
+        needs_energy = include_all or (config is not None and (
+            config.include_energy_growth_rate or
+            config.include_energy_growth_accel or
+            config.include_temporal_freq_dominant or
+            config.include_oscillation_amplitude or
+            config.include_oscillation_period
+        ))
+        energy = None
+        if needs_energy:
+            energy = (trajectories ** 2).sum(dim=(-2, -1))  # [N, M, T, C] - ONCE
+
         # Growth & decay features
         if include_all or (config is not None and config.include_energy_growth_rate):
-            energy = (trajectories ** 2).sum(dim=(-2, -1))  # [N, M, T, C]
             growth_rate = self._compute_growth_rate(energy)
             features['energy_growth_rate'] = growth_rate
 
         if include_all or (config is not None and config.include_energy_growth_accel):
-            energy = (trajectories ** 2).sum(dim=(-2, -1))
             accel = self._compute_growth_acceleration(energy)
             features['energy_growth_accel'] = accel
 
@@ -143,17 +154,14 @@ class TemporalFeatureExtractor:
 
         # Oscillation features
         if include_all or (config is not None and config.include_temporal_freq_dominant):
-            energy = (trajectories ** 2).sum(dim=(-2, -1))
             dom_freq = self._compute_dominant_temporal_frequency(energy)
             features['temporal_freq_dominant'] = dom_freq
 
         if include_all or (config is not None and config.include_oscillation_amplitude):
-            energy = (trajectories ** 2).sum(dim=(-2, -1))
             amplitude = self._compute_oscillation_amplitude(energy)
             features['oscillation_amplitude'] = amplitude
 
         if include_all or (config is not None and config.include_oscillation_period):
-            energy = (trajectories ** 2).sum(dim=(-2, -1))
             period = self._compute_oscillation_period(energy)
             features['oscillation_period'] = period
 

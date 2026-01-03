@@ -1,9 +1,9 @@
 """
-SDF (Summary Descriptor Features) configuration.
+SUMMARY feature family configuration.
 
-Configuration schemas for all SDF feature categories:
+Configuration schemas for all SUMMARY feature categories:
 - Spatial statistics
-- Spectral/frequency features  
+- Spectral/frequency features
 - Distributional features
 - Temporal dynamics
 - Structural features
@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 # =============================================================================
-# SDF Feature Category Configurations
+# SUMMARY Feature Category Configurations
 # =============================================================================
 
 class SummarySpatialConfig(BaseModel):
@@ -656,14 +656,14 @@ class SummaryInvariantDriftConfig(BaseModel):
 
 
 # =============================================================================
-# SDF Top-Level Configuration
+# SUMMARY Top-Level Configuration
 # =============================================================================
 
 class SummaryConfig(BaseModel):
     """
-    Summary Descriptor Features (SDF) configuration.
+    SUMMARY feature family configuration.
 
-    Controls which SDF features to extract, multiscale parameters,
+    Controls which SUMMARY features to extract, multiscale parameters,
     and aggregation settings.
 
     Attributes:

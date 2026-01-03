@@ -1,8 +1,9 @@
-# SUMMARY Feature Reference v2.0 + Phase 1/2 Extensions
+# Feature Reference: SUMMARY + TEMPORAL
 
-Complete reference for all Summary Descriptor Features (SUMMARY) computed by Spinlock.
+Complete reference for SUMMARY and TEMPORAL feature families computed by Spinlock.
 
-**Total Features**: 221 (baseline 174 + Phase 1: 33 + Phase 2: 14)
+**SUMMARY Features**: ~221 aggregated behavioral descriptors
+**TEMPORAL Features**: 63 per-timestep time series features
 
 ## Table of Contents
 
@@ -21,6 +22,9 @@ Complete reference for all Summary Descriptor Features (SUMMARY) computed by Spi
 ### Extensions
 - **Phase 1** (High-Impact, 33 features): Percentiles, event counts, time-to-event, rolling windows, RQA, correlation dimension
 - **Phase 2** (Research, 14 features): PACF, permutation entropy, histogram/occupancy
+
+### TEMPORAL Family (Time Series)
+9. [TEMPORAL Features](#temporal-features-time-series-family) (63 features, per-timestep)
 
 ---
 
@@ -916,6 +920,62 @@ Response to input amplitude scaling:
 **Unstable operators:** Positive mean drift, high variance, ratio > 1.0
 **Oscillatory operators:** High variance, low monotonicity, ratio near 1.0
 **Scale-selective:** Different drift patterns across raw/lowpass/highpass
+
+---
+
+## TEMPORAL Features (Time Series Family)
+
+**Category:** Per-timestep time series
+**Feature Count:** 63 (59 from SUMMARY per-timestep + 4 derived)
+**Shape:** `[N, M, T, D]` - Full temporal resolution preserved
+**Purpose:** Input for 1D CNN temporal encoder in VQ-VAE pipeline
+
+The TEMPORAL family preserves full temporal trajectories for sequence modeling, unlike SUMMARY which aggregates to scalar statistics.
+
+### Reused SUMMARY Per-Timestep Features (59)
+
+TEMPORAL reuses these SUMMARY per-timestep features at each timestep:
+
+**Spatial (24 features)**
+- All spatial features: `spatial_mean`, `spatial_variance`, `spatial_std`, `spatial_skewness`, `spatial_kurtosis`, `spatial_min`, `spatial_max`, `spatial_range`, `spatial_iqr`, `spatial_mad`
+- Gradient features: `gradient_magnitude_mean`, `gradient_magnitude_std`, `gradient_magnitude_max`, `gradient_x_mean`, `gradient_y_mean`, `gradient_anisotropy`
+- Curvature features: `laplacian_mean`, `laplacian_std`, `laplacian_energy`
+- Percentiles: `percentile_5`, `percentile_25`, `percentile_50`, `percentile_75`, `percentile_95`
+
+**Spectral (27 features)**
+- FFT power (15): `fft_power_scale_{0-4}_{mean,max,std}` (5 scales × 3 statistics)
+- Dominant frequency: `dominant_freq_x`, `dominant_freq_y`, `dominant_freq_magnitude`
+- Spectral shape: `spectral_centroid_x`, `spectral_centroid_y`, `spectral_bandwidth`, `low_freq_ratio`, `mid_freq_ratio`, `high_freq_ratio`, `spectral_flatness`, `spectral_rolloff`, `spectral_anisotropy`
+
+**Cross-Channel (8 features)**
+- Eigenvalues: `cross_channel_eigen_top_{1,2,3}`, `cross_channel_eigen_trace`
+- Matrix properties: `cross_channel_condition_number`, `cross_channel_participation_ratio`
+- Correlation stats: `cross_channel_corr_mean`, `cross_channel_corr_std`
+
+### Derived Temporal Curves (4)
+
+These features are computed uniquely for TEMPORAL from raw trajectories:
+
+| Feature | Formula | Range | Interpretation |
+|---------|---------|-------|----------------|
+| `energy_trajectory` | `‖u‖₂` per timestep | 0 to ∞ | L2 norm evolution; energy proxy |
+| `variance_trajectory` | `var(u)` spatial | 0 to ∞ | Spatial variability over time |
+| `smoothness_trajectory` | `var(u)` all dims | 0 to ∞ | Field roughness proxy |
+| `channel_correlation_trajectory` | `mean(cov(cᵢ, cⱼ))` | -∞ to +∞ | Cross-channel coupling strength |
+
+### Storage Format
+
+- **Sequences**: `[N, M, T, 63]` - Full time series per operator
+- **Context** (optional): `[N, 126]` - Mean + std across M and T dimensions
+
+### TEMPORAL vs SUMMARY Comparison
+
+| Aspect | TEMPORAL | SUMMARY |
+|--------|----------|---------|
+| Granularity | Per-timestep `[N, M, T, D]` | Aggregated `[N, D]` |
+| Temporal info | Full time series preserved | Collapsed to statistics |
+| Use case | 1D CNN encoding, sequence modeling | Scalar behavioral descriptors |
+| Feature count | 63 per timestep | 120 per-trajectory, 360 aggregated |
 
 ---
 

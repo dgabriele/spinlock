@@ -3,18 +3,23 @@ Main feature extraction orchestrator.
 
 Coordinates the end-to-end feature extraction pipeline:
 1. Read rollouts from HDF5 datasets
-2. Extract features using family-specific extractors (SDF, etc.)
+2. Extract features using family-specific extractors (TEMPORAL, SUMMARY)
 3. Write features back to HDF5
 4. Progress tracking and logging
 
+Two sibling feature families:
+- TEMPORAL: Per-timestep time series [N, T, D] (spatial, spectral, cross_channel)
+- SUMMARY: Aggregated scalars [N, D] (temporal dynamics, causality, invariant_drift)
+
 Example:
     >>> from spinlock.features.extractor import FeatureExtractor
-    >>> from spinlock.features.config import FeatureExtractionConfig
+    >>> from spinlock.features.config import FeatureExtractionConfig, TemporalConfig
     >>> from spinlock.features.summary.config import SummaryConfig
     >>>
     >>> config = FeatureExtractionConfig(
     ...     input_dataset=Path("datasets/benchmark_10k.h5"),
-    ...     sdf=SummaryConfig()
+    ...     temporal=TemporalConfig(enabled=False),  # Disable TEMPORAL
+    ...     summary=SummaryConfig()
     ... )
     >>> extractor = FeatureExtractor(config)
     >>> extractor.extract(verbose=True)
@@ -43,7 +48,8 @@ class FeatureExtractor:
     Attributes:
         config: Feature extraction configuration
         device: Computation device (cuda or cpu)
-        sdf_extractor: SDF feature extractor (if enabled)
+        summary_extractor: SUMMARY feature extractor (if enabled)
+        temporal_enabled: Whether to extract TEMPORAL features
     """
 
     def __init__(self, config: FeatureExtractionConfig):
@@ -55,14 +61,15 @@ class FeatureExtractor:
         """
         self.config = config
         self.device = torch.device(config.device)
+        self.temporal_enabled = config.temporal.enabled
 
         # Initialize family-specific extractors
-        self.sdf_extractor: Optional[SummaryExtractor] = None
+        self.summary_extractor: Optional[SummaryExtractor] = None
 
-        if config.sdf is not None:
-            self.sdf_extractor = SummaryExtractor(
+        if config.summary is not None:
+            self.summary_extractor = SummaryExtractor(
                 device=self.device,
-                config=config.sdf
+                config=config.summary
             )
 
     def extract(self, verbose: bool = False) -> None:
@@ -81,8 +88,8 @@ class FeatureExtractor:
             raise FileNotFoundError(f"Input dataset not found: {self.config.input_dataset}")
 
         # Check that at least one feature family is enabled
-        if self.sdf_extractor is None:
-            raise ValueError("No feature families enabled. Set config.sdf to enable SDF extraction.")
+        if self.summary_extractor is None:
+            raise ValueError("No feature families enabled. Set config.summary to enable SUMMARY extraction.")
 
         # Determine output path
         output_path = self.config.output_dataset or self.config.input_dataset
@@ -92,6 +99,8 @@ class FeatureExtractor:
             print(f"Output dataset: {output_path}")
             print(f"Device:         {self.device}")
             print(f"Batch size:     {self.config.batch_size}")
+            print(f"TEMPORAL:       {'ENABLED' if self.temporal_enabled else 'DISABLED'}")
+            print(f"SUMMARY:        ENABLED")
             print()
 
         # Read dataset metadata
@@ -131,13 +140,16 @@ class FeatureExtractor:
                 print(f"  Channels:      {num_channels}")
                 print()
 
-        # Extract SDF features
-        if self.sdf_extractor is not None:
+        # Extract features
+        if self.summary_extractor is not None:
             if verbose:
-                print("Extracting SDF features...")
+                print("Extracting features...")
+                if self.temporal_enabled:
+                    print("  TEMPORAL: per-timestep features [N, T, D]")
+                print("  SUMMARY: aggregated features [N, D]")
                 print()
 
-            self._extract_summary(
+            self._extract_features(
                 num_samples=num_samples,
                 num_realizations=num_realizations,
                 num_timesteps=num_timesteps,
@@ -148,7 +160,7 @@ class FeatureExtractor:
         if verbose:
             print("\n✓ Feature extraction complete!")
 
-    def _extract_summary(
+    def _extract_features(
         self,
         num_samples: int,
         num_realizations: int,
@@ -157,7 +169,7 @@ class FeatureExtractor:
         verbose: bool = False
     ) -> None:
         """
-        Extract SDF features from dataset.
+        Extract TEMPORAL and SUMMARY features from dataset.
 
         Args:
             num_samples: Number of samples in dataset
@@ -166,7 +178,7 @@ class FeatureExtractor:
             output_path: Path to write features
             verbose: Print progress
         """
-        assert self.sdf_extractor is not None, "SDF extractor not initialized"
+        assert self.summary_extractor is not None, "SUMMARY extractor not initialized"
 
         # Create HDF5 writer
         writer = HDF5FeatureWriter(
@@ -175,10 +187,10 @@ class FeatureExtractor:
         )
 
         # Get feature registry
-        registry = self.sdf_extractor.get_feature_registry()
+        registry = self.summary_extractor.get_feature_registry()
 
         if verbose:
-            print(f"SDF Registry: {registry.num_features} features")
+            print(f"Feature Registry: {registry.num_features} features")
             for category in registry.categories:
                 cat_features = registry.get_features_by_category(category)
                 print(f"  - {category}: {len(cat_features)} features")
@@ -186,12 +198,13 @@ class FeatureExtractor:
 
         # Create feature groups in HDF5
         with writer.open_for_writing():
-            writer.create_sdf_group(
+            writer.create_summary_group(
                 num_samples=num_samples,
                 num_realizations=num_realizations,
                 num_timesteps=num_timesteps,
                 registry=registry,
-                config=self.config.sdf
+                config=self.config.summary,
+                temporal_enabled=self.temporal_enabled
             )
 
             # Process in batches
@@ -200,7 +213,7 @@ class FeatureExtractor:
 
             pbar = None
             if verbose:
-                pbar = tqdm(total=num_samples, desc="Extracting SDF features")
+                pbar = tqdm(total=num_samples, desc="Extracting features")
 
             for batch_idx in range(num_batches):
                 start_idx = batch_idx * batch_size
@@ -219,10 +232,14 @@ class FeatureExtractor:
                 # Extract features
                 start_time = time.time()
 
-                features = self.sdf_extractor.extract_all(rollouts)
+                features = self.summary_extractor.extract_all(rollouts)
 
-                # Move features back to CPU for storage
-                per_timestep = features['per_timestep'].cpu().numpy()  # [B, T, D]
+                # Handle TEMPORAL features (per-timestep)
+                per_timestep = None
+                if self.temporal_enabled:
+                    per_timestep = features['per_timestep'].cpu().numpy()  # [B, T, D]
+
+                # Handle SUMMARY features (per-trajectory, aggregated)
                 per_trajectory = features['per_trajectory'].cpu().numpy()  # [B, M, D_traj]
 
                 # Combine aggregated features
@@ -238,7 +255,7 @@ class FeatureExtractor:
                 extraction_times = np.full(current_batch_size, extraction_time / current_batch_size)
 
                 # Write to HDF5
-                writer.write_sdf_batch(
+                writer.write_summary_batch(
                     batch_idx=start_idx,
                     per_timestep=per_timestep,
                     per_trajectory=per_trajectory,
@@ -298,14 +315,15 @@ class FeatureExtractor:
             'output_dataset': str(self.config.output_dataset or self.config.input_dataset),
             'device': str(self.device),
             'batch_size': self.config.batch_size,
+            'temporal_enabled': self.temporal_enabled,
             'feature_families': []
         }
 
-        if self.sdf_extractor is not None:
-            registry = self.sdf_extractor.get_feature_registry()
+        if self.summary_extractor is not None:
+            registry = self.summary_extractor.get_feature_registry()
             summary['feature_families'].append({
-                'name': 'sdf',
-                'version': self.sdf_extractor.version,
+                'name': 'summary',
+                'version': self.summary_extractor.version,
                 'num_features': registry.num_features,
                 'categories': {
                     cat: len(registry.get_features_by_category(cat))

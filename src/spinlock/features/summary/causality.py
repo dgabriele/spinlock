@@ -671,6 +671,8 @@ class CausalityFeatureExtractor:
         """
         Batched conditional entropy H(Y|X) for all samples.
 
+        Fully vectorized using scatter_add - no Python loops.
+
         Args:
             y: Target variable (discrete) [N, M, T]
             x: Conditioning variable (discrete) [N, M, T]
@@ -680,36 +682,42 @@ class CausalityFeatureExtractor:
             Conditional entropy [N, M]
         """
         N, M, T = y.shape
+        NM = N * M
 
-        # Vectorized 2D histogram using scatter_add
         # Flatten batch dimensions
-        y_flat = y.reshape(N * M, T)  # [NM, T]
-        x_flat = x.reshape(N * M, T)  # [NM, T]
+        y_flat = y.reshape(NM, T)  # [NM, T]
+        x_flat = x.reshape(NM, T)  # [NM, T]
 
-        # Compute joint histograms for all samples
-        joint_hist = torch.zeros(N * M, num_bins, num_bins, device=y.device)
+        # OPTIMIZATION: Vectorized 2D histogram using scatter_add
+        # Create batch indices: [NM, T] where each row is the sample index
+        batch_idx = torch.arange(NM, device=y.device, dtype=torch.long).unsqueeze(1).expand(-1, T)
 
-        for nm in range(N * M):
-            # Linear indexing for 2D histogram
-            indices = x_flat[nm] * num_bins + y_flat[nm]  # [T]
-            joint_hist[nm] = torch.bincount(indices, minlength=num_bins * num_bins).reshape(num_bins, num_bins).float()
+        # Linear index for 2D histogram: sample_idx * (num_bins²) + x * num_bins + y
+        linear_idx = batch_idx * (num_bins * num_bins) + x_flat * num_bins + y_flat
+        linear_idx_flat = linear_idx.flatten()  # [NM * T]
+
+        # Scatter-add to compute all joint histograms at once
+        ones = torch.ones(NM * T, device=y.device, dtype=torch.float32)
+        joint_hist_flat = torch.zeros(NM * num_bins * num_bins, device=y.device, dtype=torch.float32)
+        joint_hist_flat.scatter_add_(0, linear_idx_flat, ones)
+
+        # Reshape to [NM, num_bins, num_bins]
+        joint_hist = joint_hist_flat.reshape(NM, num_bins, num_bins)
 
         # Joint and marginal probabilities
-        joint_prob = joint_hist / T  # [NM, num_bins, num_bins]
+        joint_prob = joint_hist / T
         marginal_x = joint_prob.sum(dim=2)  # [NM, num_bins]
 
-        # H(Y|X) = -Σ_x,y p(x,y) log(p(y|x))
         # Conditional probability: p(y|x) = p(x,y) / p(x)
-        p_y_given_x = joint_prob / (marginal_x.unsqueeze(2) + 1e-10)  # [NM, num_bins, num_bins]
+        p_y_given_x = joint_prob / (marginal_x.unsqueeze(2) + 1e-10)
 
-        # Entropy computation (vectorized)
-        # Only include terms where joint_prob > 0
+        # Entropy: H(Y|X) = -Σ p(x,y) log(p(y|x))
         mask = joint_prob > 1e-10
         entropy = -torch.where(
             mask,
             joint_prob * torch.log(p_y_given_x + 1e-10),
             torch.zeros_like(joint_prob)
-        ).sum(dim=(1, 2))  # [NM]
+        ).sum(dim=(1, 2))
 
         return entropy.reshape(N, M)
 
@@ -723,6 +731,8 @@ class CausalityFeatureExtractor:
         """
         Batched conditional entropy H(Z|X,Y) for all samples.
 
+        Fully vectorized using scatter_add - no Python loops.
+
         Args:
             z: Target variable (discrete) [N, M, T]
             x: Conditioning variable 1 (discrete) [N, M, T]
@@ -733,37 +743,44 @@ class CausalityFeatureExtractor:
             Conditional entropy [N, M]
         """
         N, M, T = z.shape
+        NM = N * M
+        num_bins_cubed = num_bins ** 3
 
         # Flatten batch dimensions
-        z_flat = z.reshape(N * M, T)  # [NM, T]
-        x_flat = x.reshape(N * M, T)  # [NM, T]
-        y_flat = y.reshape(N * M, T)  # [NM, T]
+        z_flat = z.reshape(NM, T)
+        x_flat = x.reshape(NM, T)
+        y_flat = y.reshape(NM, T)
 
-        # Compute 3D joint histograms for all samples
-        joint_hist = torch.zeros(N * M, num_bins, num_bins, num_bins, device=z.device)
+        # OPTIMIZATION: Vectorized 3D histogram using scatter_add
+        # Create batch indices
+        batch_idx = torch.arange(NM, device=z.device, dtype=torch.long).unsqueeze(1).expand(-1, T)
 
-        for nm in range(N * M):
-            # Linear indexing for 3D histogram
-            indices = (x_flat[nm] * num_bins + y_flat[nm]) * num_bins + z_flat[nm]  # [T]
-            joint_hist[nm] = torch.bincount(
-                indices, minlength=num_bins ** 3
-            ).reshape(num_bins, num_bins, num_bins).float()
+        # Linear index for 3D histogram: sample_idx * (num_bins³) + (x * num_bins + y) * num_bins + z
+        linear_idx = batch_idx * num_bins_cubed + (x_flat * num_bins + y_flat) * num_bins + z_flat
+        linear_idx_flat = linear_idx.flatten()
+
+        # Scatter-add to compute all 3D joint histograms at once
+        ones = torch.ones(NM * T, device=z.device, dtype=torch.float32)
+        joint_hist_flat = torch.zeros(NM * num_bins_cubed, device=z.device, dtype=torch.float32)
+        joint_hist_flat.scatter_add_(0, linear_idx_flat, ones)
+
+        # Reshape to [NM, num_bins, num_bins, num_bins]
+        joint_hist = joint_hist_flat.reshape(NM, num_bins, num_bins, num_bins)
 
         # Probabilities
-        joint_prob = joint_hist / T  # [NM, num_bins, num_bins, num_bins]
+        joint_prob = joint_hist / T
         marginal_xy = joint_prob.sum(dim=3)  # [NM, num_bins, num_bins]
 
-        # H(Z|X,Y) = -Σ_{x,y,z} p(x,y,z) log(p(z|x,y))
         # Conditional probability: p(z|x,y) = p(x,y,z) / p(x,y)
-        p_z_given_xy = joint_prob / (marginal_xy.unsqueeze(3) + 1e-10)  # [NM, num_bins, num_bins, num_bins]
+        p_z_given_xy = joint_prob / (marginal_xy.unsqueeze(3) + 1e-10)
 
-        # Entropy computation (vectorized)
+        # Entropy: H(Z|X,Y) = -Σ p(x,y,z) log(p(z|x,y))
         mask = joint_prob > 1e-10
         entropy = -torch.where(
             mask,
             joint_prob * torch.log(p_z_given_xy + 1e-10),
             torch.zeros_like(joint_prob)
-        ).sum(dim=(1, 2, 3))  # [NM]
+        ).sum(dim=(1, 2, 3))
 
         return entropy.reshape(N, M)
 

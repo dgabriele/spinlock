@@ -6,7 +6,7 @@
 [![Poetry](https://img.shields.io/badge/dependency%20manager-poetry-blue)](https://python-poetry.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A self-directed discovery substrate for learning the "physics of change" through autonomous exploration of neural operator space. Uses stratified low-discrepancy sampling and bias-minimizing feature extraction to discover truly alien computational structures—enabling general dynamical reasoning beyond task-specific machine learning.
+Pre-training infrastructure for **Neural Operator Agents (NOA)**—foundation models that learn to predict, classify, and reason about dynamical system behaviors. Generate large-scale operator datasets, extract multi-modal behavioral features, and train VQ-VAE tokenizers for downstream scientific ML applications.
 
 ---
 
@@ -28,6 +28,24 @@ A self-directed discovery substrate for learning the "physics of change" through
 ## 🎯 What is Spinlock?
 
 Spinlock enables systematic exploration of neural operator parameter spaces to build behavioral representations for operator reasoning. Rather than studying individual operators in isolation, Spinlock treats the entire operator space as a structured domain for learning and discovery.
+
+### Primary Application: Foundation Models for Dynamical Systems
+
+Spinlock builds **foundation models for scientific simulation**. The goal is to pre-train Neural Operator Agents on diverse dynamical behaviors, then apply them to downstream tasks across physics, biology, climate modeling, and engineering—similar to how language models pre-train on text corpora before fine-tuning.
+
+**The ML Problem:** Given a neural operator with parameters θ and initial condition u₀, predict behavioral properties of the trajectory u(t) without running expensive rollouts.
+
+**Our Approach:**
+- **Data:** Generate 100K+ operator trajectories with stratified parameter sampling
+- **Features:** Extract 500+ behavioral descriptors (spatial, spectral, temporal, causal)
+- **Tokenization:** VQ-VAE compresses behaviors into discrete tokens (~8-15 learned categories)
+- **Agent:** Transformer-based NOA learns to predict tokens from (θ, u₀) embeddings
+
+**Downstream Applications:**
+- **Surrogate modeling:** Predict simulation outcomes 1000× faster than full rollout
+- **Anomaly detection:** Flag unusual dynamics in real-time sensor data
+- **Transfer learning:** Fine-tune on domain-specific PDEs (Navier-Stokes, reaction-diffusion, etc.)
+- **Scientific discovery:** Cluster operators by behavior to find universal patterns across systems
 
 ### Core Capabilities
 

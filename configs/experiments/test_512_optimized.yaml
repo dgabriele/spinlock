@@ -104,8 +104,8 @@ sampling:
     check_discrepancy: true
     check_correlation: true
 
-  total_samples: 100000  # 100K operators
-  batch_size: 8  # Increased for better GPU utilization (100000 / 8 = 12500 batches)
+  total_samples: 100000  # Full 100K dataset
+  batch_size: 32  # Optimized batch size for GPU
 
 # Simulation configuration
 simulation:
@@ -189,12 +189,12 @@ simulation:
 
 # Dataset output configuration
 dataset:
-  output_path: "datasets/local_100k_optimized.h5"
+  output_path: "datasets/100k_full_features.h5"
 
   storage:
     compression: "gzip"
     compression_level: 4
-    chunk_size: 8  # Match batch_size for optimal HDF5 performance
+    chunk_size: 32  # Match batch_size for optimal HDF5 performance
     store_trajectories: false  # Feature-only mode (saves space)
 
 # Feature extraction configuration
@@ -203,7 +203,7 @@ dataset:
 # - SUMMARY: Aggregated scalar features [N, D] - compressed behavioral descriptors
 features:
   temporal:
-    enabled: false  # Disable TEMPORAL family (per-timestep time series)
+    enabled: true   # Enable TEMPORAL family (per-timestep time series)
   summary:
     enabled: true   # Enable SUMMARY family (aggregated scalars)
 

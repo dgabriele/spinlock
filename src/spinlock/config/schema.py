@@ -396,6 +396,36 @@ class LoggingConfig(BaseModel):
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
 
 
+class TemporalFeaturesConfig(BaseModel):
+    """TEMPORAL feature family configuration (per-timestep time series)."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Extract per-timestep time series features. Disable for SUMMARY-only mode."
+    )
+
+
+class SummaryFeaturesConfig(BaseModel):
+    """SUMMARY feature family configuration (aggregated scalars)."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Extract aggregated summary features."
+    )
+
+
+class FeaturesConfig(BaseModel):
+    """Feature extraction configuration.
+
+    Two feature families:
+    - TEMPORAL: Per-timestep time series features [N, T, D]
+    - SUMMARY: Aggregated scalar features [N, D]
+    """
+
+    temporal: TemporalFeaturesConfig = Field(default_factory=TemporalFeaturesConfig)
+    summary: SummaryFeaturesConfig = Field(default_factory=SummaryFeaturesConfig)
+
+
 # =============================================================================
 # Root Configuration
 # =============================================================================
@@ -434,6 +464,7 @@ class SpinlockConfig(BaseModel):
     sampling: SamplingConfig
     simulation: SimulationConfig
     dataset: DatasetConfig
+    features: FeaturesConfig = Field(default_factory=FeaturesConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     cloud: CloudConfig = Field(
         default_factory=CloudConfig,

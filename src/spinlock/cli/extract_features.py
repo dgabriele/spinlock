@@ -1,8 +1,12 @@
 """
 Extract features command for Spinlock CLI.
 
-Post-processing command that extracts SDF (Summary Descriptor Features)
-from existing datasets for downstream VQ-VAE training and analysis.
+Post-processing command that extracts features from existing datasets
+for downstream VQ-VAE training and analysis.
+
+Two sibling feature families:
+- TEMPORAL: Per-timestep time series [N, T, D] (spatial, spectral, cross_channel)
+- SUMMARY: Aggregated scalars [N, D] (temporal dynamics, causality, invariant_drift)
 """
 
 from argparse import ArgumentParser, Namespace
@@ -17,8 +21,9 @@ class ExtractFeaturesCommand(CLICommand):
     """
     Command to extract features from generated datasets.
 
-    Supports multiple feature families (SDF first, more to come).
-    Post-processing operation: reads datasets, extracts features, writes back.
+    Two sibling feature families:
+    - TEMPORAL: Per-timestep time series [N, T, D]
+    - SUMMARY: Aggregated scalars [N, D]
     """
 
     @property
@@ -32,18 +37,21 @@ class ExtractFeaturesCommand(CLICommand):
     @property
     def description(self) -> str:
         return """
-Extract Summary Descriptor Features (SDF) from a Spinlock dataset.
+Extract TEMPORAL and SUMMARY features from a Spinlock dataset.
 
-SDF features include spatial statistics, spectral properties, and temporal
-dynamics. Features are extracted at multiple temporal granularities:
-  - Per-timestep: Features for each evolution step
-  - Per-trajectory: Aggregated over time for each realization
-  - Aggregated: Final summary across all realizations
+Two sibling feature families:
+- TEMPORAL: Per-timestep time series [N, T, D] (spatial, spectral, cross_channel)
+- SUMMARY: Aggregated scalars [N, D] (temporal dynamics, causality, invariant_drift)
 
-Extracted features are stored in the dataset's /features/summary/ group.
+Features are extracted at multiple temporal granularities:
+  - Per-timestep: Features for each evolution step (TEMPORAL)
+  - Per-trajectory: Aggregated over time for each realization (SUMMARY)
+  - Aggregated: Final summary across all realizations (SUMMARY)
+
+Extracted features are stored in /features/temporal/ and /features/summary/.
 
 Examples:
-  # Extract SDF features with default settings
+  # Extract SUMMARY features with default settings
   spinlock extract-features --dataset datasets/benchmark_10k.h5
 
   # Extract with custom config
@@ -96,19 +104,19 @@ Examples:
         feature_group.add_argument(
             "--enable-spatial",
             action="store_true",
-            help="Enable SDF spatial statistics features",
+            help="Enable SUMMARY spatial statistics features",
         )
 
         feature_group.add_argument(
             "--enable-spectral",
             action="store_true",
-            help="Enable SDF spectral features",
+            help="Enable SUMMARY spectral features",
         )
 
         feature_group.add_argument(
             "--enable-temporal",
             action="store_true",
-            help="Enable SDF temporal features",
+            help="Enable SUMMARY temporal features",
         )
 
         feature_group.add_argument(
@@ -229,7 +237,7 @@ Examples:
 
         return FeatureExtractionConfig(
             input_dataset=args.dataset,
-            sdf=SummaryConfig(),  # All defaults enabled
+            summary=SummaryConfig(),  # All defaults enabled
             batch_size=args.batch_size,
             device=args.device,
             overwrite=args.overwrite,
@@ -239,15 +247,15 @@ Examples:
         """Apply CLI argument overrides to config."""
         # SDF feature category toggles
         if args.enable_spatial:
-            config.sdf.spatial.enabled = True
+            config.summary.spatial.enabled = True
         if args.enable_spectral:
-            config.sdf.spectral.enabled = True
+            config.summary.spectral.enabled = True
         if args.enable_temporal:
-            config.sdf.temporal.enabled = True
+            config.summary.temporal.enabled = True
 
         # Multiscale parameters
         if args.num_fft_scales:
-            config.sdf.spectral.num_fft_scales = args.num_fft_scales
+            config.summary.spectral.num_fft_scales = args.num_fft_scales
 
         # Execution settings
         config.batch_size = args.batch_size
@@ -271,16 +279,16 @@ Examples:
             print(f"Output:  {config.output_dataset}")
 
         print(f"\nSDF Features:")
-        if config.sdf:
-            est_count = config.sdf.estimate_feature_count()
+        if config.summary:
+            est_count = config.summary.estimate_feature_count()
             print(f"  Estimated features: ~{est_count}")
-            print(f"  Spatial:            {'enabled' if config.sdf.spatial.enabled else 'disabled'}")
-            print(f"  Spectral:           {'enabled' if config.sdf.spectral.enabled else 'disabled'} (scales: {config.sdf.spectral.num_fft_scales})")
-            print(f"  Temporal:           {'enabled' if config.sdf.temporal.enabled else 'disabled'}")
-            print(f"  Structural:         {'enabled' if config.sdf.structural.enabled else 'disabled'}")
-            print(f"  Physics:            {'enabled' if config.sdf.physics.enabled else 'disabled'}")
-            print(f"  Morphological:      {'enabled' if config.sdf.morphological.enabled else 'disabled'}")
-            print(f"  Multiscale:         {'enabled' if config.sdf.multiscale.enabled else 'disabled'}")
+            print(f"  Spatial:            {'enabled' if config.summary.spatial.enabled else 'disabled'}")
+            print(f"  Spectral:           {'enabled' if config.summary.spectral.enabled else 'disabled'} (scales: {config.summary.spectral.num_fft_scales})")
+            print(f"  Temporal:           {'enabled' if config.summary.temporal.enabled else 'disabled'}")
+            print(f"  Structural:         {'enabled' if config.summary.structural.enabled else 'disabled'}")
+            print(f"  Physics:            {'enabled' if config.summary.physics.enabled else 'disabled'}")
+            print(f"  Morphological:      {'enabled' if config.summary.morphological.enabled else 'disabled'}")
+            print(f"  Multiscale:         {'enabled' if config.summary.multiscale.enabled else 'disabled'}")
 
         print(f"\nExecution:")
         print(f"  Batch size:         {config.batch_size}")

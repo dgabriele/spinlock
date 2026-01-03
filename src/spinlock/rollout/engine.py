@@ -142,7 +142,7 @@ class OperatorRollout:
         if extract_operator_features:
             if not OPERATOR_FEATURES_AVAILABLE:
                 raise RuntimeError(
-                    "Operator feature extraction requested but spinlock.features.sdf not available"
+                    "Operator feature extraction requested but spinlock.features.summary not available"
                 )
             self.operator_feature_extractor = OperatorSensitivityExtractor(
                 device=device,

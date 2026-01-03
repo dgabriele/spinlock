@@ -2,15 +2,18 @@
 General feature extraction configuration.
 
 Root configuration for the feature extraction pipeline that supports
-multiple feature families (SDF, and future families like temporal_series, spatial_tokens).
+two sibling feature families:
+- TEMPORAL: Per-timestep time series [N, T, D] (spatial, spectral, cross_channel)
+- SUMMARY: Aggregated scalars [N, D] (temporal dynamics, causality, invariant_drift)
 
 Example:
-    >>> from spinlock.features.config import FeatureExtractionConfig
+    >>> from spinlock.features.config import FeatureExtractionConfig, TemporalConfig
     >>> from spinlock.features.summary.config import SummaryConfig
     >>>
     >>> config = FeatureExtractionConfig(
     ...     input_dataset=Path("datasets/benchmark_10k.h5"),
-    ...     sdf=SummaryConfig()
+    ...     temporal=TemporalConfig(enabled=True),
+    ...     summary=SummaryConfig()
     ... )
 """
 
@@ -22,16 +25,35 @@ if TYPE_CHECKING:
     from spinlock.features.summary.config import SummaryConfig
 
 
+class TemporalConfig(BaseModel):
+    """
+    TEMPORAL feature family configuration.
+
+    TEMPORAL features are per-timestep time series [N, T, D] computed at each
+    timestep. Categories: spatial, spectral, cross_channel.
+
+    Attributes:
+        enabled: Whether to extract TEMPORAL features
+    """
+    enabled: bool = Field(
+        default=True,
+        description="Extract per-timestep time series features [N, T, D]"
+    )
+
+
 class FeatureExtractionConfig(BaseModel):
     """
     Root configuration for feature extraction pipeline.
 
-    Supports multiple feature families (SDF is first, more to come).
+    Two sibling feature families:
+    - TEMPORAL: Per-timestep time series [N, T, D]
+    - SUMMARY: Aggregated scalars [N, D]
 
     Attributes:
         input_dataset: Path to input HDF5 dataset
         output_dataset: Optional separate output path (None writes to input)
-        sdf: Summary Descriptor Features configuration
+        temporal: TEMPORAL feature family configuration (per-timestep)
+        summary: SUMMARY feature family configuration (aggregated scalars)
         batch_size: Batch size for extraction
         device: Computation device (cuda or cpu)
         overwrite: Whether to overwrite existing features
@@ -42,7 +64,8 @@ class FeatureExtractionConfig(BaseModel):
         >>> from spinlock.features.summary.config import SummaryConfig
         >>> config = FeatureExtractionConfig(
         ...     input_dataset=Path("datasets/benchmark_10k.h5"),
-        ...     sdf=SummaryConfig(),
+        ...     temporal=TemporalConfig(enabled=False),  # Disable TEMPORAL
+        ...     summary=SummaryConfig(),
         ...     batch_size=32,
         ...     device="cuda"
         ... )
@@ -52,9 +75,9 @@ class FeatureExtractionConfig(BaseModel):
     input_dataset: Path
     output_dataset: Optional[Path] = None  # If None, writes to input_dataset
 
-    # Feature families to extract
-    sdf: Optional['SummaryConfig'] = None  # TYPE_CHECKING import avoids circular dependency
-    # Future: temporal_series, spatial_tokens, etc.
+    # Feature families to extract (siblings, not nested)
+    temporal: TemporalConfig = Field(default_factory=TemporalConfig)  # TEMPORAL features (per-timestep)
+    summary: Optional['SummaryConfig'] = None  # SUMMARY features (aggregated scalars)
 
     # Extraction settings
     batch_size: int = Field(default=32, ge=1, le=1000)

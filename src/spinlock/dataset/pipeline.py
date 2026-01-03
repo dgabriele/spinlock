@@ -122,7 +122,7 @@ class AsyncFeatureWriter:
                     if task is None:  # Sentinel
                         break
                         
-                    self.feature_writer.write_sdf_batch(
+                    self.feature_writer.write_summary_batch(
                         batch_idx=task.batch_idx_start,
                         per_timestep=task.per_timestep,
                         per_trajectory=task.per_trajectory,
@@ -140,65 +140,75 @@ class AsyncFeatureWriter:
 class FeatureExtractionPipeline:
     """
     Optimized feature extraction pipeline.
-    
+
     Handles GPU feature extraction with efficient memory management
     and eliminates wasteful recomputation.
     """
-    
-    def __init__(self, sdf_extractor: SummaryExtractor, device: torch.device):
+
+    def __init__(
+        self,
+        summary_extractor: SummaryExtractor,
+        device: torch.device,
+        temporal_enabled: bool = True
+    ):
         """
         Initialize feature extraction pipeline.
-        
+
         Args:
-            sdf_extractor: SDF feature extractor
+            summary_extractor: SUMMARY feature extractor
             device: Computation device
+            temporal_enabled: Whether to extract TEMPORAL (per-timestep) features
         """
-        self.sdf_extractor = sdf_extractor
+        self.summary_extractor = summary_extractor
         self.device = device
-    
+        self.temporal_enabled = temporal_enabled
+
     def extract_all(
         self,
         batch_outputs: torch.Tensor  # [B, M, T, C, H, W]
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[Optional[np.ndarray], np.ndarray, np.ndarray]:
         """
         Extract all features efficiently (no recomputation).
-        
+
         Args:
             batch_outputs: Trajectory tensors [B, M, T, C, H, W]
-            
+
         Returns:
             Tuple of (per_timestep_np, per_trajectory_np, aggregated_np)
+            per_timestep_np is None if TEMPORAL features are disabled
         """
         with torch.no_grad():
-            # Stage 1: Extract per-timestep features
-            per_timestep_gpu = self.sdf_extractor.extract_per_timestep(batch_outputs)
-            per_timestep_np = per_timestep_gpu.cpu().numpy()
-            del per_timestep_gpu
-            if self.device.type == "cuda":
-                torch.cuda.empty_cache()
-            
-            # Stage 2: Extract per-trajectory features
-            per_trajectory_gpu = self.sdf_extractor.extract_per_trajectory(batch_outputs)
+            # Stage 1: Extract per-timestep (TEMPORAL) features - only if enabled
+            per_timestep_np = None
+            if self.temporal_enabled:
+                per_timestep_gpu = self.summary_extractor.extract_per_timestep(batch_outputs)
+                per_timestep_np = per_timestep_gpu.cpu().numpy()
+                del per_timestep_gpu
+                if self.device.type == "cuda":
+                    torch.cuda.empty_cache()
+
+            # Stage 2: Extract per-trajectory (SUMMARY) features
+            per_trajectory_gpu = self.summary_extractor.extract_per_trajectory(batch_outputs)
             per_trajectory_np = per_trajectory_gpu.cpu().numpy()
-            
+
             # Stage 3: Aggregate using same GPU tensor (no recomputation)
             aggregated_list = []
             for method in ['mean', 'std', 'cv']:
-                agg_gpu = self.sdf_extractor.aggregate_realizations(
+                agg_gpu = self.summary_extractor.aggregate_realizations(
                     per_trajectory_gpu, method=method
                 )
                 aggregated_list.append(agg_gpu.cpu())
                 del agg_gpu
                 if self.device.type == "cuda":
                     torch.cuda.empty_cache()
-            
+
             aggregated_np = torch.cat(aggregated_list, dim=1).numpy()
-            
+
             # Free GPU memory
             del per_trajectory_gpu, aggregated_list
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()
-            
+
             return per_timestep_np, per_trajectory_np, aggregated_np
 
 
@@ -452,15 +462,25 @@ class DatasetGenerationPipeline:
             print("   Dataset size: <10 GB (vs. ~1.2 TB with trajectories)\n")
 
         # Initialize inline feature extraction
-        sdf_extractor = None
+        summary_extractor = None
         feature_writer = None
-        
+
+        # Determine if TEMPORAL features are enabled from typed config
+        temporal_enabled = self.config.features.temporal.enabled
+
         if not store_trajectories:
             print("Initializing inline feature extractor...")
-            sdf_config = SummaryConfig()  # Default: all features
-            sdf_extractor = SummaryExtractor(device=self.device, config=sdf_config)
+            summary_config = SummaryConfig()
+            summary_extractor = SummaryExtractor(device=self.device, config=summary_config)
+
+            # Log extraction mode
+            if not temporal_enabled:
+                print("  TEMPORAL features: DISABLED (per-timestep time series)")
+                print("  SUMMARY features: ENABLED (aggregated scalars only)")
+
             print(f"  Feature extractor ready on {self.device}\n")
-            self._sdf_extractor = sdf_extractor
+            self._summary_extractor = summary_extractor
+            self._temporal_enabled = temporal_enabled
 
         # Initialize storage backend with actual max grid size (not hardcoded 256)
         storage_config = {
@@ -484,7 +504,7 @@ class DatasetGenerationPipeline:
         try:
 
             # Initialize feature writer for inline extraction
-            if sdf_extractor is not None:
+            if summary_extractor is not None:
                 from pathlib import Path
                 feature_writer = HDF5FeatureWriter(
                     dataset_path=Path(self.config.dataset.output_path),
@@ -493,17 +513,20 @@ class DatasetGenerationPipeline:
                 feature_writer.__enter__()
                 self._feature_writer = feature_writer
 
-                # Create SDF storage groups
-                registry = sdf_extractor.get_feature_registry()
-                sdf_config = sdf_extractor.config
+                # Create SUMMARY storage groups
+                registry = summary_extractor.get_feature_registry()
+                summary_config = summary_extractor.config
 
                 # Calculate dimensions for logging
-                # Per-timestep categories: spatial, spectral, cross_channel
-                per_timestep_dim = (
-                    len(registry.get_feature_names(category='spatial')) +
-                    len(registry.get_feature_names(category='spectral')) +
-                    len(registry.get_feature_names(category='cross_channel'))
-                )
+                # Per-timestep (TEMPORAL) categories: spatial, spectral, cross_channel
+                if temporal_enabled:
+                    per_timestep_dim = (
+                        len(registry.get_feature_names(category='spatial')) +
+                        len(registry.get_feature_names(category='spectral')) +
+                        len(registry.get_feature_names(category='cross_channel'))
+                    )
+                else:
+                    per_timestep_dim = 0  # TEMPORAL disabled
 
                 # Per-trajectory categories: temporal, causality, invariant_drift, operator_sensitivity
                 per_trajectory_dim = (
@@ -513,21 +536,23 @@ class DatasetGenerationPipeline:
                     len(registry.get_feature_names(category='operator_sensitivity'))
                 )
 
-                feature_writer.create_sdf_group(
+                feature_writer.create_summary_group(
                     num_samples=num_samples,
                     num_realizations=self.config.simulation.num_realizations,
                     num_timesteps=self.config.simulation.num_timesteps,
                     registry=registry,
-                    config=sdf_config,
+                    config=summary_config,
                     compression=self.config.dataset.storage.compression,
                     compression_opts=self.config.dataset.storage.compression_level,
-                    chunk_size=self.config.dataset.storage.chunk_size
+                    chunk_size=self.config.dataset.storage.chunk_size,
+                    temporal_enabled=temporal_enabled
                 )
 
                 # Initialize optimized feature extraction pipeline
                 self._feature_pipeline = FeatureExtractionPipeline(
-                    sdf_extractor=sdf_extractor,
-                    device=self.device
+                    summary_extractor=summary_extractor,
+                    device=self.device,
+                    temporal_enabled=temporal_enabled
                 )
                 
                 # Initialize async feature writer for pipelining
@@ -1363,7 +1388,7 @@ class DatasetGenerationPipeline:
         async_writer: Optional[AsyncFeatureWriter]
     ) -> None:
         """
-        Extract SDF features inline during generation (GPU-optimized).
+        Extract SUMMARY features inline during generation (GPU-optimized).
         
         Uses optimized extraction pipeline and async writing for pipelining.
         
@@ -1391,7 +1416,7 @@ class DatasetGenerationPipeline:
             async_writer.enqueue(task)
         else:
             # Fallback: synchronous write (for backward compatibility)
-            self._feature_writer.write_sdf_batch(
+            self._feature_writer.write_summary_batch(
                 batch_idx=batch_idx_start,
                 per_timestep=per_timestep_np,
                 per_trajectory=per_trajectory_np,

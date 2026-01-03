@@ -70,7 +70,7 @@ class SummaryExtractor(FeatureExtractorBase):
         profiling_context: Optional['FeatureProfilingContext'] = None
     ):
         """
-        Initialize SDF extractor.
+        Initialize SUMMARY extractor.
 
         Args:
             device: Computation device
@@ -143,7 +143,7 @@ class SummaryExtractor(FeatureExtractorBase):
     @property
     def family_name(self) -> str:
         """Feature family name."""
-        return "sdf"
+        return "summary"
 
     @property
     def version(self) -> str:
@@ -844,7 +844,7 @@ class SummaryExtractor(FeatureExtractorBase):
         metadata: Optional[Dict] = None
     ) -> Dict[str, torch.Tensor]:
         """
-        Extract all SDF features (convenience method).
+        Extract all SUMMARY features (convenience method).
 
         Runs full three-stage pipeline and returns all feature representations.
 
@@ -860,8 +860,11 @@ class SummaryExtractor(FeatureExtractorBase):
             - 'aggregated_std': Features [N, D_final] (std across realizations)
             - 'aggregated_cv': Features [N, D_final] (cv across realizations)
         """
-        # Stage 1: Per-timestep features
-        per_timestep = self.extract_per_timestep(trajectories, metadata)
+        # Stage 1: Per-timestep features (optional - skip if disabled)
+        extract_per_timestep = self.config.extract_per_timestep if self.config else True
+        per_timestep = None
+        if extract_per_timestep:
+            per_timestep = self.extract_per_timestep(trajectories, metadata)
 
         # Stage 2: Per-trajectory features
         per_trajectory = self.extract_per_trajectory(trajectories, metadata)
@@ -876,8 +879,10 @@ class SummaryExtractor(FeatureExtractorBase):
                 method=method
             )
 
-        return {
-            'per_timestep': per_timestep,
+        result = {
             'per_trajectory': per_trajectory,
             **aggregated
         }
+        if per_timestep is not None:
+            result['per_timestep'] = per_timestep
+        return result

@@ -2,25 +2,30 @@
 HDF5 storage for extracted features.
 
 Extends existing Spinlock datasets with feature groups following the established
-HDF5 schema pattern. Supports multiple feature families with separate groups.
+HDF5 schema pattern. Two feature families stored separately:
 
 Schema (extends /features/ group in dataset):
     /features/
-        @family_versions - {"summary": "1.0", ...}
+        @family_versions - {"temporal": "1.0", "summary": "1.0", ...}
         @extraction_timestamp - ISO timestamp
         @extraction_config - JSON config used
-        /sdf/
+        /temporal/
+            @version - "1.0"
+            features [N, T, D] - Per-timestep time series features
+        /summary/
             @version - "1.0"
             @feature_registry - JSON {name: index} mapping
             @num_features - Total feature dimension
-            /per_timestep/
-                features [N, T, D] - Per-timestep features
             /per_trajectory/
                 features [N, M, D_traj] - Per-trajectory features
             /aggregated/
                 features [N, D_final] - Final aggregated features
                 /metadata/
                     extraction_time [N] - Extraction time per sample
+
+Feature Families:
+    TEMPORAL: Per-timestep time series [N, T, D] - spatial, spectral, cross_channel
+    SUMMARY: Aggregated scalars [N, D] - temporal dynamics, causality, invariant_drift
 
 Design follows src/spinlock/dataset/storage.py patterns.
 """
@@ -50,17 +55,17 @@ class HDF5FeatureWriter:
         )
 
         with writer.open_for_writing():
-            writer.create_sdf_group(
+            writer.create_summary_group(
                 num_samples=10000,
                 num_timesteps=100,
                 num_realizations=10,
                 registry=registry,
-                config=sdf_config
+                config=summary_config
             )
 
             # Write batches
             for batch_idx in range(0, num_samples, batch_size):
-                writer.write_sdf_batch(
+                writer.write_summary_batch(
                     batch_idx=batch_idx,
                     per_timestep=per_timestep_features,
                     per_trajectory=per_trajectory_features,
@@ -118,7 +123,7 @@ class HDF5FeatureWriter:
             self.file.close()
             self.file = None
 
-    def create_sdf_group(
+    def create_summary_group(
         self,
         num_samples: int,
         num_timesteps: int,
@@ -127,56 +132,38 @@ class HDF5FeatureWriter:
         config: Any,
         compression: str = "gzip",
         compression_opts: int = 4,
-        chunk_size: int = 100
+        chunk_size: int = 100,
+        temporal_enabled: bool = True
     ) -> None:
         """
-        Create SDF feature group structure.
+        Create TEMPORAL and SUMMARY feature group structures.
+
+        Creates:
+        - /features/temporal/ - per-timestep features (if temporal_enabled)
+        - /features/summary/ - per-trajectory and aggregated features
 
         Args:
             num_samples: Number of samples (N)
             num_timesteps: Number of timesteps (T)
             num_realizations: Number of realizations (M)
             registry: Feature registry with name-to-index mapping
-            config: SDF configuration (SummaryConfig)
+            config: SUMMARY configuration (SummaryConfig)
             compression: Compression algorithm ("gzip", "lzf", "none")
             compression_opts: Compression level (0-9 for gzip)
             chunk_size: Chunk size for HDF5
+            temporal_enabled: Whether TEMPORAL (per-timestep) features are enabled
 
         Raises:
             RuntimeError: If file not opened
-            ValueError: If SDF group already exists and overwrite=False
+            ValueError: If feature groups already exist and overwrite=False
         """
+        self._temporal_enabled = temporal_enabled
         if self.file is None:
             raise RuntimeError("HDF5 file not opened. Use 'with writer.open_for_writing()'")
 
         features_group = cast(h5py.Group, self.file['features'])
 
-        # Check if SDF group already exists
-        if 'sdf' in features_group:
-            if not self.overwrite:
-                raise ValueError(
-                    "SDF features already exist. Set overwrite=True to replace."
-                )
-            # Delete existing group
-            del features_group['sdf']
-
-        # Create SDF group
-        sdf_group = features_group.create_group('sdf')
-        sdf_group.attrs['version'] = "1.0.0"
-        sdf_group.attrs['feature_registry'] = registry.to_json()
-        sdf_group.attrs['num_features'] = registry.num_features
-        sdf_group.attrs['extraction_config'] = json.dumps({
-            'per_channel': config.per_channel,
-            'temporal_aggregation': config.temporal_aggregation,
-            'realization_aggregation': config.realization_aggregation,
-        })
-
-        # Estimate feature dimensions
-        D_per_timestep = self._estimate_per_timestep_dim(registry, config)
-        D_per_trajectory = self._estimate_per_trajectory_dim(registry, config)
-        D_aggregated = self._estimate_aggregated_dim(registry, config)
-
-        # Create subgroups with datasets
+        # Compression settings
         compression_kwargs = {}
         if compression != "none":
             compression_kwargs = {
@@ -184,20 +171,52 @@ class HDF5FeatureWriter:
                 'compression_opts': compression_opts if compression == "gzip" else None
             }
 
-        # Per-timestep features [N, T, D]
+        # Estimate feature dimensions
+        D_per_timestep = self._estimate_per_timestep_dim(registry, config)
+        D_per_trajectory = self._estimate_per_trajectory_dim(registry, config)
+        D_aggregated = self._estimate_aggregated_dim(registry, config)
+
+        # Create TEMPORAL group (per-timestep features) if enabled
         if D_per_timestep > 0:
-            per_timestep_group = sdf_group.create_group('per_timestep')
-            per_timestep_group.create_dataset(
+            if 'temporal' in features_group:
+                if not self.overwrite:
+                    raise ValueError(
+                        "TEMPORAL features already exist. Set overwrite=True to replace."
+                    )
+                del features_group['temporal']
+
+            temporal_group = features_group.create_group('temporal')
+            temporal_group.attrs['version'] = "1.0.0"
+            temporal_group.create_dataset(
                 'features',
                 shape=(num_samples, num_timesteps, D_per_timestep),
                 dtype=np.float32,
                 chunks=(min(chunk_size, num_samples), num_timesteps, D_per_timestep),
                 **compression_kwargs
             )
+            self._feature_groups_created.add('temporal')
+
+        # Create SUMMARY group (per-trajectory and aggregated features)
+        if 'summary' in features_group:
+            if not self.overwrite:
+                raise ValueError(
+                    "SUMMARY features already exist. Set overwrite=True to replace."
+                )
+            del features_group['summary']
+
+        summary_group = features_group.create_group('summary')
+        summary_group.attrs['version'] = "1.0.0"
+        summary_group.attrs['feature_registry'] = registry.to_json()
+        summary_group.attrs['num_features'] = registry.num_features
+        summary_group.attrs['extraction_config'] = json.dumps({
+            'per_channel': config.per_channel,
+            'temporal_aggregation': config.temporal_aggregation,
+            'realization_aggregation': config.realization_aggregation,
+        })
 
         # Per-trajectory features [N, M, D_traj]
         if D_per_trajectory > 0:
-            per_trajectory_group = sdf_group.create_group('per_trajectory')
+            per_trajectory_group = summary_group.create_group('per_trajectory')
             per_trajectory_group.create_dataset(
                 'features',
                 shape=(num_samples, num_realizations, D_per_trajectory),
@@ -208,7 +227,7 @@ class HDF5FeatureWriter:
 
         # Aggregated features [N, D_final]
         if D_aggregated > 0:
-            aggregated_group = sdf_group.create_group('aggregated')
+            aggregated_group = summary_group.create_group('aggregated')
             aggregated_group.create_dataset(
                 'features',
                 shape=(num_samples, D_aggregated),
@@ -229,12 +248,14 @@ class HDF5FeatureWriter:
         # Update family versions
         family_versions_str = str(features_group.attrs['family_versions'])
         family_versions = json.loads(family_versions_str)
-        family_versions['sdf'] = "1.0.0"
+        if D_per_timestep > 0:
+            family_versions['temporal'] = "1.0.0"
+        family_versions['summary'] = "1.0.0"
         features_group.attrs['family_versions'] = json.dumps(family_versions)
 
-        self._feature_groups_created.add('sdf')
+        self._feature_groups_created.add('summary')
 
-    def write_sdf_batch(
+    def write_summary_batch(
         self,
         batch_idx: int,
         per_timestep: Optional[np.ndarray] = None,
@@ -243,25 +264,23 @@ class HDF5FeatureWriter:
         extraction_times: Optional[np.ndarray] = None
     ) -> None:
         """
-        Write a batch of SDF features.
+        Write a batch of features to TEMPORAL and SUMMARY groups.
 
         Args:
             batch_idx: Starting index for this batch
-            per_timestep: Per-timestep features [B, T, D] or None
-            per_trajectory: Per-trajectory features [B, M, D_traj] or None
-            aggregated: Aggregated features [B, D_final] or None
+            per_timestep: TEMPORAL features [B, T, D] or None (written to features/temporal)
+            per_trajectory: SUMMARY per-trajectory features [B, M, D_traj] or None
+            aggregated: SUMMARY aggregated features [B, D_final] or None
             extraction_times: Extraction time per sample [B] or None
 
         Raises:
-            RuntimeError: If file not opened or SDF group not created
+            RuntimeError: If file not opened or groups not created
         """
         if self.file is None:
             raise RuntimeError("HDF5 file not opened")
 
-        if 'sdf' not in self._feature_groups_created:
-            raise RuntimeError("SDF group not created. Call create_sdf_group() first")
-
-        sdf_group = cast(h5py.Group, self.file['features/sdf'])
+        if 'summary' not in self._feature_groups_created:
+            raise RuntimeError("SUMMARY group not created. Call create_summary_group() first")
 
         # Determine batch size
         batch_size = None
@@ -276,24 +295,28 @@ class HDF5FeatureWriter:
 
         end_idx = batch_idx + batch_size
 
-        # Write per-timestep features
-        if per_timestep is not None and 'per_timestep' in sdf_group:
-            dataset = cast(h5py.Dataset, sdf_group['per_timestep/features'])
+        # Write TEMPORAL features (per-timestep) to features/temporal
+        if per_timestep is not None and 'temporal' in self._feature_groups_created:
+            temporal_group = cast(h5py.Group, self.file['features/temporal'])
+            dataset = cast(h5py.Dataset, temporal_group['features'])
             dataset[batch_idx:end_idx] = per_timestep
 
+        # Write SUMMARY features to features/summary
+        summary_group = cast(h5py.Group, self.file['features/summary'])
+
         # Write per-trajectory features
-        if per_trajectory is not None and 'per_trajectory' in sdf_group:
-            dataset = cast(h5py.Dataset, sdf_group['per_trajectory/features'])
+        if per_trajectory is not None and 'per_trajectory' in summary_group:
+            dataset = cast(h5py.Dataset, summary_group['per_trajectory/features'])
             dataset[batch_idx:end_idx] = per_trajectory
 
         # Write aggregated features
-        if aggregated is not None and 'aggregated' in sdf_group:
-            dataset = cast(h5py.Dataset, sdf_group['aggregated/features'])
+        if aggregated is not None and 'aggregated' in summary_group:
+            dataset = cast(h5py.Dataset, summary_group['aggregated/features'])
             dataset[batch_idx:end_idx] = aggregated
 
             # Write extraction times if provided
             if extraction_times is not None:
-                time_dataset = cast(h5py.Dataset, sdf_group['aggregated/metadata/extraction_time'])
+                time_dataset = cast(h5py.Dataset, summary_group['aggregated/metadata/extraction_time'])
                 time_dataset[batch_idx:end_idx] = extraction_times
 
     def write_operator_sensitivity_features(
@@ -313,25 +336,25 @@ class HDF5FeatureWriter:
             features: Dictionary of feature_name -> scalar value
 
         Raises:
-            RuntimeError: If file not opened or SDF group not created
+            RuntimeError: If file not opened or SUMMARY group not created
         """
         if self.file is None:
             raise RuntimeError("HDF5 file not opened")
 
-        if 'sdf' not in self._feature_groups_created:
-            raise RuntimeError("SDF group not created. Call create_sdf_group() first")
+        if 'summary' not in self._feature_groups_created:
+            raise RuntimeError("SUMMARY group not created. Call create_summary_group() first")
 
-        sdf_group = cast(h5py.Group, self.file['features/sdf'])
+        summary_group = cast(h5py.Group, self.file['features/summary'])
 
         # Create operator_sensitivity subgroup if doesn't exist
-        if 'operator_sensitivity_inline' not in sdf_group:
-            ops_group = sdf_group.create_group('operator_sensitivity_inline')
+        if 'operator_sensitivity_inline' not in summary_group:
+            ops_group = summary_group.create_group('operator_sensitivity_inline')
             ops_group.attrs['description'] = (
                 "Operator sensitivity features extracted during generation. "
                 "Must be merged into per_trajectory features during post-hoc extraction."
             )
         else:
-            ops_group = cast(h5py.Group, sdf_group['operator_sensitivity_inline'])
+            ops_group = cast(h5py.Group, summary_group['operator_sensitivity_inline'])
 
         # Store features as individual datasets (sparse storage)
         # Each feature is a 1D array [N] where N = num_samples
@@ -358,11 +381,15 @@ class HDF5FeatureWriter:
 
         Args:
             registry: Feature registry
-            config: SDF configuration
+            config: SUMMARY configuration
 
         Returns:
-            Estimated dimension
+            Estimated dimension (0 if TEMPORAL extraction is disabled)
         """
+        # Check if TEMPORAL (per-timestep) extraction is disabled
+        if not self._temporal_enabled:
+            return 0
+
         # Count features in per-timestep categories (spatial, spectral, cross_channel, etc.)
         per_timestep_categories = ['spatial', 'spectral', 'cross_channel', 'distributional',
                                    'structural', 'physics', 'morphological', 'multiscale']
@@ -379,11 +406,11 @@ class HDF5FeatureWriter:
 
     def _estimate_per_trajectory_dim(self, registry: FeatureRegistry, config: Any) -> int:
         """
-        Estimate dimension of per-trajectory features.
+        Estimate dimension of per-trajectory SUMMARY features.
 
         Args:
             registry: Feature registry
-            config: SDF configuration
+            config: SUMMARY configuration
 
         Returns:
             Estimated dimension
@@ -401,11 +428,11 @@ class HDF5FeatureWriter:
 
     def _estimate_aggregated_dim(self, registry: FeatureRegistry, config: Any) -> int:
         """
-        Estimate dimension of aggregated features.
+        Estimate dimension of aggregated SUMMARY features.
 
         Args:
             registry: Feature registry
-            config: SDF configuration
+            config: SUMMARY configuration
 
         Returns:
             Estimated dimension
@@ -422,6 +449,9 @@ class HDF5FeatureReader:
     Reader for feature-augmented HDF5 datasets.
 
     Reads feature groups from datasets with /features/ structure.
+    Two feature families:
+    - TEMPORAL: Per-timestep time series [N, T, D] at /features/temporal
+    - SUMMARY: Aggregated scalars [N, D] at /features/summary
 
     Example:
         ```python
@@ -429,9 +459,12 @@ class HDF5FeatureReader:
             # Check which feature families exist
             families = reader.get_feature_families()
 
-            # Read SDF features
-            aggregated = reader.get_sdf_aggregated()  # [N, D_final]
-            registry = reader.get_sdf_registry()
+            # Read TEMPORAL features (per-timestep)
+            temporal = reader.get_temporal_features()  # [N, T, D]
+
+            # Read SUMMARY features (aggregated)
+            aggregated = reader.get_summary_aggregated()  # [N, D_final]
+            registry = reader.get_summary_registry()
         ```
     """
 
@@ -472,7 +505,7 @@ class HDF5FeatureReader:
         Get list of available feature families.
 
         Returns:
-            List of family names (e.g., ['sdf'])
+            List of family names (e.g., ['temporal', 'summary'])
         """
         if self.file is None:
             raise RuntimeError("File not opened")
@@ -483,9 +516,36 @@ class HDF5FeatureReader:
         features_group = cast(h5py.Group, self.file['features'])
         return [key for key in features_group.keys() if isinstance(features_group[key], h5py.Group)]
 
+    def has_temporal(self) -> bool:
+        """Check if dataset has TEMPORAL features (per-timestep)."""
+        return 'temporal' in self.get_feature_families()
+
     def has_summary(self) -> bool:
-        """Check if dataset has SUMMARY features."""
+        """Check if dataset has SUMMARY features (aggregated)."""
         return 'summary' in self.get_feature_families()
+
+    def get_temporal_features(self, idx: Optional[slice] = None) -> Optional[np.ndarray]:
+        """
+        Get TEMPORAL features (per-timestep time series).
+
+        Args:
+            idx: Optional slice or index
+
+        Returns:
+            Features [N, T, D] or [T, D] (if idx specified), None if not available
+        """
+        if self.file is None:
+            raise RuntimeError("File not opened")
+
+        if not self.has_temporal():
+            return None
+
+        temporal_group = cast(h5py.Group, self.file['features/temporal'])
+        dataset = cast(h5py.Dataset, temporal_group['features'])
+
+        if idx is None:
+            return dataset[:]
+        return dataset[idx]
 
     def get_summary_registry(self) -> Optional[FeatureRegistry]:
         """
@@ -504,29 +564,6 @@ class HDF5FeatureReader:
         registry_json_str = str(summary_group.attrs['feature_registry'])
 
         return FeatureRegistry.from_json(registry_json_str, family_name='summary')
-
-    def get_summary_per_timestep(self, idx: Optional[slice] = None) -> Optional[np.ndarray]:
-        """
-        Get per-timestep SUMMARY features.
-
-        Args:
-            idx: Optional slice or index
-
-        Returns:
-            Features [N, T, D] or [T, D] (if idx specified), None if not available
-        """
-        if self.file is None:
-            raise RuntimeError("File not opened")
-
-        summary_group = cast(h5py.Group, self.file['features/summary']) if self.has_summary() else None
-        if summary_group is None or 'per_timestep' not in summary_group:
-            return None
-
-        dataset = cast(h5py.Dataset, summary_group['per_timestep/features'])
-
-        if idx is None:
-            return dataset[:]
-        return dataset[idx]
 
     def get_summary_per_trajectory(self, idx: Optional[slice] = None) -> Optional[np.ndarray]:
         """

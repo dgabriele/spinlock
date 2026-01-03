@@ -127,9 +127,6 @@ class InvariantDriftExtractor:
         if num_scales >= 3:
             scales.append('highpass')
 
-        # Compute multi-scale fields
-        multiscale_fields = self._compute_multiscale_fields(trajectories, config)
-
         # Extract drift features for each norm and scale
         norms_to_compute = []
 
@@ -145,26 +142,45 @@ class InvariantDriftExtractor:
         if include_all or (config and config.include_tv_drift):
             norms_to_compute.append('tv')
 
-        # Compute drift for each norm and scale combination
-        for norm_type in norms_to_compute:
-            for scale in scales:
-                fields = multiscale_fields[scale]
+        # OPTIMIZATION: Lazy multi-scale computation (compute on-demand, free immediately)
+        # Only hold one scale in memory at a time instead of all three
+        lowpass_cache = None  # Cache lowpass for highpass computation
+
+        for scale in scales:
+            # Compute fields for this scale on-demand
+            if scale == 'raw':
+                fields = trajectories
+            elif scale == 'lowpass':
+                lowpass_cache = self._compute_lowpass_fields(trajectories, config)
+                fields = lowpass_cache
+            elif scale == 'highpass':
+                if lowpass_cache is None:
+                    lowpass_cache = self._compute_lowpass_fields(trajectories, config)
+                fields = trajectories - lowpass_cache
+
+            # Extract all norms for this scale
+            for norm_type in norms_to_compute:
                 drift_features = self._compute_norm_drift(fields, norm_type, scale, config)
                 features.update(drift_features)
+
+            # Free scale memory if not needed anymore
+            if scale == 'highpass' and lowpass_cache is not None:
+                del lowpass_cache
+                lowpass_cache = None
 
         # Optional physical invariants (config-gated)
         if config is not None:
             if config.include_mass_drift:
-                mass_features = self._compute_mass_drift(multiscale_fields, config)
+                mass_features = self._compute_mass_drift_lazy(trajectories, scales, config)
                 features.update(mass_features)
 
             if config.include_energy_drift:
-                energy_features = self._compute_energy_drift(multiscale_fields, config)
+                energy_features = self._compute_energy_drift_lazy(trajectories, scales, config)
                 features.update(energy_features)
 
         # Scale-specific dissipation features (config-gated or default)
         if include_all or (config is not None and getattr(config, 'include_scale_specific_dissipation', False)):
-            dissipation_features = self._compute_scale_specific_dissipation(multiscale_fields, config)
+            dissipation_features = self._compute_scale_specific_dissipation_lazy(trajectories, config)
             features.update(dissipation_features)
 
         # Apply adaptive outlier clipping to prevent extreme values
@@ -229,24 +245,22 @@ class InvariantDriftExtractor:
     # Multi-Scale Filtering
     # =========================================================================
 
-    def _compute_multiscale_fields(
+    def _compute_lowpass_fields(
         self,
         fields: torch.Tensor,  # [N, M, T, C, H, W]
         config: Optional['SummaryInvariantDriftConfig'] = None
-    ) -> Dict[str, torch.Tensor]:
+    ) -> torch.Tensor:
         """
-        Compute raw, low-pass, and high-pass filtered fields.
+        Compute low-pass filtered fields only (lazy computation).
 
-        Uses Gaussian blur for low-pass filtering to separate smooth-mode
-        behavior from small-scale instabilities.
+        Uses Gaussian blur for low-pass filtering.
 
         Args:
             fields: Trajectory fields [N, M, T, C, H, W]
             config: Optional config
 
         Returns:
-            Dictionary with keys 'raw', 'lowpass', 'highpass'
-            Each has shape [N, M, T, C, H, W]
+            Low-pass filtered fields [N, M, T, C, H, W]
         """
         # Ensure Gaussian kernel is initialized
         if self._gaussian_kernel is None:
@@ -265,18 +279,8 @@ class InvariantDriftExtractor:
             padding=self._kernel_size // 2  # 'same' padding
         )
 
-        # High-pass: residual (raw - low_pass)
-        high_pass_flat = fields_flat - low_pass_flat
-
         # Reshape back to [N, M, T, C, H, W]
-        low_pass = low_pass_flat.reshape(N, M, T, C, H, W)
-        high_pass = high_pass_flat.reshape(N, M, T, C, H, W)
-
-        return {
-            'raw': fields,
-            'lowpass': low_pass,
-            'highpass': high_pass
-        }
+        return low_pass_flat.reshape(N, M, T, C, H, W)
 
     def _create_gaussian_kernel(self, sigma: float, kernel_size: int) -> torch.Tensor:
         """
@@ -377,7 +381,7 @@ class InvariantDriftExtractor:
         Compute histogram-based entropy: -∫p log p dx (GPU-optimized batched version).
 
         Uses binning for efficiency (KDE too expensive for large grids).
-        All operations stay on GPU - no .item() calls.
+        Fully vectorized - no Python loops.
 
         Args:
             fields: Trajectory fields [N, M, T, C, H, W]
@@ -387,13 +391,14 @@ class InvariantDriftExtractor:
             Entropy time series [N, M, T, C]
         """
         N, M, T, C, H, W = fields.shape
+        HW = H * W
 
         # Flatten spatial dimensions for histogram computation
-        fields_flat = fields.reshape(N, M, T, C, H * W)  # [N, M, T, C, H*W]
+        fields_flat = fields.reshape(N, M, T, C, HW)  # [N, M, T, C, H*W]
 
         # Flatten batch dimensions for batched processing
         NMTC = N * M * T * C
-        fields_flat_batched = fields_flat.reshape(NMTC, H * W)  # [NMTC, H*W]
+        fields_flat_batched = fields_flat.reshape(NMTC, HW)  # [NMTC, H*W]
 
         # Normalize to [0, 1] per sample (no .item() calls - stays on GPU)
         min_vals = fields_flat_batched.min(dim=1, keepdim=True).values  # [NMTC, 1]
@@ -404,16 +409,28 @@ class InvariantDriftExtractor:
         discrete = torch.floor(normalized * (num_bins - 1)).long()
         discrete = torch.clamp(discrete, 0, num_bins - 1)  # [NMTC, H*W]
 
-        # Batched histogram computation using bincount
-        entropies = torch.zeros(NMTC, device=fields.device)
+        # OPTIMIZATION: Vectorized batched histogram using scatter_add
+        # Create batch indices: [NMTC, HW] where each row is the batch index
+        batch_indices = torch.arange(NMTC, device=fields.device, dtype=torch.long)
+        batch_indices = batch_indices.unsqueeze(1).expand(-1, HW)  # [NMTC, HW]
 
-        for i in range(NMTC):
-            # Compute histogram for this sample
-            hist = torch.bincount(discrete[i], minlength=num_bins).float()  # [num_bins]
-            hist = hist / (H * W)  # Normalize to probabilities
+        # Compute linear index: batch_idx * num_bins + bin_idx
+        linear_idx = batch_indices * num_bins + discrete  # [NMTC, HW]
+        linear_idx_flat = linear_idx.flatten()  # [NMTC * HW]
 
-            # Entropy: -Σ p log p (vectorized)
-            entropies[i] = -(hist * torch.log(hist + 1e-10)).sum()
+        # Scatter-add ones to compute all histograms at once
+        ones = torch.ones(NMTC * HW, device=fields.device, dtype=fields.dtype)
+        histograms_flat = torch.zeros(NMTC * num_bins, device=fields.device, dtype=fields.dtype)
+        histograms_flat.scatter_add_(0, linear_idx_flat, ones)
+
+        # Reshape to [NMTC, num_bins]
+        histograms = histograms_flat.reshape(NMTC, num_bins)
+
+        # Normalize to probabilities
+        probs = histograms / HW  # [NMTC, num_bins]
+
+        # Vectorized entropy: -Σ p log p
+        entropies = -(probs * torch.log(probs + 1e-10)).sum(dim=1)  # [NMTC]
 
         # Reshape to [N, M, T, C]
         return entropies.reshape(N, M, T, C)
@@ -422,7 +439,7 @@ class InvariantDriftExtractor:
         """
         Compute total variation: ∫|∇u| dx.
 
-        Uses discrete approximation with central differences.
+        Uses forward differences (GPU-optimized, no torch.roll).
 
         Args:
             fields: Trajectory fields [N, M, T, C, H, W]
@@ -435,20 +452,15 @@ class InvariantDriftExtractor:
         # Reshape for batch gradient computation
         fields_flat = fields.reshape(N * M * T, C, H, W)
 
-        # Compute gradients using central differences
-        # Gradient in x direction (circular boundary)
-        grad_x = torch.roll(fields_flat, shifts=-1, dims=3) - torch.roll(fields_flat, shifts=1, dims=3)
-        grad_x = grad_x / 2.0  # Central difference
+        # OPTIMIZATION: Use slicing instead of torch.roll (avoids 4 temp tensors)
+        # Forward differences along x: [NMT, C, H, W-1]
+        grad_x = fields_flat[:, :, :, 1:] - fields_flat[:, :, :, :-1]
+        # Forward differences along y: [NMT, C, H-1, W]
+        grad_y = fields_flat[:, :, 1:, :] - fields_flat[:, :, :-1, :]
 
-        # Gradient in y direction (circular boundary)
-        grad_y = torch.roll(fields_flat, shifts=-1, dims=2) - torch.roll(fields_flat, shifts=1, dims=2)
-        grad_y = grad_y / 2.0
-
-        # Gradient magnitude
-        grad_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2 + 1e-8)
-
-        # Total variation: sum over spatial dims
-        tv = grad_mag.sum(dim=(-2, -1))  # [NMT, C]
+        # Anisotropic TV approximation (L1 of gradients)
+        # More memory efficient than isotropic TV (no sqrt needed)
+        tv = grad_x.abs().sum(dim=(-2, -1)) + grad_y.abs().sum(dim=(-2, -1))  # [NMT, C]
 
         # Reshape to [N, M, T, C]
         return tv.reshape(N, M, T, C)
@@ -504,32 +516,37 @@ class InvariantDriftExtractor:
     # Optional Physical Invariants
     # =========================================================================
 
-    def _compute_mass_drift(
+    def _compute_mass_drift_lazy(
         self,
-        multiscale_fields: Dict[str, torch.Tensor],
+        trajectories: torch.Tensor,
+        scales: list,
         config: 'SummaryInvariantDriftConfig'
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute mass drift: ∫u dx (scalar fields only).
+        Compute mass drift: ∫u dx (lazy computation).
 
         Args:
-            multiscale_fields: Dict with 'raw', 'lowpass', 'highpass' fields
+            trajectories: Raw trajectory fields [N, M, T, C, H, W]
+            scales: List of scales to compute
             config: Config
 
         Returns:
             Dictionary with mass drift features for each scale
         """
         features = {}
-
-        num_scales = config.num_scales if config else 3
-        scales = ['raw']
-        if num_scales >= 2:
-            scales.append('lowpass')
-        if num_scales >= 3:
-            scales.append('highpass')
+        lowpass_cache = None
 
         for scale in scales:
-            fields = multiscale_fields[scale]  # [N, M, T, C, H, W]
+            # Compute fields on-demand
+            if scale == 'raw':
+                fields = trajectories
+            elif scale == 'lowpass':
+                lowpass_cache = self._compute_lowpass_fields(trajectories, config)
+                fields = lowpass_cache
+            elif scale == 'highpass':
+                if lowpass_cache is None:
+                    lowpass_cache = self._compute_lowpass_fields(trajectories, config)
+                fields = trajectories - lowpass_cache
 
             # Mass = ∫u dx (sum over spatial dimensions)
             mass_series = fields.sum(dim=(-2, -1))  # [N, M, T, C]
@@ -544,52 +561,55 @@ class InvariantDriftExtractor:
 
         return features
 
-    def _compute_energy_drift(
+    def _compute_energy_drift_lazy(
         self,
-        multiscale_fields: Dict[str, torch.Tensor],
+        trajectories: torch.Tensor,
+        scales: list,
         config: 'SummaryInvariantDriftConfig'
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute energy drift.
+        Compute energy drift (lazy computation, optimized gradients).
 
         Includes:
         - L2 energy: ∫u² dx
         - Gradient energy: ∫|∇u|² dx
 
         Args:
-            multiscale_fields: Dict with 'raw', 'lowpass', 'highpass' fields
+            trajectories: Raw trajectory fields [N, M, T, C, H, W]
+            scales: List of scales to compute
             config: Config
 
         Returns:
             Dictionary with energy drift features
         """
         features = {}
-
-        num_scales = config.num_scales if config else 3
-        scales = ['raw']
-        if num_scales >= 2:
-            scales.append('lowpass')
-        if num_scales >= 3:
-            scales.append('highpass')
+        lowpass_cache = None
 
         for scale in scales:
-            fields = multiscale_fields[scale]  # [N, M, T, C, H, W]
+            # Compute fields on-demand
+            if scale == 'raw':
+                fields = trajectories
+            elif scale == 'lowpass':
+                lowpass_cache = self._compute_lowpass_fields(trajectories, config)
+                fields = lowpass_cache
+            elif scale == 'highpass':
+                if lowpass_cache is None:
+                    lowpass_cache = self._compute_lowpass_fields(trajectories, config)
+                fields = trajectories - lowpass_cache
 
             # L2 energy: ∫u² dx
             l2_energy_series = (fields ** 2).sum(dim=(-2, -1))  # [N, M, T, C]
 
-            # Gradient energy: ∫|∇u|² dx
+            # Gradient energy: ∫|∇u|² dx (using slicing instead of roll)
             N, M, T, C, H, W = fields.shape
             fields_flat = fields.reshape(N * M * T, C, H, W)
 
-            # Compute gradients
-            grad_x = torch.roll(fields_flat, shifts=-1, dims=3) - torch.roll(fields_flat, shifts=1, dims=3)
-            grad_x = grad_x / 2.0
-            grad_y = torch.roll(fields_flat, shifts=-1, dims=2) - torch.roll(fields_flat, shifts=1, dims=2)
-            grad_y = grad_y / 2.0
+            # OPTIMIZATION: Use slicing instead of torch.roll
+            grad_x = fields_flat[:, :, :, 1:] - fields_flat[:, :, :, :-1]  # [NMT, C, H, W-1]
+            grad_y = fields_flat[:, :, 1:, :] - fields_flat[:, :, :-1, :]  # [NMT, C, H-1, W]
 
-            # Gradient energy
-            grad_energy_flat = (grad_x ** 2 + grad_y ** 2).sum(dim=(-2, -1))  # [NMT, C]
+            # Gradient energy (sum of squared gradients)
+            grad_energy_flat = (grad_x ** 2).sum(dim=(-2, -1)) + (grad_y ** 2).sum(dim=(-2, -1))
             grad_energy_series = grad_energy_flat.reshape(N, M, T, C)
 
             # Compute drift metrics for L2 energy
@@ -606,25 +626,18 @@ class InvariantDriftExtractor:
 
         return features
 
-    def _compute_scale_specific_dissipation(
+    def _compute_scale_specific_dissipation_lazy(
         self,
-        multiscale_fields: Dict[str, torch.Tensor],
+        trajectories: torch.Tensor,
         config: Optional['SummaryInvariantDriftConfig'] = None
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute scale-specific dissipation features.
+        Compute scale-specific dissipation features (lazy computation).
 
-        Characterizes energy dissipation across frequency bands:
-        - dissipation_rate_lowfreq: Energy decay in low frequencies
-        - dissipation_rate_highfreq: Energy decay in high frequencies
-        - dissipation_selectivity: Ratio of high/low dissipation rates
-        - energy_cascade_direction: Upscale vs. downscale energy transfer
-
-        These features detect frequency-dependent dissipation and energy cascades
-        (e.g., turbulent cascades, diffusion selectivity).
+        Uses raw trajectories directly instead of pre-computed multiscale_fields.
 
         Args:
-            multiscale_fields: Dict with 'raw', 'lowpass', 'highpass' fields [N, M, T, C, H, W]
+            trajectories: Raw trajectory fields [N, M, T, C, H, W]
             config: Optional config
 
         Returns:
@@ -632,13 +645,11 @@ class InvariantDriftExtractor:
         """
         features = {}
 
-        # Extract fields
-        fields_raw = multiscale_fields['raw']  # [N, M, T, C, H, W]
-        N, M, T, C, H, W = fields_raw.shape
+        N, M, T, C, H, W = trajectories.shape
 
         # Compute spectral energy over time
         # Use FFT to decompose into frequency bands
-        fields_flat = fields_raw.reshape(N * M * T, C, H, W)
+        fields_flat = trajectories.reshape(N * M * T, C, H, W)
 
         # Compute 2D FFT
         fft = torch.fft.rfft2(fields_flat, dim=(-2, -1))  # [NMT, C, H, W//2+1]
@@ -648,14 +659,12 @@ class InvariantDriftExtractor:
         power_series = power.reshape(N, M, T, C, H, W // 2 + 1)  # [N, M, T, C, H, W//2+1]
 
         # Define frequency bands
-        # Low frequency: radial freq < 0.25 * Nyquist
-        # High frequency: radial freq > 0.75 * Nyquist
-        freq_y = torch.fft.fftfreq(H, d=1.0, device=fields_raw.device)[:, None]  # [H, 1]
-        freq_x = torch.fft.rfftfreq(W, d=1.0, device=fields_raw.device)[None, :]  # [1, W//2+1]
+        freq_y = torch.fft.fftfreq(H, d=1.0, device=trajectories.device)[:, None]  # [H, 1]
+        freq_x = torch.fft.rfftfreq(W, d=1.0, device=trajectories.device)[None, :]  # [1, W//2+1]
         freq_radial = torch.sqrt(freq_y ** 2 + freq_x ** 2)  # [H, W//2+1]
 
-        # Broadcast to match power_series shape [N, M, T, C, H, W//2+1]
-        freq_radial = freq_radial.unsqueeze(0).unsqueeze(0).unsqueeze(0).unsqueeze(0)  # [1, 1, 1, 1, H, W//2+1]
+        # Broadcast to match power_series shape
+        freq_radial = freq_radial.unsqueeze(0).unsqueeze(0).unsqueeze(0).unsqueeze(0)
 
         # Frequency thresholds
         nyquist_freq = 0.5
@@ -663,37 +672,26 @@ class InvariantDriftExtractor:
         high_freq_threshold = 0.75 * nyquist_freq
 
         # Masks for frequency bands
-        mask_lowfreq = (freq_radial < low_freq_threshold).float()  # [1, 1, 1, 1, H, W//2+1]
-        mask_highfreq = (freq_radial > high_freq_threshold).float()  # [1, 1, 1, 1, H, W//2+1]
+        mask_lowfreq = (freq_radial < low_freq_threshold).float()
+        mask_highfreq = (freq_radial > high_freq_threshold).float()
 
         # Compute energy in each band over time
         energy_lowfreq = (power_series * mask_lowfreq).sum(dim=(-2, -1))  # [N, M, T, C]
         energy_highfreq = (power_series * mask_highfreq).sum(dim=(-2, -1))  # [N, M, T, C]
 
         # Compute dissipation rate: -d(log E)/dt
-        # For numerical stability, use finite differences
-        # dissipation_rate ≈ -(log E[t+1] - log E[t]) / dt
+        log_energy_low = torch.log(energy_lowfreq + 1e-8)
+        dlog_dt_low = log_energy_low[:, :, 1:, :] - log_energy_low[:, :, :-1, :]
+        dissipation_rate_lowfreq = -dlog_dt_low.mean(dim=2)
 
-        # Low frequency dissipation rate
-        log_energy_low = torch.log(energy_lowfreq + 1e-8)  # [N, M, T, C]
-        dlog_dt_low = log_energy_low[:, :, 1:, :] - log_energy_low[:, :, :-1, :]  # [N, M, T-1, C]
-        dissipation_rate_lowfreq = -dlog_dt_low.mean(dim=2)  # [N, M, C] (average over time)
+        log_energy_high = torch.log(energy_highfreq + 1e-8)
+        dlog_dt_high = log_energy_high[:, :, 1:, :] - log_energy_high[:, :, :-1, :]
+        dissipation_rate_highfreq = -dlog_dt_high.mean(dim=2)
 
-        # High frequency dissipation rate
-        log_energy_high = torch.log(energy_highfreq + 1e-8)  # [N, M, T, C]
-        dlog_dt_high = log_energy_high[:, :, 1:, :] - log_energy_high[:, :, :-1, :]  # [N, M, T-1, C]
-        dissipation_rate_highfreq = -dlog_dt_high.mean(dim=2)  # [N, M, C]
+        # Dissipation selectivity and cascade direction
+        dissipation_selectivity = dissipation_rate_highfreq / (dissipation_rate_lowfreq + 1e-8)
+        energy_cascade_direction = torch.sign(dlog_dt_low.mean(dim=2))
 
-        # Dissipation selectivity: ratio of high/low rates
-        dissipation_selectivity = dissipation_rate_highfreq / (dissipation_rate_lowfreq + 1e-8)  # [N, M, C]
-
-        # Energy cascade direction: sign of low-freq energy drift
-        # Positive = energy accumulating at low freq (downscale cascade)
-        # Negative = energy dissipating from low freq (upscale cascade)
-        # Use mean drift direction over trajectory
-        energy_cascade_direction = torch.sign(dlog_dt_low.mean(dim=2))  # [N, M, C]
-
-        # Store features
         features['dissipation_rate_lowfreq'] = dissipation_rate_lowfreq
         features['dissipation_rate_highfreq'] = dissipation_rate_highfreq
         features['dissipation_selectivity'] = dissipation_selectivity
