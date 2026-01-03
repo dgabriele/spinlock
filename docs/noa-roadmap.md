@@ -1,8 +1,8 @@
 # Neural Operator Agent (NOA) Roadmap
 
-**A hierarchical, meta-cognitive neural operator system for learning, generating, and reflecting on complex dynamical behaviors.**
+**A hierarchical, meta-cognitive neural operator system for learning, generating, and reflecting on complex dynamical behaviors with general intelligence capabilities.**
 
-This roadmap provides a practical blueprint for building a Neural Operator Agent (NOA) capable of mapping VQ-VAE token sequences to operators and initial conditions, producing rollouts consistent with observed dynamics, and developing self-referential understanding of its own generative behavior.
+This roadmap provides a practical blueprint for building a Neural Operator Agent (NOA) capable of mapping VQ-VAE token sequences to operators and initial conditions, producing rollouts consistent with observed dynamics, and developing self-referential understanding of its own generative behavior. The architecture provides a testbed for cognitive capabilities including working memory, compositional reasoning, episodic memory formation, meta-learning, and metacognitive monitoring—all grounded in measurable, empirically testable mechanisms.
 
 ## Overview
 
@@ -10,9 +10,9 @@ This roadmap provides a practical blueprint for building a Neural Operator Agent
 flowchart LR
     Phase0[Phase 0:<br/>Foundation]
     Phase1[Phase 1:<br/>Single-Step Mapping]
-    Phase2[Phase 2:<br/>Multi-Observation Context]
-    Phase3[Phase 3:<br/>Exploration & Agency]
-    Phase4[Phase 4:<br/>Meta-Cognition]
+    Phase2[Phase 2:<br/>Working Memory &<br/>Composition]
+    Phase3[Phase 3:<br/>Exploration &<br/>Memory Selection]
+    Phase4[Phase 4:<br/>Metacognition &<br/>Self-Modeling]
     Phase5[Phase 5:<br/>Scientific Discovery]
 
     Phase0 --> Phase1
@@ -197,46 +197,82 @@ This phase establishes the **baseline meta-operator mapping** essential before m
 
 ---
 
-## Phase 2: Multi-Observation Context
+## Phase 2: Multi-Observation Context & Working Memory
 
 **Status:** 📋 **PLANNED**
 
 ### Objective
-Capture temporal correlations and higher-order operator dependencies across multiple observations.
+Capture temporal correlations and higher-order operator dependencies across multiple observations, enabling compositional reasoning and working memory dynamics.
 
 ### Architecture Upgrade
 - **Transformer or attention-based temporal encoder**
 - **Input:** Sequence of tokenized rollouts across multiple observations or timesteps
 - **Output:** Contextualized operator parameters conditioned on multi-step patterns
 
-### Advantages
-- Enables NOA to synthesize operators conditioned on multi-step patterns
-- Forms **contextualized latent representations** supporting emergent reasoning
-- Attention across sequences enables identification of invariant operator traits over time
+### Cognitive Capabilities (Grounded in Mechanisms)
+
+**Working Memory Dynamics:**
+- Transformer attention mechanism maintains limited-capacity state over operator sequences
+- Empirically measurable: track which prior observations influence current predictions (attention weights)
+- Testable hypothesis: Does performance degrade with sequence length in a capacity-limited manner?
+
+**Compositional Reasoning:**
+- Learn how operator components combine to produce emergent behaviors
+- Mechanism: Attention over operator parameter subspaces reveals compositional structure
+- Validation: Zero-shot generalization to novel parameter combinations not seen during training
+- Quantifiable metric: Prediction accuracy on held-out compositional configurations
+
+**Meta-Learning from Dynamics:**
+- Few-shot adaptation to novel operator families through in-context learning
+- No gradient updates required—adaptation via attention over similar past experiences
+- Testable: Measure generalization error after N shots vs. baselines (k-NN, direct transfer)
 
 ### Key Emphasis
-Attention across sequences is critical for eventual **self-modeling**—the agent must identify invariant traits in its own operator generation over time.
+Attention across sequences is critical for eventual **self-modeling**—the agent must identify invariant traits in its own operator generation over time. This phase establishes measurable analogues to cognitive working memory through attention mechanisms.
 
 ### Deliverables
 - [ ] Transformer-based temporal encoder
 - [ ] Multi-observation training protocol
 - [ ] Contextualized representation analysis
 - [ ] Temporal dependency metrics
+- [ ] Working memory capacity analysis
+- [ ] Compositional generalization benchmarks
+- [ ] Few-shot adaptation evaluation
 
 ---
 
-## Phase 3: Curiosity-Driven Exploration
+## Phase 3: Curiosity-Driven Exploration & Attention-Based Memory Selection
 
 **Status:** 📋 **PLANNED**
 
 ### Objective
-Close the loop: agent actively directs its own exploration by identifying knowledge gaps and adaptively refining sampling.
+Close the loop: agent actively directs its own exploration by identifying knowledge gaps and adaptively refining sampling. Develop attention-based mechanisms for determining which experiences are worth encoding vs. discarding.
 
 ### Core Mechanism: Adaptive Refinement
 - **Prediction error as curiosity signal**: High-variance regions indicate poor understanding
 - **World model uncertainty**: Track which regions of operator space are poorly understood
 - **Autonomous re-parameterization**: Agent refines sampling to explore behavioral frontiers
 - **Directed discovery**: Use prediction error to guide exploration toward novel regimes
+
+### Cognitive Capabilities (Grounded in Mechanisms)
+
+**Attention-Based Memory Selection:**
+- Mechanism: Use prediction error gradient to determine which operator experiences merit long-term encoding
+- High-surprise operators → higher retention probability (analogous to biological memory consolidation)
+- Quantifiable: Compare replay buffer composition under error-weighted vs. uniform sampling
+- Testable: Does selective memory improve sample efficiency vs. random replay?
+
+**Episodic-Like Memory Indexing:**
+- Organize operator "experiences" by behavioral similarity (not chronological order)
+- Retrieval mechanism: Query by feature-space proximity, not recency
+- Validation: Measure retrieval precision/recall on held-out operator queries
+- Metric: Does similarity-based indexing outperform temporal or random retrieval?
+
+**Cross-Domain Abstraction (Empirical):**
+- Identify parameter-invariant behavioral patterns across different operator families
+- Mechanism: Hierarchical clustering in learned representation space
+- Test: Train on operator family A, evaluate abstraction transfer to family B
+- Quantify: Measure zero-shot transfer accuracy as proxy for domain-invariant learning
 
 ### Why This Matters
 This is the **"meta" in meta-cognitive**: Not just learning from data, but learning *what to learn about*.
@@ -247,30 +283,61 @@ The NOA doesn't just model existing data—it actively identifies gaps in its wo
 - Does curiosity-driven sampling discover fundamentally new behavioral categories?
 - Are identified "knowledge gaps" semantically meaningful?
 - Does adaptive refinement improve coverage of operator space more efficiently than uniform sampling?
+- Does attention-weighted memory selection improve sample efficiency vs. uniform replay?
+- Can the system identify and retrieve behaviorally similar operators across different parameter regimes?
 
 ### Key Emphasis
-This phase closes the discovery loop: the NOA becomes self-directed, autonomously identifying behavioral frontiers and adapting its exploration strategy.
+This phase closes the discovery loop: the NOA becomes self-directed, autonomously identifying behavioral frontiers and adapting its exploration strategy. It develops mechanisms for selective memory encoding and cross-domain pattern recognition.
 
 ### Deliverables
 - [ ] Prediction error-based curiosity metric
 - [ ] World model uncertainty quantification
 - [ ] Adaptive sampling re-parameterization
 - [ ] Discovery validation framework
+- [ ] Attention-weighted memory consolidation
+- [ ] Similarity-based retrieval system
+- [ ] Cross-domain transfer benchmarks
 
 ---
 
-## Phase 4: Transparent Self-Modeling
+## Phase 4: Transparent Self-Modeling & Metacognitive Monitoring
 
 **Status:** 📋 **PLANNED**
 
 ### Research Question
-Can an agent develop interpretable internal models of its own generative processes?
+Can an agent develop interpretable internal models of its own generative processes, enabling metacognitive monitoring of prediction confidence and capability boundaries?
 
 ### Core Mechanism
 The NOA learns a **self-model**: a function mapping from internal state → predicted behavioral outcomes. This is not "self-awareness" in an anthropomorphic sense, but rather:
 - A learned approximation of the agent's own input-output mapping
 - An inspectable representation of what the system "expects" itself to do
 - A tool for detecting distributional shift in the agent's own behavior
+
+### Cognitive Capabilities (Grounded in Mechanisms)
+
+**Metacognitive Confidence Estimation:**
+- Mechanism: Learn mapping from internal activation patterns → prediction error
+- Output: Calibrated uncertainty estimates for each operator prediction
+- Validation: Measure calibration curve (predicted confidence vs. actual accuracy)
+- Testable: Does the agent "know when it doesn't know"? (High uncertainty → high error correlation)
+
+**Capability Boundary Detection:**
+- Identify parameter regions where self-model uncertainty is high (knowledge gaps)
+- Mechanism: Track prediction variance across ensemble or dropout samples
+- Quantifiable: Compare identified "uncertain" regions to actual generalization error
+- Use case: Explicit refusal on out-of-distribution operators vs. silent failure
+
+**Episodic Memory Consolidation:**
+- Selective encoding of high-information operator sequences into long-term memory
+- Mechanism: Prioritize replay of experiences where self-model was most surprised
+- Metric: Does surprise-weighted replay improve sample efficiency vs. uniform?
+- Biological analogue: Replay of hippocampal sequences during consolidation (empirically testable)
+
+**Forward Modeling of Own Behavior:**
+- Predict how NOA's own predictions will change with additional observations
+- Mechanism: Second-order model (model of the model) for meta-level prediction
+- Test: Can agent predict its own learning trajectory on held-out tasks?
+- Application: Active learning—query examples that maximally reduce self-model uncertainty
 
 ### Transparency Requirements
 
@@ -291,15 +358,21 @@ The NOA learns a **self-model**: a function mapping from internal state → pred
 - **Hypothesis**: Self-modeling improves exploration efficiency by identifying knowledge gaps
 - **Test**: Compare exploration in agents with/without self-models
 - **Interpretability check**: Are identified "knowledge gaps" semantically meaningful?
+- **Calibration test**: Plot predicted uncertainty vs. actual error (should be monotonic)
+- **Active learning test**: Does self-model-guided querying outperform random or uncertainty sampling?
 
 ### Key Emphasis
-This approach treats self-modeling as a **mechanistic tool** for understanding and improving agent behavior, not as a mystical property. The self-model must be transparent and inspectable.
+This approach treats self-modeling as a **mechanistic tool** for understanding and improving agent behavior, not as a mystical property. The self-model must be transparent and inspectable. Metacognitive capabilities are operationalized as uncertainty quantification and capability boundary detection—measurable, testable phenomena.
 
 ### Deliverables
 - [ ] Self-model learning architecture
 - [ ] Calibration validation metrics
 - [ ] Distributional shift detection
 - [ ] Interpretability analysis tools
+- [ ] Metacognitive confidence estimation
+- [ ] Capability boundary detection system
+- [ ] Surprise-weighted episodic replay
+- [ ] Forward model of learning dynamics
 
 ---
 
@@ -356,16 +429,44 @@ Every discovered "law" must be:
 This roadmap systematically integrates multiple advanced components:
 - **Tokenized latent representations** (Phase 0)
 - **Feature-based reconstruction** (Phase 1)
-- **Multi-step attention** (Phase 2)
-- **Exploratory agency** (Phase 3)
-- **Self-referential modeling** (Phase 4)
+- **Multi-step attention & working memory** (Phase 2)
+- **Exploratory agency & memory selection** (Phase 3)
+- **Self-referential modeling & metacognition** (Phase 4)
 - **Scientific discovery** (Phase 5)
 
+### Dual Purpose Architecture
+
 The resulting architecture serves dual purposes:
+
 1. **Research platform** for studying emergent cognitive-like behavior in dynamical systems
+   - Working memory dynamics through attention mechanisms
+   - Compositional reasoning via parameter-space decomposition
+   - Meta-learning through in-context adaptation
+   - Episodic memory formation via selective consolidation
+   - Cross-domain abstraction through representation learning
+   - Metacognitive monitoring via uncertainty quantification
+
 2. **Foundation for autonomous scientific exploration**, enabling the system to abstract, reason about, and experiment with its own operator space
 
-This approach could lead to novel insights and discoveries by allowing the system to develop its own understanding of dynamical behavior.
+### From Dynamical Systems to General Intelligence
+
+The NOA architecture provides a testbed for general intelligence capabilities grounded in dynamical system reasoning:
+
+**Meta-Learning:** Few-shot adaptation to novel operator families tests whether the system learns abstract behavioral principles rather than memorizing specific instances. This is empirically measurable through generalization error after N<10 shots.
+
+**Compositional Reasoning:** Predicting emergent behaviors from operator component combinations tests systematic generalization—a core challenge in general intelligence. Zero-shot accuracy on held-out configurations provides quantifiable metrics.
+
+**Working Memory:** Attention-based maintenance of limited operator sequences mirrors cognitive working memory constraints. Capacity limits and performance degradation with sequence length are directly measurable.
+
+**Episodic Memory:** Selective encoding and retrieval of high-information operator experiences tests whether the system develops efficient memory indexing strategies. Retrieval precision/recall on similarity queries provides ground truth.
+
+**Cross-Domain Abstraction:** Identifying domain-invariant patterns across different operator families tests transfer learning capabilities. Zero-shot transfer accuracy from domain A→B quantifies abstraction quality.
+
+**Metacognitive Monitoring:** Uncertainty-aware prediction and capability boundary detection test whether the system develops accurate self-models. Calibration curves (predicted vs. actual error) provide rigorous validation.
+
+These capabilities are not anthropomorphic analogies—they are operationalized as measurable, testable phenomena grounded in concrete mechanisms. The dynamical systems domain provides clean experimental conditions for studying these phenomena without the confounds of natural language or vision tasks.
+
+This approach could lead to novel insights and discoveries by allowing the system to develop its own understanding of dynamical behavior while simultaneously advancing our understanding of general intelligence architectures.
 
 ---
 
