@@ -12,6 +12,7 @@ Design principles:
 
 import yaml
 import re
+import os
 from pathlib import Path
 from typing import Any, Dict, Union
 from .schema import SpinlockConfig
@@ -20,6 +21,10 @@ from .schema import SpinlockConfig
 def substitute_params(obj: Any, params: Dict[str, Any]) -> Any:
     """
     Recursively substitute ${param} placeholders with actual values.
+
+    Substitution priority:
+    1. Runtime params (passed via params argument)
+    2. Environment variables (from os.environ)
 
     Args:
         obj: Configuration object (dict, list, str, or scalar)
@@ -32,18 +37,34 @@ def substitute_params(obj: Any, params: Dict[str, Any]) -> Any:
         >>> config = {"grid_size": "${size}", "channels": [16, "${size}"]}
         >>> substitute_params(config, {"size": 64})
         {'grid_size': 64, 'channels': [16, 64]}
+
+        >>> # Environment variable substitution
+        >>> os.environ['API_KEY'] = 'secret123'
+        >>> config = {"key": "${API_KEY}"}
+        >>> substitute_params(config, {})
+        {'key': 'secret123'}
     """
     if isinstance(obj, str):
         # Check for ${param} pattern
         match = re.fullmatch(r'\$\{(\w+)\}', obj)
         if match:
             param_name = match.group(1)
-            if param_name not in params:
-                raise ValueError(
-                    f"Missing runtime parameter: {param_name}. "
-                    f"Available parameters: {list(params.keys())}"
-                )
-            return params[param_name]
+
+            # Priority 1: Runtime params
+            if param_name in params:
+                return params[param_name]
+
+            # Priority 2: Environment variables
+            env_value = os.getenv(param_name)
+            if env_value is not None:
+                return env_value
+
+            # Not found in either source
+            raise ValueError(
+                f"Missing parameter: {param_name}. "
+                f"Not found in runtime parameters {list(params.keys())} "
+                f"or environment variables."
+            )
         return obj
     elif isinstance(obj, dict):
         return {k: substitute_params(v, params) for k, v in obj.items()}
@@ -117,9 +138,8 @@ def load_config(
     # Load raw YAML
     raw_config = load_yaml(path)
 
-    # Apply parameter substitution if provided
-    if runtime_params:
-        raw_config = substitute_params(raw_config, runtime_params)
+    # Apply parameter substitution (always run to pick up environment variables)
+    raw_config = substitute_params(raw_config, runtime_params or {})
 
     # Validate with Pydantic
     try:

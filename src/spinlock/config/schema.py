@@ -16,6 +16,7 @@ Design principles:
 from typing import Literal, Union, Any, Iterator, Dict, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pathlib import Path
+from spinlock.config.cloud import CloudConfig
 
 
 # =============================================================================
@@ -234,7 +235,7 @@ class SamplingConfig(BaseModel):
     stratification: StratificationConfig = Field(default_factory=StratificationConfig)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
-    total_samples: int = Field(ge=100)
+    total_samples: int = Field(ge=1, description="Total number of parameter sets to sample")
     batch_size: int = Field(default=1000, ge=1)
 
     @model_validator(mode='after')
@@ -434,6 +435,10 @@ class SpinlockConfig(BaseModel):
     simulation: SimulationConfig
     dataset: DatasetConfig
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    cloud: CloudConfig = Field(
+        default_factory=CloudConfig,
+        description="Cloud provider configuration (Lambda Labs, RunPod, S3)"
+    )
 
     @model_validator(mode='after')
     def validate_output_path(self) -> 'SpinlockConfig':

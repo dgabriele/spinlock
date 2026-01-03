@@ -1,0 +1,289 @@
+version: "1.0"
+
+metadata:
+  name: "lambda_labs_100k"
+  description: |
+    Large-scale 100K dataset for production VQ-VAE training using Lambda Labs GPU Cloud.
+    Based on baseline_10k configuration with cloud infrastructure enabled.
+    Uses Lambda Labs A100 instance + S3 storage for cost-effective large-scale generation.
+  author: "Spinlock Team"
+  created: "2026-01-02"
+  purpose: |
+    Production-scale dataset generation for VQ-VAE training with sufficient samples
+    to achieve high codebook utilization and prevent overfitting.
+
+    Target: 100,000 operators with 5 realizations each = 500,000 total samples
+
+    Infrastructure:
+    - Lambda Labs A100 GPU (40GB VRAM, $1.10/hr)
+    - S3 storage for output (us-west-2)
+    - Estimated cost: $19-58 total (~17-52 hours runtime)
+    - Feature-only mode: <10GB storage (vs. ~120TB for raw trajectories)
+
+# 14-dimensional parameter space (same as baseline_10k)
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 5]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: integer
+      bounds: [16, 64]
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5, 7]
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["gelu"]
+      description: "Activation function"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian"]
+      description: "Stochastic noise distribution"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.00001, 1.0]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+    noise_schedule:
+      type: choice
+      choices: ["constant"]
+      description: "Temporal noise schedule"
+
+    spatial_correlation:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Spatial correlation length for noise"
+
+  operator:
+    normalization:
+      type: choice
+      choices: ["instance"]
+      description: "Feature normalization"
+
+    grid_size:
+      type: choice
+      choices: [128]
+      description: "Spatial grid resolution (fixed for VQ-VAE consistency)"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["residual", "convex"]
+      weights: [0.75, 0.25]
+      description: "Temporal update policy"
+
+# Sampling configuration for 100K samples
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 5  # More strata for 100K samples
+    min_samples_per_stratum: 20
+
+  validation:
+    check_discrepancy: true
+    check_correlation: true
+
+  total_samples: 100000  # 100K operators
+  batch_size: 5  # Conservative for A100 (40GB VRAM)
+
+# Simulation with minimal IC basis
+simulation:
+  device: "cuda"  # Lambda Labs instance has A100
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "sampled"
+
+    # Equal weighting: 25% per IC family
+    ic_type_weights:
+      # Gaussian noise family (25% total, 5 variance levels)
+      gaussian_random_field_v0: 0.05   # variance=0.25
+      gaussian_random_field_v1: 0.05   # variance=0.5
+      gaussian_random_field_v2: 0.05   # variance=1.0
+      gaussian_random_field_v3: 0.05   # variance=2.0
+      gaussian_random_field_v4: 0.05   # variance=4.0
+
+      # Band-limited noise family (25% total, 3 bands)
+      multiscale_grf_low: 0.0833
+      multiscale_grf_mid: 0.0833
+      multiscale_grf_high: 0.0834
+
+      # Sinusoid family (25%)
+      structured: 0.25
+
+      # Localized blob family (25%)
+      localized: 0.25
+
+    # Gaussian noise configurations
+    gaussian_random_field_v0:
+      length_scale: 0.05
+      variance: 0.25
+
+    gaussian_random_field_v1:
+      length_scale: 0.05
+      variance: 0.5
+
+    gaussian_random_field_v2:
+      length_scale: 0.05
+      variance: 1.0
+
+    gaussian_random_field_v3:
+      length_scale: 0.05
+      variance: 2.0
+
+    gaussian_random_field_v4:
+      length_scale: 0.05
+      variance: 4.0
+
+    # Band-limited noise configurations
+    multiscale_grf_low:
+      scales: [0.30, 0.35, 0.40]
+      variance: 1.0
+
+    multiscale_grf_mid:
+      scales: [0.08, 0.10, 0.12]
+      variance: 1.0
+
+    multiscale_grf_high:
+      scales: [0.02, 0.025, 0.03]
+      variance: 1.0
+
+    # Sinusoid configurations
+    structured:
+      num_modes: 1
+      wavelength_range: [8.0, 64.0]
+      amplitude_range: [0.5, 2.0]
+
+    # Localized blob configurations
+    localized:
+      num_blobs: [1, 5]
+      blob_size_range: [0.05, 0.15]
+      amplitude_range: [1.0, 3.0]
+
+  num_realizations: 5  # 5 stochastic realizations per operator
+  num_timesteps: 500  # Temporal trajectories for feature extraction
+
+  # Feature extraction (inline during generation)
+  # INITIAL features: Extracted from t=0 initial conditions
+  # - IC type metadata (gaussian_random_field_v0-4, multiscale_grf_*, structured, localized)
+  # - Initial condition statistics (variance, correlation length, etc.)
+  #
+  # TEMPORAL features: Extracted from full T=500 trajectory
+  # - Per-timestep features: spatial, spectral, cross-channel (46 features)
+  # - Per-trajectory features: temporal, causality, invariant_drift (100+ features)
+  # - Operator sensitivity: Extracted inline during generation (12 features)
+  # - Total: ~146 aggregated features per operator
+  #
+  # Feature storage: Saved automatically in HDF5 under 'features/summary/' group
+  # Feature-only mode: Raw trajectories NOT stored (saves 120TB → <10GB)
+
+# Dataset output configuration
+dataset:
+  output_path: "baseline_100k.h5"  # Will be uploaded to S3
+
+  storage:
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 5  # Match batch_size for optimal buffering
+    store_trajectories: false  # Feature-only mode (saves ~120TB!)
+
+# Cloud provider configuration
+cloud:
+  provider:
+    enabled: true
+    provider: "lambda_labs"
+
+  lambda_labs:
+    api_key: "${LAMBDA_API_KEY}"  # Read from environment variable
+    gpu_type: "A100"
+    instance_type: "gpu_1x_a100_sxm4"
+    region: "us-west-1"
+    ssh_key_name: "spinlock-key"  # Must be registered in Lambda Labs dashboard
+
+    # Safety limits
+    max_cost_per_hour: 1.50  # Safety limit ($1.10/hr actual + buffer)
+    auto_shutdown_on_completion: true  # Terminate after job completes
+
+    # Remote execution
+    remote_working_dir: "/home/ubuntu/spinlock"
+    setup_script: null  # Optional: path to setup script
+
+  s3:
+    bucket: "spinlock-datasets"
+    prefix: "production/100k/"
+    region: "us-west-2"
+    storage_class: "STANDARD"  # Can use INTELLIGENT_TIERING for cost optimization
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "structured"
+
+# =============================================================================
+# Expected Results
+# =============================================================================
+#
+# Scale:
+# - 100,000 operators × 5 realizations = 500,000 total samples
+# - 128×128 spatial resolution
+# - 500 timesteps per trajectory
+# - Feature-only mode: <10GB storage
+#
+# Cost Estimate (Lambda Labs A100 @ $1.10/hr):
+# - Best case: 17 hours × $1.10/hr = $18.70
+# - Worst case: 52 hours × $1.10/hr = $57.20
+# - Expected: ~$30-40 (25-35 hours)
+#
+# Infrastructure:
+# - Lambda Labs: A100 40GB GPU ($1.10/hr)
+# - S3 storage: ~$0.023/GB/month × 10GB = $0.23/month
+# - S3 PUT requests: $0.005 per 1000 × ~100 = $0.50
+# - Total one-time cost: $19-58
+#
+# VQ-VAE Training (after generation):
+# - Codebook utilization: >80% (with 100K samples)
+# - Reconstruction quality: High (sufficient diversity)
+# - Overfitting risk: Low (100K >> typical VQ-VAE datasets)
+#
+# Usage:
+#   # Set API key
+#   export LAMBDA_API_KEY="your-api-key-here"
+#
+#   # Submit cloud job
+#   poetry run spinlock cloud-generate \
+#     --config configs/cloud/lambda_labs_100k.yaml \
+#     --provider lambda_labs \
+#     --monitor
+#
+#   # Monitor existing job
+#   poetry run spinlock cloud-generate \
+#     --provider lambda_labs \
+#     --job-id abc12345 \
+#     --monitor
+#
+# =============================================================================

@@ -511,16 +511,32 @@ Output:
             print(f"Loaded {features.shape[0]} samples with {features.shape[1]} features")
 
         # Clean features (remove NaN, zero-variance, duplicates, cap outliers)
-        if config.get("clean_features", True):  # Default: enabled
+        # Check both old flat format and new feature_cleaning section
+        feature_cleaning = config.get("feature_cleaning", {})
+        clean_enabled = feature_cleaning.get("enabled", config.get("clean_features", True))
+
+        if clean_enabled:
             if verbose:
                 print("\nCleaning features...")
 
             from spinlock.encoding import FeatureProcessor
 
+            # Read parameters from feature_cleaning section (new) or fall back to root level (old)
+            # Explicitly cast to proper types to handle YAML parsing
+            max_var_thresh = feature_cleaning.get("max_variance_threshold", config.get("max_variance_threshold", None))
+            if max_var_thresh is not None:
+                max_var_thresh = float(max_var_thresh)
+
             processor = FeatureProcessor(
-                variance_threshold=config.get("variance_threshold", 1e-8),
-                deduplicate_threshold=config.get("deduplicate_threshold", 0.99),
-                mad_threshold=config.get("mad_threshold", 5.0),
+                variance_threshold=float(feature_cleaning.get("variance_threshold", config.get("variance_threshold", 1e-10))),
+                max_variance_threshold=max_var_thresh,
+                max_cv_threshold=float(feature_cleaning.get("max_cv_threshold", config.get("max_cv_threshold", 100.0))),
+                deduplicate_threshold=float(feature_cleaning.get("deduplicate_threshold", config.get("deduplicate_threshold", 0.99))),
+                use_intelligent_dedup=bool(feature_cleaning.get("use_intelligent_dedup", config.get("use_intelligent_dedup", True))),
+                outlier_method=str(feature_cleaning.get("outlier_method", config.get("outlier_method", "percentile"))),
+                percentile_range=tuple(feature_cleaning.get("percentile_range", config.get("percentile_range", [0.5, 99.5]))),
+                iqr_multiplier=float(feature_cleaning.get("iqr_multiplier", config.get("iqr_multiplier", 1.5))),
+                mad_threshold=float(feature_cleaning.get("mad_threshold", config.get("mad_threshold", 3.0))),
                 verbose=verbose,
             )
 

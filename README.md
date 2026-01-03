@@ -167,7 +167,9 @@ flowchart TD
 #### 1. Neural Operator Generation
 - **Sobol-stratified parameter sampling** - Low-discrepancy sequences ensure uniform parameter space coverage
 - **CNN operator construction** - Build neural operators from parameter vectors
-- **Stochastic rollout generation** - 500 timesteps × 3 realizations capturing behavioral variability
+- **Stochastic rollout generation** - 256 timesteps × 5 realizations capturing behavioral variability
+  - Default 64×64 grids optimal for VQ-VAE compression and fast NOA evaluation
+  - Power-of-2 timesteps for GPU efficiency
 
 #### 2. Feature Extraction (4 Complementary Families)
 - **INITIAL** (Initial Condition): Hybrid features combining manual and learned spatial patterns
@@ -176,7 +178,9 @@ flowchart TD
 - **ARCHITECTURE** (Neural Operator Parameters): Architectural/stochastic/evolution features
   - Direct parameter space features (architecture, stochastic, operator, evolution, stratification)
 - **SUMMARY** (Summary Descriptor Features): Aggregated per-rollout behavioral statistics
-  - Spatial, spectral, temporal, cross-channel, causality, invariant drift, operator sensitivity
+  - **Fast defaults (v1.0-v2.0)**: Spatial, spectral, temporal, cross-channel, causality, invariant drift, operator sensitivity, multiscale
+  - **Optional v2.1 categories** (disabled by default): Distributional, structural, physics, morphological
+  - Default optimized for fast NOA evaluation (~1s feature extraction vs ~6s with all v2.1)
   - Aggregated across all timesteps and realizations per operator
 - **TEMPORAL** (Temporal Dynamics): Full temporal resolution trajectories
   - Preserves time-series structure for sequential modeling
@@ -226,9 +230,18 @@ See [docs/features/](docs/features/) for detailed feature definitions and extrac
 ### Generate Operator Dataset
 
 ```bash
+# Generate with default fast configuration (v1.0-v2.0 features, 64×64, T=256, M=5)
 poetry run spinlock generate \
-    --config configs/experiments/baseline_10k.yaml \
-    --output datasets/my_operators.h5
+    --config configs/experiments/baseline_10k.yaml
+
+# Or with all v2.1 features enabled (slower, more comprehensive)
+# Add to config YAML:
+# features:
+#   summary:
+#     distributional: {enabled: true}
+#     structural: {enabled: true}
+#     physics: {enabled: true}
+#     morphological: {enabled: true}
 ```
 
 ### Inspect Dataset

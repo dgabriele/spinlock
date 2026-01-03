@@ -105,9 +105,13 @@ class CategoricalVQVAEConfig:
                     {'num_tokens': None, 'latent_dim': None},
                 ]
 
-            # Use feature count for this category to scale latent dimensions
-            # Compression ratios apply per-category: latent_dim = feature_count × ratio
-            # This makes each category's latent space scale with its complexity
+            # CORRECT DESIGN: Use feature count for adaptive coarse-to-fine hierarchy
+            # This implements proper hierarchical VQ-VAE with compression at coarse levels:
+            # - Small categories (7 features): L0=4D (compression), L2=11D (expansion)
+            # - Large categories (71 features): L0=35D (compression), L2=107D (expansion)
+            # The information bottleneck at L0 forces meaningful clustering.
+            # V11 tried "fixing" this to use group_embedding_dim (256), which broke
+            # coarse-to-fine compression and caused 11% quality regression.
             category_feature_dim = len(self.group_indices[cat])
 
             # Fill missing num_tokens FIRST

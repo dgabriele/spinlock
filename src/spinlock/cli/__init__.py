@@ -10,6 +10,7 @@ import argparse
 
 from .base import CLICommand, ConfigurableCommand
 from .generate import GenerateCommand
+from .cloud_generate import CloudGenerateCommand
 from .info import InfoCommand
 from .validate import ValidateCommand
 from .visualize import VisualizeCommand
@@ -21,6 +22,7 @@ __all__ = [
     "CLICommand",
     "ConfigurableCommand",
     "GenerateCommand",
+    "CloudGenerateCommand",
     "InfoCommand",
     "ValidateCommand",
     "VisualizeCommand",
@@ -68,6 +70,7 @@ For more help on a specific command:
     # Register commands
     commands = [
         GenerateCommand(),
+        CloudGenerateCommand(),
         InfoCommand(),
         ValidateCommand(),
         VisualizeCommand(),

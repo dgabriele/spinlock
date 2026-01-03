@@ -1,5 +1,5 @@
 """
-SDF (Summary Descriptor Features) main orchestrator.
+Summary Feature Extraction - main orchestrator.
 
 Coordinates extraction of spatial, spectral, and temporal features,
 implementing the three-stage extraction pipeline:
@@ -17,6 +17,7 @@ Example:
 """
 
 import torch
+from contextlib import nullcontext
 from typing import Dict, Optional, TYPE_CHECKING
 from spinlock.features.base import FeatureExtractorBase
 from spinlock.features.registry import FeatureRegistry
@@ -51,7 +52,7 @@ class SummaryExtractor(FeatureExtractorBase):
 
     Attributes:
         device: Computation device (cuda or cpu)
-        config: SDF configuration
+        config: Summary feature configuration
         spatial_extractor: Spatial statistics extractor
         spectral_extractor: Spectral/frequency extractor
         temporal_extractor: Temporal dynamics extractor
@@ -65,7 +66,8 @@ class SummaryExtractor(FeatureExtractorBase):
     def __init__(
         self,
         device: torch.device = torch.device('cuda'),
-        config: Optional['SummaryConfig'] = None
+        config: Optional['SummaryConfig'] = None,
+        profiling_context: Optional['FeatureProfilingContext'] = None
     ):
         """
         Initialize SDF extractor.
@@ -73,9 +75,11 @@ class SummaryExtractor(FeatureExtractorBase):
         Args:
             device: Computation device
             config: Optional SummaryConfig instance
+            profiling_context: Optional profiling context for performance measurement
         """
         self.device = device
         self.config = config
+        self.profiling_context = profiling_context
 
         # Initialize v1.0 component extractors (always enabled)
         self.spatial_extractor = SpatialFeatureExtractor(device=device)
@@ -533,28 +537,32 @@ class SummaryExtractor(FeatureExtractorBase):
             (averaged across realizations and channels for simplicity)
         """
         N, M, T, C, H, W = trajectories.shape
+        prof = self.profiling_context
 
         # Extract v1.0 per-timestep features
-        spatial_features = self.spatial_extractor.extract(
-            trajectories,
-            config=self.config.spatial if self.config else None
-        )
+        with prof.time_category('spatial', 0, N) if prof else nullcontext():
+            spatial_features = self.spatial_extractor.extract(
+                trajectories,
+                config=self.config.spatial if self.config else None
+            )
 
-        spectral_features = self.spectral_extractor.extract(
-            trajectories,
-            config=self.config.spectral if self.config else None,
-            num_scales=self.config.spectral.num_fft_scales if self.config else 5
-        )
+        with prof.time_category('spectral', 0, N) if prof else nullcontext():
+            spectral_features = self.spectral_extractor.extract(
+                trajectories,
+                config=self.config.spectral if self.config else None,
+                num_scales=self.config.spectral.num_fft_scales if self.config else 5
+            )
 
         # Extract v2.0 per-timestep features
         cross_channel_features = {}
         if self.cross_channel_extractor is not None:
-            # Reshape for cross-channel extraction: [N*M*T, C, H, W]
-            fields_flat = trajectories.reshape(N * M * T, C, H, W)
-            cross_channel_features = self.cross_channel_extractor.extract(
-                fields_flat,
-                config=self.config.cross_channel if self.config else None
-            )
+            with prof.time_category('cross_channel', 0, N) if prof else nullcontext():
+                # Reshape for cross-channel extraction: [N*M*T, C, H, W]
+                fields_flat = trajectories.reshape(N * M * T, C, H, W)
+                cross_channel_features = self.cross_channel_extractor.extract(
+                    fields_flat,
+                    config=self.config.cross_channel if self.config else None
+                )
             # Reshape features back to [N, M, T, C] structure
             # (Each feature has shape [N*M*T] or [N*M*T, ...])
             for name in cross_channel_features:
@@ -575,34 +583,39 @@ class SummaryExtractor(FeatureExtractorBase):
         fields_v21 = trajectories.reshape(N * M, T, C, H, W)
 
         if self.distributional_extractor is not None:
-            distributional_features = self.distributional_extractor.extract(
-                fields_v21,
-                config=self.config.distributional if self.config else None
-            )
+            with prof.time_category('distributional', 0, N) if prof else nullcontext():
+                distributional_features = self.distributional_extractor.extract(
+                    fields_v21,
+                    config=self.config.distributional if self.config else None
+                )
 
         if self.structural_extractor is not None:
-            structural_features = self.structural_extractor.extract(
-                fields_v21,
-                config=self.config.structural if self.config else None
-            )
+            with prof.time_category('structural', 0, N) if prof else nullcontext():
+                structural_features = self.structural_extractor.extract(
+                    fields_v21,
+                    config=self.config.structural if self.config else None
+                )
 
         if self.physics_extractor is not None:
-            physics_features = self.physics_extractor.extract(
-                fields_v21,
-                config=self.config.physics if self.config else None
-            )
+            with prof.time_category('physics', 0, N) if prof else nullcontext():
+                physics_features = self.physics_extractor.extract(
+                    fields_v21,
+                    config=self.config.physics if self.config else None
+                )
 
         if self.morphological_extractor is not None:
-            morphological_features = self.morphological_extractor.extract(
-                fields_v21,
-                config=self.config.morphological if self.config else None
-            )
+            with prof.time_category('morphological', 0, N) if prof else nullcontext():
+                morphological_features = self.morphological_extractor.extract(
+                    fields_v21,
+                    config=self.config.morphological if self.config else None
+                )
 
         if self.multiscale_extractor is not None:
-            multiscale_features = self.multiscale_extractor.extract(
-                fields_v21,
-                config=self.config.multiscale if self.config else None
-            )
+            with prof.time_category('multiscale', 0, N) if prof else nullcontext():
+                multiscale_features = self.multiscale_extractor.extract(
+                    fields_v21,
+                    config=self.config.multiscale if self.config else None
+                )
 
         # Combine all per-timestep features
         all_features = {
@@ -689,33 +702,40 @@ class SummaryExtractor(FeatureExtractorBase):
             Per-trajectory features [N, M, D_traj]
             (averaged across channels for simplicity)
         """
+        N = trajectories.shape[0]
+        prof = self.profiling_context
+
         # Extract v1.0 temporal features
-        temporal_features = self.temporal_extractor.extract(
-            trajectories,
-            config=self.config.temporal if self.config else None
-        )
+        with prof.time_category('temporal', 0, N) if prof else nullcontext():
+            temporal_features = self.temporal_extractor.extract(
+                trajectories,
+                config=self.config.temporal if self.config else None
+            )
 
         # Extract v2.0 trajectory-level features
         causality_features = {}
         if self.causality_extractor is not None:
-            causality_features = self.causality_extractor.extract(
-                trajectories,
-                config=self.config.causality if self.config else None
-            )
+            with prof.time_category('causality', 0, N) if prof else nullcontext():
+                causality_features = self.causality_extractor.extract(
+                    trajectories,
+                    config=self.config.causality if self.config else None
+                )
 
         invariant_drift_features = {}
         if self.invariant_drift_extractor is not None:
-            invariant_drift_features = self.invariant_drift_extractor.extract(
-                trajectories,
-                config=self.config.invariant_drift if self.config else None
-            )
+            with prof.time_category('invariant_drift', 0, N) if prof else nullcontext():
+                invariant_drift_features = self.invariant_drift_extractor.extract(
+                    trajectories,
+                    config=self.config.invariant_drift if self.config else None
+                )
 
         nonlinear_features = {}
         if self.nonlinear_extractor is not None:
-            nonlinear_features = self.nonlinear_extractor.extract(
-                trajectories,
-                config=self.config.nonlinear if self.config else None
-            )
+            with prof.time_category('nonlinear', 0, N) if prof else nullcontext():
+                nonlinear_features = self.nonlinear_extractor.extract(
+                    trajectories,
+                    config=self.config.nonlinear if self.config else None
+                )
 
         # Operator sensitivity features (from inline extraction during generation)
         operator_sensitivity_features = {}

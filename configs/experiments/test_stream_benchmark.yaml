@@ -1,0 +1,98 @@
+version: "1.0"
+
+metadata:
+  name: "test_stream_benchmark"
+  description: "Benchmark CUDA stream parallelism (16 streams)"
+  author: "Spinlock Team"
+  created: "2026-01-02"
+
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 5]
+    base_channels:
+      type: integer
+      bounds: [16, 64]
+    kernel_size:
+      type: choice
+      choices: [3, 5, 7]
+    activation:
+      type: choice
+      choices: ["gelu"]
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.3]
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian"]
+    noise_scale:
+      type: continuous
+      bounds: [0.00001, 1.0]
+      log_scale: true
+    noise_schedule:
+      type: choice
+      choices: ["constant"]
+    spatial_correlation:
+      type: continuous
+      bounds: [0.0, 0.3]
+
+  operator:
+    normalization:
+      type: choice
+      choices: ["instance"]
+    grid_size:
+      type: choice
+      choices: [128]
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["residual", "convex"]
+      weights: [0.75, 0.25]
+
+sampling:
+  strategy: "sobol_stratified"
+  sobol:
+    scramble: true
+    seed: 42
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 3
+    min_samples_per_stratum: 3
+  validation:
+    check_discrepancy: true
+    check_correlation: true
+  total_samples: 16  # Exactly 16 to use all 16 streams
+  batch_size: 16     # Single batch to test stream parallelism
+
+simulation:
+  device: "cuda"
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+  input_generation:
+    method: "sampled"
+    ic_type_weights:
+      gaussian_random_field_v2: 1.0
+    gaussian_random_field_v2:
+      length_scale: 0.05
+      variance: 1.0
+  precision: "float16"
+  num_realizations: 2  # Reduced for speed
+  num_timesteps: 100   # Reduced for speed
+  extract_operator_features: false
+
+dataset:
+  output_path: "./datasets/test_stream_benchmark.h5"
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 16
+    store_trajectories: false
+
+logging:
+  level: "INFO"

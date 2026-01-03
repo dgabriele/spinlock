@@ -3,10 +3,10 @@
 Ported from unisim.system.features.processor (100% generic, domain-agnostic).
 
 Applies cleaning steps before VQ-VAE training:
-1. Remove zero-variance features (std < threshold)
+1. Remove zero-variance AND extreme-variance features
 2. Deduplicate highly correlated features (corr > threshold)
 3. Handle NaNs (median replacement)
-4. Cap outliers using MAD (Median Absolute Deviation)
+4. Cap outliers using adaptive method (percentile, IQR, or MAD)
 
 This ensures clean, numerically stable features for categorical VQ-VAE training.
 """
@@ -22,30 +22,47 @@ class FeatureProcessor:
     """Feature post-processing pipeline.
 
     Applies all cleaning steps from production system:
-    1. Remove zero-variance features
+    1. Remove zero-variance AND extreme-variance features
     2. Deduplicate highly correlated features
     3. Handle NaNs (median replacement)
-    4. Cap outliers using MAD (Median Absolute Deviation)
+    4. Cap outliers using adaptive method (percentile, IQR, or MAD)
     """
 
     def __init__(
         self,
-        variance_threshold: float = 1e-8,
+        variance_threshold: float = 1e-10,
+        max_variance_threshold: Optional[float] = 1e10,
+        max_cv_threshold: float = 100.0,
         deduplicate_threshold: float = 0.99,
-        mad_threshold: float = 5.0,
+        use_intelligent_dedup: bool = True,
+        outlier_method: str = "percentile",
+        percentile_range: Tuple[float, float] = (0.5, 99.5),
+        iqr_multiplier: float = 1.5,
+        mad_threshold: float = 3.0,
         verbose: bool = False,
     ):
-        """Initialize processor.
+        """Initialize processor with intelligent adaptive filtering.
 
         Args:
             variance_threshold: Remove features with std below this threshold
+            max_variance_threshold: Remove features with variance above this threshold (extreme variance)
+            max_cv_threshold: Maximum coefficient of variation (CV = std/mean) - filters unstable features
             deduplicate_threshold: Remove features with correlation above this threshold
-            mad_threshold: MAD multiplier for outlier capping (values beyond median ± mad_threshold * MAD are capped)
-                          Typical values: 3.0 (aggressive), 5.0 (moderate), 7.0 (conservative)
+            use_intelligent_dedup: If True, keep more informative feature from correlated pairs
+            outlier_method: Method for outlier capping - "percentile" (adaptive), "iqr" (boxplot), or "mad" (legacy)
+            percentile_range: (lower, upper) percentiles for clipping (e.g., (0.5, 99.5) clips 0.5% each end)
+            iqr_multiplier: IQR multiplier for boxplot-style outlier detection (1.5 = mild, 3.0 = extreme)
+            mad_threshold: MAD multiplier for outlier capping (legacy method, 3.0 = aggressive, 5.0 = moderate)
             verbose: Print detailed cleaning statistics
         """
         self.variance_threshold = variance_threshold
+        self.max_variance_threshold = max_variance_threshold
+        self.max_cv_threshold = max_cv_threshold
         self.deduplicate_threshold = deduplicate_threshold
+        self.use_intelligent_dedup = use_intelligent_dedup
+        self.outlier_method = outlier_method
+        self.percentile_range = percentile_range
+        self.iqr_multiplier = iqr_multiplier
         self.mad_threshold = mad_threshold
         self.verbose = verbose
 
@@ -95,7 +112,10 @@ class FeatureProcessor:
         if self.verbose:
             kept = variance_mask.sum()
             removed = (~variance_mask).sum()
-            logger.info(f"\n1. Zero-variance removal (std < {self.variance_threshold}):")
+            if self.max_variance_threshold is not None:
+                logger.info(f"\n1. Variance filtering (std < {self.variance_threshold} OR var > {self.max_variance_threshold:.1e}):")
+            else:
+                logger.info(f"\n1. Zero-variance removal (std < {self.variance_threshold}):")
             logger.info(f"   Kept: {kept}/{original_dim}")
             logger.info(f"   Removed: {removed}")
 
@@ -127,7 +147,12 @@ class FeatureProcessor:
         features = self._cap_outliers(features)
 
         if self.verbose:
-            logger.info(f"\n4. Outlier capping (MAD threshold = {self.mad_threshold}):")
+            if self.outlier_method == "percentile":
+                logger.info(f"\n4. Outlier capping (percentile: {self.percentile_range[0]}-{self.percentile_range[1]}%):")
+            elif self.outlier_method == "iqr":
+                logger.info(f"\n4. Outlier capping (IQR multiplier = {self.iqr_multiplier}):")
+            else:  # mad
+                logger.info(f"\n4. Outlier capping (MAD threshold = {self.mad_threshold}):")
             logger.info(f"   Features with outliers: {outlier_stats['num_features_with_outliers']}")
             logger.info(f"   Total outliers capped: {outlier_stats['total_outliers']}")
 
@@ -146,7 +171,12 @@ class FeatureProcessor:
         return features, combined_mask, final_names
 
     def _remove_zero_variance(self, features: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Remove features with std < threshold.
+        """Remove features with std < threshold OR unstable variance (using CV).
+
+        Uses intelligent distribution-aware filtering:
+        - Zero variance: std < threshold
+        - Extreme variance: var > max_threshold AND CV > max_cv_threshold
+        - CV (Coefficient of Variation) = std / |mean| measures relative variability
 
         Args:
             features: Features [N, D]
@@ -155,17 +185,42 @@ class FeatureProcessor:
             Tuple of (filtered_features [N, D'], mask [D])
         """
         stds = np.nanstd(features, axis=0)
-        mask = stds > self.variance_threshold
+        vars = np.var(features, axis=0)
+        means = np.mean(features, axis=0)
+
+        # Coefficient of Variation: std / |mean| (handles scale differences)
+        cv = stds / (np.abs(means) + 1e-10)
+
+        # Start with all features
+        mask = np.ones(features.shape[1], dtype=bool)
+
+        # Remove zero variance
+        mask &= stds > self.variance_threshold
+
+        # Remove extreme variance ONLY if also extreme CV (intelligent filtering)
+        if self.max_variance_threshold is not None:
+            # Extreme variance is OK if CV is reasonable (proportional to scale)
+            extreme_variance = vars > self.max_variance_threshold
+            extreme_cv = cv > self.max_cv_threshold
+            mask &= ~(extreme_variance & extreme_cv)
 
         if not mask.any():
             raise ValueError("All features have zero variance!")
 
+        if self.verbose:
+            zero_var = (stds <= self.variance_threshold).sum()
+            extreme_both = (extreme_variance & extreme_cv).sum() if self.max_variance_threshold else 0
+            logger.info(f"   Zero-variance (std <= {self.variance_threshold}): {zero_var}")
+            if self.max_variance_threshold:
+                logger.info(f"   Extreme-variance AND extreme-CV (var>{self.max_variance_threshold:.1e}, CV>{self.max_cv_threshold}): {extreme_both}")
+
         return features[:, mask], mask
 
     def _deduplicate(self, features: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Remove highly correlated features.
+        """Remove highly correlated features using intelligent selection.
 
-        Keeps first occurrence of correlated pair.
+        If use_intelligent_dedup=True: Keeps more informative feature from correlated pairs
+        Otherwise: Keeps first occurrence (legacy behavior)
 
         Args:
             features: Features [N, D]
@@ -186,19 +241,78 @@ class FeatureProcessor:
         n_features = features.shape[1]
         to_remove = set()
 
+        # Compute informativeness scores for intelligent deduplication
+        if self.use_intelligent_dedup:
+            informativeness = self._compute_informativeness_scores(features)
+        else:
+            informativeness = None
+
         # Find highly correlated pairs
         for i in range(n_features):
             if i in to_remove:
                 continue
             for j in range(i + 1, n_features):
                 if j not in to_remove and abs(corr_matrix[i, j]) > self.deduplicate_threshold:
-                    to_remove.add(j)
+                    # Intelligent: Remove less informative feature
+                    if informativeness is not None:
+                        if informativeness[i] < informativeness[j]:
+                            to_remove.add(i)
+                            break  # i is removed, move to next i
+                        else:
+                            to_remove.add(j)
+                    else:
+                        # Legacy: Remove second feature
+                        to_remove.add(j)
 
         # Create mask
         keep_mask = np.ones(n_features, dtype=bool)
         keep_mask[list(to_remove)] = False
 
         return features[:, keep_mask], keep_mask
+
+    def _compute_informativeness_scores(self, features: np.ndarray) -> np.ndarray:
+        """Compute informativeness score for each feature.
+
+        Higher score = more informative feature (better to keep).
+
+        Score combines:
+        1. Entropy (diversity of values)
+        2. IQR (spread/range)
+        3. Outlier cleanliness (fewer outliers is better)
+
+        Args:
+            features: Features [N, D]
+
+        Returns:
+            Informativeness scores [D]
+        """
+        n_features = features.shape[1]
+        scores = np.zeros(n_features)
+
+        for feat_idx in range(n_features):
+            feat_values = features[:, feat_idx]
+
+            # 1. Entropy (diversity) - use histogram-based estimate
+            hist, _ = np.histogram(feat_values, bins=min(50, len(feat_values) // 20))
+            hist = hist / (hist.sum() + 1e-10)
+            entropy = -np.sum(hist * np.log(hist + 1e-10))
+
+            # 2. IQR (spread)
+            q75, q25 = np.percentile(feat_values, [75, 25])
+            iqr = q75 - q25
+
+            # 3. Outlier ratio (cleanliness - lower is better)
+            # Use IQR method for outlier detection
+            lower_bound = q25 - 1.5 * iqr
+            upper_bound = q75 + 1.5 * iqr
+            outliers = ((feat_values < lower_bound) | (feat_values > upper_bound)).sum()
+            outlier_ratio = outliers / len(feat_values)
+
+            # Composite score: entropy * iqr * (1 - outlier_ratio)
+            # Higher entropy, higher IQR, lower outlier_ratio → better feature
+            scores[feat_idx] = entropy * (iqr + 1e-10) * (1 - outlier_ratio)
+
+        return scores
 
     def _handle_nans(self, features: np.ndarray) -> np.ndarray:
         """Replace NaNs with feature median.
@@ -224,7 +338,86 @@ class FeatureProcessor:
         return features_clean
 
     def _cap_outliers(self, features: np.ndarray) -> np.ndarray:
-        """Cap outliers using MAD (Median Absolute Deviation).
+        """Cap outliers using selected method (percentile, IQR, or MAD).
+
+        Dispatches to the appropriate method based on self.outlier_method.
+
+        Args:
+            features: Features [N, D]
+
+        Returns:
+            Features with outliers capped [N, D]
+        """
+        if self.outlier_method == "percentile":
+            return self._cap_outliers_percentile(features)
+        elif self.outlier_method == "iqr":
+            return self._cap_outliers_iqr(features)
+        elif self.outlier_method == "mad":
+            return self._cap_outliers_mad(features)
+        else:
+            raise ValueError(f"Unknown outlier_method: {self.outlier_method}")
+
+    def _cap_outliers_percentile(self, features: np.ndarray) -> np.ndarray:
+        """Cap outliers using percentile-based clipping (ADAPTIVE).
+
+        Clips each feature at specified percentiles (e.g., 0.5% and 99.5%).
+        This is truly adaptive - clips the same proportion of outliers for ALL features
+        regardless of their distribution.
+
+        Args:
+            features: Features [N, D]
+
+        Returns:
+            Features with outliers clipped [N, D]
+        """
+        features_clipped = features.copy()
+        lower_pct, upper_pct = self.percentile_range
+
+        for feat_idx in range(features.shape[1]):
+            feat_values = features[:, feat_idx]
+
+            # Compute percentiles
+            low = np.percentile(feat_values, lower_pct)
+            high = np.percentile(feat_values, upper_pct)
+
+            # Clip
+            features_clipped[:, feat_idx] = np.clip(feat_values, low, high)
+
+        return features_clipped
+
+    def _cap_outliers_iqr(self, features: np.ndarray) -> np.ndarray:
+        """Cap outliers using IQR-based detection (ADAPTIVE, boxplot-style).
+
+        Uses Q1 - multiplier*IQR and Q3 + multiplier*IQR as bounds.
+        Standard multiplier: 1.5 (mild outliers), 3.0 (extreme outliers only).
+
+        Args:
+            features: Features [N, D]
+
+        Returns:
+            Features with outliers clipped [N, D]
+        """
+        features_clipped = features.copy()
+
+        for feat_idx in range(features.shape[1]):
+            feat_values = features[:, feat_idx]
+
+            # Compute quartiles and IQR
+            q1 = np.percentile(feat_values, 25)
+            q3 = np.percentile(feat_values, 75)
+            iqr = q3 - q1
+
+            # Compute bounds
+            low = q1 - self.iqr_multiplier * iqr
+            high = q3 + self.iqr_multiplier * iqr
+
+            # Clip
+            features_clipped[:, feat_idx] = np.clip(feat_values, low, high)
+
+        return features_clipped
+
+    def _cap_outliers_mad(self, features: np.ndarray) -> np.ndarray:
+        """Cap outliers using MAD (Median Absolute Deviation) - LEGACY METHOD.
 
         MAD is a robust measure of variability that is resistant to extreme outliers.
         Formula: MAD = median(|x - median(x)|)

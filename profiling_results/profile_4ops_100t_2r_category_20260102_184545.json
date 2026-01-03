@@ -1,0 +1,200 @@
+{
+  "device": "cuda",
+  "gpu_name": "NVIDIA GeForce RTX 3060 Ti",
+  "total_time_ms": 6804.246078968048,
+  "category_summary": {
+    "spatial": {
+      "total_ms": 102.9076156616211,
+      "num_features": 1,
+      "mean_ms": 102.9076156616211
+    },
+    "spectral": {
+      "total_ms": 32.912384033203125,
+      "num_features": 1,
+      "mean_ms": 32.912384033203125
+    },
+    "cross_channel": {
+      "total_ms": 343.58233642578125,
+      "num_features": 1,
+      "mean_ms": 343.58233642578125
+    },
+    "distributional": {
+      "total_ms": 3302.792236328125,
+      "num_features": 1,
+      "mean_ms": 3302.792236328125
+    },
+    "structural": {
+      "total_ms": 1231.0794677734375,
+      "num_features": 1,
+      "mean_ms": 1231.0794677734375
+    },
+    "physics": {
+      "total_ms": 602.7908935546875,
+      "num_features": 1,
+      "mean_ms": 602.7908935546875
+    },
+    "morphological": {
+      "total_ms": 508.1313781738281,
+      "num_features": 1,
+      "mean_ms": 508.1313781738281
+    },
+    "multiscale": {
+      "total_ms": 15.739935874938965,
+      "num_features": 1,
+      "mean_ms": 15.739935874938965
+    },
+    "temporal": {
+      "total_ms": 15.73692798614502,
+      "num_features": 1,
+      "mean_ms": 15.73692798614502
+    },
+    "causality": {
+      "total_ms": 6.271999835968018,
+      "num_features": 1,
+      "mean_ms": 6.271999835968018
+    },
+    "invariant_drift": {
+      "total_ms": 642.3009033203125,
+      "num_features": 1,
+      "mean_ms": 642.3009033203125
+    }
+  },
+  "detailed_stats": {
+    "spatial": {
+      "total_ms": 102.9076156616211,
+      "count": 1,
+      "mean_ms": 102.9076156616211,
+      "min_ms": 102.9076156616211,
+      "max_ms": 102.9076156616211,
+      "total_samples": 4,
+      "category": "spatial",
+      "ms_per_sample": 25.726903915405273
+    },
+    "spectral": {
+      "total_ms": 32.912384033203125,
+      "count": 1,
+      "mean_ms": 32.912384033203125,
+      "min_ms": 32.912384033203125,
+      "max_ms": 32.912384033203125,
+      "total_samples": 4,
+      "category": "spectral",
+      "ms_per_sample": 8.228096008300781
+    },
+    "cross_channel": {
+      "total_ms": 343.58233642578125,
+      "count": 1,
+      "mean_ms": 343.58233642578125,
+      "min_ms": 343.58233642578125,
+      "max_ms": 343.58233642578125,
+      "total_samples": 4,
+      "category": "cross_channel",
+      "ms_per_sample": 85.89558410644531
+    },
+    "distributional": {
+      "total_ms": 3302.792236328125,
+      "count": 1,
+      "mean_ms": 3302.792236328125,
+      "min_ms": 3302.792236328125,
+      "max_ms": 3302.792236328125,
+      "total_samples": 4,
+      "category": "distributional",
+      "ms_per_sample": 825.6980590820312
+    },
+    "structural": {
+      "total_ms": 1231.0794677734375,
+      "count": 1,
+      "mean_ms": 1231.0794677734375,
+      "min_ms": 1231.0794677734375,
+      "max_ms": 1231.0794677734375,
+      "total_samples": 4,
+      "category": "structural",
+      "ms_per_sample": 307.7698669433594
+    },
+    "physics": {
+      "total_ms": 602.7908935546875,
+      "count": 1,
+      "mean_ms": 602.7908935546875,
+      "min_ms": 602.7908935546875,
+      "max_ms": 602.7908935546875,
+      "total_samples": 4,
+      "category": "physics",
+      "ms_per_sample": 150.69772338867188
+    },
+    "morphological": {
+      "total_ms": 508.1313781738281,
+      "count": 1,
+      "mean_ms": 508.1313781738281,
+      "min_ms": 508.1313781738281,
+      "max_ms": 508.1313781738281,
+      "total_samples": 4,
+      "category": "morphological",
+      "ms_per_sample": 127.03284454345703
+    },
+    "multiscale": {
+      "total_ms": 15.739935874938965,
+      "count": 1,
+      "mean_ms": 15.739935874938965,
+      "min_ms": 15.739935874938965,
+      "max_ms": 15.739935874938965,
+      "total_samples": 4,
+      "category": "multiscale",
+      "ms_per_sample": 3.934983968734741
+    },
+    "temporal": {
+      "total_ms": 15.73692798614502,
+      "count": 1,
+      "mean_ms": 15.73692798614502,
+      "min_ms": 15.73692798614502,
+      "max_ms": 15.73692798614502,
+      "total_samples": 4,
+      "category": "temporal",
+      "ms_per_sample": 3.934231996536255
+    },
+    "causality": {
+      "total_ms": 6.271999835968018,
+      "count": 1,
+      "mean_ms": 6.271999835968018,
+      "min_ms": 6.271999835968018,
+      "max_ms": 6.271999835968018,
+      "total_samples": 4,
+      "category": "causality",
+      "ms_per_sample": 1.5679999589920044
+    },
+    "invariant_drift": {
+      "total_ms": 642.3009033203125,
+      "count": 1,
+      "mean_ms": 642.3009033203125,
+      "min_ms": 642.3009033203125,
+      "max_ms": 642.3009033203125,
+      "total_samples": 4,
+      "category": "invariant_drift",
+      "ms_per_sample": 160.57522583007812
+    }
+  },
+  "bottlenecks": [
+    {
+      "name": "distributional",
+      "percentage": 48.54016445021101
+    },
+    {
+      "name": "structural",
+      "percentage": 18.092812245264163
+    },
+    {
+      "name": "invariant_drift",
+      "percentage": 9.439707145596442
+    },
+    {
+      "name": "physics",
+      "percentage": 8.85904017225239
+    },
+    {
+      "name": "morphological",
+      "percentage": 7.4678571626688255
+    },
+    {
+      "name": "cross_channel",
+      "percentage": 5.049528374463053
+    }
+  ]
+}

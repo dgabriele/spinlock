@@ -117,7 +117,7 @@ class SummaryDistributionalConfig(BaseModel):
     Features: entropy, complexity, compression metrics
     """
 
-    enabled: bool = True
+    enabled: bool = False  # v2.1 Phase 2: Disabled by default (3.2s overhead) - opt-in via config
 
     # Entropy (multiscale via coarse-graining)
     num_entropy_scales: int = Field(default=3, ge=1, le=5)
@@ -220,7 +220,7 @@ class SummaryStructuralConfig(BaseModel):
     Features: connectivity, topology, edges, texture
     """
 
-    enabled: bool = True
+    enabled: bool = False  # v2.1 Phase 2: Disabled by default (1.0s overhead) - opt-in via config
 
     # Connectivity & topology
     include_num_connected_components: bool = True
@@ -261,7 +261,7 @@ class SummaryPhysicsConfig(BaseModel):
     Features: correlation functions, structure factor, fluctuations
     """
 
-    enabled: bool = True
+    enabled: bool = False  # v2.1 Phase 2: Disabled by default (0.55s overhead) - opt-in via config
 
     # Correlation functions (multiscale via binning)
     num_correlation_scales: int = Field(default=3, ge=1, le=5)
@@ -294,7 +294,7 @@ class SummaryMorphologicalConfig(BaseModel):
     Features: shape descriptors, image moments, granulometry
     """
 
-    enabled: bool = True
+    enabled: bool = False  # v2.1 Phase 2: Disabled by default (0.47s overhead) - opt-in via config
 
     # Shape descriptors
     include_area_fraction: bool = True  # Fraction above threshold

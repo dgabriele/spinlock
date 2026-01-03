@@ -8,6 +8,31 @@
 dataset_path: "datasets/baseline_10k.h5"
 # No max_samples limit - use full dataset
 
+# Feature Cleaning (V7 BASELINE - proven 82% quality)
+# Key insight: DON'T remove extreme variance features - let category discovery handle them!
+# V7 achieved 82% by putting extreme features in dedicated categories
+feature_cleaning:
+  enabled: true
+
+  # STAGE 1: Minimal variance filtering (V7-style)
+  variance_threshold: 1.0e-8  # V7 default - only remove true zero-variance
+  max_variance_threshold: null  # DON'T filter extreme variance - let categories handle it
+
+  # STAGE 2: Standard deduplication (V7 baseline)
+  deduplicate_threshold: 0.99  # Same as V7
+  use_intelligent_dedup: false  # V7 baseline (V10 showed intelligent version hurts quality)
+
+  # STAGE 3: V7-style outlier clipping
+  outlier_method: "mad"  # V7 default (not percentile)
+  mad_threshold: 5.0  # V7 default
+
+# V12 Validation Run: V7 Architecture + Fixed Per-Category MSE Metric
+# - Architecture: V7's adaptive latent dims (feature_count based) - CORRECT coarse-to-fine design
+# - Metrics: FIXED per-category MSE bug in metrics.py (now compares like-to-like)
+# - Expected: ~82% quality (matching V7) + valid per-category MSE values (0.0-0.5 range)
+# - Validates: V7 architecture is sound, V11's "fix" was actually a regression
+# - After validation: Proceed to Phase 2A hyperparameter optimization
+
 # Feature Families
 families:
   architecture:
@@ -77,7 +102,7 @@ training:
 
   # Checkpointing
   save_every: 50  # Save checkpoint every 50 epochs
-  checkpoint_dir: "checkpoints/production/10k_arch_summary_400epochs_v2"
+  checkpoint_dir: "checkpoints/production/10k_v12_validation"
 
   # Callbacks
   early_stopping_patience: 50  # Increased patience for long training

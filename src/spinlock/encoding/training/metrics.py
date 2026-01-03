@@ -216,11 +216,21 @@ def compute_per_category_metrics(
                 cat_levels = model.config.get_category_levels(cat_name)
                 num_levels = len(cat_levels)
 
+                # Get the feature indices for this category
+                cat_indices = model.config.group_indices[cat_name]
+
+                # Extract only this category's features from the full feature vector
+                cat_features = features[:, cat_indices]
+
                 # Average across all levels for this category
                 cat_recon_mse = 0.0
                 for level_idx in range(num_levels):
                     partial_recon = partial_recons[idx]
-                    cat_recon_mse += F.mse_loss(partial_recon, features).item()
+                    # CRITICAL FIX: partial_recon is a FULL 298-feature reconstruction
+                    # Extract category-specific features from BOTH tensors before comparing
+                    cat_partial_recon = partial_recon[:, cat_indices]
+                    # Now compare like-to-like (both are category-specific)
+                    cat_recon_mse += F.mse_loss(cat_partial_recon, cat_features).item()
                     idx += 1
 
                 cat_recon_mse /= num_levels

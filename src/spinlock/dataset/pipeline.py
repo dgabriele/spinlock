@@ -31,11 +31,14 @@ from dataclasses import dataclass
 
 from .generators import InputFieldGenerator
 from .storage import HDF5DatasetWriter
+from typing import Optional
+from ..cloud.storage import StorageBackend, LocalHDF5Backend
+from ..cloud.execution import ExecutionBackend, LocalExecutionBackend
 from ..sampling import StratifiedSobolSampler
 from ..operators import OperatorBuilder, NeuralOperator
 from ..execution import ParallelExecutor, AdaptiveBatchSizer, MemoryManager
 from ..config import SpinlockConfig
-from ..features.sdf import SummaryExtractor, SummaryConfig
+from ..features.summary import SummaryExtractor, SummaryConfig
 from ..features.storage import HDF5FeatureWriter
 
 
@@ -220,17 +223,31 @@ class DatasetGenerationPipeline:
         ```
     """
 
-    def __init__(self, config: SpinlockConfig):
+    def __init__(
+        self,
+        config: SpinlockConfig,
+        storage_backend: Optional[StorageBackend] = None,
+        execution_backend: Optional[ExecutionBackend] = None
+    ):
         """
         Initialize dataset generation pipeline.
 
         Args:
             config: Complete Spinlock configuration
+            storage_backend: Optional storage backend (defaults to local HDF5)
+            execution_backend: Optional execution backend (defaults to local GPU)
         """
         self.config = config
 
-        # Setup device
-        self.device = self._setup_device()
+        # Inject backends (with defaults for backward compatibility)
+        self._storage_backend = storage_backend or self._create_default_storage()
+        self._execution_backend = execution_backend or self._create_default_execution()
+
+        # Setup execution backend
+        self._execution_backend.setup({"device": self.config.simulation.device})
+
+        # Setup device from execution backend
+        self.device = self._execution_backend.get_device()
 
         # Initialize components
         self.sampler = self._create_sampler()
@@ -251,13 +268,26 @@ class DatasetGenerationPipeline:
 
         # Policy cache for temporal mode (reduces instantiation overhead)
         self._policy_cache: Dict[Tuple[str, float, float], Any] = {}
-        
+
         # Feature extraction pipeline (initialized when needed)
         self._feature_pipeline: Optional[FeatureExtractionPipeline] = None
         self._async_feature_writer: Optional[AsyncFeatureWriter] = None
 
+    def _create_default_storage(self) -> StorageBackend:
+        """Create default storage backend (local HDF5)."""
+        return LocalHDF5Backend()
+
+    def _create_default_execution(self) -> ExecutionBackend:
+        """Create default execution backend (local GPU/CPU)."""
+        return LocalExecutionBackend()
+
     def _setup_device(self) -> torch.device:
-        """Setup torch device from config."""
+        """
+        Setup torch device from config (deprecated, use execution backend).
+
+        This method is kept for backward compatibility but is no longer used
+        internally. The device is now obtained from the execution backend.
+        """
         device_str = self.config.simulation.device
 
         if device_str == "cuda":
@@ -432,21 +462,26 @@ class DatasetGenerationPipeline:
             print(f"  Feature extractor ready on {self.device}\n")
             self._sdf_extractor = sdf_extractor
 
-        # Create HDF5 writer with actual max grid size (not hardcoded 256)
-        with HDF5DatasetWriter(
-            output_path=self.config.dataset.output_path,
-            grid_size=self.max_grid_size,  # Use actual max, not hardcoded 256
-            input_channels=3,  # TODO: Extract from config
-            output_channels=3,  # TODO: Extract from config
-            num_realizations=self.config.simulation.num_realizations,
-            num_parameter_sets=num_samples,
-            compression=self.config.dataset.storage.compression,
-            compression_opts=self.config.dataset.storage.compression_level,
-            chunk_size=self.config.dataset.storage.chunk_size,
-            track_ic_metadata=True,  # Enable discovery metadata
-            store_trajectories=store_trajectories,  # Feature-only mode support
-            num_timesteps=self.config.simulation.num_timesteps,  # Temporal support
-        ) as writer:
+        # Initialize storage backend with actual max grid size (not hardcoded 256)
+        storage_config = {
+            "grid_size": self.max_grid_size,  # Use actual max, not hardcoded 256
+            "input_channels": 3,  # TODO: Extract from config
+            "output_channels": 3,  # TODO: Extract from config
+            "num_realizations": self.config.simulation.num_realizations,
+            "num_parameter_sets": num_samples,
+            "compression": self.config.dataset.storage.compression,
+            "compression_level": self.config.dataset.storage.compression_level,
+            "chunk_size": self.config.dataset.storage.chunk_size,
+            "track_ic_metadata": True,  # Enable discovery metadata
+            "store_trajectories": store_trajectories,  # Feature-only mode support
+            "num_timesteps": self.config.simulation.num_timesteps,  # Temporal support
+        }
+        self._storage_backend.initialize(
+            output_path=str(self.config.dataset.output_path),
+            config=storage_config
+        )
+
+        try:
 
             # Initialize feature writer for inline extraction
             if sdf_extractor is not None:
@@ -510,7 +545,7 @@ class DatasetGenerationPipeline:
                 print(f"  Async I/O: Enabled (pipelined writes)\n")
 
             # Write metadata
-            writer.write_metadata(
+            self._storage_backend.write_metadata(
                 {
                     "config": self.config.model_dump(mode="json"),
                     "sampling_metrics": validation_metrics,
@@ -557,10 +592,10 @@ class DatasetGenerationPipeline:
                                 param_batch, actual_batch_size, grid_size
                             )
 
-                            # Write to HDF5 (with metadata and proper indexing)
+                            # Write to storage backend (with metadata and proper indexing)
                             store_start = time.time()
                             self._write_batch_to_hdf5(
-                                writer, batch_indices, param_batch, batch_inputs, batch_outputs, metadata
+                                batch_indices, param_batch, batch_inputs, batch_outputs, metadata
                             )
                             self.stats["storage_time"] += time.time() - store_start
 
@@ -628,7 +663,11 @@ class DatasetGenerationPipeline:
                             else:
                                 raise
 
-        print(f"\n✓ Dataset saved: {self.config.dataset.output_path}")
+            print(f"\n✓ Dataset saved: {self.config.dataset.output_path}")
+
+        finally:
+            # Ensure storage backend is properly closed
+            self._storage_backend.close()
 
     def _process_batch(
         self, param_batch: NDArray[np.float64], batch_size: int
@@ -1361,7 +1400,6 @@ class DatasetGenerationPipeline:
 
     def _write_batch_to_hdf5(
         self,
-        writer: HDF5DatasetWriter,
         batch_indices: NDArray[np.int64],
         param_batch: NDArray[np.float64],
         batch_inputs: torch.Tensor,
@@ -1369,10 +1407,9 @@ class DatasetGenerationPipeline:
         metadata: Dict[str, Any],
     ) -> None:
         """
-        Write batch to HDF5 with proper indexing and metadata.
+        Write batch to storage backend with proper indexing and metadata.
 
         Args:
-            writer: HDF5 writer
             batch_indices: Global indices for this batch
             param_batch: Parameters
             batch_inputs: Input fields
@@ -1389,12 +1426,12 @@ class DatasetGenerationPipeline:
             )
 
         # We need to write to specific indices, not sequential
-        # But HDF5DatasetWriter expects sequential writes
+        # But storage backend expects sequential writes
         # For now, store temporarily and write sequentially
         # This is a limitation we'll need to address
 
         # Workaround: Write batch sequentially (assumes group-by-grid processes in order)
-        writer.write_batch(
+        self._storage_backend.write_batch(
             parameters=param_batch,
             inputs=batch_inputs,
             outputs=batch_outputs,
@@ -1461,9 +1498,8 @@ class DatasetGenerationPipeline:
             del self._policy_cache[key]
         self._policy_cache.clear()
 
-        # Force GPU memory cleanup if CUDA available
-        if self.device.type == "cuda":
-            torch.cuda.empty_cache()
+        # Cleanup execution backend (GPU memory, etc.)
+        self._execution_backend.cleanup()
 
         # Force garbage collection
         gc.collect()
