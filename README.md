@@ -42,10 +42,20 @@ Spinlock builds **foundation models for scientific simulation**. The goal is to 
 - **Agent:** Transformer-based NOA learns to predict tokens from (θ, u₀) embeddings
 
 **Downstream Applications:**
+
+*Scientific & Engineering:*
 - **Surrogate modeling:** Predict simulation outcomes 1000× faster than full rollout
 - **Anomaly detection:** Flag unusual dynamics in real-time sensor data
 - **Transfer learning:** Fine-tune on domain-specific PDEs (Navier-Stokes, reaction-diffusion, etc.)
-- **Scientific discovery:** Cluster operators by behavior to find universal patterns across systems
+- **Scientific discovery:** Cluster operators by behavior to find universal patterns across physics and biology
+
+*General Intelligence & Cognition:*
+- **Meta-learning from dynamics:** Few-shot adaptation to novel systems by learning abstract behavioral principles rather than task-specific solutions
+- **Compositional reasoning:** Understand how operator components combine to produce emergent behaviors, enabling prediction of unseen configurations
+- **Working memory dynamics:** Model short-term information processing through temporal operator trajectories, capturing how systems maintain and transform state
+- **Episodic memory formation:** Learn to encode, consolidate, and retrieve sequences of dynamical events, enabling experience-based reasoning
+- **Cross-domain abstraction:** Extract domain-invariant behavioral patterns that generalize across disparate physical, biological, and cognitive systems
+- **Attention-based memory selection:** Discover which dynamical features are worth preserving vs. discarding for efficient future prediction
 
 ### Core Capabilities
 
