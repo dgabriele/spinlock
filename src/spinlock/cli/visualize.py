@@ -572,7 +572,7 @@ Examples:
             # Use stored input from dataset as initial condition
             initial_condition = selected_inputs[op_idx]  # [C, H, W]
 
-            traj, _ = rollout.evolve_operator(
+            traj, _, _ = rollout.evolve_operator(
                 operator,
                 initial_condition,
                 num_realizations=n_realizations,

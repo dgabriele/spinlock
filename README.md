@@ -16,6 +16,7 @@ Pre-training infrastructure for **Neural Operator Agents (NOA)**—foundation mo
 - [🧠 Neural Operator Agents (NOA)](#-neural-operator-agents-noa)
 - [🏗️ Architecture](#️-architecture)
 - [📊 Feature Families](#-feature-families)
+- [🎛️ VQ-VAE Behavioral Tokenization](#️-vq-vae-behavioral-tokenization)
 - [⚡ Quick Start](#-quick-start)
 - [🚀 Installation](#-installation)
 - [📚 Documentation](#-documentation)
@@ -258,6 +259,47 @@ The VQ-VAE jointly trains on all 4 families simultaneously, learning unified rep
 This multi-modal training enables the model to discover behavioral categories that integrate structural, dynamical, and temporal characteristics—essential for NOA systems that reason about operator behavior.
 
 See [docs/features/](docs/features/) for detailed feature definitions and extraction methods.
+
+---
+
+## 🎛️ VQ-VAE Behavioral Tokenization
+
+The VQ-VAE pipeline transforms continuous behavioral features into discrete tokens—a compositional vocabulary for describing neural operator dynamics.
+
+### Production Baseline: 100K Full Features
+
+Our production model achieves **0.9475 quality** with **93.7% codebook utilization** on 100,000 operators:
+
+| Metric | Value |
+|--------|-------|
+| Input Features | 172 (after cleaning from 268 raw) |
+| Categories Discovered | 11 (data-driven clustering) |
+| Hierarchical Levels | 3 (coarse → medium → fine) |
+| Total Codebooks | 33 (11 categories × 3 levels) |
+| Reconstruction Error | 0.052 |
+
+**Key design choices:**
+- **Auto-scaling codebook sizes** via compression ratios (0.5 coarse, 1.5 fine)
+- **Dead code resets** prune unused codes, right-sizing vocabulary to data
+- **Category purity**: 82% of categories contain features from a single family (emergent, not enforced)
+
+### Visualization Dashboards
+
+```bash
+# Generate all three dashboards
+poetry run spinlock visualize-vqvae \
+    --checkpoint checkpoints/production/100k_full_features/ \
+    --output visualizations/ \
+    --type all
+```
+
+| Dashboard | Purpose |
+|-----------|---------|
+| **Engineering** | Training curves, utilization heatmap, architecture schematic |
+| **Topological** | t-SNE codebook embeddings, inter-codebook similarity |
+| **Semantic** | Feature→category mapping, category sizes, correlation |
+
+📖 **Detailed documentation:** [docs/baselines/100k-full-features-vqvae.md](docs/baselines/100k-full-features-vqvae.md)
 
 ---
 

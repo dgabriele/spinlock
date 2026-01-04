@@ -21,6 +21,7 @@ torchvision = ">=0.20.0"
 requests = "^2.32.5"
 paramiko = "^4.0.0"
 kornia = "^0.8.2"
+av = "^16.0.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
