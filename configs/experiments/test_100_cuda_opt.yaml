@@ -1,0 +1,169 @@
+version: "1.0"
+
+metadata:
+  name: "test_100_cuda_opt"
+  description: |
+    Test config for CUDA optimization benchmarking.
+    100 operators based on production 100K config.
+  author: "Spinlock Team"
+  created: "2026-01-04"
+  purpose: |
+    Benchmark CUDA optimizations:
+    - Phase 1: Architecture partitioning + torch.compile
+    - Phase 2: Batched operator execution with vmap
+
+    Based on local_100k_optimized.yaml parameter space.
+
+# Same 14-dimensional parameter space as production
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 5]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: choice
+      choices: [16, 32, 48, 64]  # Discrete values for effective partitioning
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5]  # Reduced from [3, 5, 7] to get fewer partitions
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["gelu"]
+      description: "Activation function"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian"]
+      description: "Stochastic noise distribution"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.00001, 1.0]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+    noise_schedule:
+      type: choice
+      choices: ["constant"]
+      description: "Temporal noise schedule"
+
+    spatial_correlation:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Spatial correlation length for noise"
+
+  operator:
+    normalization:
+      type: choice
+      choices: ["instance"]
+      description: "Feature normalization"
+
+    grid_size:
+      type: choice
+      choices: [128]
+      description: "Spatial grid resolution"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["residual", "convex"]
+      weights: [0.75, 0.25]
+      description: "Temporal update policy"
+
+# Sampling configuration for 100 test samples
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 3
+    min_samples_per_stratum: 2
+
+  validation:
+    check_discrepancy: true
+    check_correlation: true
+
+  total_samples: 100
+  batch_size: 4
+
+# Simulation configuration
+simulation:
+  device: "cuda"
+  operator_type: "cnn"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "sampled"
+
+    ic_type_weights:
+      gaussian_random_field_v2: 0.5
+      structured: 0.25
+      localized: 0.25
+
+    gaussian_random_field_v2:
+      length_scale: 0.05
+      variance: 1.0
+
+    structured:
+      num_modes: 1
+      wavelength_range: [8.0, 64.0]
+      amplitude_range: [0.5, 2.0]
+
+    localized:
+      num_blobs: 5
+      min_width: 5.0
+      max_width: 15.0
+
+  num_realizations: 3
+  num_timesteps: 100  # Reduced for faster testing
+
+  # Performance optimization settings
+  performance:
+    # Phase 1: Architecture partitioning
+    partition_by_architecture: true  # ENABLED
+    channel_bucket_size: 16
+    compile_mode: "reduce-overhead"
+    # Phase 2: Batched execution (not yet implemented)
+    batched_execution: false
+    max_batch_size: 32
+
+# Dataset output configuration
+dataset:
+  output_path: "datasets/test_100_cuda_opt.h5"
+
+  storage:
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 4
+    store_trajectories: false
+
+# Feature extraction
+features:
+  temporal:
+    enabled: false
+  summary:
+    enabled: true
+
+# Logging
+logging:
+  level: "INFO"
+  format: "structured"

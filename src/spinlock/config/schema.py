@@ -370,9 +370,20 @@ class InputGenerationConfig(BaseModel):
 class PerformanceConfig(BaseModel):
     """Performance optimization configuration."""
 
-    compile: bool = False  # torch.compile (PyTorch 2.0+)
+    compile: bool = False  # torch.compile (PyTorch 2.0+) - legacy single-operator mode
     benchmark_cudnn: bool = True
     deterministic: bool = False
+
+    # Phase 1: Architecture partitioning + torch.compile per partition
+    # Groups operators by (num_layers, channels_bucket, kernel_size) and compiles ONE
+    # kernel per partition, reusing it across all operators with same architecture.
+    partition_by_architecture: bool = True  # Default: enabled
+    channel_bucket_size: int = 16  # Bucket channels in groups (16, 32, 48, 64)
+    compile_mode: Literal["reduce-overhead", "max-autotune", "default"] = "reduce-overhead"
+
+    # Phase 2: Batched operator execution with vmap (future)
+    batched_execution: bool = False  # Not yet implemented
+    max_batch_size: int = 32  # Max operators per vmap batch
 
 
 class SimulationConfig(BaseModel):

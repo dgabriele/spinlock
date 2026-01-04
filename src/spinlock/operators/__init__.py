@@ -19,6 +19,14 @@ from .parameters import (
     DatasetMetadata,
     BatchMetadata
 )
+from .partitioning import (
+    ArchitecturePartition,
+    bucket_channels,
+    get_architecture_signature,
+    partition_operators,
+    get_partition_stats,
+    print_partition_summary,
+)
 
 __all__ = [
     # Base blocks
@@ -46,4 +54,11 @@ __all__ = [
     "SamplingMetrics",
     "DatasetMetadata",
     "BatchMetadata",
+    # Partitioning (CUDA optimization)
+    "ArchitecturePartition",
+    "bucket_channels",
+    "get_architecture_signature",
+    "partition_operators",
+    "get_partition_stats",
+    "print_partition_summary",
 ]
