@@ -28,96 +28,99 @@ poetry run spinlock inspect datasets/my_operators.h5
 ```
 
 View dataset contents:
-- Number of operators
-- Feature dimensions (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL)
-- Metadata (INITIAL types, evolution policies, parameter stratification)
+- Number of operators and realizations
+- Feature dimensions (SUMMARY aggregated, TEMPORAL if enabled)
+- Metadata (initial condition types, evolution policies, parameter stratification)
 
 ### 3. Understanding Feature Semantics
 
-The four feature families provide complementary perspectives on operator behavior. Understanding what each feature measures enables interpretable discovery and validation:
+The feature families provide complementary perspectives on operator behavior. Understanding what each feature measures enables interpretable discovery and validation.
+
+**HDF5 Layout:** See [HDF5 Layout Reference](features/hdf5-layout.md) for the complete dataset schema.
 
 ```python
 import h5py
 import numpy as np
+import json
 from pathlib import Path
 
 # Load dataset
 with h5py.File("datasets/my_operators.h5", "r") as f:
-    initial_features = f["features/initial"][:]      # [N, M, 42]
-    arch_features = f["features/architecture"][:]    # [N, 21+]
-    summary_features = f["features/summary"][:]      # [N, 420-520]
-    temporal_features = f["features/temporal"][:]    # [N, M, T, D]
+    # SUMMARY features: aggregated behavioral statistics [N, D]
+    summary_features = f["/features/summary/aggregated/features"][:]
 
-    # Feature metadata
-    initial_names = f["features/initial"].attrs["feature_names"]
-    summary_names = f["features/summary"].attrs["feature_names"]
+    # TEMPORAL features: per-timestep time series [N, T, D] (if enabled)
+    if "/features/temporal/features" in f:
+        temporal_features = f["/features/temporal/features"][:]
+    else:
+        temporal_features = None
 
-# Example 1: Interpret spatial characteristics (INITIAL features)
-# High spatial gradient → sharp interfaces or localized structures
-spatial_gradient_idx = list(initial_names).index("ic_spatial_gradient_mean")
-spatial_gradients = initial_features[:, :, spatial_gradient_idx].mean(axis=1)
+    # ARCHITECTURE features: from parameter vectors [N, P]
+    arch_features = f["/parameters/vectors"][:]
 
-print("Operators with high spatial gradients (sharp structures):")
-high_gradient_ops = np.where(spatial_gradients > np.percentile(spatial_gradients, 90))[0]
-print(f"  Found {len(high_gradient_ops)} operators in top 10%")
+    # Feature registry for interpretability
+    registry_json = f["/features/summary"].attrs["feature_registry"]
+    registry = json.loads(registry_json)
 
-# Example 2: Cross-validate ARCHITECTURE and SUMMARY features
-# Do high-noise operators show high SUMMARY entropy?
-noise_scale_idx = 0  # First parameter in architecture features
-noise_scales = arch_features[:, noise_scale_idx]
+# Example 1: Find features by category
+# Registry structure: {category: {feature_name: index}}
+def get_feature_indices(registry, category):
+    """Get feature indices for a category."""
+    if category not in registry:
+        return []
+    return list(registry[category].values())
 
-# Find SUMMARY entropy feature
-entropy_idx = [i for i, name in enumerate(summary_names) if "entropy" in name][0]
-summary_entropy = summary_features[:, entropy_idx]
+spatial_indices = get_feature_indices(registry, "spatial")
+spectral_indices = get_feature_indices(registry, "spectral")
+temporal_indices = get_feature_indices(registry, "temporal")
 
-correlation = np.corrcoef(noise_scales, summary_entropy)[0, 1]
-print(f"\nNoise scale vs. SUMMARY entropy correlation: {correlation:.3f}")
-print("  High correlation confirms features capture related behavioral aspects")
+print(f"Feature dimensions by category:")
+print(f"  Spatial: {len(spatial_indices)} features")
+print(f"  Spectral: {len(spectral_indices)} features")
+print(f"  Temporal: {len(temporal_indices)} features")
 
-# Example 3: Identify behavioral regimes via SUMMARY spectral features
+# Example 2: Analyze SUMMARY spectral features
 # Strong spectral peaks → periodic or quasi-periodic behavior
-spectral_peak_indices = [i for i, name in enumerate(summary_names)
-                         if "spectral" in name and "peak" in name]
-spectral_strength = summary_features[:, spectral_peak_indices].max(axis=1)
+if spectral_indices:
+    spectral_features = summary_features[:, spectral_indices]
+    spectral_strength = spectral_features.max(axis=1)
 
-print(f"\nOperators with strong periodic components:")
-periodic_ops = np.where(spectral_strength > np.percentile(spectral_strength, 80))[0]
-print(f"  Found {len(periodic_ops)} operators in top 20%")
+    print(f"\nOperators with strong periodic components:")
+    periodic_ops = np.where(spectral_strength > np.percentile(spectral_strength, 80))[0]
+    print(f"  Found {len(periodic_ops)} operators in top 20%")
 
-# Example 4: Temporal evolution patterns
-# Examine how variance evolves over time
-variance_trajectory = temporal_features[:, :, :, 0]  # Assuming first feature is variance
-mean_variance_trajectory = variance_trajectory.mean(axis=1)  # Average across realizations
+# Example 3: Temporal evolution patterns (if TEMPORAL enabled)
+if temporal_features is not None:
+    # Examine how features evolve over time
+    early_mean = temporal_features[:, :50, :].mean(axis=(1, 2))
+    late_mean = temporal_features[:, -50:, :].mean(axis=(1, 2))
+    feature_growth = (late_mean - early_mean) / (np.abs(early_mean) + 1e-8)
 
-# Classify temporal behaviors
-early_variance = mean_variance_trajectory[:, :50].mean(axis=1)
-late_variance = mean_variance_trajectory[:, -50:].mean(axis=1)
-variance_growth = (late_variance - early_variance) / (early_variance + 1e-8)
-
-print(f"\nTemporal behavior classification:")
-print(f"  Growing operators (variance increases): {(variance_growth > 0.5).sum()}")
-print(f"  Stable operators (variance constant): {(np.abs(variance_growth) < 0.5).sum()}")
-print(f"  Decaying operators (variance decreases): {(variance_growth < -0.5).sum()}")
+    print(f"\nTemporal behavior classification:")
+    print(f"  Growing operators: {(feature_growth > 0.5).sum()}")
+    print(f"  Stable operators: {(np.abs(feature_growth) < 0.5).sum()}")
+    print(f"  Decaying operators: {(feature_growth < -0.5).sum()}")
+else:
+    print("\nTEMPORAL features not available in this dataset")
 ```
 
 **Interpretation Tips:**
 
-| Feature Family | High Values Indicate | Low Values Indicate |
-|---------------|---------------------|-------------------|
-| **INITIAL spatial gradients** | Sharp interfaces, localized structures | Smooth, diffuse initial conditions |
-| **INITIAL spectral peaks** | Periodic initial patterns | Broadband or noisy initial conditions |
-| **ARCHITECTURE noise scale** | High stochasticity, variability | Deterministic or low-noise dynamics |
-| **SUMMARY entropy** | Chaotic or irregular dynamics | Ordered or simple patterns |
-| **SUMMARY spectral power** | Periodic or quasi-periodic behavior | Aperiodic or chaotic behavior |
-| **SUMMARY spatial variance** | Heterogeneous spatial patterns | Homogeneous or uniform states |
-| **TEMPORAL growth rates** | Expanding or unstable dynamics | Contracting or stable dynamics |
+| Feature Category | High Values Indicate | Low Values Indicate |
+|-----------------|---------------------|-------------------|
+| **Spatial gradients** | Sharp interfaces, localized structures | Smooth, diffuse patterns |
+| **Spectral peaks** | Periodic or quasi-periodic behavior | Aperiodic or chaotic behavior |
+| **Spectral entropy** | Chaotic or irregular dynamics | Ordered or simple patterns |
+| **Temporal autocorrelation** | Persistent dynamics | Rapidly changing states |
+| **Causality metrics** | Strong information flow | Weak dependencies |
+| **Invariant drift** | Evolving behavioral regimes | Stable dynamics |
 
 **Cross-Validation Strategy:**
 
 Multi-modal features enable consistency checking across perspectives:
-- If **ARCHITECTURE** suggests chaotic behavior (high noise), do **SUMMARY** entropy features confirm?
-- If **TEMPORAL** shows period-doubling, do **SUMMARY** spectral features detect harmonics?
-- If **INITIAL** indicates smooth inputs, does **SUMMARY** show expected spatial autocorrelation?
+- If **parameter vectors** suggest high noise, do **SUMMARY** entropy features confirm chaotic behavior?
+- If **TEMPORAL** features show period-doubling, do **SUMMARY** spectral features detect harmonics?
+- Compare spatial features at early vs. late timesteps to detect pattern evolution.
 
 This cross-validation increases confidence that discovered categories reflect genuine behavioral differences, not statistical artifacts.
 
@@ -131,7 +134,8 @@ poetry run spinlock train-vqvae \
 ```
 
 This will:
-- Load and concatenate all feature families (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL)
+- Load SUMMARY aggregated features from `/features/summary/aggregated/features`
+- Optionally concatenate TEMPORAL features if available
 - Automatically clean features (NaN removal, variance filtering, deduplication)
 - Discover ~8-15 categories via hierarchical clustering
 - Train 3-level hierarchical VQ-VAE
@@ -196,24 +200,22 @@ poetry run spinlock visualize-dataset \
 If you already have rollouts and want to extract features:
 
 ```python
-from spinlock.features.initial import InitialExtractor, InitialConfig
 from spinlock.features.summary import SummaryExtractor, SummaryConfig
 import torch
 
-# Configure and create INITIAL extractor
-initial_config = InitialConfig()
-initial_extractor = InitialExtractor(initial_config, device=torch.device('cuda'))
-
-# Extract INITIAL features
-initial_features = initial_extractor.extract_all(initial_conditions)  # [N, M, 42]
-
 # Configure and create SUMMARY extractor
-summary_config = SummaryConfig()
+summary_config = SummaryConfig(
+    per_channel=True,
+    temporal_aggregation=["mean", "std", "trend"],
+    realization_aggregation=["mean", "std", "cv"]
+)
 summary_extractor = SummaryExtractor(summary_config, device=torch.device('cuda'))
 
-# Extract SUMMARY features
-summary_features = summary_extractor.extract_all(rollouts)  # [N, 420-520]
+# Extract SUMMARY features from rollouts [N, M, T, C, H, W]
+summary_features = summary_extractor.extract_all(rollouts)  # [N, ~360]
 ```
+
+See [Feature Families README](features/README.md) for details on available extractors.
 
 ## Configuration
 
@@ -235,25 +237,30 @@ Located in `configs/vqvae/`:
 Create your own YAML config:
 
 ```yaml
-dataset:
+metadata:
   name: "custom_dataset"
-  num_operators: 5000
+
+sampling:
+  total_samples: 5000
+
+simulation:
   num_realizations: 3
   num_timesteps: 500
-  grid_size: 128
+  operator_type: "cnn"
 
-parameter_space:
-  architecture:
-    num_layers: [2, 8]
-    kernel_size: [3, 9]
-    # ... more parameters
+  input_generation:
+    method: "sampled"
+    grid_size: 128
 
+# Feature extraction config
 features:
-  initial: true
-  architecture: true
-  summary: true
-  temporal: true
+  temporal:
+    enabled: false  # Disable per-timestep features to save space
+  summary:
+    enabled: true   # Enable aggregated SUMMARY features
 ```
+
+See [HDF5 Layout Reference](features/hdf5-layout.md) for details on the feature storage structure.
 
 ## Common Workflows
 
@@ -309,6 +316,7 @@ poetry run spinlock train-vqvae --datasets datasets/*.h5
 ## References
 
 - [Architecture](architecture.md) - System design details
-- [Feature Families](features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL documentation
+- [Feature Families](features/README.md) - Feature family documentation (TEMPORAL, SUMMARY)
+- [HDF5 Layout](features/hdf5-layout.md) - Dataset schema reference
 - [VQ-VAE Training](vqvae/training-guide.md) - Tokenization pipeline
 - [NOA Roadmap](noa-roadmap.md) - Future development plan

@@ -351,6 +351,7 @@ For detailed installation instructions, platform-specific guides, and troublesho
 - [**NOA Roadmap**](docs/noa-roadmap.md) - 5-phase development plan for Neural Operator Agents
 - [**Architecture**](docs/architecture.md) - Detailed system design and implementation
 - [**Feature Families**](docs/features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL feature definitions and extraction
+- [**HDF5 Layout**](docs/features/hdf5-layout.md) - Dataset schema reference for VQ-VAE pipeline
 - [**Getting Started**](docs/getting-started.md) - Tutorials and end-to-end examples
 - [**Installation**](docs/installation.md) - Platform-specific installation guides
 
