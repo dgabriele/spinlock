@@ -1,0 +1,106 @@
+# Production Training: SUMMARY + TEMPORAL + ARCHITECTURE Joint Training (Full 100K Dataset)
+# Multi-family configuration with aggregated, temporal, and architecture features
+
+# Dataset
+dataset_path: "datasets/100k_full_features.h5"
+# No max_samples limit - use full dataset
+
+# Feature Families
+families:
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [512, 256]
+      output_dim: 128
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
+
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      embedding_dim: 128
+      architecture: "resnet1d_3"
+
+  architecture:
+    encoder: IdentityEncoder
+    encoder_params: {}
+    # Parameters are already normalized to [0, 1] range (12D)
+
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 256
+  group_hidden_dim: 512
+
+  # Hierarchical levels (empty for autoscaling)
+  levels: []
+
+  # VQ-VAE hyperparameters
+  commitment_cost: 0.25
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+
+# Training
+training:
+  batch_size: 512
+  learning_rate: 0.001
+  num_epochs: 200  # Reduced from 400 - 100K samples converges faster
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 0
+
+  # Category discovery (auto mode)
+  category_assignment: "auto"
+  num_categories_auto: null  # Auto-determine via silhouette score
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+  max_clusters: 25
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.3
+  topo_samples: 512
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/production/100k_full_features"
+
+  # Callbacks
+  early_stopping_patience: 30
+  early_stopping_min_delta: 0.01
+  dead_code_reset_interval: 25
+  dead_code_threshold: 10.0
+  dead_code_max_reset_fraction: 0.25
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Expected Performance:
+# - Dataset: 100K samples with SUMMARY (360D) + TEMPORAL (256×63D) + ARCHITECTURE (12D)
+# - After encoding: SUMMARY (128D) + TEMPORAL (128D) + ARCHITECTURE (12D) = 268D total
+# - Training time: ~2-4 hours (200 epochs, batch_size=256)
+# - Target metrics:
+#   - Reconstruction quality: >0.85
+#   - Codebook utilization: >25%
+#   - Category orthogonality: <0.25
