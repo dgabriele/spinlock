@@ -45,7 +45,7 @@ class VisualizationGrid:
         spacing_width: int = 2,
         display_realizations: Optional[int] = None,
         add_headers: bool = True,
-        header_height: int = 20,
+        header_height: int = 80,
         color_norm_mode: str = "per-cell"
     ):
         """
@@ -81,7 +81,7 @@ class VisualizationGrid:
         grid_W: int
     ) -> torch.Tensor:
         """
-        Create header row with column labels.
+        Create header row with vertical column labels.
 
         Args:
             M_display: Number of displayed realizations
@@ -96,37 +96,55 @@ class VisualizationGrid:
 
         # Create white background
         header_img = Image.new('RGB', (grid_W, self.header_height), color=(255, 255, 255))
-        draw = ImageDraw.Draw(header_img)
 
-        # Use default font (small)
+        # Use readable font
         try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
         except:
             font = ImageFont.load_default()
 
         W = self.grid_size
         spacing = self.spacing_width if self.add_spacing else 0
 
+        def draw_vertical_text(img: Image.Image, text: str, center_x: int, font: ImageFont.FreeTypeFont) -> None:
+            """Draw vertically oriented text centered at x position."""
+            # Create temporary image for text (horizontal first)
+            temp_draw = ImageDraw.Draw(Image.new('RGB', (1, 1)))
+            bbox = temp_draw.textbbox((0, 0), text, font=font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+
+            # Create text image with padding
+            text_img = Image.new('RGB', (text_w + 4, text_h + 4), color=(255, 255, 255))
+            text_draw = ImageDraw.Draw(text_img)
+            text_draw.text((2, 2), text, fill=(0, 0, 0), font=font)
+
+            # Rotate 90 degrees counter-clockwise
+            rotated = text_img.rotate(90, expand=True)
+
+            # Calculate position: center horizontally, align to top with padding
+            paste_x = center_x - rotated.width // 2
+            paste_y = 4  # Small top margin, leaves space at bottom for gap with content
+
+            # Clip to image boundaries
+            paste_x = max(0, min(paste_x, grid_W - rotated.width))
+            paste_y = max(0, min(paste_y, self.header_height - rotated.height))
+
+            # Paste rotated text
+            img.paste(rotated, (paste_x, paste_y))
+
         # Draw "Realizations" label over realization columns (if any)
         if M_display > 0:
             realizations_width = M_display * W + (M_display - 1) * spacing
-            text = "Realizations"
-            bbox = draw.textbbox((0, 0), text, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_x = (realizations_width - text_width) // 2
-            draw.text((text_x, 4), text, fill=(0, 0, 0), font=font)
+            center_x = realizations_width // 2
+            draw_vertical_text(header_img, "Realizations", center_x, font)
 
-        # Draw individual aggregate labels
+        # Draw individual aggregate labels vertically
         for i, agg_name in enumerate(aggregate_names):
             col = M_display + i
             col_start = col * (W + spacing)
             col_center = col_start + W // 2
-
-            # Center text
-            bbox = draw.textbbox((0, 0), agg_name, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_x = col_center - text_width // 2
-            draw.text((text_x, 4), agg_name, fill=(0, 0, 0), font=font)
+            draw_vertical_text(header_img, agg_name, col_center, font)
 
         # Convert to tensor
         header_array = np.array(header_img).astype(np.float32) / 255.0

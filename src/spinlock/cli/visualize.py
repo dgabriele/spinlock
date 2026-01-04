@@ -196,6 +196,14 @@ Examples:
         )
 
         sample_group.add_argument(
+            "--evolution-policy",
+            type=str,
+            choices=["convex", "residual", "autoregressive"],
+            default=None,
+            help="Filter operators by evolution policy (default: no filter, use all)",
+        )
+
+        sample_group.add_argument(
             "--operator-indices",
             type=int,
             nargs="+",
@@ -310,6 +318,7 @@ Examples:
                 aggregates=args.aggregates,
                 add_spacing=not args.no_spacing,
                 sampling_method=args.sampling_method,
+                evolution_policy=args.evolution_policy,
                 operator_indices=args.operator_indices,
                 seed=args.seed,
                 normalization=args.normalization if args.normalization != "none" else None,
@@ -418,6 +427,7 @@ Examples:
         aggregates: List[str],
         add_spacing: bool,
         sampling_method: str,
+        evolution_policy: Optional[str],
         operator_indices: Optional[List[int]],
         seed: int,
         normalization: Optional[str],
@@ -464,6 +474,25 @@ Examples:
             # Get dataset defaults for realizations
             dataset_num_realizations = int(metadata.get("num_realizations", 10))
 
+            # Filter by evolution policy if specified
+            eligible_indices = None
+            if evolution_policy is not None:
+                h5file = reader.file
+                if "metadata/evolution_policies" in h5file:
+                    policies = h5file["metadata/evolution_policies"][:]
+                    eligible_indices = [
+                        i for i, p in enumerate(policies)
+                        if (p.decode() if isinstance(p, bytes) else p) == evolution_policy
+                    ]
+                    if verbose:
+                        print(f"  Filtered to {len(eligible_indices)} operators with policy={evolution_policy}")
+                    if len(eligible_indices) == 0:
+                        print(f"  Warning: No operators found with policy={evolution_policy}")
+                        eligible_indices = list(range(num_total_operators))
+                else:
+                    if verbose:
+                        print(f"  Warning: No evolution_policies metadata, ignoring --evolution-policy")
+
             # Sample operator indices
             if operator_indices is not None:
                 selected_indices = operator_indices
@@ -475,17 +504,29 @@ Examples:
                     reader=reader,
                     n_sample=n_operators,
                     seed=seed,
+                    eligible_indices=eligible_indices,
                     verbose=verbose
                 )
                 if verbose:
                     print(f"  Sampled {len(selected_indices)} operators via diverse (feature-based)")
             else:
-                selected_indices = self._sample_operator_indices(
-                    n_total=num_total_operators,
-                    n_sample=n_operators,
-                    method=sampling_method,
-                    seed=seed
-                )
+                # Apply sampling to eligible indices if filtered
+                if eligible_indices is not None:
+                    selected_indices = self._sample_operator_indices(
+                        n_total=len(eligible_indices),
+                        n_sample=n_operators,
+                        method=sampling_method,
+                        seed=seed
+                    )
+                    # Map back to original indices
+                    selected_indices = [eligible_indices[i] for i in selected_indices]
+                else:
+                    selected_indices = self._sample_operator_indices(
+                        n_total=num_total_operators,
+                        n_sample=n_operators,
+                        method=sampling_method,
+                        seed=seed
+                    )
                 if verbose:
                     print(f"  Sampled {len(selected_indices)} operators via {sampling_method}")
 
@@ -836,6 +877,7 @@ Examples:
         reader: "HDF5DatasetReader",
         n_sample: int,
         seed: int,
+        eligible_indices: Optional[List[int]] = None,
         verbose: bool = False
     ) -> List[int]:
         """
@@ -852,6 +894,7 @@ Examples:
             reader: HDF5 dataset reader with features
             n_sample: Number of operators to sample
             seed: Random seed for reproducibility
+            eligible_indices: If provided, only consider these indices (for policy filtering)
             verbose: Print progress information
 
         Returns:
@@ -889,6 +932,13 @@ Examples:
                 method="sobol",
                 seed=seed
             )
+
+        # If eligible_indices provided, filter features
+        if eligible_indices is not None:
+            features = features[eligible_indices]
+            index_mapping = eligible_indices  # Map filtered indices back to original
+        else:
+            index_mapping = None
 
         n_total = len(features)
         if verbose:
@@ -958,7 +1008,12 @@ Examples:
             print(f"  Interestingness scores: min={selected_scores.min():.3f}, "
                   f"max={selected_scores.max():.3f}, mean={selected_scores.mean():.3f}")
 
-        return selected[:n_sample]
+        # Map back to original indices if we filtered
+        result = selected[:n_sample]
+        if index_mapping is not None:
+            result = [index_mapping[i] for i in result]
+
+        return result
 
     def _precompute_aggregates(
         self,

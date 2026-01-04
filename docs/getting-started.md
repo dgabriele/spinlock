@@ -209,6 +209,14 @@ poetry run spinlock visualize-dataset \
     --aggregates pca variance entropy spectral mean \
     --size 128x128 \
     --sampling-method diverse
+
+# Filter by evolution policy (convex produces more dynamic/amoeba-like behavior)
+poetry run spinlock visualize-dataset \
+    --dataset datasets/100k_full_features.h5 \
+    --output visualizations/convex_operators.mp4 \
+    --evolution-policy convex \
+    --sampling-method diverse \
+    --aggregates pca variance mean
 ```
 
 **Sampling methods:**
@@ -216,6 +224,10 @@ poetry run spinlock visualize-dataset \
 - `diverse`: Feature-based interestingness scoring (entropy + outlier distance + variance)
 - `random`: Uniform random sampling
 - `sequential`: First N operators
+
+**Evolution policy filter:**
+- `--evolution-policy convex`: Select operators using convex mixing (more dynamic, amoeba-like)
+- `--evolution-policy residual`: Select operators using residual/Euler integration (more stable)
 
 **Aggregate renderers:**
 - `mean`: Mean field across realizations

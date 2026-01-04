@@ -328,6 +328,24 @@ poetry run spinlock generate \
 poetry run spinlock inspect datasets/my_operators.h5
 ```
 
+### Visualize Operator Dynamics
+
+Generate videos showing temporal evolution of operators with aggregate views (PCA, variance, mean):
+
+```bash
+# Visualize convex operators (more dynamic, amoeba-like behavior)
+poetry run spinlock visualize-dataset \
+    --dataset datasets/100k_full_features.h5 \
+    --output visualizations/convex_operators.mp4 \
+    --evolution-policy convex \
+    --sampling-method diverse \
+    --aggregates pca variance mean
+```
+
+![Convex Operator Evolution](docs/images/convex_operators_evolution.png)
+
+*Convex evolution policy produces sustained, morphing dynamics. Each row is an operator; columns show realizations and aggregate statistics (PCA modes as RGB, variance map, mean field).*
+
 ### Train VQ-VAE Tokenizer
 
 ```bash
