@@ -1,0 +1,281 @@
+version: "1.0"
+
+metadata:
+  name: "u_afno_baseline_10k"
+  description: |
+    U-AFNO neural operator dataset with global spectral mixing via AFNO bottleneck.
+    Uses U-Net encoder/decoder architecture with AFNO spectral processing for
+    capturing both local (convolution) and global (FFT) dynamics.
+  author: "Spinlock Team"
+  created: "2026-01-03"
+  purpose: |
+    Generate dataset using U-AFNO (U-Net + Adaptive Fourier Neural Operator) architecture.
+
+    U-AFNO advantages over CNN:
+    - Global receptive field via FFT-based spectral mixing
+    - Multi-scale feature hierarchy from U-Net encoder/decoder
+    - Better suited for long-range spatial dependencies
+    - Captures both local textures and global structure
+
+    Architecture:
+    - U-Net encoder: Progressive downsampling with skip connections
+    - AFNO bottleneck: Multiple spectral mixing blocks for global processing
+    - U-Net decoder: Upsampling with skip fusion for reconstruction
+
+# Parameter space includes both shared and U-AFNO specific parameters
+parameter_space:
+  architecture:
+    # Shared architecture parameters
+    base_channels:
+      type: integer
+      bounds: [16, 48]
+      description: "Base number of channels for U-Net (reduced for 8GB GPU)"
+
+    activation:
+      type: choice
+      choices: ["gelu"]
+      description: "Activation function"
+
+    # These are not used by U-AFNO but included for parameter space compatibility
+    num_layers:
+      type: integer
+      bounds: [2, 5]
+      description: "Not used for U-AFNO (encoder_levels controls depth)"
+
+    kernel_size:
+      type: choice
+      choices: [3]
+      description: "Kernel size for convolutions in U-Net blocks"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.1]
+      description: "Dropout probability (lower for U-AFNO stability)"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian"]
+      description: "Stochastic noise distribution"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.00001, 0.5]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+    noise_schedule:
+      type: choice
+      choices: ["constant"]
+      description: "Temporal noise schedule"
+
+    spatial_correlation:
+      type: continuous
+      bounds: [0.0, 0.2]
+      description: "Spatial correlation length for noise"
+
+  operator:
+    normalization:
+      type: choice
+      choices: ["instance"]
+      description: "Feature normalization"
+
+    grid_size:
+      type: choice
+      choices: [128]
+      description: "Spatial grid resolution (128x128)"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["residual", "convex"]
+      weights: [0.75, 0.25]
+      description: "Temporal update policy"
+
+  # U-AFNO specific parameter space (reduced for 8GB GPU)
+  # These are sampled via Sobol alongside other parameters
+  u_afno:
+    modes:
+      type: integer
+      bounds: [8, 24]
+      description: "Number of Fourier modes to keep in AFNO spectral mixing"
+
+    hidden_dim:
+      type: integer
+      bounds: [32, 96]
+      description: "Hidden dimension for AFNO MLP"
+
+    encoder_levels:
+      type: integer
+      bounds: [2, 3]
+      description: "Number of U-Net encoder levels (each halves spatial resolution)"
+
+    afno_blocks:
+      type: integer
+      bounds: [2, 4]
+      description: "Number of stacked AFNO blocks in bottleneck"
+
+    blocks_per_level:
+      type: integer
+      bounds: [1, 2]
+      description: "Number of residual blocks per U-Net level"
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 3
+    min_samples_per_stratum: 10
+
+  validation:
+    check_discrepancy: true
+    check_correlation: true
+
+  total_samples: 10000  # Full 10K baseline
+  batch_size: 1  # Single operator per batch for float32 memory
+
+# Simulation configuration
+simulation:
+  device: "cuda"
+
+  # U-AFNO operator type (instead of default CNN)
+  operator_type: "u_afno"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "sampled"
+
+    # Same IC distribution as baseline
+    ic_type_weights:
+      gaussian_random_field_v0: 0.05
+      gaussian_random_field_v1: 0.05
+      gaussian_random_field_v2: 0.05
+      gaussian_random_field_v3: 0.05
+      gaussian_random_field_v4: 0.05
+      multiscale_grf_low: 0.0833
+      multiscale_grf_mid: 0.0833
+      multiscale_grf_high: 0.0834
+      structured: 0.25
+      localized: 0.25
+
+    # IC configurations (same as baseline)
+    gaussian_random_field_v0:
+      length_scale: 0.05
+      variance: 0.25
+
+    gaussian_random_field_v1:
+      length_scale: 0.05
+      variance: 0.5
+
+    gaussian_random_field_v2:
+      length_scale: 0.05
+      variance: 1.0
+
+    gaussian_random_field_v3:
+      length_scale: 0.05
+      variance: 2.0
+
+    gaussian_random_field_v4:
+      length_scale: 0.05
+      variance: 4.0
+
+    multiscale_grf_low:
+      scales: [0.30, 0.35, 0.40]
+      variance: 1.0
+
+    multiscale_grf_mid:
+      scales: [0.08, 0.10, 0.12]
+      variance: 1.0
+
+    multiscale_grf_high:
+      scales: [0.02, 0.03, 0.04]
+      variance: 1.0
+
+    structured:
+      num_structures: 3
+      structure_types: ["stripe"]
+
+    localized:
+      num_blobs: 5
+      min_width: 5.0
+      max_width: 15.0
+
+  precision: "float32"  # float16 causes cuDNN errors with complex FFT in AFNO
+  num_realizations: 3  # Full realizations (no learned features)
+  num_timesteps: 500   # Full timesteps
+
+  extract_operator_features: false
+
+# Dataset storage configuration
+dataset:
+  output_path: "./datasets/u_afno_baseline_10k.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 5
+    store_trajectories: false
+
+logging:
+  level: "INFO"
+
+# Feature extraction (learned features disabled for now due to memory constraints)
+features:
+  summary:
+    enabled: true
+    summary_mode: "manual"  # Manual features only
+    learned:
+      enabled: false  # Disabled - requires more GPU memory
+
+# =============================================================================
+# U-AFNO Architecture Notes
+# =============================================================================
+#
+# U-AFNO combines U-Net and AFNO for multi-scale spectral processing:
+#
+# Architecture Flow:
+#   Input [B, 3, 128, 128]
+#       |
+#       v
+#   U-Net Encoder (2-4 levels of downsampling)
+#       |-- Level 0: 128x128 -> 64x64 (skip connection)
+#       |-- Level 1: 64x64 -> 32x32 (skip connection)
+#       |-- Level 2: 32x32 -> 16x16 (skip connection, if encoder_levels=3)
+#       |-- Level 3: 16x16 -> 8x8 (skip connection, if encoder_levels=4)
+#       |
+#       v
+#   AFNO Bottleneck (2-6 stacked blocks)
+#       |-- FFT -> Spectral mixing -> IFFT
+#       |-- Global receptive field
+#       |-- Mode truncation for compression
+#       |
+#       v
+#   U-Net Decoder (upsampling with skip fusion)
+#       |-- Upsample + concat skip + refine
+#       |-- Reconstruct to original resolution
+#       |
+#       v
+#   Output [B, 3, 128, 128]
+#
+# Key Hyperparameters:
+# - modes: Higher = more high-frequency detail, but more compute
+# - encoder_levels: More levels = deeper compression, larger receptive field
+# - afno_blocks: More blocks = deeper spectral processing
+# - hidden_dim: Larger = more expressive MLP in spectral mixing
+#
+# Expected Performance:
+# - Slower than CNN (FFT + more parameters)
+# - Better for long-range dependencies
+# - Potentially better feature extraction quality
+#
+# =============================================================================

@@ -116,6 +116,9 @@ Establish the data infrastructure and tokenization system that enables behaviora
 - Hierarchical VQ-VAE tokens representing neural operator rollouts
 - Stratified parameter sampling (Sobol + Owen scrambling)
 - Stochastic rollout generation (500 timesteps × 3 realizations)
+- Multiple operator architectures:
+  - **CNN**: Sequential convolutional layers for local feature extraction
+  - **U-AFNO**: U-Net encoder + AFNO spectral bottleneck + decoder for global receptive field via FFT-based mixing
 
 **Initial Conditions:**
 - Small, generic basis: Gaussian noise, band-limited noise, simple sinusoids/blobs
@@ -476,5 +479,6 @@ This approach could lead to novel insights and discoveries by allowing the syste
 - Feature extraction: `src/spinlock/features/`
 - VQ-VAE tokenization: `src/spinlock/encoding/`
 - Dataset generation: `src/spinlock/dataset/`
+- Operator architectures: `src/spinlock/operators/` (CNN, U-AFNO)
 
 For detailed architecture and implementation, see [architecture.md](architecture.md).

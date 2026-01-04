@@ -79,9 +79,15 @@ flowchart TD
 ### 2. Operator Generation
 **Location:** `src/spinlock/operators/`
 
-- **Parameter mapping:** Maps Sobol samples to CNN architectures
+- **Parameter mapping:** Maps Sobol samples to operator architectures
 - **Operator builder:** Constructs neural operators from parameters
 - **Block composition:** Modular building blocks for operator design
+- **Architecture types:**
+  - **CNN (default):** Sequential convolutional layers with residual blocks
+  - **U-AFNO:** U-Net encoder + AFNO spectral bottleneck + U-Net decoder
+    - Global receptive field via FFT-based spectral mixing
+    - Multi-scale hierarchy with skip connections
+    - Configurable modes, encoder levels, AFNO blocks
 
 ### 3. Rollout Execution
 **Location:** `src/spinlock/rollout/`

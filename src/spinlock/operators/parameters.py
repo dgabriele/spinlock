@@ -19,6 +19,7 @@ class OperatorParameters:
 
     Example:
         ```python
+        # CNN operator parameters
         params = OperatorParameters(
             num_layers=3,
             base_channels=32,
@@ -37,6 +38,22 @@ class OperatorParameters:
             update_policy="convex",
             alpha=0.7,
             dt=0.01
+        )
+
+        # U-AFNO operator parameters
+        u_afno_params = OperatorParameters(
+            num_layers=0,  # Not used for U-AFNO
+            base_channels=32,
+            input_channels=3,
+            output_channels=3,
+            kernel_size=3,  # Not used for U-AFNO
+            activation="gelu",
+            normalization="instance",
+            # U-AFNO specific
+            encoder_levels=3,
+            modes=32,
+            afno_blocks=4,
+            hidden_dim=64,
         )
 
         # Type-safe access
@@ -77,6 +94,13 @@ class OperatorParameters:
     update_policy: str = "convex"  # "autoregressive", "residual", "convex"
     alpha: float = 0.5  # Convex policy: mixing parameter in [0,1]
     dt: float = 0.01    # Residual policy: integration step size
+
+    # U-AFNO specific parameters (optional, only for operator_type="u_afno")
+    encoder_levels: Optional[int] = None  # U-Net encoder depth (default: 3)
+    modes: Optional[int] = None           # AFNO Fourier modes to keep (default: 32)
+    afno_blocks: Optional[int] = None     # Number of stacked AFNO blocks (default: 4)
+    hidden_dim: Optional[int] = None      # AFNO hidden dimension (default: 2x bottleneck)
+    blocks_per_level: Optional[int] = None  # Residual blocks per U-Net level (default: 2)
 
     # Additional metadata
     extra: Dict[str, Any] = field(default_factory=dict)

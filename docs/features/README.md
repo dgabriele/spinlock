@@ -132,4 +132,17 @@ All feature extractors are GPU-accelerated and optimized for batch processing:
 - Efficient memory management for large datasets
 - Inline feature computation during dataset generation
 
+### Operator Compatibility
+
+Feature extraction works identically with all supported operator architectures:
+
+| Operator Type | Description | Feature Compatibility |
+|---------------|-------------|----------------------|
+| **CNN** | Sequential convolutional layers with residual blocks | ✅ Full support |
+| **U-AFNO** | U-Net encoder + AFNO spectral bottleneck + decoder | ✅ Full support |
+
+The feature extraction pipeline is architecture-agnostic—it processes rollout trajectories regardless of how they were generated. This enables direct comparison of behavioral features across different operator architectures within the same dataset or across datasets.
+
+**Note:** ARCHITECTURE features automatically capture operator-type-specific parameters (e.g., U-AFNO's `modes`, `encoder_levels`, `afno_blocks` are included when using U-AFNO operators).
+
 For usage examples, see [Getting Started](../getting-started.md).

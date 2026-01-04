@@ -194,7 +194,12 @@ flowchart TD
 
 #### 1. Neural Operator Generation
 - **Sobol-stratified parameter sampling** - Low-discrepancy sequences ensure uniform parameter space coverage
-- **CNN operator construction** - Build neural operators from parameter vectors
+- **Configurable operator architectures** - Choose between CNN and U-AFNO:
+  - **CNN (default)**: Simple sequential convolutions for local feature extraction
+  - **U-AFNO**: U-Net encoder/decoder with AFNO spectral bottleneck for global receptive field
+    - FFT-based spectral mixing captures long-range spatial dependencies
+    - Multi-scale U-Net hierarchy preserves local detail with skip connections
+    - Ideal for operators with non-local dynamics (wave propagation, diffusion)
 - **Stochastic rollout generation** - 256 timesteps × 5 realizations capturing behavioral variability
   - Default 64×64 grids optimal for VQ-VAE compression and fast NOA evaluation
   - Power-of-2 timesteps for GPU efficiency
