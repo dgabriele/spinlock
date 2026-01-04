@@ -28,6 +28,7 @@ from .blocks import (
 )
 from .afno import SpectralMixingBlock, AFNOBlock
 from .u_afno import UAFNOOperator
+from .simple_cnn import SimpleCNNOperator
 from .parameters import OperatorParameters
 from typing import Literal
 
@@ -76,8 +77,9 @@ class OperatorBuilder:
         # AFNO blocks
         "SpectralMixingBlock": SpectralMixingBlock,
         "AFNOBlock": AFNOBlock,
-        # U-AFNO operator
+        # Operator classes
         "UAFNOOperator": UAFNOOperator,
+        "SimpleCNNOperator": SimpleCNNOperator,
     }
 
     @classmethod
@@ -202,11 +204,11 @@ class OperatorBuilder:
         param_dict = self.map_parameters(unit_params, param_spec)
         return OperatorParameters.from_dict(param_dict)
 
-    def build_simple_cnn(self, params: Union[Dict[str, Any], OperatorParameters]) -> nn.Module:
+    def build_simple_cnn(self, params: Union[Dict[str, Any], OperatorParameters]) -> SimpleCNNOperator:
         """
         Build a simple CNN operator from parameters.
 
-        Constructs a sequential model:
+        Constructs a SimpleCNNOperator with:
         1. Input convolution
         2. N hidden layers (conv or residual blocks)
         3. Optional stochastic block
@@ -230,7 +232,7 @@ class OperatorBuilder:
                 OperatorParameters (type-safe, recommended)
 
         Returns:
-            Sequential neural operator
+            SimpleCNNOperator with get_intermediate_features() support
 
         Example:
             ```python
@@ -247,9 +249,12 @@ class OperatorBuilder:
                 "noise_scale": 0.05
             }
             model = builder.build_simple_cnn(params)
+
+            # Extract intermediate features
+            features = model.get_intermediate_features(x, extract_from="all")
             ```
         """
-        layers = []
+        conv_blocks = []
         current_channels = params["input_channels"]
         base_channels = params["base_channels"]
 
@@ -261,8 +266,8 @@ class OperatorBuilder:
             "dropout": params.get("dropout_rate", 0.0),
         }
 
-        # Input layer
-        layers.append(ConvBlock(current_channels, base_channels, **global_kwargs))
+        # Input layer (first conv block)
+        conv_blocks.append(ConvBlock(current_channels, base_channels, **global_kwargs))
         current_channels = base_channels
 
         # Hidden layers
@@ -273,35 +278,36 @@ class OperatorBuilder:
 
             # Use residual blocks for deeper networks
             if num_layers > 3:
-                layers.append(
+                conv_blocks.append(
                     ResidualBlock(current_channels, out_channels, num_convs=2, **global_kwargs)
                 )
             else:
-                layers.append(ConvBlock(current_channels, out_channels, **global_kwargs))
+                conv_blocks.append(ConvBlock(current_channels, out_channels, **global_kwargs))
 
             current_channels = out_channels
 
-        # Optional stochastic block
+        # Optional stochastic block (separate from conv blocks)
         noise_type = params.get("noise_type") if isinstance(params, dict) else params.noise_type
         noise_scale = params.get("noise_scale") if isinstance(params, dict) else params.noise_scale
+        stochastic_block = None
         if noise_type is not None and noise_scale is not None:
-            layers.append(
-                StochasticBlock(
-                    current_channels,
-                    noise_type=noise_type,
-                    noise_scale=noise_scale,
-                    always_active=True,  # For dataset generation
-                )
+            stochastic_block = StochasticBlock(
+                current_channels,
+                noise_type=noise_type,
+                noise_scale=noise_scale,
+                always_active=True,  # For dataset generation
             )
 
-        # Output layer
-        layers.append(
-            OutputLayer(
-                current_channels, params["output_channels"], activation="none"  # Raw outputs
-            )
+        # Output layer (separate from conv blocks)
+        output_layer = OutputLayer(
+            current_channels, params["output_channels"], activation="none"  # Raw outputs
         )
 
-        return nn.Sequential(*layers)
+        return SimpleCNNOperator(
+            conv_blocks=nn.ModuleList(conv_blocks),
+            stochastic_block=stochastic_block,
+            output_layer=output_layer,
+        )
 
     def build_u_afno(self, params: Union[Dict[str, Any], OperatorParameters]) -> nn.Module:
         """
@@ -634,19 +640,23 @@ class NeuralOperator(nn.Module):
     def get_intermediate_features(
         self,
         x: torch.Tensor,
-        extract_from: str = "bottleneck",
+        extract_from: str = "all",
         skip_levels: list[int] | None = None,
+        layer_indices: list[int] | None = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Extract intermediate features from the underlying model.
 
         Delegates to the wrapped model's get_intermediate_features() method.
-        Only available for U-AFNO operators.
+        Supports both SimpleCNNOperator and UAFNOOperator.
 
         Args:
             x: Input tensor [B, C, H, W]
-            extract_from: Which latents to extract ("bottleneck", "skips", or "all")
-            skip_levels: Which encoder levels to extract for skip connections
+            extract_from: Which latents to extract:
+                - For U-AFNO: "bottleneck", "skips", or "all"
+                - For CNN: "early", "mid", "pre_output", or "all"
+            skip_levels: (U-AFNO only) Which encoder levels to extract
+            layer_indices: (CNN only) Which layer indices to extract
 
         Returns:
             Dict of intermediate feature tensors
@@ -657,8 +667,17 @@ class NeuralOperator(nn.Module):
         if not hasattr(self.model, "get_intermediate_features"):
             raise AttributeError(
                 "Operator must have get_intermediate_features() method. "
-                "Only U-AFNO operators are supported for learned feature extraction."
+                "Supported: SimpleCNNOperator, UAFNOOperator."
             )
-        return self.model.get_intermediate_features(
-            x, extract_from=extract_from, skip_levels=skip_levels
-        )
+
+        # Detect operator type and call with appropriate kwargs
+        if hasattr(self.model, "conv_blocks"):
+            # SimpleCNNOperator
+            return self.model.get_intermediate_features(
+                x, extract_from=extract_from, layer_indices=layer_indices
+            )
+        else:
+            # UAFNOOperator
+            return self.model.get_intermediate_features(
+                x, extract_from=extract_from, skip_levels=skip_levels
+            )

@@ -11,6 +11,7 @@ from .blocks import (
 )
 from .afno import SpectralMixingBlock, AFNOBlock
 from .u_afno import UAFNOOperator, UNetEncoder, UNetDecoder
+from .simple_cnn import SimpleCNNOperator
 from .builder import OperatorBuilder, NeuralOperator
 from .parameters import (
     OperatorParameters,
@@ -35,6 +36,8 @@ __all__ = [
     "UAFNOOperator",
     "UNetEncoder",
     "UNetDecoder",
+    # CNN operator
+    "SimpleCNNOperator",
     # Builder and wrapper
     "OperatorBuilder",
     "NeuralOperator",

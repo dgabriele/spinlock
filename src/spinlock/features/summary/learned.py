@@ -1,10 +1,12 @@
 """
 Learned SUMMARY Feature Extractor.
 
-Extracts features from U-AFNO intermediate representations (bottleneck and skips).
+Extracts features from neural operator intermediate representations:
+- U-AFNO: bottleneck and skip connections
+- CNN: conv block activations (early, mid, pre_output)
 
 Pipeline:
-1. Collect latents from U-AFNO during forward pass
+1. Collect latents during forward pass via get_intermediate_features()
 2. Temporal aggregation: pool across T timesteps
 3. Spatial aggregation: global average pooling
 4. Optional projection: MLP to fixed dimension
@@ -13,6 +15,10 @@ Shape conventions:
 - Input trajectories: [N, M, T, C, H, W] (N operators, M realizations, T timesteps)
 - Latents per timestep: [B, C_latent, H', W']
 - Output features: [N, D_learned]
+
+Supported operators:
+- UAFNOOperator: extract_from="bottleneck" | "skips" | "all"
+- SimpleCNNOperator: extract_from="early" | "mid" | "pre_output" | "all"
 
 Author: Claude (Anthropic)
 Date: January 2026
@@ -30,7 +36,9 @@ if TYPE_CHECKING:
 
 class LearnedSummaryExtractor:
     """
-    Extract learned features from U-AFNO latent representations.
+    Extract learned features from neural operator latent representations.
+
+    Supports both U-AFNO and SimpleCNN operators via their get_intermediate_features() method.
 
     Implements the aggregation pipeline:
     1. Per-timestep: Extract latents via operator.get_intermediate_features()
@@ -44,7 +52,7 @@ class LearnedSummaryExtractor:
         config: LearnedSummaryConfig
         projection_mlp: Optional MLP for projection
 
-    Example:
+    Example (U-AFNO):
         >>> from spinlock.operators.u_afno import UAFNOOperator
         >>> from spinlock.features.summary.config import LearnedSummaryConfig
         >>>
@@ -55,6 +63,15 @@ class LearnedSummaryExtractor:
         >>> trajectories = torch.randn(3, 10, 3, 64, 64)  # [M, T, C, H, W]
         >>> features = extractor.extract_from_operator(operator, trajectories)
         >>> print(features.shape)  # [D_learned]
+
+    Example (CNN):
+        >>> from spinlock.operators.simple_cnn import SimpleCNNOperator
+        >>>
+        >>> config = LearnedSummaryConfig(enabled=True, extract_from="all")
+        >>> extractor = LearnedSummaryExtractor(device=torch.device('cuda'), config=config)
+        >>>
+        >>> operator = SimpleCNNOperator(...)
+        >>> features = extractor.extract_from_operator(operator, trajectories)
     """
 
     def __init__(
@@ -97,6 +114,10 @@ class LearnedSummaryExtractor:
         self._projection_initialized = True
         self._latent_dim = input_dim
 
+    def _is_cnn_operator(self, operator: nn.Module) -> bool:
+        """Check if operator is a CNN (has conv_blocks attribute)."""
+        return hasattr(operator, "conv_blocks")
+
     def extract_from_operator(
         self,
         operator: nn.Module,
@@ -106,7 +127,7 @@ class LearnedSummaryExtractor:
         Extract learned features from operator latents over trajectory.
 
         Args:
-            operator: U-AFNO operator (must have get_intermediate_features method)
+            operator: Neural operator (U-AFNO or SimpleCNN) with get_intermediate_features method
             trajectories: Trajectory tensor [M, T, C, H, W]
 
         Returns:
@@ -118,26 +139,37 @@ class LearnedSummaryExtractor:
         if not hasattr(operator, "get_intermediate_features"):
             raise ValueError(
                 "Operator must have get_intermediate_features() method. "
-                "Only U-AFNO operators are supported for learned feature extraction."
+                "Supported: UAFNOOperator, SimpleCNNOperator."
             )
 
         M, T, C, H, W = trajectories.shape
         config = self.config
 
         # Determine extraction settings
-        extract_from = config.extract_from if config else "bottleneck"
-        skip_levels = config.skip_levels if config else [0, 1, 2]
+        extract_from = config.extract_from if config else "all"
 
         # Collect latents for all timesteps
         # Process in batches for memory efficiency: [M*T, C, H, W]
         trajectories_flat = trajectories.reshape(M * T, C, H, W)
 
+        # Call with appropriate kwargs based on operator type
         with torch.no_grad():
-            latents_dict = operator.get_intermediate_features(
-                trajectories_flat,
-                extract_from=extract_from,
-                skip_levels=skip_levels,
-            )
+            if self._is_cnn_operator(operator):
+                # CNN: uses layer_indices instead of skip_levels
+                layer_indices = config.layer_indices if config and hasattr(config, 'layer_indices') else None
+                latents_dict = operator.get_intermediate_features(
+                    trajectories_flat,
+                    extract_from=extract_from,
+                    layer_indices=layer_indices,
+                )
+            else:
+                # U-AFNO: uses skip_levels
+                skip_levels = config.skip_levels if config else [0, 1, 2]
+                latents_dict = operator.get_intermediate_features(
+                    trajectories_flat,
+                    extract_from=extract_from,
+                    skip_levels=skip_levels,
+                )
 
         # Apply spatial aggregation (GAP) to each latent type
         aggregated_latents = []
@@ -195,7 +227,7 @@ class LearnedSummaryExtractor:
         Extract learned features for batch of operators.
 
         Args:
-            operators: List of N U-AFNO operators
+            operators: List of N neural operators (U-AFNO or SimpleCNN)
             trajectories: Trajectories [N, M, T, C, H, W]
 
         Returns:
@@ -247,7 +279,7 @@ class LearnedSummaryExtractor:
         Get output feature dimension (for registry/storage pre-allocation).
 
         Args:
-            operator: Sample U-AFNO operator to probe dimensions
+            operator: Sample operator (U-AFNO or SimpleCNN) to probe dimensions
             input_shape: (C, H, W) input shape for probing
 
         Returns:
@@ -256,12 +288,24 @@ class LearnedSummaryExtractor:
         C, H, W = input_shape
         dummy_input = torch.zeros(1, C, H, W, device=self.device)
 
+        extract_from = self.config.extract_from if self.config else "all"
+
         with torch.no_grad():
-            latents = operator.get_intermediate_features(
-                dummy_input,
-                extract_from=self.config.extract_from if self.config else "bottleneck",
-                skip_levels=self.config.skip_levels if self.config else [0, 1, 2],
-            )
+            if self._is_cnn_operator(operator):
+                # CNN: uses layer_indices
+                layer_indices = self.config.layer_indices if self.config and hasattr(self.config, 'layer_indices') else None
+                latents = operator.get_intermediate_features(
+                    dummy_input,
+                    extract_from=extract_from,
+                    layer_indices=layer_indices,
+                )
+            else:
+                # U-AFNO: uses skip_levels
+                latents = operator.get_intermediate_features(
+                    dummy_input,
+                    extract_from=extract_from,
+                    skip_levels=self.config.skip_levels if self.config else [0, 1, 2],
+                )
 
         total_dim = 0
         for key, latent in latents.items():

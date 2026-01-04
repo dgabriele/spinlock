@@ -461,19 +461,34 @@ class TemporalFeaturesConfig(BaseModel):
 
 
 class LearnedFeaturesConfig(BaseModel):
-    """Learned feature configuration (U-AFNO latent extraction)."""
+    """Learned feature configuration (neural operator latent extraction).
+
+    Supports both U-AFNO and CNN operators:
+    - U-AFNO: bottleneck, skips, or all
+    - CNN: early, mid, pre_output, or all
+    """
 
     enabled: bool = Field(
         default=False,
-        description="Enable learned feature extraction from U-AFNO latent representations."
+        description="Enable learned feature extraction from neural operator latent representations."
     )
-    extract_from: Literal["bottleneck", "skips", "all"] = Field(
-        default="bottleneck",
-        description="Which latents to extract: bottleneck (global spectral), skips (multi-scale), or all."
+    extract_from: Literal["bottleneck", "skips", "all", "early", "mid", "pre_output"] = Field(
+        default="all",
+        description=(
+            "Which latents to extract. "
+            "U-AFNO: 'bottleneck', 'skips', or 'all'. "
+            "CNN: 'early', 'mid', 'pre_output', or 'all'."
+        )
     )
+    # U-AFNO specific
     skip_levels: List[int] = Field(
         default_factory=lambda: [0, 1, 2],
-        description="Which encoder levels to extract (0 = shallowest, higher = deeper)."
+        description="(U-AFNO) Which encoder levels to extract (0 = shallowest, higher = deeper)."
+    )
+    # CNN specific
+    layer_indices: Optional[List[int]] = Field(
+        default=None,
+        description="(CNN) Which mid layer indices to extract. None = all mid layers."
     )
     temporal_agg: Literal["mean", "max", "mean_max", "std"] = Field(
         default="mean_max",
@@ -525,13 +540,13 @@ class SummaryFeaturesConfig(BaseModel):
         default="manual",
         description=(
             "Feature mode: 'manual' (hand-crafted features only), "
-            "'learned' (U-AFNO latent features only), "
+            "'learned' (neural operator latent features only), "
             "'hybrid' (both concatenated)."
         )
     )
     learned: LearnedFeaturesConfig = Field(
         default_factory=LearnedFeaturesConfig,
-        description="Configuration for learned feature extraction from U-AFNO latents."
+        description="Configuration for learned feature extraction from neural operator latents (U-AFNO or CNN)."
     )
 
 

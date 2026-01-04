@@ -664,39 +664,61 @@ class LearnedSummaryConfig(BaseModel):
     """
     Learned SUMMARY feature configuration.
 
-    Extracts features from U-AFNO intermediate representations:
-    - Bottleneck latents (default): Global spectral features after AFNO
-    - Skip connections (optional): Multi-scale encoder features
+    Extracts features from neural operator intermediate representations:
+
+    For U-AFNO operators:
+    - Bottleneck latents: Global spectral features after AFNO
+    - Skip connections: Multi-scale encoder features
+
+    For CNN operators:
+    - Early: First conv block activations (local edges/gradients)
+    - Mid: Middle block activations (mid-level patterns)
+    - Pre-output: Final hidden state before output layer
 
     Aggregation pipeline:
     1. Temporal: Pool across T timesteps (mean, max, or concatenated)
     2. Spatial: Global average pooling across H, W
     3. Optional: Project to fixed dimension via MLP
 
-    Note: Only available for U-AFNO operators. CNN operators do not support
-    learned feature extraction.
-
-    Example:
+    Example (U-AFNO):
         >>> config = LearnedSummaryConfig(
         ...     enabled=True,
-        ...     extract_from="all",
+        ...     extract_from="bottleneck",  # U-AFNO specific
+        ...     temporal_agg="mean_max",
+        ... )
+
+    Example (CNN):
+        >>> config = LearnedSummaryConfig(
+        ...     enabled=True,
+        ...     extract_from="all",  # Works for both
         ...     temporal_agg="mean_max",
         ... )
     """
 
     enabled: bool = Field(
         default=False,
-        description="Enable learned feature extraction from U-AFNO latents"
+        description="Enable learned feature extraction from operator latents"
     )
 
-    extract_from: Literal["bottleneck", "skips", "all"] = Field(
-        default="bottleneck",
-        description="Which latents to extract: bottleneck only, skips only, or all"
+    extract_from: Literal["bottleneck", "skips", "all", "early", "mid", "pre_output"] = Field(
+        default="all",
+        description=(
+            "Which latents to extract. "
+            "U-AFNO: 'bottleneck', 'skips', or 'all'. "
+            "CNN: 'early', 'mid', 'pre_output', or 'all'."
+        )
     )
 
+    # U-AFNO specific
     skip_levels: List[int] = Field(
         default_factory=lambda: [0, 1, 2],
-        description="Which encoder levels to extract (0=shallowest, used when extract_from='skips' or 'all')"
+        description="(U-AFNO) Which encoder levels to extract (0=shallowest)"
+    )
+
+    # CNN specific
+    layer_indices: Optional[List[int]] = Field(
+        default=None,
+        description="(CNN) Which mid layer indices to extract. None = all mid layers."
     )
 
     temporal_agg: Literal["mean", "max", "mean_max", "std"] = Field(
@@ -792,16 +814,16 @@ class SummaryConfig(BaseModel):
     invariant_drift: SummaryInvariantDriftConfig = Field(default_factory=SummaryInvariantDriftConfig)
     nonlinear: SummaryNonlinearConfig = Field(default_factory=SummaryNonlinearConfig)  # Phase 1 extension
 
-    # Learned features (Phase 2) - extract from U-AFNO latents
+    # Learned features (Phase 2) - extract from neural operator latents
     learned: LearnedSummaryConfig = Field(
         default_factory=LearnedSummaryConfig,
-        description="Learned feature extraction from U-AFNO intermediate representations"
+        description="Learned feature extraction from neural operator intermediate representations (U-AFNO or CNN)"
     )
 
     # Summary mode toggle
     summary_mode: Literal["manual", "learned", "hybrid"] = Field(
         default="manual",
-        description="Feature mode: manual (hand-crafted), learned (U-AFNO latents), hybrid (both concatenated)"
+        description="Feature mode: manual (hand-crafted), learned (operator latents), hybrid (both concatenated)"
     )
 
     # Per-timestep extraction toggle
@@ -1090,6 +1112,7 @@ class SummaryConfig(BaseModel):
                 enabled=schema_config.learned.enabled,
                 extract_from=schema_config.learned.extract_from,
                 skip_levels=list(schema_config.learned.skip_levels),
+                layer_indices=list(schema_config.learned.layer_indices) if schema_config.learned.layer_indices else None,
                 temporal_agg=schema_config.learned.temporal_agg,
                 spatial_agg=schema_config.learned.spatial_agg,
                 projection_dim=schema_config.learned.projection_dim,
