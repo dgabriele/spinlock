@@ -99,7 +99,7 @@ sampling:
     check_discrepancy: true
     check_correlation: true
 
-  total_samples: 100
+  total_samples: 1000
   batch_size: 4
 
 # Simulation configuration
@@ -148,7 +148,7 @@ simulation:
 
 # Dataset output configuration
 dataset:
-  output_path: "datasets/test_100_cuda_opt.h5"
+  output_path: "datasets/test_1000_cuda_opt.h5"
 
   storage:
     compression: "gzip"

@@ -29,8 +29,8 @@ from typing import Dict, Type, Any
 from .base import BaseEncoder
 from .identity import IdentityEncoder
 from .mlp import MLPEncoder
-from .ic_cnn import InitialCNNEncoder
-from .td_cnn import TemporalCNNEncoder
+from .initial_cnn import InitialCNNEncoder
+from .temporal_cnn import TemporalCNNEncoder
 
 
 # Encoder Registry
