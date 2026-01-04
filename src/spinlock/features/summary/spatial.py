@@ -283,6 +283,7 @@ class SpatialFeatureExtractor:
 
         Skewness measures asymmetry of the distribution.
         Returns 0 for zero-variance fields (symmetric by definition when all values equal).
+        Returns 0 for symmetric distributions (e.g., structured ICs like sine waves).
         """
         mean = x.mean(dim=(-2, -1), keepdim=True)
         std = x.std(dim=(-2, -1), keepdim=True)
@@ -306,6 +307,10 @@ class SpatialFeatureExtractor:
         # Use IQR-based bounds computed from non-NaN values in current batch
         skew = self._adaptive_outlier_clip(skew, iqr_multiplier=10.0)
 
+        # Final safety: replace any remaining NaN/Inf with 0
+        # (can occur for symmetric distributions like structured ICs)
+        skew = torch.nan_to_num(skew, nan=0.0, posinf=0.0, neginf=0.0)
+
         return skew
 
     def _compute_kurtosis(self, x: torch.Tensor) -> torch.Tensor:
@@ -314,6 +319,7 @@ class SpatialFeatureExtractor:
 
         Kurtosis measures tail heaviness. Excess kurtosis is 0 for Gaussian.
         Returns 0 for zero-variance fields (degenerate distribution).
+        Returns 0 for symmetric distributions (e.g., structured ICs like sine waves).
         """
         mean = x.mean(dim=(-2, -1), keepdim=True)
         std = x.std(dim=(-2, -1), keepdim=True)
@@ -336,6 +342,10 @@ class SpatialFeatureExtractor:
         # Adaptive outlier protection: clip extreme numerical errors while preserving valid extremes
         # Kurtosis can be very large for heavy-tailed distributions, so use wider multiplier
         kurt = self._adaptive_outlier_clip(kurt, iqr_multiplier=15.0)
+
+        # Final safety: replace any remaining NaN/Inf with 0
+        # (can occur for symmetric distributions like structured ICs)
+        kurt = torch.nan_to_num(kurt, nan=0.0, posinf=0.0, neginf=0.0)
 
         return kurt
 

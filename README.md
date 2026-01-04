@@ -222,12 +222,15 @@ flowchart TD
 - **Joint training across all feature families** (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL)
 - **Automatic category discovery** via hierarchical clustering (~8-15 categories)
 - **Multi-level discrete latent space** (coarse → medium → fine)
+- **Hierarchical codebook sizing** - Coarse levels use larger codebooks (compression ratio 0.5) to capture broad behavioral categories; fine levels use smaller codebooks (ratio 1.5) since fine-grained distinctions are inherently sparse
+- **Dead code reset** - Runtime pruning of unused codes prevents collapse and right-sizes codebooks to data
 - **Feature cleaning** - NaN removal, variance filtering, deduplication, outlier capping
 
 #### 4. Behavioral Vocabulary
 - **Discrete tokens** representing operator behavioral patterns
 - **Category-specific embeddings** preserving multi-modal structure
 - **Foundation for transformer-based agent reasoning** (Phase 2+)
+- **Visualization dashboards** - Engineering (metrics), Topological (t-SNE codebook space), Semantic (feature mappings)
 
 See [docs/architecture.md](docs/architecture.md) for detailed system design.
 
@@ -352,6 +355,9 @@ For detailed installation instructions, platform-specific guides, and troublesho
 - [**Architecture**](docs/architecture.md) - Detailed system design and implementation
 - [**Feature Families**](docs/features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL feature definitions and extraction
 - [**HDF5 Layout**](docs/features/hdf5-layout.md) - Dataset schema reference for VQ-VAE pipeline
+- [**Baselines**](docs/baselines/README.md) - Production datasets and VQ-VAE tokenizers
+  - [100K Dataset](docs/baselines/100k-full-features-dataset.md) - 100K operators with SUMMARY+TEMPORAL+ARCHITECTURE features
+  - [100K VQ-VAE](docs/baselines/100k-full-features-vqvae.md) - Tokenizer (quality: 0.95, utilization: 94%)
 - [**Getting Started**](docs/getting-started.md) - Tutorials and end-to-end examples
 - [**Installation**](docs/installation.md) - Platform-specific installation guides
 

@@ -66,6 +66,7 @@ examples/*/output/
 *.mp4
 *.gif
 *.png
+!docs/**/images/*.png
 
 # OS
 .DS_Store

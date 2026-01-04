@@ -692,25 +692,41 @@ Output:
         """Load features from HDF5 dataset.
 
         Supports both single family and multi-family (concatenated) loading.
+        Applies per-family encoders from config to transform raw features.
+
+        HDF5 paths:
+        - SUMMARY: /features/summary/aggregated/features [N, D]
+        - TEMPORAL: /features/temporal/features [N, T, D]
         """
         import h5py
         import numpy as np
+        import torch
+        from spinlock.encoding.encoders import get_encoder
 
         # Extract configuration (assumes new nested format, flattened above)
         dataset_path = config.get("dataset_path")
         feature_type = config.get("feature_type", "aggregated")
         max_samples = config.get("max_samples")
+        device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
 
-        # Extract family names from families dict (required by validation)
-        feature_families = list(config["families"].keys())
+        # Extract family configs
+        families_config = config["families"]
+        feature_families = list(families_config.keys())
 
         all_features = []
         all_feature_names = []
 
         with h5py.File(dataset_path, "r") as f:
             for family_idx, feature_family in enumerate(feature_families):
-                # Navigate to features group
-                features_path = f"/features/{feature_family}/{feature_type}"
+                family_config = families_config[feature_family]
+
+                # Determine correct HDF5 path based on family type
+                # TEMPORAL uses /features/temporal directly (no aggregated sublevel)
+                # SUMMARY uses /features/summary/aggregated
+                if feature_family == "temporal":
+                    features_path = f"/features/{feature_family}"
+                else:
+                    features_path = f"/features/{feature_family}/{feature_type}"
 
                 if features_path not in f:
                     raise ValueError(
@@ -726,13 +742,54 @@ Output:
                 else:
                     family_features = np.array(group["features"])
 
-                # Load feature names
-                if "feature_names" in group.attrs:
-                    family_names = [name.decode() if isinstance(name, bytes) else name
-                                   for name in group.attrs["feature_names"]]
+                # Replace NaN with 0 before encoding (encoders can't handle NaN)
+                nan_count = np.isnan(family_features).sum()
+                if nan_count > 0:
+                    family_features = np.nan_to_num(family_features, nan=0.0)
+                    print(f"  {feature_family}: Replaced {nan_count} NaN values with 0")
+
+                # Apply per-family encoder if configured
+                encoder_name = family_config.get("encoder")
+                encoder_params = family_config.get("encoder_params", {})
+
+                if encoder_name and encoder_name not in ["identity", "IdentityEncoder"]:
+                    # Get input dimension for encoder
+                    if len(family_features.shape) == 3:
+                        # Temporal: [N, T, D] -> input_dim is D
+                        input_dim = family_features.shape[2]
+                    else:
+                        # 2D: [N, D] -> input_dim is D
+                        input_dim = family_features.shape[1]
+
+                    # Create encoder with input_dim
+                    encoder = get_encoder(encoder_name, input_dim=input_dim, **encoder_params)
+                    encoder = encoder.to(device)
+                    encoder.eval()
+
+                    # Apply encoder in batches
+                    batch_size = 1024
+                    encoded_features = []
+                    features_tensor = torch.tensor(family_features, dtype=torch.float32)
+
+                    with torch.no_grad():
+                        for i in range(0, len(features_tensor), batch_size):
+                            batch = features_tensor[i:i+batch_size].to(device)
+                            encoded = encoder(batch)
+                            encoded_features.append(encoded.cpu().numpy())
+
+                    family_features = np.concatenate(encoded_features, axis=0)
+                    print(f"  {feature_family}: Applied {encoder_name} -> shape {family_features.shape}")
+
+                # Generate feature names
+                if len(family_features.shape) == 2:
+                    output_dim = family_features.shape[1]
+                    family_names = [f"{feature_family}_{i}" for i in range(output_dim)]
                 else:
-                    family_names = [f"{feature_family}_feature_{i}"
-                                   for i in range(family_features.shape[1])]
+                    # Should not happen after encoder, but handle gracefully
+                    raise ValueError(
+                        f"Features for {feature_family} are {len(family_features.shape)}D after encoding. "
+                        f"Expected 2D. Shape: {family_features.shape}"
+                    )
 
                 # Prefix feature names with family name (for multi-family)
                 if len(feature_families) > 1:
