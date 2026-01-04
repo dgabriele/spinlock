@@ -185,15 +185,46 @@ poetry run spinlock generate \
     --output datasets/test_100.h5
 ```
 
-### Example 2: Visualize Rollouts
+### Example 2: Visualize Operator Dynamics
+
+Create videos showing temporal evolution of operators with multiple aggregate views:
 
 ```bash
-# Visualize first 16 operators
+# Basic visualization with default settings
 poetry run spinlock visualize-dataset \
     --dataset datasets/test_100.h5 \
-    --num-ops 16 \
-    --output visualizations/
+    --output visualizations/evolution.mp4
+
+# Diverse sampling (feature-based) to find interesting behaviors
+poetry run spinlock visualize-dataset \
+    --dataset datasets/100k_full_features.h5 \
+    --output visualizations/diverse_operators.mp4 \
+    --sampling-method diverse \
+    --n-operators 8
+
+# Custom aggregates: PCA, variance, entropy, spectral (FFT)
+poetry run spinlock visualize-dataset \
+    --dataset datasets/100k_full_features.h5 \
+    --output visualizations/full_analysis.mp4 \
+    --aggregates pca variance entropy spectral mean \
+    --size 128x128 \
+    --sampling-method diverse
 ```
+
+**Sampling methods:**
+- `sobol` (default): Low-discrepancy space-filling sampling
+- `diverse`: Feature-based interestingness scoring (entropy + outlier distance + variance)
+- `random`: Uniform random sampling
+- `sequential`: First N operators
+
+**Aggregate renderers:**
+- `mean`: Mean field across realizations
+- `variance`: Spatial variance map (uncertainty)
+- `entropy`: Shannon entropy (structural uncertainty)
+- `pca`: PCA modes as RGB (PC1/PC2/PC3)
+- `spectral`: FFT power spectrum
+- `envelope`: Min/max range
+- `ssim`: Structural similarity
 
 ### Example 3: Extract Features Only
 
