@@ -4,12 +4,21 @@ Architecture Partitioning for CUDA Optimization.
 Groups operators by architecture signature (graph-defining parameters),
 enabling torch.compile kernel reuse across operators in the same partition.
 
-Key insight: Operators with same (num_layers, base_channels_bucket, kernel_size)
+Key insight: Operators with same (num_layers, base_channels, kernel_size)
 have identical computational graphs - only weights differ. torch.compile can
 generate one optimized kernel per partition and reuse it for all operators.
 
-Expected partitions: ~32 (4 num_layers × 4 channel buckets × 2 kernel sizes)
-Expected speedup: 1.3-1.5× from compile kernel reuse
+Expected partitions: ~32 (4 num_layers × 4 channel values × 2 kernel sizes)
+Expected speedup: 1.3-1.5× from compile kernel reuse (at 10K+ operators)
+
+Note on vmap batching (January 2026):
+    We investigated using torch.func.vmap + functional_call to batch multiple
+    operators with a single kernel launch. Benchmarks showed vmap is ~25% SLOWER
+    than sequential execution due to:
+    - functional_call overhead for parameter lookup
+    - Instance normalization not vectorizing efficiently
+    - Memory overhead from stacking all parameters
+    This approach was abandoned. Use torch.compile partitioning instead.
 
 Author: Claude (Anthropic)
 Date: January 2026
