@@ -178,9 +178,9 @@ Examples:
         )
 
         render_group.add_argument(
-            "--add-spacing",
+            "--no-spacing",
             action="store_true",
-            help="Add white spacing between grid cells",
+            help="Disable spacing between grid cells (spacing enabled by default)",
         )
 
         # Sampling configuration
@@ -189,9 +189,10 @@ Examples:
         sample_group.add_argument(
             "--sampling-method",
             type=str,
-            choices=["sobol", "random", "sequential"],
+            choices=["sobol", "random", "sequential", "diverse"],
             default="sobol",
-            help="Operator sampling method (default: sobol)",
+            help="Operator sampling method: sobol (low-discrepancy), random, sequential, "
+                 "or diverse (feature-based interestingness) (default: sobol)",
         )
 
         sample_group.add_argument(
@@ -307,7 +308,7 @@ Examples:
                 colormap=args.colormap,
                 color_norm_mode=args.color_norm_mode,
                 aggregates=args.aggregates,
-                add_spacing=args.add_spacing,
+                add_spacing=not args.no_spacing,
                 sampling_method=args.sampling_method,
                 operator_indices=args.operator_indices,
                 seed=args.seed,
@@ -379,7 +380,7 @@ Examples:
         print(f"  Realizations:  {args.n_realizations}")
         print(f"  Aggregates:    {', '.join(args.aggregates)}")
         print(f"  Cell size:     {grid_size}×{grid_size}")
-        print(f"  Spacing:       {'enabled' if args.add_spacing else 'disabled'}")
+        print(f"  Spacing:       {'disabled' if args.no_spacing else 'enabled'}")
 
         print(f"\nEvolution:")
         print(f"  Policy:        per-operator (from dataset)")
@@ -468,6 +469,16 @@ Examples:
                 selected_indices = operator_indices
                 if verbose:
                     print(f"  Using explicit indices: {selected_indices}")
+            elif sampling_method == "diverse":
+                # Diverse sampling uses features to find interesting operators
+                selected_indices = self._sample_diverse_operators(
+                    reader=reader,
+                    n_sample=n_operators,
+                    seed=seed,
+                    verbose=verbose
+                )
+                if verbose:
+                    print(f"  Sampled {len(selected_indices)} operators via diverse (feature-based)")
             else:
                 selected_indices = self._sample_operator_indices(
                     n_total=num_total_operators,
@@ -819,6 +830,135 @@ Examples:
 
         else:
             raise ValueError(f"Unknown sampling method: {method}")
+
+    def _sample_diverse_operators(
+        self,
+        reader: "HDF5DatasetReader",
+        n_sample: int,
+        seed: int,
+        verbose: bool = False
+    ) -> List[int]:
+        """
+        Sample operators with diverse/interesting behavior using feature statistics.
+
+        Uses multiple interestingness criteria:
+        1. Feature entropy (high entropy = complex, multi-modal behavior)
+        2. Distance from centroid (outliers with unusual patterns)
+        3. Feature variance (high variance = dynamic behavior)
+
+        Combines scores and samples to maximize diversity across the behavioral space.
+
+        Args:
+            reader: HDF5 dataset reader with features
+            n_sample: Number of operators to sample
+            seed: Random seed for reproducibility
+            verbose: Print progress information
+
+        Returns:
+            List of operator indices sorted by interestingness
+        """
+        from scipy.stats import entropy as scipy_entropy
+        from sklearn.preprocessing import StandardScaler
+
+        rng = np.random.default_rng(seed)
+
+        # Try to load summary features first (most informative for behavior)
+        features = None
+        feature_source = None
+        h5file = reader.file
+
+        # Check available feature paths
+        feature_paths = [
+            ("features/summary/aggregated/features", "summary"),
+            ("features/architecture/aggregated/features", "architecture"),
+        ]
+
+        for path, source in feature_paths:
+            if path in h5file:
+                features = h5file[path][:]
+                feature_source = source
+                break
+
+        if features is None:
+            # Fall back to parameters if no features available
+            if verbose:
+                print("  Warning: No features found, using Sobol sampling instead")
+            return self._sample_operator_indices(
+                n_total=reader.get_metadata().get("num_samples", 0),
+                n_sample=n_sample,
+                method="sobol",
+                seed=seed
+            )
+
+        n_total = len(features)
+        if verbose:
+            print(f"  Using {feature_source} features ({features.shape[1]}D) for diversity scoring")
+
+        # Clean features: replace NaN/inf with 0
+        features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Normalize features for fair comparison
+        scaler = StandardScaler()
+        features_norm = scaler.fit_transform(features)
+
+        # Compute interestingness scores
+        scores = np.zeros(n_total)
+
+        # 1. Feature entropy per operator (discretize and compute)
+        n_bins = 20
+        for i in range(n_total):
+            feat_vec = features_norm[i]
+            # Discretize feature values
+            hist, _ = np.histogram(feat_vec, bins=n_bins, range=(-3, 3))
+            hist = hist / (hist.sum() + 1e-10)
+            scores[i] += scipy_entropy(hist + 1e-10) * 0.3  # Weight: 30%
+
+        # 2. Distance from centroid (outlier score)
+        centroid = features_norm.mean(axis=0)
+        distances = np.linalg.norm(features_norm - centroid, axis=1)
+        # Normalize to [0, 1]
+        distances_norm = (distances - distances.min()) / (distances.max() - distances.min() + 1e-10)
+        scores += distances_norm * 0.4  # Weight: 40%
+
+        # 3. Feature variance per operator (dynamic behavior)
+        variances = features_norm.var(axis=1)
+        variances_norm = (variances - variances.min()) / (variances.max() - variances.min() + 1e-10)
+        scores += variances_norm * 0.3  # Weight: 30%
+
+        # Stratified sampling: divide into interestingness tiers and sample from each
+        n_tiers = min(5, n_sample)
+        tier_size = n_total // n_tiers
+        sorted_indices = np.argsort(scores)[::-1]  # Highest scores first
+
+        selected = []
+        samples_per_tier = n_sample // n_tiers
+        remainder = n_sample % n_tiers
+
+        for tier in range(n_tiers):
+            tier_start = tier * tier_size
+            tier_end = min((tier + 1) * tier_size, n_total)
+            tier_indices = sorted_indices[tier_start:tier_end]
+
+            # Sample from this tier
+            n_from_tier = samples_per_tier + (1 if tier < remainder else 0)
+            n_from_tier = min(n_from_tier, len(tier_indices))
+
+            if n_from_tier > 0:
+                tier_selected = rng.choice(tier_indices, size=n_from_tier, replace=False)
+                selected.extend(tier_selected.tolist())
+
+        # If we need more samples (due to small tiers), fill from top scorers
+        if len(selected) < n_sample:
+            remaining = n_sample - len(selected)
+            available = [i for i in sorted_indices if i not in selected][:remaining]
+            selected.extend(available)
+
+        if verbose:
+            selected_scores = scores[selected]
+            print(f"  Interestingness scores: min={selected_scores.min():.3f}, "
+                  f"max={selected_scores.max():.3f}, mean={selected_scores.mean():.3f}")
+
+        return selected[:n_sample]
 
     def _precompute_aggregates(
         self,
