@@ -13,7 +13,7 @@ Design principles:
 - Extensible: Easy to add new parameter types or strategies
 """
 
-from typing import Literal, Union, Any, Iterator, Dict, Optional
+from typing import Literal, Union, Any, Iterator, Dict, Optional, List
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pathlib import Path
 from spinlock.config.cloud import CloudConfig
@@ -128,6 +128,45 @@ class ArrayParameter(ParameterSpec):
 
 
 # =============================================================================
+# U-AFNO Parameter Space
+# =============================================================================
+
+
+class UAFNOParameterSpace(BaseModel):
+    """
+    Parameter space configuration for U-AFNO operators.
+
+    Defines the Sobol-sampable hyperparameters for U-AFNO architecture:
+    - modes: Number of Fourier modes for spectral mixing
+    - hidden_dim: Hidden dimension in AFNO MLP
+    - encoder_levels: Depth of U-Net encoder
+    - afno_blocks: Number of stacked AFNO blocks in bottleneck
+    - blocks_per_level: Residual blocks per U-Net level
+    """
+
+    modes: IntegerParameter = Field(
+        default_factory=lambda: IntegerParameter(bounds=(8, 64)),
+        description="Number of Fourier modes to keep in AFNO spectral mixing"
+    )
+    hidden_dim: IntegerParameter = Field(
+        default_factory=lambda: IntegerParameter(bounds=(32, 256)),
+        description="Hidden dimension for AFNO MLP (default: 2x bottleneck channels)"
+    )
+    encoder_levels: IntegerParameter = Field(
+        default_factory=lambda: IntegerParameter(bounds=(2, 5)),
+        description="Number of U-Net encoder levels (each halves spatial resolution)"
+    )
+    afno_blocks: IntegerParameter = Field(
+        default_factory=lambda: IntegerParameter(bounds=(2, 8)),
+        description="Number of stacked AFNO blocks in bottleneck"
+    )
+    blocks_per_level: IntegerParameter = Field(
+        default_factory=lambda: IntegerParameter(bounds=(1, 4)),
+        description="Number of residual blocks per U-Net level"
+    )
+
+
+# =============================================================================
 # Parameter Space Configuration
 # =============================================================================
 
@@ -155,6 +194,9 @@ class ParameterSpace(BaseModel):
         IntegerParameter, ContinuousParameter, ChoiceParameter, BooleanParameter
     ]] = Field(default_factory=dict)  # Optional for backward compatibility
 
+    # U-AFNO specific parameter space (optional, only when operator_type="u_afno")
+    u_afno: Optional[UAFNOParameterSpace] = None
+
     @property
     def total_dimensions(self) -> int:
         """
@@ -174,7 +216,14 @@ class ParameterSpace(BaseModel):
         yield from self.architecture.values()
         yield from self.stochastic.values()
         yield from self.operator.values()
-        yield from self.evolution.values()  # NEW: Include evolution params
+        yield from self.evolution.values()
+        # Include U-AFNO params if specified
+        if self.u_afno is not None:
+            yield self.u_afno.modes
+            yield self.u_afno.hidden_dim
+            yield self.u_afno.encoder_levels
+            yield self.u_afno.afno_blocks
+            yield self.u_afno.blocks_per_level
 
     def _count_dimensions(self, param: ParameterSpec) -> int:
         """Count dimensions for a single parameter."""
@@ -338,6 +387,12 @@ class SimulationConfig(BaseModel):
     num_timesteps: int = Field(default=1, ge=1, le=10000)
     extract_operator_features: bool = Field(default=False)
 
+    # Operator architecture type
+    operator_type: Literal["cnn", "u_afno"] = Field(
+        default="cnn",
+        description="Neural operator architecture: 'cnn' for convolutional, 'u_afno' for U-Net+AFNO"
+    )
+
 
 # =============================================================================
 # Dataset Configuration
@@ -405,12 +460,78 @@ class TemporalFeaturesConfig(BaseModel):
     )
 
 
+class LearnedFeaturesConfig(BaseModel):
+    """Learned feature configuration (U-AFNO latent extraction)."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable learned feature extraction from U-AFNO latent representations."
+    )
+    extract_from: Literal["bottleneck", "skips", "all"] = Field(
+        default="bottleneck",
+        description="Which latents to extract: bottleneck (global spectral), skips (multi-scale), or all."
+    )
+    skip_levels: List[int] = Field(
+        default_factory=lambda: [0, 1, 2],
+        description="Which encoder levels to extract (0 = shallowest, higher = deeper)."
+    )
+    temporal_agg: Literal["mean", "max", "mean_max", "std"] = Field(
+        default="mean_max",
+        description="Temporal aggregation method across timesteps."
+    )
+    spatial_agg: Literal["gap", "flatten"] = Field(
+        default="gap",
+        description="Spatial aggregation: gap (global average pooling) or flatten."
+    )
+    projection_dim: Optional[int] = Field(
+        default=None,
+        ge=8,
+        le=512,
+        description="Optional fixed output dimension via MLP projection."
+    )
+
+    # Training config for learned features
+    training_epochs: int = Field(
+        default=100,
+        ge=1,
+        le=500,
+        description="Number of epochs to train each operator on next-step prediction."
+    )
+    learning_rate: float = Field(
+        default=1e-3,
+        gt=0,
+        description="Learning rate for operator training (Adam optimizer)."
+    )
+    lr_scheduler: Literal["constant", "cosine"] = Field(
+        default="cosine",
+        description="Learning rate schedule: constant or cosine annealing."
+    )
+    early_stopping_patience: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Stop training if no improvement for this many epochs."
+    )
+
+
 class SummaryFeaturesConfig(BaseModel):
     """SUMMARY feature family configuration (aggregated scalars)."""
 
     enabled: bool = Field(
         default=True,
         description="Extract aggregated summary features."
+    )
+    summary_mode: Literal["manual", "learned", "hybrid"] = Field(
+        default="manual",
+        description=(
+            "Feature mode: 'manual' (hand-crafted features only), "
+            "'learned' (U-AFNO latent features only), "
+            "'hybrid' (both concatenated)."
+        )
+    )
+    learned: LearnedFeaturesConfig = Field(
+        default_factory=LearnedFeaturesConfig,
+        description="Configuration for learned feature extraction from U-AFNO latents."
     )
 
 

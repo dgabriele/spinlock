@@ -26,7 +26,10 @@ from .blocks import (
     UpsampleBlock,
     OutputLayer,
 )
+from .afno import SpectralMixingBlock, AFNOBlock
+from .u_afno import UAFNOOperator
 from .parameters import OperatorParameters
+from typing import Literal
 
 # Module-level flag to prevent repetitive JIT compilation logging
 _JIT_COMPILE_LOGGED = False
@@ -70,6 +73,11 @@ class OperatorBuilder:
         "DownsampleBlock": DownsampleBlock,
         "UpsampleBlock": UpsampleBlock,
         "OutputLayer": OutputLayer,
+        # AFNO blocks
+        "SpectralMixingBlock": SpectralMixingBlock,
+        "AFNOBlock": AFNOBlock,
+        # U-AFNO operator
+        "UAFNOOperator": UAFNOOperator,
     }
 
     @classmethod
@@ -295,8 +303,76 @@ class OperatorBuilder:
 
         return nn.Sequential(*layers)
 
+    def build_u_afno(self, params: Union[Dict[str, Any], OperatorParameters]) -> nn.Module:
+        """
+        Build a U-AFNO operator from parameters.
+
+        Constructs a U-Net encoder → AFNO bottleneck → U-Net decoder architecture
+        with optional stochastic noise injection.
+
+        Args:
+            params: OperatorParameters dataclass or dict with keys:
+                - input_channels: int
+                - output_channels: int
+                - base_channels: int
+                - encoder_levels: int (default: 3)
+                - modes: int (default: 32)
+                - afno_blocks: int (default: 4)
+                - hidden_dim: int (optional, default: 2x bottleneck channels)
+                - activation: str (default: "gelu")
+                - normalization: str (default: "instance")
+                - noise_type: str (optional, e.g., "gaussian")
+                - noise_scale: float (optional)
+                - noise_schedule: str (default: "constant")
+                - spatial_correlation: float (default: 0.0)
+
+        Returns:
+            UAFNOOperator neural operator
+
+        Example:
+            ```python
+            params = {
+                "input_channels": 3,
+                "output_channels": 3,
+                "base_channels": 32,
+                "encoder_levels": 3,
+                "modes": 32,
+                "afno_blocks": 4,
+                "activation": "gelu",
+                "noise_type": "gaussian",
+                "noise_scale": 0.05
+            }
+            model = builder.build_u_afno(params)
+            ```
+        """
+        # Handle both dict and OperatorParameters
+        def get_param(key: str, default: Any = None) -> Any:
+            if isinstance(params, dict):
+                return params.get(key, default)
+            return getattr(params, key, default)
+
+        return UAFNOOperator(
+            in_channels=get_param("input_channels", 3),
+            out_channels=get_param("output_channels", 3),
+            base_channels=get_param("base_channels", 32),
+            encoder_levels=get_param("encoder_levels", 3),
+            modes=get_param("modes", 32),
+            afno_blocks=get_param("afno_blocks", 4),
+            hidden_dim=get_param("hidden_dim", None),
+            blocks_per_level=get_param("blocks_per_level", 2),
+            normalization=get_param("normalization", "instance"),
+            activation=get_param("activation", "gelu"),
+            noise_type=get_param("noise_type", None),
+            noise_scale=get_param("noise_scale", None),
+            noise_schedule=get_param("noise_schedule", "constant"),
+            spatial_correlation=get_param("spatial_correlation", 0.0),
+        )
+
     def build_from_sampled_params(
-        self, unit_params: NDArray[np.float64], parameter_space_config: Dict[str, Dict[str, Any]]
+        self,
+        unit_params: NDArray[np.float64],
+        parameter_space_config: Dict[str, Dict[str, Any]],
+        operator_type: Literal["cnn", "u_afno"] = "cnn",
     ) -> nn.Module:
         """
         Complete pipeline: unit parameters → mapped parameters → operator.
@@ -304,6 +380,7 @@ class OperatorBuilder:
         Args:
             unit_params: Sampled parameters in [0,1]^d
             parameter_space_config: Parameter specifications
+            operator_type: Type of operator to build ("cnn" or "u_afno")
 
         Returns:
             Neural operator model
@@ -314,18 +391,28 @@ class OperatorBuilder:
             samples = sampler.sample(1)
             unit_params = samples[0]
 
-            # Build operator
+            # Build CNN operator (default)
             operator = builder.build_from_sampled_params(
                 unit_params,
                 config.parameter_space.architecture
+            )
+
+            # Build U-AFNO operator
+            operator = builder.build_from_sampled_params(
+                unit_params,
+                config.parameter_space.architecture,
+                operator_type="u_afno"
             )
             ```
         """
         # Map to actual values
         mapped_params = self.map_parameters(unit_params, parameter_space_config)
 
-        # Build operator
-        return self.build_simple_cnn(mapped_params)
+        # Build operator based on type
+        if operator_type == "u_afno":
+            return self.build_u_afno(mapped_params)
+        else:
+            return self.build_simple_cnn(mapped_params)
 
 
 class NeuralOperator(nn.Module):
@@ -543,3 +630,35 @@ class NeuralOperator(nn.Module):
             f"Metadata: {self.metadata}",
         ]
         return "\n".join(summary)
+
+    def get_intermediate_features(
+        self,
+        x: torch.Tensor,
+        extract_from: str = "bottleneck",
+        skip_levels: list[int] | None = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Extract intermediate features from the underlying model.
+
+        Delegates to the wrapped model's get_intermediate_features() method.
+        Only available for U-AFNO operators.
+
+        Args:
+            x: Input tensor [B, C, H, W]
+            extract_from: Which latents to extract ("bottleneck", "skips", or "all")
+            skip_levels: Which encoder levels to extract for skip connections
+
+        Returns:
+            Dict of intermediate feature tensors
+
+        Raises:
+            AttributeError: If underlying model doesn't support this method
+        """
+        if not hasattr(self.model, "get_intermediate_features"):
+            raise AttributeError(
+                "Operator must have get_intermediate_features() method. "
+                "Only U-AFNO operators are supported for learned feature extraction."
+            )
+        return self.model.get_intermediate_features(
+            x, extract_from=extract_from, skip_levels=skip_levels
+        )

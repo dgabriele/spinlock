@@ -9,6 +9,8 @@ from .blocks import (
     UpsampleBlock,
     OutputLayer
 )
+from .afno import SpectralMixingBlock, AFNOBlock
+from .u_afno import UAFNOOperator, UNetEncoder, UNetDecoder
 from .builder import OperatorBuilder, NeuralOperator
 from .parameters import (
     OperatorParameters,
@@ -18,6 +20,7 @@ from .parameters import (
 )
 
 __all__ = [
+    # Base blocks
     "BaseBlock",
     "ConvBlock",
     "ResidualBlock",
@@ -25,8 +28,17 @@ __all__ = [
     "DownsampleBlock",
     "UpsampleBlock",
     "OutputLayer",
+    # AFNO blocks
+    "SpectralMixingBlock",
+    "AFNOBlock",
+    # U-AFNO operator
+    "UAFNOOperator",
+    "UNetEncoder",
+    "UNetDecoder",
+    # Builder and wrapper
     "OperatorBuilder",
     "NeuralOperator",
+    # Parameters and metadata
     "OperatorParameters",
     "SamplingMetrics",
     "DatasetMetadata",

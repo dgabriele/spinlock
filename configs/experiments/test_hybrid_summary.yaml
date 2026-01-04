@@ -1,0 +1,162 @@
+version: "1.0"
+
+metadata:
+  name: "test_hybrid_summary"
+  description: "Small test dataset to validate hybrid summary mode with learned U-AFNO features"
+  author: "Spinlock Team"
+  created: "2026-01-03"
+
+# Minimal parameter space for quick testing
+parameter_space:
+  architecture:
+    base_channels:
+      type: integer
+      bounds: [16, 32]
+      description: "Base number of channels for U-Net"
+
+    activation:
+      type: choice
+      choices: ["gelu"]
+
+    num_layers:
+      type: integer
+      bounds: [2, 3]
+
+    kernel_size:
+      type: choice
+      choices: [3]
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.1]
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian"]
+
+    noise_scale:
+      type: continuous
+      bounds: [0.0001, 0.1]
+      log_scale: true
+
+    noise_schedule:
+      type: choice
+      choices: ["constant"]
+
+    spatial_correlation:
+      type: continuous
+      bounds: [0.0, 0.1]
+
+  operator:
+    normalization:
+      type: choice
+      choices: ["instance"]
+
+    grid_size:
+      type: choice
+      choices: [64]  # Smaller grid for faster testing
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["residual"]
+
+  # U-AFNO specific parameters
+  u_afno:
+    modes:
+      type: integer
+      bounds: [8, 16]
+
+    hidden_dim:
+      type: integer
+      bounds: [32, 64]
+
+    encoder_levels:
+      type: integer
+      bounds: [2, 3]
+
+    afno_blocks:
+      type: integer
+      bounds: [2, 3]
+
+    blocks_per_level:
+      type: integer
+      bounds: [1, 2]
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+  sobol:
+    scramble: true
+    seed: 42
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 2
+    min_samples_per_stratum: 2
+  validation:
+    check_discrepancy: false
+    check_correlation: false
+
+  total_samples: 10  # Small for testing
+  batch_size: 1      # Small batch to avoid OOM during training
+
+# Simulation configuration
+simulation:
+  device: "cuda"
+  operator_type: "u_afno"  # Required for learned features
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "sampled"
+    ic_type_weights:
+      gaussian_random_field_v2: 0.5
+      structured: 0.5
+
+    gaussian_random_field_v2:
+      length_scale: 0.05
+      variance: 1.0
+
+    structured:
+      num_structures: 3
+      structure_types: ["stripe"]
+
+  precision: "float16"
+  num_realizations: 2
+  num_timesteps: 20  # Short rollout for testing
+
+  extract_operator_features: false
+
+# Dataset storage configuration
+dataset:
+  output_path: "./datasets/test_hybrid_summary.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 5
+    store_trajectories: false
+
+# Feature configuration with hybrid summary mode
+features:
+  summary:
+    enabled: true
+    summary_mode: "hybrid"  # Both manual + learned features
+    learned:
+      enabled: true
+      extract_from: "bottleneck"  # Extract from AFNO bottleneck
+      temporal_agg: "mean_max"    # Mean + max concatenated
+      spatial_agg: "gap"          # Global average pooling
+      projection_dim: null        # No projection, use padding for variable dimensions
+      # Training config
+      training_epochs: 20         # Quick training for testing
+      learning_rate: 0.001
+      lr_scheduler: "cosine"
+      early_stopping_patience: 5
+
+logging:
+  level: "INFO"

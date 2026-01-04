@@ -656,6 +656,102 @@ class SummaryInvariantDriftConfig(BaseModel):
 
 
 # =============================================================================
+# Learned SUMMARY Features (Phase 2)
+# =============================================================================
+
+
+class LearnedSummaryConfig(BaseModel):
+    """
+    Learned SUMMARY feature configuration.
+
+    Extracts features from U-AFNO intermediate representations:
+    - Bottleneck latents (default): Global spectral features after AFNO
+    - Skip connections (optional): Multi-scale encoder features
+
+    Aggregation pipeline:
+    1. Temporal: Pool across T timesteps (mean, max, or concatenated)
+    2. Spatial: Global average pooling across H, W
+    3. Optional: Project to fixed dimension via MLP
+
+    Note: Only available for U-AFNO operators. CNN operators do not support
+    learned feature extraction.
+
+    Example:
+        >>> config = LearnedSummaryConfig(
+        ...     enabled=True,
+        ...     extract_from="all",
+        ...     temporal_agg="mean_max",
+        ... )
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable learned feature extraction from U-AFNO latents"
+    )
+
+    extract_from: Literal["bottleneck", "skips", "all"] = Field(
+        default="bottleneck",
+        description="Which latents to extract: bottleneck only, skips only, or all"
+    )
+
+    skip_levels: List[int] = Field(
+        default_factory=lambda: [0, 1, 2],
+        description="Which encoder levels to extract (0=shallowest, used when extract_from='skips' or 'all')"
+    )
+
+    temporal_agg: Literal["mean", "max", "mean_max", "std"] = Field(
+        default="mean_max",
+        description="Temporal aggregation: mean, max, mean+max concatenated, or std"
+    )
+
+    spatial_agg: Literal["gap", "flatten"] = Field(
+        default="gap",
+        description="Spatial aggregation: global average pooling (gap) or flatten"
+    )
+
+    projection_dim: Optional[int] = Field(
+        default=None,
+        ge=8,
+        le=512,
+        description="Optional projection to fixed dimension via MLP (None = raw latents)"
+    )
+
+    # Training config for learned features
+    training_epochs: int = Field(
+        default=100,
+        ge=1,
+        le=500,
+        description="Number of epochs to train each operator on next-step prediction"
+    )
+    learning_rate: float = Field(
+        default=1e-3,
+        gt=0,
+        description="Learning rate for operator training (Adam optimizer)"
+    )
+    lr_scheduler: Literal["constant", "cosine"] = Field(
+        default="cosine",
+        description="Learning rate schedule: constant or cosine annealing"
+    )
+    early_stopping_patience: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Stop training if no improvement for this many epochs"
+    )
+
+    @field_validator('skip_levels')
+    @classmethod
+    def validate_skip_levels(cls, v: List[int]) -> List[int]:
+        """Ensure skip levels are valid."""
+        if not v:
+            raise ValueError("skip_levels must be non-empty")
+        for level in v:
+            if level < 0 or level > 5:
+                raise ValueError("skip_levels must be in range [0, 5]")
+        return v
+
+
+# =============================================================================
 # SUMMARY Top-Level Configuration
 # =============================================================================
 
@@ -695,6 +791,24 @@ class SummaryConfig(BaseModel):
     causality: SummaryCausalityConfig = Field(default_factory=SummaryCausalityConfig)
     invariant_drift: SummaryInvariantDriftConfig = Field(default_factory=SummaryInvariantDriftConfig)
     nonlinear: SummaryNonlinearConfig = Field(default_factory=SummaryNonlinearConfig)  # Phase 1 extension
+
+    # Learned features (Phase 2) - extract from U-AFNO latents
+    learned: LearnedSummaryConfig = Field(
+        default_factory=LearnedSummaryConfig,
+        description="Learned feature extraction from U-AFNO intermediate representations"
+    )
+
+    # Summary mode toggle
+    summary_mode: Literal["manual", "learned", "hybrid"] = Field(
+        default="manual",
+        description="Feature mode: manual (hand-crafted), learned (U-AFNO latents), hybrid (both concatenated)"
+    )
+
+    # Per-timestep extraction toggle
+    extract_per_timestep: bool = Field(
+        default=True,
+        description="Extract per-timestep (TEMPORAL) features. Disable for SUMMARY-only mode."
+    )
 
     # Aggregation settings
     per_channel: bool = True  # Extract features per-channel or aggregate across channels
@@ -945,4 +1059,49 @@ class SummaryConfig(BaseModel):
             count += nonlinear_count * len(self.realization_aggregation)
 
         return count
+
+    @classmethod
+    def from_schema_config(cls, schema_config: "SummaryFeaturesConfig") -> "SummaryConfig":
+        """
+        Create a SummaryConfig from a schema SummaryFeaturesConfig.
+
+        This factory method bridges the gap between the schema config
+        (used by SpinlockConfig for YAML parsing) and the extractor config
+        (used by SummaryExtractor for feature extraction).
+
+        Args:
+            schema_config: SummaryFeaturesConfig from spinlock.config.schema
+
+        Returns:
+            SummaryConfig with summary_mode and learned settings from schema
+        """
+        # Import here to avoid circular imports
+        from spinlock.config.schema import SummaryFeaturesConfig as SchemaConfig
+
+        if not isinstance(schema_config, SchemaConfig):
+            raise TypeError(
+                f"Expected SummaryFeaturesConfig, got {type(schema_config).__name__}"
+            )
+
+        # Convert learned config if present
+        learned_config = LearnedSummaryConfig()
+        if schema_config.learned is not None:
+            learned_config = LearnedSummaryConfig(
+                enabled=schema_config.learned.enabled,
+                extract_from=schema_config.learned.extract_from,
+                skip_levels=list(schema_config.learned.skip_levels),
+                temporal_agg=schema_config.learned.temporal_agg,
+                spatial_agg=schema_config.learned.spatial_agg,
+                projection_dim=schema_config.learned.projection_dim,
+                # Training config
+                training_epochs=schema_config.learned.training_epochs,
+                learning_rate=schema_config.learned.learning_rate,
+                lr_scheduler=schema_config.learned.lr_scheduler,
+                early_stopping_patience=schema_config.learned.early_stopping_patience,
+            )
+
+        return cls(
+            summary_mode=schema_config.summary_mode,
+            learned=learned_config,
+        )
 

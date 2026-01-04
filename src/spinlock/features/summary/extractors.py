@@ -18,7 +18,7 @@ Example:
 
 import torch
 from contextlib import nullcontext
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 from spinlock.features.base import FeatureExtractorBase
 from spinlock.features.registry import FeatureRegistry
 from spinlock.features.summary.spatial import SpatialFeatureExtractor
@@ -35,9 +35,11 @@ from spinlock.features.summary.structural import StructuralFeatureExtractor
 from spinlock.features.summary.physics import PhysicsFeatureExtractor
 from spinlock.features.summary.morphological import MorphologicalFeatureExtractor
 from spinlock.features.summary.multiscale import MultiscaleFeatureExtractor
+# Learned features (U-AFNO latent extraction)
+from spinlock.features.summary.learned import LearnedSummaryExtractor
 
 if TYPE_CHECKING:
-    from spinlock.features.summary.config import SummaryConfig
+    from spinlock.features.summary.config import SummaryConfig, LearnedSummaryConfig
 
 
 class SummaryExtractor(FeatureExtractorBase):
@@ -60,6 +62,7 @@ class SummaryExtractor(FeatureExtractorBase):
         cross_channel_extractor: Cross-channel interaction extractor (v2.0, optional)
         causality_extractor: Causality/directionality extractor (v2.0, optional)
         invariant_drift_extractor: Invariant drift extractor (v2.0, optional)
+        learned_extractor: Learned feature extractor from U-AFNO latents (Phase 2, optional)
         registry: Feature name-to-index registry
     """
 
@@ -100,6 +103,9 @@ class SummaryExtractor(FeatureExtractorBase):
         self.morphological_extractor: Optional[MorphologicalFeatureExtractor] = None
         self.multiscale_extractor: Optional[MultiscaleFeatureExtractor] = None
 
+        # Initialize learned feature extractor (U-AFNO latent extraction)
+        self.learned_extractor: Optional[LearnedSummaryExtractor] = None
+
         if config is not None:
             if config.operator_sensitivity is not None and config.operator_sensitivity.enabled:
                 self.operator_sensitivity_extractor = OperatorSensitivityExtractor(
@@ -135,6 +141,13 @@ class SummaryExtractor(FeatureExtractorBase):
 
             if config.multiscale is not None and config.multiscale.enabled:
                 self.multiscale_extractor = MultiscaleFeatureExtractor(device=device)
+
+            # Initialize learned feature extractor (U-AFNO latent extraction)
+            if config.learned is not None and config.learned.enabled:
+                self.learned_extractor = LearnedSummaryExtractor(
+                    device=device,
+                    config=config.learned
+                )
 
         # Initialize feature registry
         self._registry: Optional[FeatureRegistry] = None
@@ -838,51 +851,120 @@ class SummaryExtractor(FeatureExtractorBase):
         else:
             raise ValueError(f"Unknown aggregation method: {method}")
 
+    def extract_learned_features(
+        self,
+        operators: 'List[torch.nn.Module]',
+        trajectories: torch.Tensor,  # [N, M, T, C, H, W]
+    ) -> torch.Tensor:
+        """
+        Extract learned features from U-AFNO latent representations.
+
+        This method uses the U-AFNO intermediate features (bottleneck and/or skips)
+        to compute aggregated learned features. Only available when:
+        1. `learned_extractor` is initialized (config.learned.enabled=True)
+        2. Operators are U-AFNO instances with `get_intermediate_features()` method
+
+        Args:
+            operators: List of N U-AFNO operators
+            trajectories: Stochastic trajectories [N, M, T, C, H, W]
+
+        Returns:
+            Learned features [N, D_learned]
+
+        Raises:
+            ValueError: If learned_extractor not initialized or operators not provided
+        """
+        if self.learned_extractor is None:
+            raise ValueError(
+                "Learned feature extraction not enabled. "
+                "Set config.learned.enabled=True to enable."
+            )
+
+        if operators is None or len(operators) == 0:
+            raise ValueError(
+                "Operators required for learned feature extraction. "
+                "Ensure pipeline passes operators to feature extraction."
+            )
+
+        N = trajectories.shape[0]
+        if len(operators) != N:
+            raise ValueError(
+                f"Number of operators ({len(operators)}) must match batch size ({N})"
+            )
+
+        # Extract learned features for each operator
+        return self.learned_extractor.extract_batch(operators, trajectories)
+
     def extract_all(
         self,
         trajectories: torch.Tensor,  # [N, M, T, C, H, W]
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
+        operators: Optional[List[torch.nn.Module]] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Extract all SUMMARY features (convenience method).
 
         Runs full three-stage pipeline and returns all feature representations.
+        Supports three summary_mode options:
+        - "manual": Hand-crafted features only (spatial, spectral, temporal, v2.0+)
+        - "learned": U-AFNO latent features only (requires operators)
+        - "hybrid": Both manual and learned features concatenated
 
         Args:
             trajectories: Stochastic trajectories [N, M, T, C, H, W]
             metadata: Optional metadata dict
+            operators: List of N U-AFNO operators (required for "learned" and "hybrid" modes)
 
         Returns:
             Dictionary with keys:
-            - 'per_timestep': Features [N, T, D]
-            - 'per_trajectory': Features [N, M, D_traj]
+            - 'per_timestep': Features [N, T, D] (manual mode only)
+            - 'per_trajectory': Features [N, M, D_traj] (manual mode only)
             - 'aggregated_mean': Features [N, D_final] (mean across realizations)
             - 'aggregated_std': Features [N, D_final] (std across realizations)
             - 'aggregated_cv': Features [N, D_final] (cv across realizations)
+            - 'learned': Features [N, D_learned] (learned/hybrid modes only)
         """
-        # Stage 1: Per-timestep features (optional - skip if disabled)
-        extract_per_timestep = self.config.extract_per_timestep if self.config else True
-        per_timestep = None
-        if extract_per_timestep:
-            per_timestep = self.extract_per_timestep(trajectories, metadata)
+        # Determine summary mode
+        summary_mode = self.config.summary_mode if self.config else "manual"
 
-        # Stage 2: Per-trajectory features
-        per_trajectory = self.extract_per_trajectory(trajectories, metadata)
+        result: Dict[str, torch.Tensor] = {}
 
-        # Stage 3: Aggregate across realizations
-        agg_methods = self.config.realization_aggregation if self.config else ['mean', 'std', 'cv']
+        # Extract manual features (for "manual" and "hybrid" modes)
+        if summary_mode in ("manual", "hybrid"):
+            # Stage 1: Per-timestep features (optional - skip if disabled)
+            extract_per_timestep = self.config.extract_per_timestep if self.config else True
+            if extract_per_timestep:
+                result['per_timestep'] = self.extract_per_timestep(trajectories, metadata)
 
-        aggregated = {}
-        for method in agg_methods:
-            aggregated[f'aggregated_{method}'] = self.aggregate_realizations(
-                per_trajectory,
-                method=method
-            )
+            # Stage 2: Per-trajectory features
+            per_trajectory = self.extract_per_trajectory(trajectories, metadata)
+            result['per_trajectory'] = per_trajectory
 
-        result = {
-            'per_trajectory': per_trajectory,
-            **aggregated
-        }
-        if per_timestep is not None:
-            result['per_timestep'] = per_timestep
+            # Stage 3: Aggregate across realizations
+            agg_methods = self.config.realization_aggregation if self.config else ['mean', 'std', 'cv']
+            for method in agg_methods:
+                result[f'aggregated_{method}'] = self.aggregate_realizations(
+                    per_trajectory,
+                    method=method
+                )
+
+        # Extract learned features (for "learned" and "hybrid" modes)
+        if summary_mode in ("learned", "hybrid"):
+            if self.learned_extractor is None:
+                raise ValueError(
+                    f"summary_mode='{summary_mode}' requires learned features, "
+                    "but config.learned.enabled=False. Enable learned extraction "
+                    "or use summary_mode='manual'."
+                )
+
+            if operators is None or len(operators) == 0:
+                raise ValueError(
+                    f"summary_mode='{summary_mode}' requires operators, "
+                    "but none were provided. Ensure pipeline passes operators "
+                    "to feature extraction."
+                )
+
+            learned_features = self.extract_learned_features(operators, trajectories)
+            result['learned'] = learned_features
+
         return result

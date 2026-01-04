@@ -20,7 +20,7 @@ import torch.nn as nn
 import numpy as np
 from numpy.typing import NDArray
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from collections import defaultdict
 from tqdm import tqdm
 import time
@@ -36,6 +36,7 @@ from ..cloud.storage import StorageBackend, LocalHDF5Backend
 from ..cloud.execution import ExecutionBackend, LocalExecutionBackend
 from ..sampling import StratifiedSobolSampler
 from ..operators import OperatorBuilder, NeuralOperator
+from ..operators.training import OperatorTrainer
 from ..execution import ParallelExecutor, AdaptiveBatchSizer, MemoryManager
 from ..config import SpinlockConfig
 from ..features.summary import SummaryExtractor, SummaryConfig
@@ -46,9 +47,10 @@ from ..features.storage import HDF5FeatureWriter
 class FeatureWriteTask:
     """Task for async feature writing."""
     batch_idx_start: int
-    per_timestep: np.ndarray
-    per_trajectory: np.ndarray
-    aggregated: np.ndarray
+    per_timestep: Optional[np.ndarray]
+    per_trajectory: Optional[np.ndarray]
+    aggregated: Optional[np.ndarray]
+    learned: Optional[np.ndarray] = None  # For U-AFNO learned features
 
 
 class AsyncFeatureWriter:
@@ -121,14 +123,15 @@ class AsyncFeatureWriter:
                     task = self.write_queue.get(timeout=0.1)
                     if task is None:  # Sentinel
                         break
-                        
+
                     self.feature_writer.write_summary_batch(
                         batch_idx=task.batch_idx_start,
                         per_timestep=task.per_timestep,
                         per_trajectory=task.per_trajectory,
-                        aggregated=task.aggregated
+                        aggregated=task.aggregated,
+                        learned=task.learned
                     )
-                    
+
                     self.write_queue.task_done()
                 except queue.Empty:
                     continue
@@ -163,53 +166,88 @@ class FeatureExtractionPipeline:
         self.device = device
         self.temporal_enabled = temporal_enabled
 
+    @property
+    def needs_operators(self) -> bool:
+        """Check if this pipeline needs operators (for learned features)."""
+        config = self.summary_extractor.config
+        if config is None:
+            return False
+        return config.summary_mode in ("learned", "hybrid")
+
     def extract_all(
         self,
-        batch_outputs: torch.Tensor  # [B, M, T, C, H, W]
-    ) -> Tuple[Optional[np.ndarray], np.ndarray, np.ndarray]:
+        batch_outputs: torch.Tensor,  # [B, M, T, C, H, W]
+        operators: Optional[List[torch.nn.Module]] = None,
+    ) -> Tuple[Optional[np.ndarray], np.ndarray, np.ndarray, Optional[np.ndarray]]:
         """
         Extract all features efficiently (no recomputation).
 
         Args:
             batch_outputs: Trajectory tensors [B, M, T, C, H, W]
+            operators: Optional list of operators (required for learned features)
 
         Returns:
-            Tuple of (per_timestep_np, per_trajectory_np, aggregated_np)
-            per_timestep_np is None if TEMPORAL features are disabled
+            Tuple of (per_timestep_np, per_trajectory_np, aggregated_np, learned_np)
+            - per_timestep_np is None if TEMPORAL features are disabled
+            - learned_np is None if learned features are disabled
         """
+        config = self.summary_extractor.config
+        summary_mode = config.summary_mode if config else "manual"
+
         with torch.no_grad():
-            # Stage 1: Extract per-timestep (TEMPORAL) features - only if enabled
             per_timestep_np = None
-            if self.temporal_enabled:
-                per_timestep_gpu = self.summary_extractor.extract_per_timestep(batch_outputs)
-                per_timestep_np = per_timestep_gpu.cpu().numpy()
-                del per_timestep_gpu
+            per_trajectory_np = None
+            aggregated_np = None
+            learned_np = None
+
+            # Extract manual features (for "manual" and "hybrid" modes)
+            if summary_mode in ("manual", "hybrid"):
+                # Stage 1: Extract per-timestep (TEMPORAL) features - only if enabled
+                if self.temporal_enabled:
+                    per_timestep_gpu = self.summary_extractor.extract_per_timestep(batch_outputs)
+                    per_timestep_np = per_timestep_gpu.cpu().numpy()
+                    del per_timestep_gpu
+                    if self.device.type == "cuda":
+                        torch.cuda.empty_cache()
+
+                # Stage 2: Extract per-trajectory (SUMMARY) features
+                per_trajectory_gpu = self.summary_extractor.extract_per_trajectory(batch_outputs)
+                per_trajectory_np = per_trajectory_gpu.cpu().numpy()
+
+                # Stage 3: Aggregate using same GPU tensor (no recomputation)
+                aggregated_list = []
+                for method in ['mean', 'std', 'cv']:
+                    agg_gpu = self.summary_extractor.aggregate_realizations(
+                        per_trajectory_gpu, method=method
+                    )
+                    aggregated_list.append(agg_gpu.cpu())
+                    del agg_gpu
+                    if self.device.type == "cuda":
+                        torch.cuda.empty_cache()
+
+                aggregated_np = torch.cat(aggregated_list, dim=1).numpy()
+
+                # Free GPU memory
+                del per_trajectory_gpu, aggregated_list
                 if self.device.type == "cuda":
                     torch.cuda.empty_cache()
 
-            # Stage 2: Extract per-trajectory (SUMMARY) features
-            per_trajectory_gpu = self.summary_extractor.extract_per_trajectory(batch_outputs)
-            per_trajectory_np = per_trajectory_gpu.cpu().numpy()
-
-            # Stage 3: Aggregate using same GPU tensor (no recomputation)
-            aggregated_list = []
-            for method in ['mean', 'std', 'cv']:
-                agg_gpu = self.summary_extractor.aggregate_realizations(
-                    per_trajectory_gpu, method=method
+            # Extract learned features (for "learned" and "hybrid" modes)
+            if summary_mode in ("learned", "hybrid"):
+                if operators is None:
+                    raise ValueError(
+                        f"summary_mode='{summary_mode}' requires operators, "
+                        "but none were provided."
+                    )
+                learned_gpu = self.summary_extractor.extract_learned_features(
+                    operators, batch_outputs
                 )
-                aggregated_list.append(agg_gpu.cpu())
-                del agg_gpu
+                learned_np = learned_gpu.cpu().numpy()
+                del learned_gpu
                 if self.device.type == "cuda":
                     torch.cuda.empty_cache()
 
-            aggregated_np = torch.cat(aggregated_list, dim=1).numpy()
-
-            # Free GPU memory
-            del per_trajectory_gpu, aggregated_list
-            if self.device.type == "cuda":
-                torch.cuda.empty_cache()
-
-            return per_timestep_np, per_trajectory_np, aggregated_np
+            return per_timestep_np, per_trajectory_np, aggregated_np, learned_np
 
 
 class DatasetGenerationPipeline:
@@ -282,6 +320,9 @@ class DatasetGenerationPipeline:
         # Feature extraction pipeline (initialized when needed)
         self._feature_pipeline: Optional[FeatureExtractionPipeline] = None
         self._async_feature_writer: Optional[AsyncFeatureWriter] = None
+
+        # Training logging flag
+        self._first_batch_logged = False
 
     def _create_default_storage(self) -> StorageBackend:
         """Create default storage backend (local HDF5)."""
@@ -470,7 +511,7 @@ class DatasetGenerationPipeline:
 
         if not store_trajectories:
             print("Initializing inline feature extractor...")
-            summary_config = SummaryConfig()
+            summary_config = SummaryConfig.from_schema_config(self.config.features.summary)
             summary_extractor = SummaryExtractor(device=self.device, config=summary_config)
 
             # Log extraction mode
@@ -536,6 +577,43 @@ class DatasetGenerationPipeline:
                     len(registry.get_feature_names(category='operator_sensitivity'))
                 )
 
+                # Determine learned feature dimension (for U-AFNO latent extraction)
+                learned_dim = 0
+                if summary_config is not None and summary_config.summary_mode in ("learned", "hybrid"):
+                    learned_cfg = summary_config.learned
+                    if learned_cfg is not None and learned_cfg.enabled:
+                        if learned_cfg.projection_dim is not None:
+                            # Fixed projection dimension
+                            learned_dim = learned_cfg.projection_dim
+                        else:
+                            # Estimate from U-AFNO architecture (bottleneck = base_channels * 8)
+                            # After GAP, dimension = C_bottleneck
+                            # With mean_max temporal: 2 * C_bottleneck
+                            # For default base_channels=32: 256 channels, mean_max = 512
+                            base_channels = 32  # U-AFNO default
+                            encoder_levels = 3   # U-AFNO default
+                            bottleneck_channels = min(base_channels * (2 ** encoder_levels), base_channels * 8)
+
+                            if learned_cfg.extract_from == "bottleneck":
+                                raw_dim = bottleneck_channels
+                            elif learned_cfg.extract_from == "all":
+                                # bottleneck + skips at each level
+                                raw_dim = bottleneck_channels
+                                for level in learned_cfg.skip_levels:
+                                    level_ch = min(base_channels * (2 ** (level + 1)), base_channels * 8)
+                                    raw_dim += level_ch
+                            else:  # "skips" only
+                                raw_dim = 0
+                                for level in learned_cfg.skip_levels:
+                                    level_ch = min(base_channels * (2 ** (level + 1)), base_channels * 8)
+                                    raw_dim += level_ch
+
+                            # Apply temporal aggregation multiplier
+                            if learned_cfg.temporal_agg == "mean_max":
+                                learned_dim = raw_dim * 2
+                            else:
+                                learned_dim = raw_dim
+
                 feature_writer.create_summary_group(
                     num_samples=num_samples,
                     num_realizations=self.config.simulation.num_realizations,
@@ -545,7 +623,8 @@ class DatasetGenerationPipeline:
                     compression=self.config.dataset.storage.compression,
                     compression_opts=self.config.dataset.storage.compression_level,
                     chunk_size=self.config.dataset.storage.chunk_size,
-                    temporal_enabled=temporal_enabled
+                    temporal_enabled=temporal_enabled,
+                    learned_dim=learned_dim
                 )
 
                 # Initialize optimized feature extraction pipeline
@@ -566,6 +645,8 @@ class DatasetGenerationPipeline:
                 print(f"  Per-timestep: {per_timestep_dim} features")
                 print(f"  Per-trajectory: {per_trajectory_dim} features")
                 print(f"  Aggregated: {per_trajectory_dim * 3} features")
+                if learned_dim > 0:
+                    print(f"  Learned (U-AFNO): {learned_dim} features")
                 print(f"  Total registry size: {registry.num_features} features")
                 print(f"  Async I/O: Enabled (pipelined writes)\n")
 
@@ -612,20 +693,40 @@ class DatasetGenerationPipeline:
                         batch_indices = indices[batch_start_idx:batch_end_idx]
 
                         try:
-                            # Process batch with this grid size
-                            batch_inputs, batch_outputs, metadata = self._process_batch_with_metadata(
-                                param_batch, actual_batch_size, grid_size
+                            # Determine if operators are needed for learned features
+                            needs_operators = (
+                                self._feature_pipeline is not None
+                                and self._feature_pipeline.needs_operators
                             )
+
+                            # Process batch with this grid size
+                            batch_inputs, batch_outputs, metadata, operators = self._process_batch_with_metadata(
+                                param_batch, actual_batch_size, grid_size,
+                                keep_operators=needs_operators
+                            )
+
+                            # Train operators if learned features are enabled
+                            if operators is not None and self._should_train_operators():
+                                self._train_operators_batch(operators, batch_outputs)
+                                # Clean up GPU memory after training (optimizer state, gradients)
+                                if self.device.type == "cuda":
+                                    torch.cuda.empty_cache()
+                                gc.collect()
 
                             # Write to storage backend (with metadata and proper indexing)
                             store_start = time.time()
                             self._write_batch_to_hdf5(
-                                batch_indices, param_batch, batch_inputs, batch_outputs, metadata
+                                batch_indices, param_batch, batch_inputs, batch_outputs, metadata,
+                                operators=operators
                             )
                             self.stats["storage_time"] += time.time() - store_start
 
                             # Aggressive memory cleanup after HDF5 write
                             del batch_inputs, batch_outputs, metadata
+                            if operators is not None:
+                                for op in operators:
+                                    del op
+                                del operators
                             if self.device.type == "cuda":
                                 torch.cuda.empty_cache()
 
@@ -694,6 +795,63 @@ class DatasetGenerationPipeline:
             # Ensure storage backend is properly closed
             self._storage_backend.close()
 
+    def _should_train_operators(self) -> bool:
+        """Check if operators should be trained for learned features."""
+        summary_cfg = self.config.features.summary
+        if summary_cfg.summary_mode not in ("learned", "hybrid"):
+            return False
+        if summary_cfg.learned is None or not summary_cfg.learned.enabled:
+            return False
+        # Only train U-AFNO operators
+        return self.config.simulation.operator_type == "u_afno"
+
+    def _train_operators_batch(
+        self,
+        operators: list[NeuralOperator],
+        trajectories: torch.Tensor,
+    ) -> None:
+        """
+        Train batch of operators on their trajectories.
+
+        Args:
+            operators: List of NeuralOperator wrappers (each wrapping U-AFNO)
+            trajectories: Rollout trajectories [B, M, T, C, H, W]
+        """
+        learned_cfg = self.config.features.summary.learned
+        trainer = OperatorTrainer(
+            epochs=learned_cfg.training_epochs,
+            lr=learned_cfg.learning_rate,
+            lr_scheduler=learned_cfg.lr_scheduler,
+            device=self.device,
+            early_stopping_patience=learned_cfg.early_stopping_patience,
+            verbose=False,
+        )
+
+        train_start = time.time()
+        for i, operator in enumerate(operators):
+            # Extract trajectories for this operator: [M, T, C, H, W]
+            traj_i = trajectories[i]
+            # Train the underlying model (not the NeuralOperator wrapper)
+            stats = trainer.train(operator.model, traj_i)
+
+            if self._first_batch_logged:
+                continue
+            # Log first operator's training stats
+            if i == 0:
+                print(f"\n[Operator Training - First Batch]")
+                print(f"  Epochs: {stats.epochs_completed}")
+                print(f"  Loss: {stats.initial_loss:.6f} → {stats.final_loss:.6f}")
+                print(f"  Time: {stats.training_time_sec:.2f}s")
+                if stats.converged:
+                    print(f"  Early stopped: Yes")
+
+        train_time = time.time() - train_start
+        self.stats["training_time"] = self.stats.get("training_time", 0) + train_time
+
+        if not self._first_batch_logged:
+            print(f"  Total batch training: {train_time:.2f}s ({train_time/len(operators):.2f}s/operator)\n")
+            self._first_batch_logged = True
+
     def _process_batch(
         self, param_batch: NDArray[np.float64], batch_size: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -730,9 +888,13 @@ class DatasetGenerationPipeline:
             # Note: Global seed derived from batch position
             # For deterministic replay: torch.manual_seed(op_global_idx)
             torch.manual_seed(hash(str(params)) % (2**31))  # Deterministic per params
-            
-            # Build operator
-            model = self.operator_builder.build_simple_cnn(param_dict)
+
+            # Build operator (dispatch based on operator_type config)
+            operator_type = self.config.simulation.operator_type
+            if operator_type == "u_afno":
+                model = self.operator_builder.build_u_afno(param_dict)
+            else:
+                model = self.operator_builder.build_simple_cnn(param_dict)
             operator = NeuralOperator(model)
 
             # Prepare for inference
@@ -788,6 +950,15 @@ class DatasetGenerationPipeline:
         all_specs.update(self.config.parameter_space.stochastic)
         all_specs.update(self.config.parameter_space.operator)
         all_specs.update(self.config.parameter_space.evolution)
+
+        # Include U-AFNO parameters if configured
+        if self.config.parameter_space.u_afno is not None:
+            u_afno = self.config.parameter_space.u_afno
+            all_specs["modes"] = u_afno.modes
+            all_specs["hidden_dim"] = u_afno.hidden_dim
+            all_specs["encoder_levels"] = u_afno.encoder_levels
+            all_specs["afno_blocks"] = u_afno.afno_blocks
+            all_specs["blocks_per_level"] = u_afno.blocks_per_level
 
         # Convert Pydantic models to dicts
         all_specs_dict = {}
@@ -1035,8 +1206,9 @@ class DatasetGenerationPipeline:
         return {grid_size: np.array(indices, dtype=np.int64) for grid_size, indices in groups.items()}
 
     def _process_batch_with_metadata(
-        self, param_batch: NDArray[np.float64], batch_size: int, grid_size: int
-    ) -> tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
+        self, param_batch: NDArray[np.float64], batch_size: int, grid_size: int,
+        keep_operators: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, Dict[str, Any], Optional[List[torch.nn.Module]]]:
         """
         Process a batch with grid-size-specific logic and metadata tracking.
 
@@ -1044,16 +1216,18 @@ class DatasetGenerationPipeline:
             param_batch: Parameter values [B, P]
             batch_size: Batch size
             grid_size: Grid size for this batch
+            keep_operators: If True, return operators for learned feature extraction
 
         Returns:
-            Tuple of (inputs, outputs, metadata)
+            Tuple of (inputs, outputs, metadata, operators)
             - inputs: [B, C_in, H, W] (padded to max_grid_size if needed)
             - outputs: [B, M, C_out, H, W] (padded to max_grid_size if needed)
             - metadata: Dict with ic_types, evolution_policies, grid_sizes, noise_regimes
+            - operators: List of operators if keep_operators=True, else None
         """
         # Process batch with variable grid size and track IC types used
-        inputs, outputs, ic_types_used = self._process_batch_variable_size_with_tracking(
-            param_batch, batch_size, grid_size
+        inputs, outputs, ic_types_used, operators = self._process_batch_variable_size_with_tracking(
+            param_batch, batch_size, grid_size, keep_operators=keep_operators
         )
 
         # Extract metadata from parameters
@@ -1086,11 +1260,12 @@ class DatasetGenerationPipeline:
             "noise_regimes": noise_regimes,
         }
 
-        return inputs, outputs, metadata
+        return inputs, outputs, metadata, operators
 
     def _process_batch_variable_size_with_tracking(
-        self, param_batch: NDArray[np.float64], batch_size: int, grid_size: int
-    ) -> tuple[torch.Tensor, torch.Tensor, list[str]]:
+        self, param_batch: NDArray[np.float64], batch_size: int, grid_size: int,
+        keep_operators: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, list[str], Optional[List[torch.nn.Module]]]:
         """
         Process batch with variable grid size and track IC types used.
 
@@ -1098,12 +1273,14 @@ class DatasetGenerationPipeline:
             param_batch: Parameter values [B, P]
             batch_size: Batch size
             grid_size: Grid size for this batch
+            keep_operators: If True, return operators instead of deleting them
 
         Returns:
-            Tuple of (inputs, outputs, ic_types_used)
+            Tuple of (inputs, outputs, ic_types_used, operators)
             - inputs: [B, C_in, H, W] (padded to max_grid_size if needed)
             - outputs: [B, M, C_out, H, W] (padded to max_grid_size if needed)
             - ic_types_used: List of IC types used for each sample
+            - operators: List of operators if keep_operators=True, else None
         """
         # Build operators with this grid size
         operators = []
@@ -1123,9 +1300,13 @@ class DatasetGenerationPipeline:
             # Note: Global seed derived from batch position
             # For deterministic replay: torch.manual_seed(op_global_idx)
             torch.manual_seed(hash(str(params)) % (2**31))  # Deterministic per params
-            
-            # Build operator
-            model = self.operator_builder.build_simple_cnn(param_dict)
+
+            # Build operator (dispatch based on operator_type config)
+            operator_type = self.config.simulation.operator_type
+            if operator_type == "u_afno":
+                model = self.operator_builder.build_u_afno(param_dict)
+            else:
+                model = self.operator_builder.build_simple_cnn(param_dict)
             operator = NeuralOperator(model)
 
             # Prepare for inference
@@ -1207,13 +1388,18 @@ class DatasetGenerationPipeline:
         )
         self.stats["inference_time"] += time.time() - inf_start
 
-        # Explicitly delete operators to break reference cycles and free GPU memory
-        for op in operators:
-            del op
-        del operators
-        if self.device.type == "cuda":
-            torch.cuda.empty_cache()
-        gc.collect()  # Force garbage collection
+        # Conditionally delete operators (keep if needed for learned features)
+        returned_operators = None
+        if keep_operators:
+            returned_operators = operators
+        else:
+            # Explicitly delete operators to break reference cycles and free GPU memory
+            for op in operators:
+                del op
+            del operators
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+            gc.collect()  # Force garbage collection
 
         # OPTIMIZATION: Skip padding for single grid size datasets
         # (only pad if variable grid sizes exist and grid_size < max_grid_size)
@@ -1221,7 +1407,7 @@ class DatasetGenerationPipeline:
             inputs = self._pad_to_max_size(inputs, target_size=self.max_grid_size)
             outputs = self._pad_to_max_size(outputs, target_size=self.max_grid_size)
 
-        return inputs, outputs, ic_types_used
+        return inputs, outputs, ic_types_used, returned_operators
 
     def _sample_ic_type(self) -> str:
         """
@@ -1385,33 +1571,36 @@ class DatasetGenerationPipeline:
         batch_outputs: torch.Tensor,  # [B, M, T, C, H, W]
         batch_idx_start: int,
         feature_pipeline: FeatureExtractionPipeline,
-        async_writer: Optional[AsyncFeatureWriter]
+        async_writer: Optional[AsyncFeatureWriter],
+        operators: Optional[List[torch.nn.Module]] = None,
     ) -> None:
         """
         Extract SUMMARY features inline during generation (GPU-optimized).
-        
+
         Uses optimized extraction pipeline and async writing for pipelining.
-        
+
         Args:
             batch_outputs: Trajectory tensors [B, M, T, C, H, W]
             batch_idx_start: Starting index for this batch in dataset
             feature_pipeline: FeatureExtractionPipeline instance
             async_writer: AsyncFeatureWriter for non-blocking writes (None = blocking)
+            operators: Optional list of operators (required for learned features)
         """
         # Extract features efficiently (no recomputation)
         feat_start = time.time()
-        per_timestep_np, per_trajectory_np, aggregated_np = feature_pipeline.extract_all(
-            batch_outputs
+        per_timestep_np, per_trajectory_np, aggregated_np, learned_np = feature_pipeline.extract_all(
+            batch_outputs, operators=operators
         )
         self.stats["feature_extraction_time"] += time.time() - feat_start
-        
+
         # Write asynchronously (non-blocking) or synchronously
         if async_writer is not None:
             task = FeatureWriteTask(
                 batch_idx_start=batch_idx_start,
                 per_timestep=per_timestep_np,
                 per_trajectory=per_trajectory_np,
-                aggregated=aggregated_np
+                aggregated=aggregated_np,
+                learned=learned_np
             )
             async_writer.enqueue(task)
         else:
@@ -1420,7 +1609,8 @@ class DatasetGenerationPipeline:
                 batch_idx=batch_idx_start,
                 per_timestep=per_timestep_np,
                 per_trajectory=per_trajectory_np,
-                aggregated=aggregated_np
+                aggregated=aggregated_np,
+                learned=learned_np
             )
 
     def _write_batch_to_hdf5(
@@ -1430,6 +1620,7 @@ class DatasetGenerationPipeline:
         batch_inputs: torch.Tensor,
         batch_outputs: torch.Tensor,
         metadata: Dict[str, Any],
+        operators: Optional[List[torch.nn.Module]] = None,
     ) -> None:
         """
         Write batch to storage backend with proper indexing and metadata.
@@ -1440,6 +1631,7 @@ class DatasetGenerationPipeline:
             batch_inputs: Input fields
             batch_outputs: Output fields
             metadata: Per-sample metadata
+            operators: Optional list of operators (for learned feature extraction)
         """
         # Extract features inline if enabled (GPU-optimized)
         if self._feature_pipeline is not None:
@@ -1447,7 +1639,8 @@ class DatasetGenerationPipeline:
                 batch_outputs=batch_outputs,
                 batch_idx_start=batch_indices[0],  # First index in batch
                 feature_pipeline=self._feature_pipeline,
-                async_writer=self._async_feature_writer
+                async_writer=self._async_feature_writer,
+                operators=operators
             )
 
         # We need to write to specific indices, not sequential

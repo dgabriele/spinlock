@@ -133,14 +133,15 @@ class HDF5FeatureWriter:
         compression: str = "gzip",
         compression_opts: int = 4,
         chunk_size: int = 100,
-        temporal_enabled: bool = True
+        temporal_enabled: bool = True,
+        learned_dim: int = 0,
     ) -> None:
         """
         Create TEMPORAL and SUMMARY feature group structures.
 
         Creates:
         - /features/temporal/ - per-timestep features (if temporal_enabled)
-        - /features/summary/ - per-trajectory and aggregated features
+        - /features/summary/ - per-trajectory, aggregated, and learned features
 
         Args:
             num_samples: Number of samples (N)
@@ -152,6 +153,7 @@ class HDF5FeatureWriter:
             compression_opts: Compression level (0-9 for gzip)
             chunk_size: Chunk size for HDF5
             temporal_enabled: Whether TEMPORAL (per-timestep) features are enabled
+            learned_dim: Dimension of learned features (0 = disabled)
 
         Raises:
             RuntimeError: If file not opened
@@ -245,6 +247,20 @@ class HDF5FeatureWriter:
                 chunks=(chunk_size,)
             )
 
+        # Learned features [N, D_learned] - extracted from U-AFNO latents
+        if learned_dim > 0:
+            learned_group = summary_group.create_group('learned')
+            learned_group.attrs['version'] = "1.0.0"
+            learned_group.attrs['description'] = "Learned features from U-AFNO intermediate representations"
+            learned_group.create_dataset(
+                'features',
+                shape=(num_samples, learned_dim),
+                dtype=np.float32,
+                chunks=(min(chunk_size, num_samples), learned_dim),
+                **compression_kwargs
+            )
+            self._feature_groups_created.add('learned')
+
         # Update family versions
         family_versions_str = str(features_group.attrs['family_versions'])
         family_versions = json.loads(family_versions_str)
@@ -261,7 +277,8 @@ class HDF5FeatureWriter:
         per_timestep: Optional[np.ndarray] = None,
         per_trajectory: Optional[np.ndarray] = None,
         aggregated: Optional[np.ndarray] = None,
-        extraction_times: Optional[np.ndarray] = None
+        extraction_times: Optional[np.ndarray] = None,
+        learned: Optional[np.ndarray] = None,
     ) -> None:
         """
         Write a batch of features to TEMPORAL and SUMMARY groups.
@@ -272,6 +289,7 @@ class HDF5FeatureWriter:
             per_trajectory: SUMMARY per-trajectory features [B, M, D_traj] or None
             aggregated: SUMMARY aggregated features [B, D_final] or None
             extraction_times: Extraction time per sample [B] or None
+            learned: Learned features from U-AFNO [B, D_learned] or None
 
         Raises:
             RuntimeError: If file not opened or groups not created
@@ -290,6 +308,8 @@ class HDF5FeatureWriter:
             batch_size = per_trajectory.shape[0]
         elif aggregated is not None:
             batch_size = aggregated.shape[0]
+        elif learned is not None:
+            batch_size = learned.shape[0]
         else:
             raise ValueError("At least one feature array must be provided")
 
@@ -318,6 +338,21 @@ class HDF5FeatureWriter:
             if extraction_times is not None:
                 time_dataset = cast(h5py.Dataset, summary_group['aggregated/metadata/extraction_time'])
                 time_dataset[batch_idx:end_idx] = extraction_times
+
+        # Write learned features (from U-AFNO latents)
+        if learned is not None and 'learned' in self._feature_groups_created:
+            dataset = cast(h5py.Dataset, summary_group['learned/features'])
+            expected_dim = dataset.shape[1]
+            actual_dim = learned.shape[1] if len(learned.shape) > 1 else learned.shape[0]
+
+            # Pad or truncate to match pre-allocated dimension
+            if actual_dim < expected_dim:
+                padding = np.zeros((learned.shape[0], expected_dim - actual_dim), dtype=learned.dtype)
+                learned = np.concatenate([learned, padding], axis=1)
+            elif actual_dim > expected_dim:
+                learned = learned[:, :expected_dim]
+
+            dataset[batch_idx:end_idx] = learned
 
     def write_operator_sensitivity_features(
         self,
