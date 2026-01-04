@@ -802,18 +802,16 @@ class SummaryExtractor(FeatureExtractorBase):
             feature_list.append(feat_avg.unsqueeze(-1))  # [N, M, 1]
 
         # Append operator sensitivity features (inline-extracted, scalar per sample)
+        # Only include if actually provided in metadata - don't fill with NaN placeholders
         # These need to be broadcast across realizations: [N] → [N, M, 1]
         N, M = trajectories.shape[0], trajectories.shape[1]
-        for name in operator_sensitivity_names:
-            if name in operator_sensitivity_features:
-                # Scalar feature [N] → broadcast to [N, M, 1]
-                feat_scalar = operator_sensitivity_features[name]  # [N]
-                feat_broadcast = feat_scalar.unsqueeze(1).unsqueeze(2).expand(N, M, 1)  # [N, M, 1]
-                feature_list.append(feat_broadcast)
-            else:
-                # Feature not provided, fill with NaN
-                feat_nan = torch.full((N, M, 1), float('nan'), device=self.device)
-                feature_list.append(feat_nan)
+        if operator_sensitivity_features:
+            for name in operator_sensitivity_names:
+                if name in operator_sensitivity_features:
+                    # Scalar feature [N] → broadcast to [N, M, 1]
+                    feat_scalar = operator_sensitivity_features[name]  # [N]
+                    feat_broadcast = feat_scalar.unsqueeze(1).unsqueeze(2).expand(N, M, 1)  # [N, M, 1]
+                    feature_list.append(feat_broadcast)
 
         # Concatenate all features
         per_trajectory_features = torch.cat(feature_list, dim=-1)  # [N, M, D_traj]

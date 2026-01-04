@@ -282,7 +282,7 @@ class SpatialFeatureExtractor:
         Compute spatial skewness (third standardized moment) with robust variance handling.
 
         Skewness measures asymmetry of the distribution.
-        Returns NaN for zero-variance fields (skewness is mathematically undefined).
+        Returns 0 for zero-variance fields (symmetric by definition when all values equal).
         """
         mean = x.mean(dim=(-2, -1), keepdim=True)
         std = x.std(dim=(-2, -1), keepdim=True)
@@ -295,10 +295,10 @@ class SpatialFeatureExtractor:
         z = (x - mean) / torch.clamp(std, min=variance_threshold)
         skew = (z ** 3).mean(dim=(-2, -1))  # [NT, C]
 
-        # NaN for mathematically undefined cases (zero-variance fields)
+        # Zero for zero-variance fields (uniform distribution = no asymmetry)
         skew = torch.where(
             zero_variance_mask.squeeze(-1).squeeze(-1),
-            torch.tensor(float('nan'), device=x.device, dtype=x.dtype),
+            torch.zeros_like(skew),
             skew
         )
 
@@ -313,7 +313,7 @@ class SpatialFeatureExtractor:
         Compute spatial kurtosis (fourth standardized moment - 3) with robust variance handling.
 
         Kurtosis measures tail heaviness. Excess kurtosis is 0 for Gaussian.
-        Returns NaN for zero-variance fields (kurtosis is mathematically undefined).
+        Returns 0 for zero-variance fields (degenerate distribution).
         """
         mean = x.mean(dim=(-2, -1), keepdim=True)
         std = x.std(dim=(-2, -1), keepdim=True)
@@ -326,10 +326,10 @@ class SpatialFeatureExtractor:
         z = (x - mean) / torch.clamp(std, min=variance_threshold)
         kurt = (z ** 4).mean(dim=(-2, -1)) - 3.0  # Excess kurtosis [NT, C]
 
-        # NaN for mathematically undefined cases (zero-variance fields)
+        # Zero for zero-variance fields (degenerate distribution)
         kurt = torch.where(
             zero_variance_mask.squeeze(-1).squeeze(-1),
-            torch.tensor(float('nan'), device=x.device, dtype=x.dtype),
+            torch.zeros_like(kurt),
             kurt
         )
 

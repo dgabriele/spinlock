@@ -453,13 +453,17 @@ class HDF5FeatureWriter:
         # Temporal features are trajectory-level
         temporal_features = registry.get_features_by_category('temporal')
 
-        # v2.0 trajectory-level features (causality, invariant_drift, operator_sensitivity)
+        # v2.0 trajectory-level features (causality, invariant_drift)
+        # Note: operator_sensitivity is only included when inline extraction is enabled
+        # and features are provided via metadata. By default, we don't count them here.
         causality_features = registry.get_features_by_category('causality')
         invariant_drift_features = registry.get_features_by_category('invariant_drift')
-        operator_sensitivity_features = registry.get_features_by_category('operator_sensitivity')
+
+        # Nonlinear features (if enabled)
+        nonlinear_features = registry.get_features_by_category('nonlinear')
 
         return (len(temporal_features) + len(causality_features) +
-                len(invariant_drift_features) + len(operator_sensitivity_features))
+                len(invariant_drift_features) + len(nonlinear_features))
 
     def _estimate_aggregated_dim(self, registry: FeatureRegistry, config: Any) -> int:
         """
