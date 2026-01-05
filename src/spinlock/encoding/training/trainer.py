@@ -277,13 +277,14 @@ class VQVAETrainer:
         """Compute validation metrics.
 
         Returns:
-            Dict with utilization, quality, and detailed per-category metrics
+            Dict with utilization, quality, topographic similarity, and detailed per-category metrics
         """
         from .metrics import (
             compute_per_category_metrics,
             compute_reconstruction_error,
             compute_quality_score
         )
+        from .losses import topographic_similarity_loss
 
         # Unwrap compiled model if using torch.compile
         model_for_metrics = self.model
@@ -317,11 +318,56 @@ class VQVAETrainer:
         else:
             avg_utilization = 0.0
 
+        # Compute topographic similarity (PRE and POST quantization)
+        topo_pre_sum = 0.0
+        topo_post_sum = 0.0
+        n_batches = 0
+
+        model_for_metrics.eval()
+        with torch.no_grad():
+            for batch in self.val_loader:
+                features = batch["features"].to(self.device)
+                raw_ics = batch.get("raw_ics")
+                if raw_ics is not None:
+                    raw_ics = raw_ics.to(self.device)
+
+                # Forward pass
+                if raw_ics is not None and hasattr(model_for_metrics, 'initial_encoder'):
+                    outputs = model_for_metrics(features, raw_ics=raw_ics)
+                else:
+                    outputs = model_for_metrics(features)
+
+                # Compute topographic similarity
+                if "input_features" in outputs:
+                    targets = {"features": outputs["input_features"]}
+                else:
+                    targets = {"features": features}
+
+                _, topo_metrics = topographic_similarity_loss(
+                    outputs, targets, n_samples=min(256, features.size(0))
+                )
+                topo_pre_sum += topo_metrics["topo_pre"]
+                topo_post_sum += topo_metrics["topo_post"]
+                n_batches += 1
+
+                # Only compute on first 10 batches for efficiency
+                if n_batches >= 10:
+                    break
+
+        if n_batches > 0:
+            avg_topo_pre = topo_pre_sum / n_batches
+            avg_topo_post = topo_post_sum / n_batches
+        else:
+            avg_topo_pre = 0.0
+            avg_topo_post = 0.0
+
         # Return both aggregate and detailed metrics
         result = {
             "utilization": avg_utilization,
             "reconstruction_error": reconstruction_error,
-            "quality": quality
+            "quality": quality,
+            "topo_pre": avg_topo_pre,  # Pre-quantization topographic similarity
+            "topo_post": avg_topo_post,  # Post-quantization topographic similarity
         }
         result.update(detailed_metrics)  # Include all detailed metrics
 
@@ -391,6 +437,11 @@ class VQVAETrainer:
                 util = metrics.get("utilization", 0.0)
                 quality = metrics.get("quality", 0.0)
                 msg += f", util={util:.1%}, quality={quality:.4f}"
+
+                # Add topographic similarity metrics
+                topo_pre = metrics.get("topo_pre", 0.0)
+                topo_post = metrics.get("topo_post", 0.0)
+                msg += f", topo_pre={topo_pre:.3f}, topo_post={topo_post:.3f}"
 
                 logger.info(msg)
 

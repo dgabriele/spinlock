@@ -23,6 +23,8 @@ from .utils import (
     get_abbreviated_feature_name,
     compute_category_semantics,
     extract_utilization_counts,
+    get_utilization_cmap,
+    compute_topographic_metrics_from_checkpoint,
 )
 
 
@@ -76,20 +78,22 @@ def plot_feature_category_matrix(ax: Axes, data: VQVAECheckpointData) -> None:
             family_boundaries.append((i, family))
             current_family = family
 
-    # Add family labels on the left
+    # Add family labels on the left (inside plot area to avoid ylabel overlap)
     for i, (start, family) in enumerate(family_boundaries):
         end = family_boundaries[i + 1][0] if i + 1 < len(family_boundaries) else num_features
         mid = (start + end) / 2
-        ax.text(-0.5, mid, family[:3].upper(), ha="right", va="center", fontsize=8, fontweight="bold")
+        ax.text(0.02, mid, family[:3].upper(), ha="left", va="center", fontsize=7, fontweight="bold",
+                transform=ax.get_yaxis_transform(), color="darkblue", alpha=0.8)
 
     # X-axis: category names
     short_labels = [c.replace("cluster_", "C") for c in data.category_names]
     ax.set_xticks(range(num_cats))
     ax.set_xticklabels(short_labels, fontsize=8, rotation=45, ha="right")
 
-    # Remove y-ticks (too many features)
+    # Remove y-ticks (too many features) - ylabel moved to right side to avoid family label overlap
     ax.set_yticks([])
-    ax.set_ylabel(f"Features ({num_features})")
+    ax.yaxis.set_label_position("right")
+    ax.set_ylabel(f"Features ({num_features})", fontsize=10)
     # Skip xlabel - category names visible in tick labels, overlaps with panel below
     ax.set_title("Feature → Category Assignments", fontsize=12, fontweight="bold")
 
@@ -174,8 +178,8 @@ def plot_codebook_utilization(
             else:
                 annotations[i][level] = "—"
 
-    # Plot heatmap
-    im = ax.imshow(matrix, cmap="RdYlGn", aspect="auto", vmin=0, vmax=1.0)
+    # Plot heatmap (dark gray → green, neutral for low util)
+    im = ax.imshow(matrix, cmap=get_utilization_cmap(), aspect="auto", vmin=0, vmax=1.0)
 
     # Axis labels
     level_labels = [f"L{i}" for i in range(num_levels)]
@@ -200,8 +204,8 @@ def plot_codebook_utilization(
     for i in range(num_cats):
         for j in range(num_levels):
             val = matrix[i, j]
-            # Choose text color based on background brightness
-            color = "white" if val < 0.4 or val > 0.8 else "black"
+            # Choose text color based on background brightness (dark gray → green)
+            color = "white" if val < 0.5 else "black"
             ax.text(j, i, annotations[i][j], ha="center", va="center", fontsize=7, color=color, fontweight="bold")
 
     # Colorbar
@@ -286,10 +290,134 @@ def create_family_legend(ax: Axes, data: VQVAECheckpointData) -> None:
         y_pos -= 0.15
 
 
+def plot_topographic_metrics(
+    ax: Axes,
+    topo_metrics: Optional[Dict[str, float]] = None,
+    error_message: Optional[str] = None,
+) -> None:
+    """Plot topographic similarity metrics as a visual summary.
+
+    Shows four metrics with bar chart and interpretive labels:
+    - Pre-quantization: Input → Latent (encoder quality)
+    - Post-quantization: Latent → Code (VQ quality)
+    - End-to-end: Input → Code (overall topology preservation)
+    - Quantization degradation: Pre - Post (VQ information loss)
+
+    Args:
+        ax: Matplotlib axes
+        topo_metrics: Dict of topology metrics, or None if computation failed
+        error_message: Error message to display if metrics unavailable
+    """
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+
+    if topo_metrics is None:
+        ax.axis("off")
+        ax.text(
+            0.5, 0.5,
+            error_message or "Topographic metrics unavailable",
+            ha="center", va="center",
+            fontsize=10, style="italic", color="gray",
+            transform=ax.transAxes,
+        )
+        ax.set_title("Topographic Similarity", fontsize=12, fontweight="bold")
+        return
+
+    # Check if metrics are estimated
+    is_estimated = topo_metrics.get("_estimated", False)
+
+    # Metrics to display with labels and interpretations
+    metric_info = [
+        ("pre_quantization", "Pre-Quant", "Input → Latent", "#3498db"),
+        ("post_quantization", "Post-Quant", "Latent → Code", "#9b59b6"),
+        ("end_to_end", "End-to-End", "Input → Code", "#2ecc71"),
+        ("quantization_degradation", "VQ Loss", "Pre − Post", "#e74c3c"),
+    ]
+
+    # Create horizontal bar chart
+    ax.axis("off")
+
+    y_positions = [0.78, 0.56, 0.34, 0.12]
+    bar_height = 0.15
+    bar_left = 0.35
+    bar_width_max = 0.55
+
+    for i, (key, label, desc, color) in enumerate(metric_info):
+        value = topo_metrics.get(key, 0.0)
+        y = y_positions[i]
+
+        # For degradation, use absolute value for bar width but keep sign for color
+        if key == "quantization_degradation":
+            bar_value = abs(value)
+            # Green if low degradation, red if high
+            color = "#2ecc71" if value < 0.1 else "#e67e22" if value < 0.2 else "#e74c3c"
+        else:
+            bar_value = max(0, min(1, value))  # Clamp to [0, 1]
+
+        # Draw bar background
+        ax.add_patch(
+            mpatches.Rectangle(
+                (bar_left, y - bar_height / 2),
+                bar_width_max, bar_height,
+                facecolor="#f0f0f0",
+                edgecolor="#cccccc",
+                transform=ax.transAxes,
+            )
+        )
+
+        # Draw bar
+        ax.add_patch(
+            mpatches.Rectangle(
+                (bar_left, y - bar_height / 2),
+                bar_width_max * bar_value, bar_height,
+                facecolor=color,
+                edgecolor="none",
+                transform=ax.transAxes,
+            )
+        )
+
+        # Label on left
+        ax.text(
+            0.02, y,
+            f"{label}:",
+            ha="left", va="center",
+            fontsize=9, fontweight="bold",
+            transform=ax.transAxes,
+        )
+
+        # Description below label
+        ax.text(
+            0.02, y - 0.06,
+            desc,
+            ha="left", va="center",
+            fontsize=7, color="gray", style="italic",
+            transform=ax.transAxes,
+        )
+
+        # Value on right
+        ax.text(
+            0.95, y,
+            f"{value:.3f}",
+            ha="right", va="center",
+            fontsize=10, fontweight="bold",
+            transform=ax.transAxes,
+        )
+
+    # Title with estimated indicator
+    title = "Topographic Similarity"
+    if is_estimated:
+        title += " (estimated)"
+    ax.set_title(title, fontsize=12, fontweight="bold")
+
+
 def create_semantic_dashboard(
     checkpoint_path: str | Path,
     output_path: Optional[str | Path] = None,
-    figsize: tuple = (16, 12),
+    dataset_path: Optional[str | Path] = None,
+    compute_topo: bool = True,
+    topo_samples: int = 1000,
+    device: str = "cuda",
+    figsize: tuple = (16, 14),
     dpi: int = 150,
 ) -> Figure:
     """Create semantic interpretation dashboard for VQ-VAE model.
@@ -297,29 +425,53 @@ def create_semantic_dashboard(
     Args:
         checkpoint_path: Path to checkpoint directory
         output_path: Optional path to save figure (PNG)
+        dataset_path: Path to dataset for topographic metrics (optional)
+        compute_topo: Whether to compute topographic metrics (requires model inference)
+        topo_samples: Number of samples for topographic metric computation
+        device: Device for topographic computation
         figsize: Figure size in inches
         dpi: Resolution for saved figure
 
     Returns:
         matplotlib Figure object
     """
+    checkpoint_path = Path(checkpoint_path)
+
     # Load data
     data = load_vqvae_checkpoint(checkpoint_path)
 
+    # Compute topographic metrics if requested
+    topo_metrics = None
+    topo_error = None
+    if compute_topo:
+        try:
+            print("Computing topographic metrics...")
+            topo_metrics = compute_topographic_metrics_from_checkpoint(
+                checkpoint_path,
+                dataset_path=dataset_path,
+                n_samples=topo_samples,
+                device=device,
+            )
+            print(f"Topographic metrics: {topo_metrics}")
+        except Exception as e:
+            topo_error = f"Failed: {str(e)[:50]}"
+            print(f"Warning: Could not compute topographic metrics: {e}")
+
     # Create figure with grid layout
-    # Layout: Top row has feature matrix + category sizes side by side
-    #         Bottom row has token examples + correlation
+    # Layout: Top row has feature matrix + category sizes + family legend
+    #         Middle row has codebook utilization + topographic metrics
+    #         Bottom row has category correlation (wide)
     fig = plt.figure(figsize=figsize, dpi=dpi)
     gs = GridSpec(
-        2, 3,
+        3, 3,
         figure=fig,
-        height_ratios=[1.5, 1],
+        height_ratios=[1.5, 1, 0.8],
         width_ratios=[1.2, 0.8, 1],
         hspace=0.35,
         wspace=0.3,
     )
 
-    # Panel A: Feature-category matrix (top-left, spans 2 columns)
+    # Panel A: Feature-category matrix (top-left)
     ax_matrix = fig.add_subplot(gs[0, 0])
     plot_feature_category_matrix(ax_matrix, data)
 
@@ -332,12 +484,16 @@ def create_semantic_dashboard(
     create_family_legend(ax_legend, data)
     ax_legend.set_title("Feature Families", fontsize=12, fontweight="bold")
 
-    # Panel D: Codebook utilization (bottom-left)
+    # Panel D: Codebook utilization (middle-left)
     ax_util = fig.add_subplot(gs[1, 0])
     plot_codebook_utilization(ax_util, data)
 
-    # Panel E: Category correlation (bottom-right, spans 2 columns)
-    ax_corr = fig.add_subplot(gs[1, 1:])
+    # Panel E: Topographic metrics (middle-right, spans 2 columns)
+    ax_topo = fig.add_subplot(gs[1, 1:])
+    plot_topographic_metrics(ax_topo, topo_metrics, topo_error)
+
+    # Panel F: Category correlation (bottom, spans all columns)
+    ax_corr = fig.add_subplot(gs[2, :])
     plot_category_correlation(ax_corr, data)
 
     # Title

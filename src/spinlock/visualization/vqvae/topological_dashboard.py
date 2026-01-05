@@ -18,7 +18,7 @@ from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 import torch
 
-from .utils import VQVAECheckpointData, load_vqvae_checkpoint
+from .utils import VQVAECheckpointData, load_vqvae_checkpoint, get_utilization_cmap
 
 
 def extract_codebook_embeddings(
@@ -42,16 +42,20 @@ def extract_codebook_embeddings(
     usage = {}
     codebook_keys = []
 
+    # Strip _orig_mod. prefix from torch.compile() models
+    normalized_keys = {k.replace("_orig_mod.", ""): k for k in state.keys()}
+
     # Detect if this is a hybrid model (VQVAEWithInitial) by checking for vqvae. prefix
-    is_hybrid = any(key.startswith("vqvae.") for key in state.keys())
+    is_hybrid = any(key.startswith("vqvae.") for key in normalized_keys.keys())
 
     # Extract VQ layer embeddings
     # Standard model: vq_layers.{idx}.embedding.weight
     # Hybrid model: vqvae.vq_layers.{idx}.embedding.weight
-    for key in sorted(state.keys()):
-        if "vq_layers" in key and "embedding.weight" in key:
+    for norm_key in sorted(normalized_keys.keys()):
+        orig_key = normalized_keys[norm_key]
+        if "vq_layers" in norm_key and "embedding.weight" in norm_key:
             # Parse index based on model type
-            parts = key.split(".")
+            parts = norm_key.split(".")
             if is_hybrid:
                 # vqvae.vq_layers.{idx}.embedding.weight -> parts[2] is idx
                 idx = int(parts[2])
@@ -60,15 +64,15 @@ def extract_codebook_embeddings(
                 idx = int(parts[1])
 
             codebook_keys.append(f"cb_{idx}")
-            embeddings[f"cb_{idx}"] = state[key].numpy()
+            embeddings[f"cb_{idx}"] = state[orig_key].numpy()
 
-        if "vq_layers" in key and "ema_cluster_size" in key:
-            parts = key.split(".")
+        if "vq_layers" in norm_key and "ema_cluster_size" in norm_key:
+            parts = norm_key.split(".")
             if is_hybrid:
                 idx = int(parts[2])
             else:
                 idx = int(parts[1])
-            usage[f"cb_{idx}"] = state[key].numpy()
+            usage[f"cb_{idx}"] = state[orig_key].numpy()
 
     return embeddings, usage, codebook_keys
 
@@ -256,8 +260,8 @@ def plot_codebook_usage_heatmap(
                 utilization_matrix[cat, level] = n_used / len(counts)
                 size_matrix[cat, level] = len(counts)
 
-    # Plot heatmap
-    im = ax.imshow(utilization_matrix, cmap="RdYlGn", aspect="auto", vmin=0, vmax=1)
+    # Plot heatmap (dark gray → green, neutral for low util)
+    im = ax.imshow(utilization_matrix, cmap=get_utilization_cmap(), aspect="auto", vmin=0, vmax=1)
 
     # Labels
     ax.set_xticks(range(num_levels))

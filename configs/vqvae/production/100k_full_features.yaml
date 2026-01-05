@@ -1,5 +1,6 @@
-# Production Training: INITIAL + SUMMARY + TEMPORAL + ARCHITECTURE Joint Training (Full 100K Dataset)
-# Multi-family configuration with all 4 feature families for comprehensive behavioral vocabulary
+# Production Training: INITIAL + SUMMARY + TEMPORAL Joint Training (Full 100K Dataset)
+# Multi-family configuration with 3 feature families for behavioral vocabulary
+# Note: ARCHITECTURE excluded - NOA already knows operator parameters (θ)
 
 # Dataset
 dataset_path: "datasets/100k_full_features.h5"
@@ -34,10 +35,8 @@ families:
       embedding_dim: 128
       architecture: "resnet1d_3"
 
-  architecture:
-    encoder: IdentityEncoder
-    encoder_params: {}
-    # Parameters are already normalized to [0, 1] range (12D)
+  # ARCHITECTURE excluded: NOA already knows operator parameters (θ)
+  # Including them in VQ-VAE vocabulary would be redundant
 
 # VQ-VAE Architecture
 model:
@@ -48,6 +47,7 @@ model:
   levels: []
 
   # VQ-VAE hyperparameters
+  uniform_codebook_init: true  # All levels start with L0's size, dead code resets prune naturally
   commitment_cost: 0.25
   use_ema: true
   decay: 0.99
@@ -55,13 +55,13 @@ model:
 
   # Auxiliary loss weights
   orthogonality_weight: 0.1
-  informativeness_weight: 0.1
+  informativeness_weight: 0.12
 
 # Training
 training:
   batch_size: 1024  # Increased from 512 for better GPU utilization
   learning_rate: 0.001
-  num_epochs: 300  # Extended for INITIAL+SUMMARY+TEMPORAL+ARCHITECTURE training
+  num_epochs: 550  # Extended for INITIAL+SUMMARY+TEMPORAL+ARCHITECTURE training
   optimizer: "adam"
   scheduler: null
   warmup_epochs: 0
@@ -70,13 +70,15 @@ training:
   category_assignment: "auto"
   num_categories_auto: null  # Auto-determine via silhouette score
   orthogonality_target: 0.15
-  min_features_per_category: 2  # Allow smaller clusters for more granular categories
+  min_features_per_category: 3  # Allow smaller clusters for more granular categories
   max_clusters: 25
 
   # Category assignment configuration
   # Supports: 'clustering' (fast), 'gradient' (optimal), 'hybrid' (recommended)
   category_assignment_config:
-    method: "clustering"  # Pure clustering - better for reconstruction (v6 got 0.198 loss with this)
+    method: "clustering"  # Pure clustering - better for reconstruction
+    # No isolated families needed - INITIAL, SUMMARY, TEMPORAL are all behavioral statistics
+    isolated_families: []
     # Gradient refinement parameters (only used when method='gradient' or 'hybrid')
     gradient_epochs: 500
     gradient_lr: 0.01
@@ -93,14 +95,18 @@ training:
 
   # Checkpointing
   save_every: 25
-  checkpoint_dir: "checkpoints/production/100k_with_initial"
+  checkpoint_dir: "checkpoints/production/100k_3family_v1"
 
   # Callbacks
-  early_stopping_patience: 30
+  early_stopping_patience: 100
   early_stopping_min_delta: 0.01
-  dead_code_reset_interval: 100  # Increased from 25 - less frequent resets for better convergence
-  dead_code_threshold: 10.0
-  dead_code_max_reset_fraction: 0.25
+
+  # Dead code resets - DISABLED for small codebooks with uniform init
+  # With ~24 codes/level, "dead" codes = natural capacity discovery, not waste
+  # EMA updates + commitment loss prevent true collapse
+  dead_code_reset_interval: 0  # 0 = disabled
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
 
   # Validation
   val_every_n_epochs: 5
@@ -119,20 +125,19 @@ logging:
 random_seed: 42
 
 # Expected Performance:
-# - Dataset: 100K samples with all 4 feature families
+# - Dataset: 100K samples with 3 feature families (ARCHITECTURE excluded)
 #   - INITIAL: 14D manual (in dataset) + 28D CNN (end-to-end from raw ICs)
 #   - SUMMARY: 360D
 #   - TEMPORAL: 256×63D
-#   - ARCHITECTURE: 12D
 # - After encoding:
 #   - INITIAL: 14D manual + 28D CNN = 42D (hybrid encoder)
 #   - SUMMARY: 360D → 128D (MLP encoder)
 #   - TEMPORAL: 256×63D → 128D (temporal CNN encoder)
-#   - ARCHITECTURE: 12D (identity)
-#   - Total: 42 + 128 + 128 + 12 = 310D
-# - Training time: ~4-8 hours (300 epochs, batch_size=512)
+#   - Total: 42 + 128 + 128 = 298D
+# - Training time: ~4-8 hours (550 epochs, batch_size=1024)
 # - Note: CNN is trained end-to-end with VQ-VAE via backprop (not pre-extracted)
+# - Note: ARCHITECTURE excluded because NOA already knows operator parameters (θ)
 # - Target metrics:
 #   - Reconstruction quality: >0.94
 #   - Codebook utilization: >90%
-#   - Category orthogonality: <0.25
+#   - Topographic similarity (post): >0.90

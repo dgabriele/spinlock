@@ -120,19 +120,26 @@ def informativeness_loss(outputs: Dict[str, Any], targets: Dict[str, torch.Tenso
 def topographic_similarity_loss(
     outputs: Dict[str, Any], targets: Dict[str, torch.Tensor], n_samples: int = 64
 ):
-    """Compute topographic similarity loss.
+    """Compute topographic similarity loss (PRE and POST quantization).
 
-    Preserves topology: nearby inputs should have nearby latent representations.
+    Preserves topology at TWO stages:
+    1. PRE-quantization: Input → Latent (encoder quality)
+    2. POST-quantization: Latent → Code (VQ quality)
+
+    The total loss optimizes both, with emphasis on post-quantization since
+    that's what the downstream NOA will use.
 
     Args:
-        outputs: Model outputs with 'latents' key
+        outputs: Model outputs with 'latents' and 'quantized' keys
         targets: Target dict with 'features' key
         n_samples: Number of samples to use for pairwise distances
 
     Returns:
-        Topographic similarity loss
+        Tuple of (total_loss, metrics_dict) where metrics_dict contains:
+            - topo_pre: Pre-quantization correlation
+            - topo_post: Post-quantization correlation
     """
-    latents = outputs["latents"]  # List of [batch, latent_dim]
+    latents = outputs["latents"]  # List of [batch, latent_dim] - PRE-quantization
     features = targets["features"]  # [batch, input_dim]
 
     batch_size = features.size(0)
@@ -146,36 +153,71 @@ def topographic_similarity_loss(
     # Compute pairwise distances in input space
     input_dists = torch.cdist(sampled_features, sampled_features)  # [n_samples, n_samples]
 
-    # Compute pairwise distances in latent space (average across levels)
+    # Compute pairwise distances in PRE-quantization latent space
     latent_dists = torch.zeros_like(input_dists)
     for latent in latents:
         sampled_latent = latent[indices]
         latent_dists += torch.cdist(sampled_latent, sampled_latent)
-        del sampled_latent  # Free memory
+        del sampled_latent
 
     latent_dists /= len(latents)
 
-    # Loss: correlation between input and latent distances
-    # Pearson correlation approximation
-    input_dists_flat = input_dists.view(-1)
-    latent_dists_flat = latent_dists.view(-1)
+    # Compute PRE-quantization correlation (input → latent)
+    input_flat = input_dists.view(-1)
+    latent_flat = latent_dists.view(-1)
 
-    input_mean = input_dists_flat.mean()
-    latent_mean = latent_dists_flat.mean()
+    input_mean = input_flat.mean()
+    latent_mean = latent_flat.mean()
 
-    input_centered = input_dists_flat - input_mean
-    latent_centered = latent_dists_flat - latent_mean
+    input_centered = input_flat - input_mean
+    latent_centered = latent_flat - latent_mean
 
-    correlation = (input_centered * latent_centered).sum() / (
+    pre_correlation = (input_centered * latent_centered).sum() / (
         input_centered.norm() * latent_centered.norm() + 1e-8
     )
 
-    # Clean up large temporaries
-    del input_dists, latent_dists, input_dists_flat, latent_dists_flat
+    # Compute POST-quantization correlation (latent → code)
+    post_correlation = torch.tensor(0.0, device=features.device)
+
+    if "quantized" in outputs:
+        # Use quantized code embeddings
+        quantized = outputs["quantized"]  # List of [batch, embed_dim] - POST-quantization
+        code_dists = torch.zeros_like(input_dists)
+
+        for q in quantized:
+            sampled_q = q[indices]
+            code_dists += torch.cdist(sampled_q, sampled_q)
+            del sampled_q
+
+        code_dists /= len(quantized)
+
+        # Correlation: latent → code (VQ discretization quality)
+        code_flat = code_dists.view(-1)
+        code_mean = code_flat.mean()
+        code_centered = code_flat - code_mean
+
+        post_correlation = (latent_centered * code_centered).sum() / (
+            latent_centered.norm() * code_centered.norm() + 1e-8
+        )
+
+        del code_dists, code_flat, code_centered
+
+    # Clean up
+    del input_dists, latent_dists, input_flat, latent_flat
     del input_centered, latent_centered
 
-    # Maximize correlation = minimize (1 - correlation)
-    return 1.0 - correlation
+    # Combined loss: optimize both pre and post quantization
+    # Weight post-quantization more since that's what NOA uses
+    pre_loss = 1.0 - pre_correlation
+    post_loss = 1.0 - post_correlation
+
+    # 30% pre, 70% post weighting (post is more important for NOA)
+    total_loss = 0.3 * pre_loss + 0.7 * post_loss
+
+    return total_loss, {
+        "topo_pre": pre_correlation.item(),
+        "topo_post": post_correlation.item(),
+    }
 
 
 def compute_total_loss(
@@ -199,7 +241,9 @@ def compute_total_loss(
         topo_samples: Number of samples for topographic loss
 
     Returns:
-        Dict with 'total' and individual loss components
+        Dict with 'total' and individual loss components including:
+            - topo_pre: Pre-quantization topographic similarity (correlation)
+            - topo_post: Post-quantization topographic similarity (correlation)
     """
     # 1. Reconstruction loss
     recon_loss = reconstruction_loss(outputs, targets)
@@ -213,8 +257,8 @@ def compute_total_loss(
     # 4. Informativeness loss (partial decoders)
     info_loss = informativeness_loss(outputs, targets)
 
-    # 5. Topographic similarity loss
-    topo_loss = topographic_similarity_loss(outputs, targets, topo_samples)
+    # 5. Topographic similarity loss (PRE + POST quantization)
+    topo_loss, topo_metrics = topographic_similarity_loss(outputs, targets, topo_samples)
 
     # Total loss
     total = (
@@ -232,4 +276,6 @@ def compute_total_loss(
         "orthogonality": ortho_loss,
         "informativeness": info_loss,
         "topographic": topo_loss,
+        "topo_pre": topo_metrics["topo_pre"],  # Pre-quantization correlation
+        "topo_post": topo_metrics["topo_post"],  # Post-quantization correlation
     }

@@ -71,6 +71,29 @@ Examples:
             action="store_true",
             help="Don't display figures, only save",
         )
+        parser.add_argument(
+            "--dataset",
+            type=str,
+            default=None,
+            help="Path to dataset HDF5 for topographic metrics (optional, auto-detected from config)",
+        )
+        parser.add_argument(
+            "--no-topo",
+            action="store_true",
+            help="Skip topographic metrics computation (faster but less complete)",
+        )
+        parser.add_argument(
+            "--topo-samples",
+            type=int,
+            default=1000,
+            help="Number of samples for topographic metrics (default: 1000)",
+        )
+        parser.add_argument(
+            "--device",
+            type=str,
+            default="cuda",
+            help="Device for topographic computation (default: cuda)",
+        )
 
     def execute(self, args: argparse.Namespace) -> int:
         """Execute the visualization command."""
@@ -143,6 +166,10 @@ Examples:
                 fig = create_semantic_dashboard(
                     checkpoint_path=checkpoint_path,
                     output_path=output_path,
+                    dataset_path=args.dataset,
+                    compute_topo=not args.no_topo,
+                    topo_samples=args.topo_samples,
+                    device=args.device,
                     dpi=args.dpi,
                 )
                 if not args.no_display:

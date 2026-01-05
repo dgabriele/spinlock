@@ -413,7 +413,8 @@ class CategoricalHierarchicalVQVAE(nn.Module):
                 - reconstruction: Dict with "features" key (reconstructed input)
                 - vq_losses: List of VQ loss values
                 - partial_reconstructions: List of partial reconstructions
-                - latents: List of latent vectors (for topographic loss)
+                - latents: List of PRE-quantization latent vectors
+                - quantized: List of POST-quantization code embeddings
                 - tokens: Token indices [batch, N×L]
         """
         # Encode to N×L latent vectors
@@ -433,7 +434,8 @@ class CategoricalHierarchicalVQVAE(nn.Module):
             "reconstruction": {"features": x_recon},
             "vq_losses": [vq_losses["vq_loss"]],
             "partial_reconstructions": partial_recons,
-            "latents": z_list,
+            "latents": z_list,  # PRE-quantization (continuous)
+            "quantized": z_q_list,  # POST-quantization (discrete code embeddings)
             "tokens": tokens,
         }
 
