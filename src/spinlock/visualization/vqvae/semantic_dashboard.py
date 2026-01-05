@@ -207,13 +207,16 @@ def plot_codebook_utilization(
     total_codes = sum(total for cat_counts in util_counts.values() for _, total in cat_counts.values())
     overall_util = total_used / total_codes if total_codes > 0 else 0
 
+    # Place summary in top-right corner to avoid axis label overlap
     ax.text(
-        0.5, -0.22,
-        f"Overall: {total_used}/{total_codes} codes used ({overall_util:.1%})",
+        0.98, 0.98,
+        f"Total: {total_used}/{total_codes} ({overall_util:.1%})",
         transform=ax.transAxes,
-        ha="center",
-        fontsize=9,
+        ha="right",
+        va="top",
+        fontsize=8,
         style="italic",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
     )
 
 
