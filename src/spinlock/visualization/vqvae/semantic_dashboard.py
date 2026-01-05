@@ -208,7 +208,7 @@ def plot_codebook_utilization(
     overall_util = total_used / total_codes if total_codes > 0 else 0
 
     ax.text(
-        0.5, -0.12,
+        0.5, -0.22,
         f"Overall: {total_used}/{total_codes} codes used ({overall_util:.1%})",
         transform=ax.transAxes,
         ha="center",
