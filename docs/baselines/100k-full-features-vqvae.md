@@ -1,26 +1,24 @@
-# VQ-VAE Baseline: 100K Full Features (INITIAL + SUMMARY + TEMPORAL + ARCHITECTURE)
+# VQ-VAE Baseline: 100K Full Features (SUMMARY + TEMPORAL + ARCHITECTURE)
 
 **Date:** January 5, 2026
 **Dataset:** `datasets/100k_full_features.h5`
-**Checkpoint:** `checkpoints/production/100k_with_initial/`
+**Checkpoint:** `checkpoints/production/100k_full_features/`
 **Status:** PRODUCTION READY
 
 ---
 
 ## Executive Summary
 
-Production VQ-VAE tokenizer trained on 100,000 neural operator samples with joint encoding of **four feature families**, including hybrid INITIAL features with end-to-end CNN training and **ARCHITECTURE feature isolation**:
+Production VQ-VAE tokenizer trained on 100,000 neural operator samples with joint encoding of **three feature families**:
 
 | Metric | Value | Target | Status |
 |--------|-------|--------|--------|
-| **Val Loss** | 0.172 | <0.20 | **EXCEEDED** |
-| **Quality** | 0.9517 | >0.85 | **EXCEEDED** |
-| **Codebook Utilization** | 66.7% | >25% | **EXCEEDED** |
-| **Reconstruction Error** | 0.048 | - | Excellent |
-| **Categories Discovered** | 15 | auto | Data-driven (1 isolated + 14 clustered) |
-| **Total Parameters** | 3.2M | - | - |
-
-**Key improvement:** ARCHITECTURE features (uniform Sobol parameters) are now **isolated** into their own dedicated category, preventing contamination of computed features and improving cluster quality for the remaining 14 categories.
+| **Val Loss** | 0.183 | <0.20 | ✅ MET |
+| **Quality** | 0.9475 | >0.85 | ✅ EXCEEDED |
+| **Codebook Utilization** | 93.7% | >25% | ✅ EXCEEDED |
+| **Reconstruction Error** | 0.053 | - | Good |
+| **Categories Discovered** | 11 | auto | Data-driven clustering |
+| **Input Dimensions** | 172 | - | After feature cleaning |
 
 ---
 
@@ -30,15 +28,12 @@ Production VQ-VAE tokenizer trained on 100,000 neural operator samples with join
 
 | Family | Raw Dimensions | Encoder | Output Dimensions |
 |--------|----------------|---------|-------------------|
-| **INITIAL** | 14 (manual) + CNN | InitialHybridEncoder | 14 + 28 = 42 |
-| **SUMMARY** | 360 | MLPEncoder [512, 256] | 128 |
-| **TEMPORAL** | 256 × 63 | TemporalCNNEncoder (ResNet-1D) | 128 |
+| **SUMMARY** | 360 | MLPEncoder [512, 256] | 125 |
+| **TEMPORAL** | 256 × 63 | TemporalCNNEncoder (ResNet-1D) | 35 |
 | **ARCHITECTURE** | 12 | IdentityEncoder | 12 |
-| **Total** | - | - | **282** (pre-cleaning) |
+| **Total** | - | - | **172** (after cleaning) |
 
-**INITIAL Hybrid Encoder:** 14D manual features (spatial stats, spectral, entropy, morphological) passed through directly + 28D CNN embeddings trained end-to-end with the VQ-VAE via backpropagation.
-
-After feature cleaning (variance filtering, deduplication, outlier capping): **175 features**
+After feature cleaning (variance filtering, deduplication, outlier capping): **172 features**
 
 ### Dataset Statistics
 
@@ -151,57 +146,38 @@ training:
 
 ## Training Results
 
-### Convergence
-
-| Epoch | Quality | Utilization | Val Loss | Train Loss |
-|-------|---------|-------------|----------|------------|
-| 1 | 0.840 | 22.8% | 0.420 | 3.012 |
-| 50 | 0.905 | 24.3% | 0.215 | 0.262 |
-| 100 | 0.922 | 30.5% | 0.204 | 0.228 |
-| 150 | 0.940 | 45.2% | 0.186 | 0.203 |
-| 200 | 0.948 | 58.3% | 0.177 | 0.193 |
-| 250 | 0.950 | 64.1% | 0.174 | 0.187 |
-| 300 | 0.952 | 66.7% | **0.172** | 0.182 |
-
 ### Final Metrics
 
 ```
 Final Metrics:
-  val_loss: 0.1723
-  utilization: 0.6669
-  reconstruction_error: 0.0483
-  quality: 0.9517
+  val_loss: 0.1828
+  utilization: 0.937
+  reconstruction_error: 0.0525
+  quality: 0.9475
+  epochs: 200
 ```
 
 ### Per-Cluster Performance
 
-| Cluster | Features | Reconstruction MSE | Notes |
-|---------|----------|-------------------|-------|
-| **architecture_isolated** | 12 | 0.895 | Expected: uniform Sobol parameters are hard to reconstruct |
-| cluster_1 | 19 | 0.349 | Mixed SUMMARY + TEMPORAL |
-| cluster_2 | 33 | 0.087 | Low-variance features (excellent reconstruction) |
-| cluster_3 | 9 | 0.308 | SUMMARY statistics |
-| cluster_4 | 4 | 0.716 | Small cluster, high variance |
-| cluster_5 | 21 | 0.399 | SUMMARY spatial |
-| cluster_6 | 8 | 0.597 | TEMPORAL features |
-| cluster_7 | 9 | 0.726 | High-variance features |
-| cluster_8 | 16 | 0.659 | Mixed features |
-| cluster_9 | 30 | 0.237 | SUMMARY + TEMPORAL |
-| cluster_10 | 12 | 0.355 | Mixed features |
-| cluster_11 | 7 | 0.619 | Small cluster |
-| cluster_12 | 3 | 0.703 | Smallest cluster |
-| cluster_13 | 4 | 0.671 | Small cluster |
-| cluster_14 | 14 | 0.322 | INITIAL + SUMMARY |
+| Cluster | Features | Description |
+|---------|----------|-------------|
+| cluster_1 | 4 | Small cluster |
+| cluster_2 | 16 | Mixed features |
+| cluster_3 | 15 | Mixed features |
+| cluster_4 | 13 | Mixed features |
+| cluster_5 | 32 | Largest cluster |
+| cluster_6 | 28 | Large cluster |
+| cluster_7 | 20 | SUMMARY + TEMPORAL |
+| cluster_8 | 10 | Mixed features |
+| cluster_9 | 11 | Mixed features |
+| cluster_10 | 14 | Mixed features |
+| cluster_11 | 9 | Small cluster |
 
-**Note on ARCHITECTURE isolation:** The `architecture_isolated` category has high MSE (0.90) because ARCHITECTURE features are **uniform Sobol-sampled parameters** (mean=0.5, std=0.2886 ≈ 1/√12). These are fundamentally hard to reconstruct through discrete quantization—this is expected behavior, not a defect. By isolating them, we prevent this "noise" from contaminating the other categories.
-
-**Note on metrics:** The global `reconstruction_error` (0.048) uses the **shared decoder** that combines all 45 codebooks (15 categories × 3 levels) to reconstruct the full feature vector. The per-cluster **Reconstruction MSE** measures how well each category's codes alone can reconstruct its own features—inherently a harder task used for informativeness regularization.
+**Note on metrics:** The global `reconstruction_error` (0.053) uses the **shared decoder** that combines all 33 codebooks (11 categories × 3 levels) to reconstruct the full feature vector.
 
 ### Training Time
 
-- **Total Duration:** ~27 minutes (300 epochs)
-- **Per-Epoch:** ~5.2 seconds (after torch.compile warmup)
-- **torch.compile Warmup:** ~90 seconds (epoch 1)
+- **Total Duration:** ~18 minutes (200 epochs)
 - **Hardware:** Single GPU with TF32 matmul
 
 ---
@@ -364,11 +340,11 @@ poetry run spinlock train-vqvae \
 |------|-------------|
 | `configs/vqvae/production/100k_full_features.yaml` | Training configuration |
 | `datasets/100k_full_features.h5` | Dataset with all features |
-| `checkpoints/production/100k_with_initial/best_model.pt` | Best model weights (val_loss: 0.172) |
-| `checkpoints/production/100k_with_initial/final_model.pt` | Final model weights (epoch 300) |
-| `checkpoints/production/100k_with_initial/config.yaml` | Saved model config |
-| `checkpoints/production/100k_with_initial/normalization_stats.npz` | Feature normalization |
-| `checkpoints/production/100k_with_initial/training_history.json` | Full training metrics |
+| `checkpoints/production/100k_full_features/best_model.pt` | Best model weights (val_loss: 0.183) |
+| `checkpoints/production/100k_full_features/final_model.pt` | Final model weights (epoch 200) |
+| `checkpoints/production/100k_full_features/config.yaml` | Saved model config |
+| `checkpoints/production/100k_full_features/normalization_stats.npz` | Feature normalization |
+| `checkpoints/production/100k_full_features/training_history.json` | Full training metrics |
 
 ---
 
@@ -414,8 +390,8 @@ Three visualization dashboards are available for analyzing trained VQ-VAE models
 ```bash
 # Generate all dashboards
 poetry run spinlock visualize-vqvae \
-    --checkpoint checkpoints/production/100k_with_initial/ \
-    --output visualizations/ \
+    --checkpoint checkpoints/production/100k_full_features/ \
+    --output docs/baselines/images/ \
     --type all
 ```
 
@@ -426,10 +402,10 @@ Technical overview for model evaluation and debugging:
 | Panel | Content |
 |-------|---------|
 | Architecture Schematic | Flow diagram: Input → Encoders → Categories → Levels → Decoder |
-| Training Curves | Loss and quality metrics over 300 epochs |
-| Utilization Heatmap | 15 categories × 3 levels with utilization percentages |
+| Training Curves | Loss and quality metrics over 200 epochs |
+| Utilization Heatmap | 11 categories × 3 levels with utilization percentages |
 | Reconstruction MSE | Per-category reconstruction error bars |
-| Summary Metrics | Quality (0.95), utilization (67%), parameters (3.2M), epochs (300) |
+| Summary Metrics | Quality (0.95), utilization (94%), epochs (200) |
 
 ![Engineering Dashboard](images/100k_full_features_engineering.png)
 
@@ -439,9 +415,9 @@ Codebook embedding space analysis:
 
 | Panel | Content |
 |-------|---------|
-| t-SNE Embedding | All 45 codebook vectors (15 categories × 3 levels) projected to 2D |
-| Similarity Matrix | 45×45 cosine similarity between codebook centroids |
-| Statistics | Total codes, active codes, embedding dimensions, model quality |
+| t-SNE Embedding | All 33 codebook vectors (11 categories × 3 levels) projected to 2D |
+| Similarity Matrix | 33×33 cosine similarity between codebook centroids |
+| Statistics | Total codes (484), active codes (438, 90.5%), model quality (0.9475) |
 
 ![Topological Dashboard](images/100k_full_features_topological.png)
 
@@ -455,9 +431,9 @@ Feature-to-category mapping analysis:
 |-------|---------|
 | Feature-Category Matrix | Which features belong to which category |
 | Category Sizes | Number of features per category (bar chart) |
-| Feature Families | INITIAL, Summary, Temporal, Architecture counts |
-| Token Structure | Compositional vocabulary explanation |
-| Category Correlation | Inter-category orthogonality |
+| Feature Families | Summary (125), Temporal (35), Architecture (12) |
+| Codebook Utilization | N/M format showing used codes per codebook (408/484 = 84.3%) |
+| Category Correlation | Inter-category orthogonality (max off-diagonal: 0.094) |
 
 ![Semantic Dashboard](images/100k_full_features_semantic.png)
 

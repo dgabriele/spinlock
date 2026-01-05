@@ -246,7 +246,8 @@ def extract_utilization_matrix(
         for level in range(num_levels):
             key = f"{cat}/level_{level}/utilization"
             if key in data.final_metrics:
-                matrix[i, level] = data.final_metrics[key]
+                # Cap at 1.0 to handle legacy metrics with utilization > 1.0
+                matrix[i, level] = min(data.final_metrics[key], 1.0)
 
     return matrix, data.category_names, level_labels
 
