@@ -18,7 +18,7 @@ import tempfile
 import h5py
 
 from spinlock.features.initial.config import InitialConfig, InitialManualConfig, InitialCNNConfig
-from spinlock.features.initial.manual_extractors import ICManualExtractor
+from spinlock.features.initial.manual_extractors import InitialManualExtractor
 from spinlock.features.initial.cnn_encoder import InitialCNNEncoder, InitialVAE, InitialCNNDecoder
 from spinlock.features.initial.extractors import InitialExtractor
 from spinlock.features.storage import HDF5FeatureWriter, HDF5FeatureReader
@@ -58,11 +58,11 @@ def ic_config_vae():
 
 # Manual Extractor Tests
 class TestManualExtractor:
-    """Tests for ICManualExtractor."""
+    """Tests for InitialManualExtractor."""
 
     def test_manual_extractor_shape(self, device, synthetic_ics):
         """Test that manual extractor produces correct shape."""
-        extractor = ICManualExtractor(device=device)
+        extractor = InitialManualExtractor(device=device)
         features = extractor.extract_all(synthetic_ics)
 
         B, M = synthetic_ics.shape[:2]
@@ -70,21 +70,21 @@ class TestManualExtractor:
 
     def test_manual_features_not_nan(self, device, synthetic_ics):
         """Test that manual features don't contain NaN values."""
-        extractor = ICManualExtractor(device=device)
+        extractor = InitialManualExtractor(device=device)
         features = extractor.extract_all(synthetic_ics)
 
         assert not torch.isnan(features).any(), "Manual features contain NaN values"
 
     def test_manual_features_not_inf(self, device, synthetic_ics):
         """Test that manual features don't contain infinite values."""
-        extractor = ICManualExtractor(device=device)
+        extractor = InitialManualExtractor(device=device)
         features = extractor.extract_all(synthetic_ics)
 
         assert not torch.isinf(features).any(), "Manual features contain infinite values"
 
     def test_manual_features_variance(self, device, synthetic_ics):
         """Test that manual features have reasonable variance (not all constant)."""
-        extractor = ICManualExtractor(device=device)
+        extractor = InitialManualExtractor(device=device)
         features = extractor.extract_all(synthetic_ics)
 
         # Check variance across batch dimension
@@ -93,7 +93,7 @@ class TestManualExtractor:
 
     def test_spatial_features(self, device, synthetic_ics):
         """Test spatial feature extraction."""
-        extractor = ICManualExtractor(device=device)
+        extractor = InitialManualExtractor(device=device)
         feature_dict = extractor.extract_spatial_features(synthetic_ics)
 
         # Manual extractors return dictionaries with feature names as keys
@@ -102,7 +102,7 @@ class TestManualExtractor:
 
     def test_spectral_features(self, device, synthetic_ics):
         """Test spectral feature extraction."""
-        extractor = ICManualExtractor(device=device)
+        extractor = InitialManualExtractor(device=device)
         feature_dict = extractor.extract_spectral_features(synthetic_ics)
 
         assert isinstance(feature_dict, dict)
@@ -110,7 +110,7 @@ class TestManualExtractor:
 
     def test_information_features(self, device, synthetic_ics):
         """Test information feature extraction."""
-        extractor = ICManualExtractor(device=device)
+        extractor = InitialManualExtractor(device=device)
         feature_dict = extractor.extract_information_features(synthetic_ics)
 
         assert isinstance(feature_dict, dict)
@@ -118,7 +118,7 @@ class TestManualExtractor:
 
     def test_morphological_features(self, device, synthetic_ics):
         """Test morphological feature extraction."""
-        extractor = ICManualExtractor(device=device)
+        extractor = InitialManualExtractor(device=device)
         feature_dict = extractor.extract_morphological_features(synthetic_ics)
 
         assert isinstance(feature_dict, dict)
