@@ -268,16 +268,16 @@ The VQ-VAE pipeline transforms continuous behavioral features into discrete toke
 
 ### Production Baseline: 100K Full Features
 
-Our production model achieves **0.9554 quality** with **93.7% codebook utilization** on 100,000 operators:
+Our production model achieves **0.9517 quality** with **66.7% codebook utilization** on 100,000 operators:
 
 | Metric | Value |
 |--------|-------|
-| Val Loss | **0.164** |
+| Val Loss | **0.172** |
 | Input Features | 175 (after cleaning from 282 raw) |
-| Categories Discovered | 7 (data-driven clustering) |
+| Categories Discovered | 15 (1 isolated + 14 clustered) |
 | Hierarchical Levels | 3 (coarse → medium → fine) |
-| Total Codebooks | 21 (7 categories × 3 levels) |
-| Reconstruction Error | 0.045 |
+| Total Codebooks | 45 (15 categories × 3 levels) |
+| Reconstruction Error | 0.048 |
 
 **Key design choices:**
 - **Hybrid INITIAL encoder** with end-to-end CNN training (14D manual + 28D learned)
@@ -419,7 +419,7 @@ For detailed installation instructions, platform-specific guides, and troublesho
 - [**HDF5 Layout**](docs/features/hdf5-layout.md) - Dataset schema reference for VQ-VAE pipeline
 - [**Baselines**](docs/baselines/README.md) - Production datasets and VQ-VAE tokenizers
   - [100K Dataset](docs/baselines/100k-full-features-dataset.md) - 100K operators with INITIAL+SUMMARY+TEMPORAL+ARCHITECTURE features
-  - [100K VQ-VAE](docs/baselines/100k-full-features-vqvae.md) - Tokenizer (val_loss: 0.164, quality: 0.96, utilization: 94%)
+  - [100K VQ-VAE](docs/baselines/100k-full-features-vqvae.md) - Tokenizer (val_loss: 0.172, quality: 0.95, utilization: 67%)
 - [**Getting Started**](docs/getting-started.md) - Tutorials and end-to-end examples
 - [**Installation**](docs/installation.md) - Platform-specific installation guides
 

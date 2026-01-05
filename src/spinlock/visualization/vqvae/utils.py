@@ -82,7 +82,9 @@ def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
 
     # Extract group indices
     group_indices = config.get("group_indices", checkpoint.get("group_indices", {}))
-    category_names = sorted(group_indices.keys())
+    # Use insertion order (list()) to match VQ layer ordering, not sorted()
+    # This ensures visualizations match model structure
+    category_names = list(group_indices.keys())
     num_categories = len(category_names)
 
     # Extract levels configuration

@@ -90,6 +90,7 @@ class DynamicCategoryAssignment(CategoryAssignment):
         gradient_lr: float = 0.01,
         subsample_excess_fraction: float = 0.1,
         device: str = "cuda",
+        isolated_families: Optional[List[str]] = None,
     ):
         """Initialize dynamic category assignment.
 
@@ -105,6 +106,9 @@ class DynamicCategoryAssignment(CategoryAssignment):
             gradient_lr: Learning rate for gradient optimization (default: 0.01)
             subsample_excess_fraction: For datasets > 10K, use 10K + this fraction of excess
             device: Device for gradient optimization ('cuda' or 'cpu'), defaults to 'cuda'
+            isolated_families: List of feature family names (e.g., ["architecture"]) that
+                should be placed in their own dedicated categories, separate from clustering.
+                Useful for features that have fundamentally different statistical properties.
         """
         if method not in ("clustering", "gradient", "hybrid"):
             raise ValueError(f"Unknown method: {method}. Use 'clustering', 'gradient', or 'hybrid'")
@@ -120,6 +124,7 @@ class DynamicCategoryAssignment(CategoryAssignment):
         self.gradient_lr = gradient_lr
         self.subsample_excess_fraction = subsample_excess_fraction
         self.device = device
+        self.isolated_families = isolated_families
 
         # Cached assignments (computed on first call to assign_categories)
         self._assignments = None
@@ -215,6 +220,7 @@ class DynamicCategoryAssignment(CategoryAssignment):
             random_seed=self.random_seed,
             max_samples_for_clustering=self.max_samples_for_clustering,
             max_clusters=self.max_clusters,
+            isolated_families=self.isolated_families,
         )
 
         return assignments

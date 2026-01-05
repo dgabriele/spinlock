@@ -215,6 +215,7 @@ def hierarchical_clustering_assignment(
     random_seed: int = 42,
     max_samples_for_clustering: int = 50000,
     max_clusters: int = 50,
+    isolated_families: Optional[List[str]] = None,
 ) -> Dict[str, List[int]]:
     """Assign features to clusters using hierarchical clustering.
 
@@ -234,6 +235,9 @@ def hierarchical_clustering_assignment(
         random_seed: Random seed for reproducibility
         max_samples_for_clustering: Maximum samples to use for clustering
         max_clusters: Maximum clusters to explore for auto-determination
+        isolated_families: List of feature family names (e.g., ["architecture"]) that
+            should be placed in their own dedicated categories, separate from clustering.
+            Feature names must have format "family::name" for family detection.
 
     Returns:
         Dict mapping category_name -> list of feature indices
@@ -241,6 +245,54 @@ def hierarchical_clustering_assignment(
     """
     N_samples, N_features = features.shape
     np.random.seed(random_seed)
+
+    # Handle isolated families - separate them before clustering
+    isolated_assignments = {}
+    clustering_indices = list(range(N_features))  # Indices to cluster
+
+    if isolated_families:
+        logger.info(f"Isolating feature families: {isolated_families}")
+
+        for family in isolated_families:
+            family_indices = []
+            for idx, name in enumerate(feature_names):
+                # Match "family::*" pattern
+                if "::" in name:
+                    feat_family = name.split("::")[0]
+                    if feat_family.lower() == family.lower():
+                        family_indices.append(idx)
+
+            if family_indices:
+                # Create dedicated category for this family
+                category_name = f"{family}_isolated"
+                isolated_assignments[category_name] = family_indices
+                logger.info(
+                    f"✓ {category_name}: {len(family_indices)} features isolated"
+                )
+
+                # Remove from clustering pool
+                for idx in family_indices:
+                    if idx in clustering_indices:
+                        clustering_indices.remove(idx)
+            else:
+                logger.warning(
+                    f"No features found for isolated family '{family}'. "
+                    f"Feature names should have format 'family::name'."
+                )
+
+        logger.info(
+            f"Remaining features for clustering: {len(clustering_indices)}"
+        )
+
+    # If all features are isolated, return early
+    if not clustering_indices:
+        logger.info("All features isolated - skipping clustering")
+        return isolated_assignments
+
+    # Subset features for clustering (only non-isolated)
+    clustering_feature_indices = np.array(clustering_indices)
+    clustering_features = features[:, clustering_feature_indices]
+    clustering_feature_names = [feature_names[i] for i in clustering_indices]
 
     # Determine subsample size for clustering
     subsample_size = None
@@ -253,19 +305,22 @@ def hierarchical_clustering_assignment(
         logger.info(f"Using all {N_samples:,} samples for clustering")
 
     # Auto-determine num_clusters if not specified
+    # Use clustering subset (excluding isolated families)
     if num_clusters is None:
         num_clusters = auto_determine_num_clusters(
-            features,
+            clustering_features,
             method="silhouette",
             max_clusters=max_clusters,
             random_seed=random_seed,
             subsample_size=subsample_size,
         )
 
-    # Compute correlation matrix (use CUDA if available)
+    # Compute correlation matrix on clustering subset (use CUDA if available)
     if USE_CUDA:
         logger.info("Computing correlation matrix (CUDA)")
-        corr_matrix_only = compute_correlation_matrix_cuda(features, subsample_size=subsample_size)
+        corr_matrix_only = compute_correlation_matrix_cuda(
+            clustering_features, subsample_size=subsample_size
+        )
         # Convert to distance and condensed form for scipy
         distance_matrix = 1.0 - np.abs(corr_matrix_only)
         np.fill_diagonal(distance_matrix, 0.0)
@@ -274,7 +329,7 @@ def hierarchical_clustering_assignment(
     else:
         logger.info("Computing correlation matrix (CPU)")
         corr_matrix, condensed_dist = compute_correlation_matrix_cpu(
-            features, subsample_size=subsample_size
+            clustering_features, subsample_size=subsample_size
         )
 
     linkage_matrix = sch.linkage(condensed_dist, method="ward")
@@ -283,37 +338,45 @@ def hierarchical_clustering_assignment(
     labels = sch.fcluster(linkage_matrix, num_clusters, criterion="maxclust")
 
     # Build category assignments
+    # Note: cluster_indices are indices into clustering_features, need to map back
     assignments = {}
     skipped_clusters = []
 
     for cluster_id in range(1, num_clusters + 1):
-        cluster_indices = np.where(labels == cluster_id)[0].tolist()
+        # These are indices into the clustering subset
+        subset_indices = np.where(labels == cluster_id)[0].tolist()
 
         # Skip clusters that are too small
-        if len(cluster_indices) < min_features_per_cluster:
-            skipped_clusters.append((cluster_id, len(cluster_indices)))
+        if len(subset_indices) < min_features_per_cluster:
+            skipped_clusters.append((cluster_id, len(subset_indices)))
             logger.warning(
-                f"Skipping cluster_{cluster_id}: only {len(cluster_indices)} features "
+                f"Skipping cluster_{cluster_id}: only {len(subset_indices)} features "
                 f"(min={min_features_per_cluster})"
             )
             continue
 
+        # Map back to original feature indices
+        original_indices = [clustering_indices[i] for i in subset_indices]
+
         category_name = f"cluster_{cluster_id}"
-        assignments[category_name] = cluster_indices
+        assignments[category_name] = original_indices
 
         # Print cluster membership for inspection
-        cluster_feature_names = [feature_names[i] for i in cluster_indices]
+        cluster_feat_names = [feature_names[i] for i in original_indices]
         preview = (
-            cluster_feature_names[:3]
-            if len(cluster_feature_names) <= 3
-            else cluster_feature_names[:3] + ["..."]
+            cluster_feat_names[:3]
+            if len(cluster_feat_names) <= 3
+            else cluster_feat_names[:3] + ["..."]
         )
         logger.info(
-            f"✓ {category_name}: {len(cluster_indices)} features - {preview}"
+            f"✓ {category_name}: {len(original_indices)} features - {preview}"
         )
 
-    # Validate orthogonality
-    max_corr = validate_cluster_orthogonality(features, assignments)
+    # Merge isolated assignments with clustered assignments
+    all_assignments = {**isolated_assignments, **assignments}
+
+    # Validate orthogonality on full feature set with all assignments
+    max_corr = validate_cluster_orthogonality(features, all_assignments)
     logger.info(f"\nOrthogonality validation:")
     logger.info(f"  Max inter-cluster correlation: {max_corr:.3f}")
     logger.info(f"  Target: {orthogonality_target:.3f}")
@@ -326,13 +389,13 @@ def hierarchical_clustering_assignment(
     else:
         logger.info(f"  ✓ Within target (margin: {orthogonality_target - max_corr:.3f})")
 
-    if len(assignments) == 0:
+    if len(all_assignments) == 0:
         raise ValueError(
             f"All {num_clusters} clusters were too small (min={min_features_per_cluster}). "
             f"Try: Decrease min_features_per_cluster or decrease num_clusters"
         )
 
-    return assignments
+    return all_assignments
 
 
 def validate_cluster_orthogonality(

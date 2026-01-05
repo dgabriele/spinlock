@@ -1005,6 +1005,8 @@ Output:
             gradient_lr=cat_config.get("gradient_lr", 0.01),
             subsample_excess_fraction=cat_config.get("subsample_excess_fraction", 0.1),
             device=cat_config.get("device", "cuda"),
+            # Family isolation - place specified families in dedicated categories
+            isolated_families=cat_config.get("isolated_families"),
         )
 
         # Compute assignments

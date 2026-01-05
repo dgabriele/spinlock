@@ -206,7 +206,9 @@ def compute_per_category_metrics(
     metrics = {}
 
     # Get category names from config (use the model's config, not model_for_check)
-    category_names = sorted(model.config.group_indices.keys())
+    # CRITICAL: Use config.categories to match VQ layer ordering (insertion order)
+    # Do NOT use sorted() - that causes category/VQ layer mismatch!
+    category_names = model.config.categories
 
     # Check if model is a hybrid model that needs raw_ics
     is_hybrid = hasattr(model, 'initial_encoder')
@@ -341,7 +343,9 @@ def compute_category_correlation(
         }
 
     model.eval()
-    category_names = sorted(model.config.group_indices.keys())
+    # CRITICAL: Use config.categories to match VQ layer ordering (insertion order)
+    # Do NOT use sorted() - that causes category/VQ layer mismatch!
+    category_names = model.config.categories
 
     # Check if model is a hybrid model that needs raw_ics
     is_hybrid = hasattr(model, 'initial_encoder')
