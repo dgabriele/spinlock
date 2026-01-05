@@ -281,7 +281,9 @@ def extract_utilization_counts(
                 codebook_size = 0
 
             # Compute used codes: N = utilization × M (round to nearest int)
+            # Cap at codebook_size to handle legacy metrics with utilization > 1.0
             used_codes = round(utilization * codebook_size) if codebook_size > 0 else 0
+            used_codes = min(used_codes, codebook_size)  # N cannot exceed M
 
             result[cat][level_idx] = (used_codes, codebook_size)
 
