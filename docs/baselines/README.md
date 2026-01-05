@@ -14,7 +14,7 @@ Production datasets and VQ-VAE tokenizers for Neural Operator Agent research.
 
 | Tokenizer | Dataset | Val Loss | Quality | Utilization | Categories | Status |
 |-----------|---------|----------|---------|-------------|------------|--------|
-| [**100K Full Features**](100k-full-features-vqvae.md) | 100k_full_features.h5 | **0.183** | 0.9475 | 93.7% | 11 | PRODUCTION |
+| [**100K Full Features**](100k-full-features-vqvae.md) | 100k_full_features.h5 | **0.169** | 0.957 | 71.7% | 14 | PRODUCTION |
 
 ## Recommended Baseline
 
@@ -37,12 +37,12 @@ Production datasets and VQ-VAE tokenizers for Neural Operator Agent research.
 
 | Family | Raw Dim | Encoded Dim | Encoder |
 |--------|---------|-------------|---------|
-| SUMMARY | 360 | 125 | MLPEncoder [512, 256] |
-| TEMPORAL | 256×63 | 35 | TemporalCNNEncoder |
+| SUMMARY | 360 | ~150 | MLPEncoder [512, 256] |
+| TEMPORAL | 256×63 | ~38 | TemporalCNNEncoder |
 | ARCHITECTURE | 12 | 12 | IdentityEncoder |
-| **Total** | - | **172** | - |
+| **Total** | - | **200** | - |
 
-After cleaning: **172 features** → **11 categories**
+After cleaning: **200 features** → **14 categories**
 
 ## Adding New Baselines
 

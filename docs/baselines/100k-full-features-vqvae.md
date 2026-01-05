@@ -9,16 +9,16 @@
 
 ## Executive Summary
 
-Production VQ-VAE tokenizer trained on 100,000 neural operator samples with joint encoding of **three feature families**:
+Production VQ-VAE tokenizer trained on 100,000 neural operator samples with joint encoding of **three feature families**, using **uniform codebook initialization** with natural dead code pruning:
 
 | Metric | Value | Target | Status |
 |--------|-------|--------|--------|
-| **Val Loss** | 0.183 | <0.20 | ✅ MET |
-| **Quality** | 0.9475 | >0.85 | ✅ EXCEEDED |
-| **Codebook Utilization** | 93.7% | >25% | ✅ EXCEEDED |
-| **Reconstruction Error** | 0.053 | - | Good |
-| **Categories Discovered** | 11 | auto | Data-driven clustering |
-| **Input Dimensions** | 172 | - | After feature cleaning |
+| **Val Loss** | 0.169 | <0.20 | ✅ EXCEEDED |
+| **Quality** | 0.957 | >0.85 | ✅ EXCEEDED |
+| **Codebook Utilization** | 71.7% | >25% | ✅ EXCEEDED |
+| **Reconstruction Error** | 0.043 | - | Excellent |
+| **Categories Discovered** | 14 | auto | Data-driven clustering |
+| **Input Dimensions** | 200 | - | After feature cleaning |
 
 ---
 
@@ -28,12 +28,12 @@ Production VQ-VAE tokenizer trained on 100,000 neural operator samples with join
 
 | Family | Raw Dimensions | Encoder | Output Dimensions |
 |--------|----------------|---------|-------------------|
-| **SUMMARY** | 360 | MLPEncoder [512, 256] | 125 |
-| **TEMPORAL** | 256 × 63 | TemporalCNNEncoder (ResNet-1D) | 35 |
+| **SUMMARY** | 360 | MLPEncoder [512, 256] | ~150 |
+| **TEMPORAL** | 256 × 63 | TemporalCNNEncoder (ResNet-1D) | ~38 |
 | **ARCHITECTURE** | 12 | IdentityEncoder | 12 |
-| **Total** | - | - | **172** (after cleaning) |
+| **Total** | - | - | **200** (after cleaning) |
 
-After feature cleaning (variance filtering, deduplication, outlier capping): **172 features**
+After feature cleaning (variance filtering, deduplication, outlier capping): **200 features**
 
 ### Dataset Statistics
 
@@ -150,53 +150,58 @@ training:
 
 ```
 Final Metrics:
-  val_loss: 0.1828
-  utilization: 0.937
-  reconstruction_error: 0.0525
-  quality: 0.9475
-  epochs: 200
+  val_loss: 0.169
+  utilization: 0.717
+  reconstruction_error: 0.043
+  quality: 0.957
+  epochs: 550
 ```
 
 ### Per-Cluster Performance
 
-| Cluster | Features | Description |
-|---------|----------|-------------|
-| cluster_1 | 4 | Small cluster |
-| cluster_2 | 16 | Mixed features |
-| cluster_3 | 15 | Mixed features |
-| cluster_4 | 13 | Mixed features |
-| cluster_5 | 32 | Largest cluster |
-| cluster_6 | 28 | Large cluster |
-| cluster_7 | 20 | SUMMARY + TEMPORAL |
-| cluster_8 | 10 | Mixed features |
-| cluster_9 | 11 | Mixed features |
-| cluster_10 | 14 | Mixed features |
-| cluster_11 | 9 | Small cluster |
+| Cluster | Features | L0 Tokens | L1 Tokens | L2 Tokens |
+|---------|----------|-----------|-----------|-----------|
+| architecture_isolated | 12 | 24 | 12 | 6 |
+| cluster_1 | 10 | 20 | 11 | 6 |
+| cluster_2 | 36 | 36 | 18 | 9 |
+| cluster_3 | 18 | 28 | 14 | 7 |
+| cluster_4 | 8 | 20 | 10 | 6 |
+| cluster_5 | 11 | 24 | 12 | 6 |
+| cluster_6 | 32 | 15 | 7 | 6 |
+| cluster_8 | 4 | 15 | 7 | 6 |
+| cluster_9 | 9 | 20 | 11 | 6 |
+| cluster_10 | 7 | 16 | 9 | 6 |
+| cluster_11 | 11 | 24 | 12 | 6 |
+| cluster_12 | 17 | 28 | 14 | 7 |
+| cluster_13 | 9 | 20 | 11 | 6 |
+| cluster_14 | 16 | 28 | 14 | 7 |
+| **TOTAL** | **200** | **318** | **162** | **90** |
 
-**Note on metrics:** The global `reconstruction_error` (0.053) uses the **shared decoder** that combines all 33 codebooks (11 categories × 3 levels) to reconstruct the full feature vector.
+**Note on metrics:** The global `reconstruction_error` (0.043) uses the **shared decoder** that combines all 42 codebooks (14 categories × 3 levels = 570 total codes) to reconstruct the full feature vector.
 
 ### Training Time
 
-- **Total Duration:** ~18 minutes (200 epochs)
+- **Total Duration:** ~50 minutes (550 epochs)
 - **Hardware:** Single GPU with TF32 matmul
 
 ---
 
 ## Hierarchical Codebook Architecture
 
-### Auto-Scaling Codebook Sizes
+### Uniform Codebook Initialization
 
-The VQ-VAE uses **compression ratio-based auto-scaling** to determine codebook sizes at each level of the hierarchy:
+This model uses **uniform codebook initialization** (`uniform_codebook_init: true`), where all hierarchical levels start with the same codebook size (L0's size). Dead code resets then naturally prune unused codes during training, allowing the model to empirically discover the appropriate hierarchical structure.
 
-| Level | Compression Ratio | Purpose | Typical Size |
-|-------|------------------|---------|--------------|
-| L0 (Coarse) | 0.5 | Broad behavioral categories | 15-32 codes |
-| L1 (Medium) | 1.0 | Sub-category distinctions | 8-17 codes |
-| L2 (Fine) | 1.5 | Specific behavioral variants | 4-8 codes |
+| Level | Initial Size | Final Size (avg) | Purpose |
+|-------|-------------|------------------|---------|
+| L0 (Coarse) | ~23 | 22.7 | Broad behavioral categories |
+| L1 (Medium) | ~23 | 11.6 | Sub-category distinctions |
+| L2 (Fine) | ~23 | 6.4 | Specific behavioral variants |
 
-**Design rationale:** Fine-grained distinctions are inherently sparse. If 80% of operators fall into a few broad behavioral regimes, only rare edge cases exhibit truly unique fine-scale dynamics. The compression ratio hierarchy reflects this information-theoretic insight:
-- **Coarse codes** must tile a large behavioral space → need more codes
-- **Fine codes** are refinements within already-narrow regions → fewer meaningful distinctions exist
+**Design rationale:** Rather than pre-specifying hierarchical compression ratios, uniform initialization lets the training process discover natural codebook capacities. The dead code reset mechanism prunes unused codes, resulting in empirically-discovered hierarchical structure:
+- **L0** retains most codes (~23) for coarse behavioral distinctions
+- **L1** naturally prunes to ~12 codes for medium-scale patterns
+- **L2** prunes aggressively to ~6 codes for fine-grained refinements
 
 ### Dead Code Reset Mechanism
 
@@ -207,23 +212,23 @@ During training, the system monitors codebook utilization and performs **dead co
 3. **Pruning effect:** Over training, codebooks naturally stabilize to their "right size"
 4. **Reset limit:** Maximum 25% of codes can be reset per interval to prevent disruption
 
-**Interpretation:** If a Level 2 codebook stabilizes at 6 codes with 83% utilization (5 active), this is the system *discovering* the natural capacity for fine-grained distinctions in that category—not a limitation but empirical evidence of inherent sparsity.
+**Interpretation:** With uniform initialization, the dead code reset mechanism serves as an empirical capacity discovery tool. Levels that need fewer codes (L2) see more codes become "dead" and get reset, while levels that need more codes (L0) maintain higher utilization.
 
 ### Per-Level Utilization Analysis
 
-From the production model:
+From the production model (14 categories × 3 levels = 42 codebooks, 570 total codes):
 
-| Level | Mean Utilization | Interpretation |
-|-------|-----------------|----------------|
-| L0 | 64% | Broad categories with room for growth |
-| L1 | 65% | Healthy mid-level distinctions |
-| L2 | 69% | Fine codes appropriately sized |
+| Level | Total Codes | Mean Utilization | Interpretation |
+|-------|-------------|-----------------|----------------|
+| L0 | 318 | ~72% | High utilization for coarse patterns |
+| L1 | 162 | ~71% | Healthy mid-level distinctions |
+| L2 | 90 | ~71% | Fine codes appropriately sized |
 
-**Key insight:** The combination of auto-scaling + dead code resets + pure clustering ensures codebooks are neither too large (wasted capacity) nor too small (forced collapse). The 65-70% utilization across all levels indicates healthy codebook sizing with some headroom for capturing additional behavioral diversity.
+**Key insight:** Uniform initialization + dead code resets results in consistent ~71% utilization across all levels, indicating the model has discovered appropriate codebook sizes for each level of the hierarchy. The total 570 codes with 71.7% utilization means ~408 active codes are being used to tokenize 200 features across 14 categories.
 
 ### Category Discovery: Pure Clustering
 
-This model uses **pure hierarchical clustering** (no gradient refinement) to discover 15 categories from 175 features. Key benefits:
+This model uses **pure hierarchical clustering** (no gradient refinement) to discover 14 categories from 200 features. Key benefits:
 - **Better reconstruction**: Gradient refinement optimizes for orthogonality at the expense of reconstruction quality
 - **Natural category sizes**: Clustering respects the inherent structure of feature correlations
 - **Faster training**: No additional optimization loop for category assignments
@@ -231,36 +236,34 @@ This model uses **pure hierarchical clustering** (no gradient refinement) to dis
 **Configuration:**
 - `method: "clustering"` (pure agglomerative clustering)
 - `min_features_per_category: 2` (allow smaller, more granular categories)
-- `max_clusters: 25` (upper bound, actual discovered: 15)
+- `max_clusters: 25` (upper bound, actual discovered: 14)
 
 ### Category Composition
 
-The 15 categories consist of **1 isolated** (ARCHITECTURE) + **14 clustered** (INITIAL+SUMMARY+TEMPORAL):
+The 14 categories consist of **1 isolated** (ARCHITECTURE) + **13 clustered** (SUMMARY+TEMPORAL):
 
 | Category | Features | Primary Content |
 |----------|----------|-----------------|
 | **architecture_isolated** | 12 | ARCHITECTURE only (isolated by design) |
-| cluster_1 | 19 | Mixed SUMMARY + TEMPORAL |
-| cluster_2 | 33 | Low-variance SUMMARY features |
-| cluster_3 | 9 | SUMMARY statistics |
-| cluster_4 | 4 | High-variance features |
-| cluster_5 | 21 | SUMMARY spatial |
-| cluster_6 | 8 | TEMPORAL features |
-| cluster_7 | 9 | High-variance features |
-| cluster_8 | 16 | Mixed features |
-| cluster_9 | 30 | SUMMARY + TEMPORAL |
-| cluster_10 | 12 | Mixed features |
-| cluster_11 | 7 | Small cluster |
-| cluster_12 | 3 | Smallest cluster |
-| cluster_13 | 4 | Small cluster |
-| cluster_14 | 14 | INITIAL + SUMMARY |
+| cluster_1 | 10 | Mixed features |
+| cluster_2 | 36 | Large SUMMARY cluster |
+| cluster_3 | 18 | SUMMARY statistics |
+| cluster_4 | 8 | Small cluster |
+| cluster_5 | 11 | Mixed features |
+| cluster_6 | 32 | Large SUMMARY + TEMPORAL |
+| cluster_8 | 4 | Smallest cluster |
+| cluster_9 | 9 | Mixed features |
+| cluster_10 | 7 | Small cluster |
+| cluster_11 | 11 | Mixed features |
+| cluster_12 | 17 | SUMMARY features |
+| cluster_13 | 9 | Mixed features |
+| cluster_14 | 16 | SUMMARY + TEMPORAL |
 
-**Key design decision:** ARCHITECTURE features are **isolated** because they're uniform Sobol-sampled operator parameters, not computed behavioral features. Mixing them with computed features (INITIAL, SUMMARY, TEMPORAL) would contaminate reconstruction quality.
+**Key design decision:** ARCHITECTURE features are **isolated** because they're uniform Sobol-sampled operator parameters, not computed behavioral features. Mixing them with computed features (SUMMARY, TEMPORAL) would contaminate reconstruction quality.
 
 **Interpretation:**
 - **architecture_isolated:** The 12 operator parameters are kept separate—they represent *inputs* to the system, not behavioral *outputs*
-- **INITIAL features** (14D manual + 28D CNN) cluster with SUMMARY features in cluster_14, capturing how initial conditions influence behavioral outcomes
-- **TEMPORAL features** (FFT, autocorrelation, periodicity) form clusters with SUMMARY (cluster_1, cluster_6, cluster_9)
+- **TEMPORAL features** (FFT, autocorrelation, periodicity) form clusters with SUMMARY (cluster_6, cluster_14)
 - **SUMMARY features** distribute across most categories, serving as the "glue" that captures aggregate behavioral signatures
 
 ---
@@ -281,7 +284,7 @@ The VQ-VAE training pipeline applies automatic feature cleaning:
 
 5. **Outlier Capping:** MAD-based clipping at 5σ
 
-**Result:** 282 features → 175 features after cleaning
+**Result:** Raw features → 200 features after cleaning
 
 ---
 
@@ -362,24 +365,25 @@ Skewness/kurtosis features were NaN at t=0 for structured initial conditions (sy
 
 ## Comparison to Previous Baselines
 
-| Metric | 10K Baseline | 100K (3-family) | **100K (4-family + isolation)** |
-|--------|--------------|-----------------|--------------------------------|
+| Metric | 10K Baseline | 100K (hierarchical) | **100K (uniform init)** |
+|--------|--------------|---------------------|------------------------|
 | Samples | 10,000 | 100,000 | 100,000 |
-| Feature Families | SUMMARY only | SUM+TEM+ARCH | **INIT+SUM+TEM+ARCH** |
-| Raw Features | 46 | 268 | **282** |
-| Cleaned Features | ~40 | 147 | **175** |
-| Categories | ~6-8 | 11 | **15** (1 isolated + 14 clustered) |
-| Val Loss | - | 0.189 | **0.172** |
-| Quality | ~0.85 | 0.9475 | **0.9517** |
-| Utilization | ~30% | 93.7% | **66.7%** |
+| Feature Families | SUMMARY only | SUM+TEM+ARCH | **SUM+TEM+ARCH** |
+| Cleaned Features | ~40 | 172 | **200** |
+| Categories | ~6-8 | 11 | **14** (1 isolated + 13 clustered) |
+| Val Loss | - | 0.183 | **0.169** |
+| Quality | ~0.85 | 0.9475 | **0.957** |
+| Utilization | ~30% | 93.7% | **71.7%** |
+| Epochs | - | 200 | **550** |
+| Total Codes | - | ~480 | **570** |
 
-**Key improvements in 4-family model with ARCHITECTURE isolation:**
-- **9% better val_loss** (0.172 vs 0.189) through pure clustering + INITIAL features
-- **INITIAL CNN trained end-to-end** - learns spatial patterns that correlate with behavioral outcomes
-- **ARCHITECTURE isolation** - prevents uniform Sobol parameters from contaminating computed features
-- **Finer-grained category structure** - 14 semantically meaningful clusters + 1 dedicated parameter category
-- **Better per-category reconstruction** - no mixed statistical types within clusters
-- **Correct utilization metrics** - fixed category ordering bug that caused inflated values
+**Key improvements with uniform codebook initialization:**
+- **8% better val_loss** (0.169 vs 0.183) through longer training and uniform init
+- **Uniform codebook init** - all levels start with L0's size, dead code resets prune naturally
+- **Empirically-discovered hierarchy** - L0→L1→L2 structure emerges from training, not pre-specified
+- **More categories** - 14 vs 11, finer-grained feature grouping
+- **Better reconstruction** - 0.043 MSE vs 0.053 (19% improvement)
+- **Higher quality** - 0.957 vs 0.9475 (1% improvement)
 
 ---
 
@@ -402,10 +406,10 @@ Technical overview for model evaluation and debugging:
 | Panel | Content |
 |-------|---------|
 | Architecture Schematic | Flow diagram: Input → Encoders → Categories → Levels → Decoder |
-| Training Curves | Loss and quality metrics over 200 epochs |
-| Utilization Heatmap | 11 categories × 3 levels with utilization percentages |
+| Training Curves | Loss and quality metrics over 550 epochs |
+| Utilization Heatmap | 14 categories × 3 levels with utilization percentages |
 | Reconstruction MSE | Per-category reconstruction error bars |
-| Summary Metrics | Quality (0.95), utilization (94%), epochs (200) |
+| Summary Metrics | Quality (0.957), utilization (71.7%), epochs (550) |
 
 ![Engineering Dashboard](images/100k_full_features_engineering.png)
 
@@ -415,9 +419,9 @@ Codebook embedding space analysis:
 
 | Panel | Content |
 |-------|---------|
-| t-SNE Embedding | All 33 codebook vectors (11 categories × 3 levels) projected to 2D |
-| Similarity Matrix | 33×33 cosine similarity between codebook centroids |
-| Statistics | Total codes (484), active codes (438, 90.5%), model quality (0.9475) |
+| t-SNE Embedding | All 42 codebook vectors (14 categories × 3 levels) projected to 2D |
+| Similarity Matrix | 42×42 cosine similarity between codebook centroids |
+| Statistics | Total codes (570), active codes (~408, 71.7%), model quality (0.957) |
 
 ![Topological Dashboard](images/100k_full_features_topological.png)
 
@@ -431,9 +435,9 @@ Feature-to-category mapping analysis:
 |-------|---------|
 | Feature-Category Matrix | Which features belong to which category |
 | Category Sizes | Number of features per category (bar chart) |
-| Feature Families | Summary (125), Temporal (35), Architecture (12) |
-| Codebook Utilization | N/M format showing used codes per codebook (408/484 = 84.3%) |
-| Category Correlation | Inter-category orthogonality (max off-diagonal: 0.094) |
+| Feature Families | Summary (~150), Temporal (~38), Architecture (12) |
+| Codebook Utilization | N/M format showing used codes per codebook (~408/570 = 71.7%) |
+| Category Correlation | Inter-category orthogonality |
 
 ![Semantic Dashboard](images/100k_full_features_semantic.png)
 
