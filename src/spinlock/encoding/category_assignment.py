@@ -172,14 +172,16 @@ class DynamicCategoryAssignment(CategoryAssignment):
         """Get ordered list of category names.
 
         Returns:
-            List of category names (sorted)
+            List of category names in insertion order (matches VQ layer ordering)
 
         Raises:
             ValueError: If assign_categories() hasn't been called yet
         """
         if self._category_names is None:
             raise ValueError("Must call assign_categories() first")
-        return sorted(self._category_names)
+        # CRITICAL: Return insertion order (NOT sorted) to match VQ layer ordering
+        # VQ layers are built using list(group_indices.keys()) which preserves insertion order
+        return list(self._category_names)
 
     def get_num_categories(self) -> int:
         """Get number of categories.

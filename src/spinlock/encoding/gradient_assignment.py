@@ -201,8 +201,10 @@ def optimize_category_assignment(
     init_logits = None
     if init_assignments is not None:
         # Convert hard assignments to soft logits (strong initialization)
+        # IMPORTANT: Use list() to preserve insertion order, NOT sorted()
+        # sorted() would cause category index mismatch with VQ layer ordering
         init_logits = torch.zeros(N_features, num_categories)
-        for cat_idx, (cat_name, indices) in enumerate(sorted(init_assignments.items())):
+        for cat_idx, (cat_name, indices) in enumerate(init_assignments.items()):
             init_logits[indices, cat_idx] = 5.0  # Strong confidence
 
     assigner = DifferentiableCategoryAssigner(
