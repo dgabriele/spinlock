@@ -523,26 +523,31 @@ def compute_topographic_metrics_from_checkpoint(
         is not supported in visualization mode.
     """
     import torch
-    import json
 
     checkpoint_dir = Path(checkpoint_dir)
 
-    # Try to load from training history
-    history_path = checkpoint_dir / "training_history.json"
-    if history_path.exists():
-        with open(history_path) as f:
-            history = json.load(f)
+    # Try to load metrics from checkpoint directly
+    model_path = checkpoint_dir / "best_model.pt"
+    if not model_path.exists():
+        model_path = checkpoint_dir / "final_model.pt"
 
-        final_metrics = history.get("final_metrics", {})
+    if model_path.exists():
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+        metrics = checkpoint.get("metrics", {})
 
-        # Check if topology metrics were recorded during training
-        # (would be stored if we add them to the training loop)
-        if "topo_pre_quantization" in final_metrics:
+        # Check if topo metrics were recorded during training
+        if "topo_pre" in metrics and "topo_post" in metrics:
+            topo_pre = metrics["topo_pre"]
+            topo_post = metrics["topo_post"]
+            # End-to-end is approximately pre * post (correlation chain)
+            end_to_end = topo_pre * topo_post
+            degradation = topo_pre - topo_post
+
             return {
-                "pre_quantization": final_metrics.get("topo_pre_quantization", 0.0),
-                "post_quantization": final_metrics.get("topo_post_quantization", 0.0),
-                "end_to_end": final_metrics.get("topo_end_to_end", 0.0),
-                "quantization_degradation": final_metrics.get("topo_degradation", 0.0),
+                "pre_quantization": round(topo_pre, 4),
+                "post_quantization": round(topo_post, 4),
+                "end_to_end": round(end_to_end, 4),
+                "quantization_degradation": round(degradation, 4),
             }
 
     # If no precomputed metrics, estimate from training quality
