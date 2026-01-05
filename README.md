@@ -268,27 +268,29 @@ The VQ-VAE pipeline transforms continuous behavioral features into discrete toke
 
 ### Production Baseline: 100K Full Features
 
-Our production model achieves **0.9475 quality** with **93.7% codebook utilization** on 100,000 operators:
+Our production model achieves **0.9554 quality** with **93.7% codebook utilization** on 100,000 operators:
 
 | Metric | Value |
 |--------|-------|
-| Input Features | 172 (after cleaning from 268 raw) |
-| Categories Discovered | 11 (data-driven clustering) |
+| Val Loss | **0.164** |
+| Input Features | 175 (after cleaning from 282 raw) |
+| Categories Discovered | 7 (data-driven clustering) |
 | Hierarchical Levels | 3 (coarse → medium → fine) |
-| Total Codebooks | 33 (11 categories × 3 levels) |
-| Reconstruction Error | 0.052 |
+| Total Codebooks | 21 (7 categories × 3 levels) |
+| Reconstruction Error | 0.045 |
 
 **Key design choices:**
+- **Hybrid INITIAL encoder** with end-to-end CNN training (14D manual + 28D learned)
+- **Pure clustering** for category discovery (no gradient refinement)
 - **Auto-scaling codebook sizes** via compression ratios (0.5 coarse, 1.5 fine)
 - **Dead code resets** prune unused codes, right-sizing vocabulary to data
-- **Category purity**: 82% of categories contain features from a single family (emergent, not enforced)
 
 ### Visualization Dashboards
 
 ```bash
 # Generate all three dashboards
 poetry run spinlock visualize-vqvae \
-    --checkpoint checkpoints/production/100k_full_features/ \
+    --checkpoint checkpoints/production/100k_with_initial/ \
     --output visualizations/ \
     --type all
 ```
@@ -416,8 +418,8 @@ For detailed installation instructions, platform-specific guides, and troublesho
 - [**Feature Families**](docs/features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL feature definitions and extraction
 - [**HDF5 Layout**](docs/features/hdf5-layout.md) - Dataset schema reference for VQ-VAE pipeline
 - [**Baselines**](docs/baselines/README.md) - Production datasets and VQ-VAE tokenizers
-  - [100K Dataset](docs/baselines/100k-full-features-dataset.md) - 100K operators with SUMMARY+TEMPORAL+ARCHITECTURE features
-  - [100K VQ-VAE](docs/baselines/100k-full-features-vqvae.md) - Tokenizer (quality: 0.95, utilization: 94%)
+  - [100K Dataset](docs/baselines/100k-full-features-dataset.md) - 100K operators with INITIAL+SUMMARY+TEMPORAL+ARCHITECTURE features
+  - [100K VQ-VAE](docs/baselines/100k-full-features-vqvae.md) - Tokenizer (val_loss: 0.164, quality: 0.96, utilization: 94%)
 - [**Getting Started**](docs/getting-started.md) - Tutorials and end-to-end examples
 - [**Installation**](docs/installation.md) - Platform-specific installation guides
 

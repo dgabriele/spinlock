@@ -70,13 +70,13 @@ training:
   category_assignment: "auto"
   num_categories_auto: null  # Auto-determine via silhouette score
   orthogonality_target: 0.15
-  min_features_per_category: 3
+  min_features_per_category: 2  # Allow smaller clusters for more granular categories
   max_clusters: 25
 
   # Category assignment configuration
   # Supports: 'clustering' (fast), 'gradient' (optimal), 'hybrid' (recommended)
   category_assignment_config:
-    method: "hybrid"  # Clustering init + gradient refinement for optimal orthogonality
+    method: "clustering"  # Pure clustering - better for reconstruction (v6 got 0.198 loss with this)
     # Gradient refinement parameters (only used when method='gradient' or 'hybrid')
     gradient_epochs: 500
     gradient_lr: 0.01
@@ -98,7 +98,7 @@ training:
   # Callbacks
   early_stopping_patience: 30
   early_stopping_min_delta: 0.01
-  dead_code_reset_interval: 25
+  dead_code_reset_interval: 100  # Increased from 25 - less frequent resets for better convergence
   dead_code_threshold: 10.0
   dead_code_max_reset_fraction: 0.25
 

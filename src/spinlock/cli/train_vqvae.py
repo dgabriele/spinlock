@@ -8,8 +8,12 @@ from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from typing import Optional, Dict, Any
 import sys
+import warnings
 import yaml
 import numpy as np
+
+# Suppress torch._inductor warning about SMs
+warnings.filterwarnings("ignore", message=".*Not enough SMs to use max_autotune_gemm.*")
 
 from .base import CLICommand
 
@@ -505,10 +509,14 @@ Output:
             print("Loading dataset and features...")
 
         # Load features from dataset
-        features, feature_names = self._load_features(config)
+        # Returns (features, feature_names, raw_ics, initial_info)
+        # raw_ics and initial_info are non-None when using hybrid INITIAL encoding
+        features, feature_names, raw_ics, initial_info = self._load_features(config)
 
         if verbose:
             print(f"Loaded {features.shape[0]} samples with {features.shape[1]} features")
+            if initial_info is not None:
+                print(f"  Hybrid INITIAL: {initial_info['manual_dim']}D manual + {initial_info['cnn_dim']}D CNN (end-to-end)")
 
         # Clean features (remove NaN, zero-variance, duplicates, cap outliers)
         # Check both old flat format and new feature_cleaning section
@@ -540,7 +548,55 @@ Output:
                 verbose=verbose,
             )
 
-            features, feature_mask, feature_names = processor.clean(features, feature_names)
+            # Protect INITIAL features from cleaning if hybrid mode is enabled
+            if initial_info is not None:
+                initial_offset = initial_info["offset"]
+                initial_end = initial_offset + initial_info["manual_dim"]
+
+                # Extract INITIAL features before cleaning
+                initial_features = features[:, initial_offset:initial_end].copy()
+                initial_names = feature_names[initial_offset:initial_end] if feature_names else None
+
+                # Remove INITIAL from features array for cleaning
+                features_for_cleaning = np.concatenate([
+                    features[:, :initial_offset],
+                    features[:, initial_end:]
+                ], axis=1)
+                names_for_cleaning = (
+                    feature_names[:initial_offset] + feature_names[initial_end:]
+                    if feature_names else None
+                )
+
+                if verbose:
+                    print(f"  Protected {initial_info['manual_dim']} INITIAL features from cleaning")
+
+                # Clean non-INITIAL features
+                cleaned_features, feature_mask, cleaned_names = processor.clean(
+                    features_for_cleaning, names_for_cleaning
+                )
+
+                # Count how many features before INITIAL were removed
+                features_removed_before = sum(1 for i, kept in enumerate(feature_mask) if not kept and i < initial_offset)
+
+                # Reattach INITIAL features at the adjusted offset
+                new_offset = initial_offset - features_removed_before
+                features = np.concatenate([
+                    cleaned_features[:, :new_offset],
+                    initial_features,
+                    cleaned_features[:, new_offset:]
+                ], axis=1)
+
+                # Update feature names
+                if cleaned_names and initial_names:
+                    feature_names = cleaned_names[:new_offset] + initial_names + cleaned_names[new_offset:]
+
+                # Update initial_info with new offset (manual_dim stays the same)
+                initial_info["offset"] = new_offset
+
+                if verbose:
+                    print(f"  INITIAL offset: {initial_offset} → {new_offset}")
+            else:
+                features, feature_mask, feature_names = processor.clean(features, feature_names)
 
             if verbose:
                 print(f"After cleaning: {features.shape[0]} samples × {features.shape[1]} features")
@@ -602,13 +658,15 @@ Output:
         if verbose:
             print("\nBuilding VQ-VAE model...")
 
-        model, vqvae_config = self._build_model(normalized_features, group_indices, config, verbose)
+        model, vqvae_config = self._build_model(
+            normalized_features, group_indices, config, verbose, initial_info
+        )
 
         # Create data loaders
         if verbose:
             print("\nCreating data loaders...")
 
-        train_loader, val_loader = self._create_data_loaders(normalized_features, config)
+        train_loader, val_loader = self._create_data_loaders(normalized_features, config, raw_ics)
 
         if verbose:
             print(f"Train samples: {len(train_loader.dataset)}")
@@ -694,9 +752,19 @@ Output:
         Supports both single family and multi-family (concatenated) loading.
         Applies per-family encoders from config to transform raw features.
 
+        For hybrid INITIAL encoding (encoder=initial_hybrid), also loads raw ICs
+        and defers CNN encoding to training loop for end-to-end learning.
+
         HDF5 paths:
         - SUMMARY: /features/summary/aggregated/features [N, D]
         - TEMPORAL: /features/temporal/features [N, T, D]
+        - INITIAL: /features/initial/aggregated/features [N, D]
+        - Raw ICs: /inputs/fields [N, M, H, W] or [N, M, C, H, W]
+
+        Returns:
+            Tuple of (features, feature_names, raw_ics, initial_info)
+            raw_ics is None if no hybrid INITIAL encoding
+            initial_info contains offset/count for hybrid encoder
         """
         import h5py
         import numpy as np
@@ -715,11 +783,83 @@ Output:
 
         all_features = []
         all_feature_names = []
+        raw_ics = None
+        initial_info = None
 
         with h5py.File(dataset_path, "r") as f:
             for family_idx, feature_family in enumerate(feature_families):
                 family_config = families_config[feature_family]
+                encoder_name = family_config.get("encoder")
 
+                # Handle hybrid INITIAL encoding specially
+                # For initial_hybrid: load raw ICs and defer CNN encoding to training loop
+                if encoder_name in ["initial_hybrid", "InitialHybridEncoder"]:
+                    # Load manual features (14D)
+                    features_path = f"/features/{feature_family}/{feature_type}"
+                    if features_path not in f:
+                        raise ValueError(
+                            f"Manual INITIAL features not found at {features_path}. "
+                            f"Run: poetry run python scripts/dev/extract_initial_features.py --dataset <path>"
+                        )
+
+                    group = f[features_path]
+                    if max_samples is not None and max_samples > 0:
+                        family_features = np.array(group["features"][:max_samples])
+                    else:
+                        family_features = np.array(group["features"])
+
+                    # Replace NaN with 0
+                    nan_count = np.isnan(family_features).sum()
+                    if nan_count > 0:
+                        family_features = np.nan_to_num(family_features, nan=0.0)
+                        print(f"  {feature_family}: Replaced {nan_count} NaN values with 0")
+
+                    # Load raw ICs for CNN encoding
+                    if "inputs/fields" not in f:
+                        raise ValueError(
+                            "Raw ICs not found at /inputs/fields. "
+                            "Required for hybrid INITIAL encoding."
+                        )
+
+                    if max_samples is not None and max_samples > 0:
+                        raw_ics_data = np.array(f["inputs/fields"][:max_samples])
+                    else:
+                        raw_ics_data = np.array(f["inputs/fields"])
+
+                    # Handle different IC shapes:
+                    # [N, M, H, W] -> add channel dim -> [N, M, 1, H, W]
+                    # [N, M, C, H, W] -> use as is
+                    if len(raw_ics_data.shape) == 4:
+                        raw_ics_data = raw_ics_data[:, :, np.newaxis, :, :]
+
+                    # Average across realizations for single IC per operator
+                    # [N, M, C, H, W] -> [N, C, H, W]
+                    raw_ics = raw_ics_data.mean(axis=1)
+
+                    # Store info for hybrid encoder
+                    initial_offset = sum(arr.shape[1] for arr in all_features)
+                    initial_info = {
+                        "offset": initial_offset,
+                        "manual_dim": family_features.shape[1],
+                        "cnn_dim": family_config.get("encoder_params", {}).get("cnn_embedding_dim", 28),
+                        "in_channels": raw_ics.shape[1],
+                    }
+
+                    print(f"  {feature_family}: Hybrid mode - {family_features.shape[1]}D manual + raw ICs {raw_ics.shape}")
+                    print(f"    CNN will be trained end-to-end (embedding_dim={initial_info['cnn_dim']})")
+
+                    # Don't apply encoder - just use manual features
+                    output_dim = family_features.shape[1]
+                    family_names = [f"{feature_family}_{i}" for i in range(output_dim)]
+
+                    if len(feature_families) > 1:
+                        family_names = [f"{feature_family}::{name}" for name in family_names]
+
+                    all_features.append(family_features)
+                    all_feature_names.extend(family_names)
+                    continue
+
+                # Standard feature loading (non-hybrid)
                 # Determine correct HDF5 path based on family type
                 # TEMPORAL uses /features/temporal directly (no aggregated sublevel)
                 # SUMMARY uses /features/summary/aggregated
@@ -749,7 +889,6 @@ Output:
                     print(f"  {feature_family}: Replaced {nan_count} NaN values with 0")
 
                 # Apply per-family encoder if configured
-                encoder_name = family_config.get("encoder")
                 encoder_params = family_config.get("encoder_params", {})
 
                 if encoder_name and encoder_name not in ["identity", "IdentityEncoder"]:
@@ -804,7 +943,7 @@ Output:
         else:
             features = all_features[0]
 
-        return features, all_feature_names
+        return features, all_feature_names, raw_ics, initial_info
 
     def _load_category_mapping(self, mapping_file: Path) -> Dict[str, list]:
         """Load category mapping from JSON file."""
@@ -834,25 +973,42 @@ Output:
     def _discover_categories(
         self, features: np.ndarray, feature_names: list, config: Dict[str, Any], verbose: bool
     ) -> Dict[str, list]:
-        """Auto-discover feature categories via hierarchical clustering."""
-        from spinlock.encoding import (
-            hierarchical_clustering_assignment,
-            standard_normalize,
-        )
+        """Auto-discover feature categories via clustering and/or gradient refinement.
+
+        Supports three methods:
+        - 'clustering': Hierarchical clustering only (fast, approximate)
+        - 'gradient': Gumbel-Softmax gradient optimization only
+        - 'hybrid': Clustering init + gradient refinement (recommended for best orthogonality)
+        """
+        from spinlock.encoding import DynamicCategoryAssignment, standard_normalize
+
+        # Get category assignment config
+        cat_config = config.get("category_assignment_config", {})
+        method = cat_config.get("method", "clustering")
+
+        if verbose:
+            print(f"  Method: {method}")
 
         # Normalize features for clustering (equal importance)
         normalized = standard_normalize(features)
 
-        # Cluster
-        group_indices = hierarchical_clustering_assignment(
-            features=normalized,
-            feature_names=feature_names,
-            num_clusters=config.get("num_categories_auto"),
+        # Create assignment strategy
+        assigner = DynamicCategoryAssignment(
+            num_categories=config.get("num_categories_auto"),
+            method=method,
             orthogonality_target=config.get("orthogonality_target", 0.15),
-            min_features_per_cluster=config.get("min_features_per_category", 3),
+            min_features_per_category=config.get("min_features_per_category", 3),
             max_clusters=config.get("max_clusters", 25),
             random_seed=config.get("random_seed", 42),
+            # Gradient refinement parameters
+            gradient_epochs=cat_config.get("gradient_epochs", 500),
+            gradient_lr=cat_config.get("gradient_lr", 0.01),
+            subsample_excess_fraction=cat_config.get("subsample_excess_fraction", 0.1),
+            device=cat_config.get("device", "cuda"),
         )
+
+        # Compute assignments
+        group_indices = assigner.assign_categories(feature_names, normalized)
 
         return group_indices
 
@@ -916,9 +1072,18 @@ Output:
         np.savez(path, **save_dict)
 
     def _build_model(
-        self, features: np.ndarray, group_indices: Dict[str, list], config: Dict[str, Any], verbose: bool
+        self,
+        features: np.ndarray,
+        group_indices: Dict[str, list],
+        config: Dict[str, Any],
+        verbose: bool,
+        initial_info: Optional[Dict[str, Any]] = None,
     ):
-        """Build VQ-VAE model."""
+        """Build VQ-VAE model.
+
+        If initial_info is provided, uses VQVAEWithInitial wrapper for
+        end-to-end INITIAL CNN training.
+        """
         from spinlock.encoding import CategoricalHierarchicalVQVAE, CategoricalVQVAEConfig
         from spinlock.encoding.latent_dim_defaults import parse_compression_ratios
         import torch
@@ -946,7 +1111,22 @@ Output:
             compression_ratios=compression_ratios,
         )
 
-        model = CategoricalHierarchicalVQVAE(vqvae_config)
+        # Build model - use wrapper for hybrid INITIAL encoding
+        if initial_info is not None:
+            from spinlock.encoding.vqvae_with_initial import VQVAEWithInitial
+
+            model = VQVAEWithInitial(
+                vqvae_config=vqvae_config,
+                initial_manual_dim=initial_info["manual_dim"],
+                initial_cnn_dim=initial_info["cnn_dim"],
+                initial_feature_offset=initial_info["offset"],
+                initial_feature_count=initial_info["manual_dim"],
+                in_channels=initial_info["in_channels"],
+            )
+            if verbose:
+                print("Using VQVAEWithInitial for end-to-end INITIAL CNN training")
+        else:
+            model = CategoricalHierarchicalVQVAE(vqvae_config)
 
         if verbose:
             total_params = sum(p.numel() for p in model.parameters())
@@ -957,22 +1137,39 @@ Output:
 
         return model, vqvae_config
 
-    def _create_data_loaders(self, features: np.ndarray, config: Dict[str, Any]):
-        """Create train/val data loaders."""
+    def _create_data_loaders(
+        self,
+        features: np.ndarray,
+        config: Dict[str, Any],
+        raw_ics: Optional[np.ndarray] = None,
+    ):
+        """Create train/val data loaders.
+
+        Args:
+            features: Pre-encoded features [N, D]
+            config: Training configuration
+            raw_ics: Optional raw initial conditions [N, C, H, W] for hybrid INITIAL
+        """
         import torch
         from torch.utils.data import Dataset, DataLoader
         import numpy as np
 
-        # Simple dataset that returns dicts
+        # Dataset that optionally includes raw ICs
         class FeatureDataset(Dataset):
-            def __init__(self, features):
+            def __init__(self, features, raw_ics=None):
                 self.features = torch.from_numpy(features).float()
+                self.raw_ics = None
+                if raw_ics is not None:
+                    self.raw_ics = torch.from_numpy(raw_ics).float()
 
             def __len__(self):
                 return len(self.features)
 
             def __getitem__(self, idx):
-                return {"features": self.features[idx]}
+                item = {"features": self.features[idx]}
+                if self.raw_ics is not None:
+                    item["raw_ics"] = self.raw_ics[idx]
+                return item
 
         # Split into train/val (90/10)
         n_samples = len(features)
@@ -985,8 +1182,11 @@ Output:
         train_indices = indices[:n_train]
         val_indices = indices[n_train:]
 
-        train_dataset = FeatureDataset(features[train_indices])
-        val_dataset = FeatureDataset(features[val_indices])
+        train_raw_ics = raw_ics[train_indices] if raw_ics is not None else None
+        val_raw_ics = raw_ics[val_indices] if raw_ics is not None else None
+
+        train_dataset = FeatureDataset(features[train_indices], train_raw_ics)
+        val_dataset = FeatureDataset(features[val_indices], val_raw_ics)
 
         batch_size = config.get("batch_size", 512)
         val_batch_size = config.get("val_batch_size", batch_size)

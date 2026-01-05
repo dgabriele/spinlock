@@ -18,7 +18,7 @@ def compute_reconstruction_error(
     """Compute reconstruction error on dataset.
 
     Args:
-        model: CategoricalHierarchicalVQVAE model
+        model: CategoricalHierarchicalVQVAE or VQVAEWithInitial model
         dataloader: DataLoader for evaluation
         device: Device to use
 
@@ -29,23 +29,40 @@ def compute_reconstruction_error(
     total_error = 0.0
     n_samples = 0
 
+    # Check if model is a hybrid model that needs raw_ics
+    is_hybrid = hasattr(model, 'initial_encoder')
+
     with torch.no_grad():
         for batch in dataloader:
             # Extract features from batch (handle both dict and tuple formats)
             if isinstance(batch, dict):
                 features = batch["features"].to(device)
+                raw_ics = batch.get("raw_ics")
+                if raw_ics is not None:
+                    raw_ics = raw_ics.to(device)
             else:
                 features = batch[0].to(device)
+                raw_ics = None
 
-            # Forward pass
-            outputs = model(features)
+            # Forward pass (pass raw_ics for hybrid models)
+            if is_hybrid and raw_ics is not None:
+                outputs = model(features, raw_ics=raw_ics)
+            else:
+                outputs = model(features)
 
             # Features reconstruction error
             # outputs["reconstruction"] is a dict with "features" key
             reconstruction = outputs["reconstruction"]
             if isinstance(reconstruction, dict):
                 reconstruction = reconstruction["features"]
-            error = F.mse_loss(reconstruction, features)
+
+            # For hybrid models, use input_features (expanded) as target
+            if "input_features" in outputs:
+                target = outputs["input_features"]
+            else:
+                target = features
+
+            error = F.mse_loss(reconstruction, target)
 
             total_error += error.item() * features.size(0)
             n_samples += features.size(0)
@@ -164,7 +181,7 @@ def compute_per_category_metrics(
     """Compute reconstruction error and utilization per category.
 
     Args:
-        model: CategoricalHierarchicalVQVAE model
+        model: CategoricalHierarchicalVQVAE or VQVAEWithInitial model
         dataloader: DataLoader for evaluation
         device: Device to use
         max_batches: Maximum batches to process (default 10)
@@ -176,15 +193,23 @@ def compute_per_category_metrics(
     """
     from spinlock.encoding import CategoricalHierarchicalVQVAE
 
-    if not isinstance(model, CategoricalHierarchicalVQVAE):
+    # Handle VQVAEWithInitial wrapper - use underlying vqvae for type checks
+    model_for_check = model
+    if hasattr(model, 'vqvae'):
+        model_for_check = model.vqvae
+
+    if not isinstance(model_for_check, CategoricalHierarchicalVQVAE):
         # Fallback for non-categorical models
         return {}
 
     model.eval()
     metrics = {}
 
-    # Get category names from config
+    # Get category names from config (use the model's config, not model_for_check)
     category_names = sorted(model.config.group_indices.keys())
+
+    # Check if model is a hybrid model that needs raw_ics
+    is_hybrid = hasattr(model, 'initial_encoder')
 
     # Accumulate per-category reconstruction errors
     category_recon_errors = {cat: [] for cat in category_names}
@@ -198,11 +223,21 @@ def compute_per_category_metrics(
             # Extract features from batch (handle both dict and tuple formats)
             if isinstance(batch, dict):
                 features = batch["features"].to(device)
+                raw_ics = batch.get("raw_ics")
+                if raw_ics is not None:
+                    raw_ics = raw_ics.to(device)
             else:
                 features = batch[0].to(device)
+                raw_ics = None
 
-            # Forward pass
-            output = model(features)
+            # Forward pass (pass raw_ics for hybrid models)
+            if is_hybrid and raw_ics is not None:
+                output = model(features, raw_ics=raw_ics)
+                # Use expanded input_features for per-category comparisons
+                features_for_comparison = output["input_features"]
+            else:
+                output = model(features)
+                features_for_comparison = features
 
             # Per-category partial reconstructions
             partial_recons = output["partial_reconstructions"]
@@ -220,7 +255,8 @@ def compute_per_category_metrics(
                 cat_indices = model.config.group_indices[cat_name]
 
                 # Extract only this category's features from the full feature vector
-                cat_features = features[:, cat_indices]
+                # Use features_for_comparison which is expanded for hybrid models
+                cat_features = features_for_comparison[:, cat_indices]
 
                 # Average across all levels for this category
                 cat_recon_mse = 0.0
@@ -276,7 +312,7 @@ def compute_category_correlation(
     """Compute pairwise correlation matrix between category latent vectors.
 
     Args:
-        model: CategoricalHierarchicalVQVAE model
+        model: CategoricalHierarchicalVQVAE or VQVAEWithInitial model
         dataloader: DataLoader for evaluation
         device: Device to use
         max_batches: Maximum batches to process (default 10)
@@ -290,7 +326,12 @@ def compute_category_correlation(
     """
     from spinlock.encoding import CategoricalHierarchicalVQVAE
 
-    if not isinstance(model, CategoricalHierarchicalVQVAE):
+    # Handle VQVAEWithInitial wrapper - use underlying vqvae for type checks
+    model_for_check = model
+    if hasattr(model, 'vqvae'):
+        model_for_check = model.vqvae
+
+    if not isinstance(model_for_check, CategoricalHierarchicalVQVAE):
         # Fallback for non-categorical models
         return {
             "correlation_matrix": np.array([[1.0]]),
@@ -301,6 +342,9 @@ def compute_category_correlation(
 
     model.eval()
     category_names = sorted(model.config.group_indices.keys())
+
+    # Check if model is a hybrid model that needs raw_ics
+    is_hybrid = hasattr(model, 'initial_encoder')
 
     # Collect latent activations per category
     # Average across levels within each category
@@ -314,11 +358,18 @@ def compute_category_correlation(
             # Extract features from batch (handle both dict and tuple formats)
             if isinstance(batch, dict):
                 features = batch["features"].to(device)
+                raw_ics = batch.get("raw_ics")
+                if raw_ics is not None:
+                    raw_ics = raw_ics.to(device)
             else:
                 features = batch[0].to(device)
+                raw_ics = None
 
-            # Forward pass
-            output = model(features)
+            # Forward pass (pass raw_ics for hybrid models)
+            if is_hybrid and raw_ics is not None:
+                output = model(features, raw_ics=raw_ics)
+            else:
+                output = model(features)
             latents = output["latents"]  # List of latent vectors
 
             # Collect latent vectors per category (average across levels)

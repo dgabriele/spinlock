@@ -31,6 +31,7 @@ ruff = "^0.1.8"
 mypy = "^1.7.0"
 ipython = "^8.18.0"
 pyright = "^1.1.407"
+cupy-cuda12x = "^13.6.0"
 
 [tool.poetry.group.optional.dependencies]
 zarr = "^2.16.0"

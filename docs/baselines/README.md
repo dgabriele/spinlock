@@ -8,17 +8,17 @@ Production datasets and VQ-VAE tokenizers for Neural Operator Agent research.
 
 | Dataset | Samples | Features | Size | Status |
 |---------|---------|----------|------|--------|
-| [**100K Full Features**](100k-full-features-dataset.md) | 100,000 | SUMMARY+TEMPORAL+ARCHITECTURE | ~10 GB | PRODUCTION |
+| [**100K Full Features**](100k-full-features-dataset.md) | 100,000 | INITIAL+SUMMARY+TEMPORAL+ARCHITECTURE | ~10 GB | PRODUCTION |
 
 ### VQ-VAE Tokenizers
 
-| Tokenizer | Dataset | Quality | Utilization | Categories | Status |
-|-----------|---------|---------|-------------|------------|--------|
-| [**100K Full Features**](100k-full-features-vqvae.md) | 100k_full_features.h5 | 0.9475 | 93.7% | 11 | PRODUCTION |
+| Tokenizer | Dataset | Val Loss | Quality | Utilization | Categories | Status |
+|-----------|---------|----------|---------|-------------|------------|--------|
+| [**100K Full Features**](100k-full-features-vqvae.md) | 100k_full_features.h5 | **0.164** | 0.9554 | 93.7% | 7 | PRODUCTION |
 
 ## Recommended Baseline
 
-**100K Full Features** is the recommended baseline for:
+**100K Full Features with INITIAL** is the recommended baseline for:
 - NOA agent training (Phase 1+)
 - Behavioral token analysis
 - Transfer learning experiments
@@ -29,7 +29,7 @@ Production datasets and VQ-VAE tokenizers for Neural Operator Agent research.
 | Component | Path |
 |-----------|------|
 | Dataset | `datasets/100k_full_features.h5` |
-| Checkpoint | `checkpoints/production/100k_full_features/` |
+| Checkpoint | `checkpoints/production/100k_with_initial/` |
 | Dataset Config | [100k-full-features-dataset.md](100k-full-features-dataset.md) |
 | VQ-VAE Config | [100k-full-features-vqvae.md](100k-full-features-vqvae.md) |
 
@@ -37,12 +37,13 @@ Production datasets and VQ-VAE tokenizers for Neural Operator Agent research.
 
 | Family | Raw Dim | Encoded Dim | Encoder |
 |--------|---------|-------------|---------|
+| **INITIAL** | 14 + CNN | 42 | InitialHybridEncoder (end-to-end) |
 | SUMMARY | 360 | 128 | MLPEncoder [512, 256] |
 | TEMPORAL | 256×63 | 128 | TemporalCNNEncoder |
 | ARCHITECTURE | 12 | 12 | IdentityEncoder |
-| **Total** | - | **268** | - |
+| **Total** | - | **282** | - |
 
-After cleaning: **147 features** → **11 categories**
+After cleaning: **175 features** → **7 categories**
 
 ## Adding New Baselines
 
