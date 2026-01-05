@@ -22,6 +22,7 @@ from .utils import (
     get_category_feature_mapping,
     get_abbreviated_feature_name,
     compute_category_semantics,
+    extract_utilization_counts,
 )
 
 
@@ -143,40 +144,77 @@ def plot_category_sizes(ax: Axes, data: VQVAECheckpointData) -> None:
     ax.set_ylim(0, max(sizes) * 1.15)
 
 
-def plot_token_examples(
+def plot_codebook_utilization(
     ax: Axes,
     data: VQVAECheckpointData,
-    n_samples: int = 8,
 ) -> None:
-    """Plot example token assignments for diverse operators.
+    """Plot codebook utilization as N/M (used codes / codebook size).
 
-    Shows token IDs across categories for selected samples.
-    Note: Requires model and dataset to actually compute tokens.
-    Without them, shows placeholder visualization.
+    Shows a heatmap with N/M annotations for each category × level cell.
+    This visualization helps identify underutilized codebooks.
     """
-    ax.set_title("Token Distribution (Placeholder)", fontsize=12, fontweight="bold")
+    # Extract utilization counts
+    util_counts = extract_utilization_counts(data)
 
-    # Without actual model/data, show structure explanation
-    ax.axis("off")
+    num_cats = data.num_categories
+    num_levels = data.num_levels
 
-    text = f"""Token Structure:
+    # Create utilization matrix for coloring
+    matrix = np.zeros((num_cats, num_levels))
+    annotations = [['' for _ in range(num_levels)] for _ in range(num_cats)]
 
-Each operator is tokenized into:
-• {data.num_categories} categories
-• {data.num_levels} levels per category
-• Total: {data.num_categories * data.num_levels} tokens per sample
+    for i, cat in enumerate(data.category_names):
+        cat_counts = util_counts.get(cat, {})
+        for level in range(num_levels):
+            used, total = cat_counts.get(level, (0, 0))
+            if total > 0:
+                utilization = used / total
+                matrix[i, level] = utilization
+                annotations[i][level] = f"{used}/{total}"
+            else:
+                annotations[i][level] = "—"
 
-To visualize actual tokens:
-1. Load the trained model
-2. Load operator features from dataset
-3. Run model.get_tokens(features)
+    # Plot heatmap
+    im = ax.imshow(matrix, cmap="RdYlGn", aspect="auto", vmin=0, vmax=1.0)
 
-The tokens form a discrete vocabulary of
-{data.num_categories * data.num_levels} independent codebooks,
-enabling compositional behavioral descriptions.
-"""
+    # Axis labels
+    level_labels = [f"L{i}" for i in range(num_levels)]
+    ax.set_xticks(range(num_levels))
+    ax.set_xticklabels(level_labels, fontsize=10)
 
-    ax.text(0.1, 0.9, text, transform=ax.transAxes, fontsize=9, verticalalignment="top", family="monospace")
+    short_labels = [c.replace("cluster_", "C").replace("architecture_isolated", "arch") for c in data.category_names]
+    ax.set_yticks(range(num_cats))
+    ax.set_yticklabels(short_labels, fontsize=8)
+
+    ax.set_xlabel("Level")
+    ax.set_ylabel("Category")
+    ax.set_title("Codebook Utilization (N/M)", fontsize=12, fontweight="bold")
+
+    # Annotate cells with N/M values
+    for i in range(num_cats):
+        for j in range(num_levels):
+            val = matrix[i, j]
+            # Choose text color based on background brightness
+            color = "white" if val < 0.4 or val > 0.8 else "black"
+            ax.text(j, i, annotations[i][j], ha="center", va="center", fontsize=7, color=color, fontweight="bold")
+
+    # Colorbar
+    cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+    cbar.set_label("Utilization", fontsize=9)
+
+    # Add summary stats
+    total_used = sum(used for cat_counts in util_counts.values() for used, _ in cat_counts.values())
+    total_codes = sum(total for cat_counts in util_counts.values() for _, total in cat_counts.values())
+    overall_util = total_used / total_codes if total_codes > 0 else 0
+
+    ax.text(
+        0.5, -0.12,
+        f"Overall: {total_used}/{total_codes} codes used ({overall_util:.1%})",
+        transform=ax.transAxes,
+        ha="center",
+        fontsize=9,
+        style="italic",
+    )
 
 
 def plot_category_correlation(ax: Axes, data: VQVAECheckpointData) -> None:
@@ -302,9 +340,9 @@ def create_semantic_dashboard(
     create_family_legend(ax_legend, data)
     ax_legend.set_title("Feature Families", fontsize=12, fontweight="bold")
 
-    # Panel D: Token examples (bottom-left)
-    ax_tokens = fig.add_subplot(gs[1, 0])
-    plot_token_examples(ax_tokens, data)
+    # Panel D: Codebook utilization (bottom-left)
+    ax_util = fig.add_subplot(gs[1, 0])
+    plot_codebook_utilization(ax_util, data)
 
     # Panel E: Category correlation (bottom-right, spans 2 columns)
     ax_corr = fig.add_subplot(gs[1, 1:])

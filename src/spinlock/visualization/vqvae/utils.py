@@ -251,6 +251,43 @@ def extract_utilization_matrix(
     return matrix, data.category_names, level_labels
 
 
+def extract_utilization_counts(
+    data: VQVAECheckpointData,
+) -> Dict[str, Dict[int, tuple[int, int]]]:
+    """Extract utilization as N/M counts (used codes / codebook size).
+
+    Args:
+        data: Loaded checkpoint data
+
+    Returns:
+        Dict mapping category name to {level_idx: (used_codes, codebook_size)}
+        Example: {"cluster_1": {0: (15, 24), 1: (7, 13), 2: (2, 6)}}
+    """
+    result: Dict[str, Dict[int, tuple[int, int]]] = {}
+
+    for cat in data.category_names:
+        result[cat] = {}
+        cat_levels = data.levels.get(cat, [])
+
+        for level_idx in range(data.num_levels):
+            # Get utilization from metrics
+            util_key = f"{cat}/level_{level_idx}/utilization"
+            utilization = data.final_metrics.get(util_key, 0.0)
+
+            # Get codebook size from level config
+            if level_idx < len(cat_levels):
+                codebook_size = cat_levels[level_idx].get("num_tokens", 0)
+            else:
+                codebook_size = 0
+
+            # Compute used codes: N = utilization × M (round to nearest int)
+            used_codes = round(utilization * codebook_size) if codebook_size > 0 else 0
+
+            result[cat][level_idx] = (used_codes, codebook_size)
+
+    return result
+
+
 def extract_reconstruction_mse(data: VQVAECheckpointData) -> Dict[str, float]:
     """Extract per-category reconstruction MSE.
 
