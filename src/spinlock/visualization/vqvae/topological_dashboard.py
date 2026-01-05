@@ -26,6 +26,9 @@ def extract_codebook_embeddings(
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], List[str]]:
     """Extract codebook embeddings and usage from checkpoint.
 
+    Supports both standard VQ-VAE models and hybrid models (VQVAEWithInitial)
+    which have a `vqvae.` prefix on their state dict keys.
+
     Returns:
         Tuple of:
         - embeddings: Dict[codebook_key] -> embedding matrix
@@ -39,15 +42,32 @@ def extract_codebook_embeddings(
     usage = {}
     codebook_keys = []
 
-    # Extract VQ layer embeddings (vq_layers.{idx}.embedding.weight)
+    # Detect if this is a hybrid model (VQVAEWithInitial) by checking for vqvae. prefix
+    is_hybrid = any(key.startswith("vqvae.") for key in state.keys())
+
+    # Extract VQ layer embeddings
+    # Standard model: vq_layers.{idx}.embedding.weight
+    # Hybrid model: vqvae.vq_layers.{idx}.embedding.weight
     for key in sorted(state.keys()):
         if "vq_layers" in key and "embedding.weight" in key:
-            idx = int(key.split(".")[1])
+            # Parse index based on model type
+            parts = key.split(".")
+            if is_hybrid:
+                # vqvae.vq_layers.{idx}.embedding.weight -> parts[2] is idx
+                idx = int(parts[2])
+            else:
+                # vq_layers.{idx}.embedding.weight -> parts[1] is idx
+                idx = int(parts[1])
+
             codebook_keys.append(f"cb_{idx}")
             embeddings[f"cb_{idx}"] = state[key].numpy()
 
         if "vq_layers" in key and "ema_cluster_size" in key:
-            idx = int(key.split(".")[1])
+            parts = key.split(".")
+            if is_hybrid:
+                idx = int(parts[2])
+            else:
+                idx = int(parts[1])
             usage[f"cb_{idx}"] = state[key].numpy()
 
     return embeddings, usage, codebook_keys

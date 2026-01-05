@@ -398,8 +398,6 @@ poetry run spinlock visualize-vqvae \
     --type all
 ```
 
-> **Note:** The topological and semantic dashboards require updates to support VQVAEWithInitial models (hybrid encoder architecture). Currently only the engineering dashboard is fully supported.
-
 ### Engineering Dashboard (`--type engineering`)
 
 Technical overview for model evaluation and debugging:
@@ -416,21 +414,19 @@ Technical overview for model evaluation and debugging:
 
 ### Topological Dashboard (`--type topological`)
 
-> ⚠️ **Currently unavailable** for VQVAEWithInitial models. Visualization code needs update to parse hybrid model state dict.
-
 Codebook embedding space analysis:
 
 | Panel | Content |
 |-------|---------|
-| t-SNE Embedding | All codebook vectors projected to 2D, colored by category, shaped by level |
-| Similarity Matrix | Cosine similarity between codebook centroids |
+| t-SNE Embedding | All 21 codebook vectors (7 categories × 3 levels) projected to 2D |
+| Similarity Matrix | 21×21 cosine similarity between codebook centroids |
 | Statistics | Total codes, active codes, embedding dimensions, model quality |
+
+![Topological Dashboard](images/100k_full_features_topological.png)
 
 **Interpreting t-SNE:** Points are L2-normalized before projection to prevent artificial clustering from dimension padding. Clear category separation indicates the VQ-VAE learned distinct embedding spaces. Within-category clustering of levels (●L0, ■L1, ▲L2) shows hierarchical structure is preserved.
 
 ### Semantic Dashboard (`--type semantic`)
-
-> ⚠️ **Currently unavailable** for VQVAEWithInitial models. Visualization code needs update to parse hybrid model state dict.
 
 Feature-to-category mapping analysis:
 
@@ -441,6 +437,8 @@ Feature-to-category mapping analysis:
 | Feature Families | INITIAL, Summary, Temporal, Architecture counts |
 | Token Structure | Compositional vocabulary explanation |
 | Category Correlation | Inter-category orthogonality |
+
+![Semantic Dashboard](images/100k_full_features_semantic.png)
 
 ---
 
