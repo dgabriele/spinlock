@@ -1,5 +1,5 @@
-# Production Training: SUMMARY + TEMPORAL + ARCHITECTURE Joint Training (Full 100K Dataset)
-# Multi-family configuration with aggregated, temporal, and architecture features
+# Production Training: INITIAL + SUMMARY + TEMPORAL + ARCHITECTURE Joint Training (Full 100K Dataset)
+# Multi-family configuration with all 4 feature families for comprehensive behavioral vocabulary
 
 # Dataset
 dataset_path: "datasets/100k_full_features.h5"
@@ -7,6 +7,18 @@ dataset_path: "datasets/100k_full_features.h5"
 
 # Feature Families
 families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      # Hybrid INITIAL encoder: manual features (14D) + CNN trained end-to-end (28D)
+      manual_dim: 14
+      cnn_embedding_dim: 28
+      encode_manual: false  # Pass manual features through directly
+      in_channels: 1
+    # INITIAL features: 14D manual + 28D CNN (end-to-end) = 42D total
+    # Manual: spatial stats, spectral, entropy, morphological
+    # CNN: InitialCNNEncoder trained jointly with VQ-VAE via backprop
+
   summary:
     encoder: MLPEncoder
     encoder_params:
@@ -47,9 +59,9 @@ model:
 
 # Training
 training:
-  batch_size: 512
+  batch_size: 1024  # Increased from 512 for better GPU utilization
   learning_rate: 0.001
-  num_epochs: 200  # Reduced from 400 - 100K samples converges faster
+  num_epochs: 300  # Extended for INITIAL+SUMMARY+TEMPORAL+ARCHITECTURE training
   optimizer: "adam"
   scheduler: null
   warmup_epochs: 0
@@ -61,17 +73,27 @@ training:
   min_features_per_category: 3
   max_clusters: 25
 
+  # Category assignment configuration
+  # Supports: 'clustering' (fast), 'gradient' (optimal), 'hybrid' (recommended)
+  category_assignment_config:
+    method: "hybrid"  # Clustering init + gradient refinement for optimal orthogonality
+    # Gradient refinement parameters (only used when method='gradient' or 'hybrid')
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1  # For datasets > 10K: use 10K + this fraction of excess
+    device: "cuda"  # GPU-first, falls back to CPU if unavailable
+
   # Loss weights
   reconstruction_weight: 1.0
   vq_weight: 1.0
   orthogonality_weight: 0.1
   informativeness_weight: 0.1
   topo_weight: 0.3
-  topo_samples: 512
+  topo_samples: 1024  # Increased from 512 for more topographic signal
 
   # Checkpointing
   save_every: 25
-  checkpoint_dir: "checkpoints/production/100k_full_features"
+  checkpoint_dir: "checkpoints/production/100k_with_initial"
 
   # Callbacks
   early_stopping_patience: 30
@@ -97,10 +119,20 @@ logging:
 random_seed: 42
 
 # Expected Performance:
-# - Dataset: 100K samples with SUMMARY (360D) + TEMPORAL (256×63D) + ARCHITECTURE (12D)
-# - After encoding: SUMMARY (128D) + TEMPORAL (128D) + ARCHITECTURE (12D) = 268D total
-# - Training time: ~2-4 hours (200 epochs, batch_size=256)
+# - Dataset: 100K samples with all 4 feature families
+#   - INITIAL: 14D manual (in dataset) + 28D CNN (end-to-end from raw ICs)
+#   - SUMMARY: 360D
+#   - TEMPORAL: 256×63D
+#   - ARCHITECTURE: 12D
+# - After encoding:
+#   - INITIAL: 14D manual + 28D CNN = 42D (hybrid encoder)
+#   - SUMMARY: 360D → 128D (MLP encoder)
+#   - TEMPORAL: 256×63D → 128D (temporal CNN encoder)
+#   - ARCHITECTURE: 12D (identity)
+#   - Total: 42 + 128 + 128 + 12 = 310D
+# - Training time: ~4-8 hours (300 epochs, batch_size=512)
+# - Note: CNN is trained end-to-end with VQ-VAE via backprop (not pre-extracted)
 # - Target metrics:
-#   - Reconstruction quality: >0.85
-#   - Codebook utilization: >25%
+#   - Reconstruction quality: >0.94
+#   - Codebook utilization: >90%
 #   - Category orthogonality: <0.25

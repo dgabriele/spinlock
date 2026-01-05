@@ -4,8 +4,10 @@ This package provides categorical hierarchical VQ-VAE implementation
 for operator behavioral feature tokenization. Features include:
 
 - Data-driven category discovery via hierarchical clustering
+- Gradient-based category refinement using Gumbel-Softmax
+- Hybrid assignment: clustering init + gradient refinement
 - Per-category MLP encoders/decoders
-- 3-level hierarchical quantization (coarse → medium → fine)
+- 3-level hierarchical quantization (coarse -> medium -> fine)
 - Intelligent formula-based defaults for latent dims and token counts
 - Normalization utilities with save/load support
 - Complete training pipeline with callbacks and loss functions
@@ -15,7 +17,7 @@ Ported from unisim.system (100% generic, adapted for spinlock).
 Main components:
 - CategoricalHierarchicalVQVAE: Main model
 - CategoricalVQVAEConfig: Configuration dataclass
-- DynamicCategoryAssignment: Auto-discovery via clustering
+- DynamicCategoryAssignment: Auto-discovery via clustering/gradient/hybrid
 - VectorQuantizer: Core VQ layer
 - VQVAETrainer: Training loop with callbacks
 
@@ -50,6 +52,14 @@ from .clustering_assignment import (
     auto_determine_num_clusters,
     validate_cluster_orthogonality,
     get_cluster_statistics,
+)
+from .gradient_assignment import (
+    DifferentiableCategoryAssigner,
+    optimize_category_assignment,
+    compute_soft_orthogonality_loss,
+    compute_soft_informativeness_loss,
+    validate_gradient_assignments,
+    compute_subsample_size,
 )
 from .vector_quantizer import VectorQuantizer, compute_codebook_metrics
 from .normalization import (
@@ -89,6 +99,13 @@ __all__ = [
     "auto_determine_num_clusters",
     "validate_cluster_orthogonality",
     "get_cluster_statistics",
+    # Gradient refinement
+    "DifferentiableCategoryAssigner",
+    "optimize_category_assignment",
+    "compute_soft_orthogonality_loss",
+    "compute_soft_informativeness_loss",
+    "validate_gradient_assignments",
+    "compute_subsample_size",
     # Vector quantization
     "VectorQuantizer",
     "compute_codebook_metrics",
