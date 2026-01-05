@@ -352,6 +352,7 @@ def compute_default_num_tokens(
     num_levels: int,
     group_embedding_dim: int,
     n_samples: int,
+    uniform_codebook_init: bool = False,
 ) -> List[int]:
     """Compute default num_tokens for hierarchical VQ-VAE.
 
@@ -361,10 +362,15 @@ def compute_default_num_tokens(
 
     Hierarchical structure: L0 has MOST tokens, L2 has FEWEST tokens.
 
+    If uniform_codebook_init=True, all levels start with L0's size and
+    dead code resets naturally prune unused codes during training.
+
     Args:
         num_levels: Number of hierarchical levels (typically 3)
         group_embedding_dim: Embedding dimension from GroupedFeatureExtractor
         n_samples: Number of samples in dataset
+        uniform_codebook_init: If True, all levels use L0's token count.
+            Dead code resets will naturally prune to appropriate sizes.
 
     Returns:
         List of num_tokens [num_tokens_L0, num_tokens_L1, ...]
@@ -376,30 +382,46 @@ def compute_default_num_tokens(
         ...     n_samples=25000
         ... )
         [32, 16, 8]
+
+        >>> compute_default_num_tokens(
+        ...     num_levels=3,
+        ...     group_embedding_dim=128,
+        ...     n_samples=25000,
+        ...     uniform_codebook_init=True
+        ... )
+        [32, 32, 32]
     """
     # Base token count scales with embedding capacity
     base_tokens = int(np.log2(group_embedding_dim) * 7)
 
+    # Compute L0 tokens first (always uses full base)
+    l0_tokens_float = base_tokens * 1.0  # level_multiplier=1.0 for L0
+    l0_tokens = (int(l0_tokens_float) // 4) * 4  # Round to multiple of 4
+
+    # Dataset-aware minimum for L0
+    if n_samples > 1000:
+        min_tokens = min(28, max(5, int(np.sqrt(n_samples / 1000.0) * 4.8)))
+        l0_tokens = max(min_tokens, l0_tokens)
+
+    # Uniform mode: all levels get L0's token count
+    if uniform_codebook_init:
+        tokens_per_level = [l0_tokens] * num_levels
+        logger.info(
+            f"Computed UNIFORM num_tokens = {tokens_per_level} "
+            f"(group_embedding_dim={group_embedding_dim}, n_samples={n_samples}, "
+            f"uniform_codebook_init=True) - dead code resets will prune naturally"
+        )
+        return tokens_per_level
+
     # Hierarchical progression: geometric halving
-    tokens_per_level = []
-    for level_idx in range(num_levels):
+    tokens_per_level = [l0_tokens]
+    for level_idx in range(1, num_levels):
         level_multiplier = 0.5**level_idx
         num_tokens_float = base_tokens * level_multiplier
+        num_tokens = int(num_tokens_float)
 
-        # Round to multiple of 4 (GPU efficiency) using floor for L0
-        if level_idx == 0:
-            num_tokens = (int(num_tokens_float) // 4) * 4
-        else:
-            num_tokens = int(num_tokens_float)
-
-        # Dataset-aware minimum tokens (L0 only)
-        if level_idx == 0 and n_samples > 1000:
-            # Minimum scales with dataset size
-            min_tokens = min(28, max(5, int(np.sqrt(n_samples / 1000.0) * 4.8)))
-            num_tokens = max(min_tokens, num_tokens)
-        else:
-            # L1 and L2: preserve standard minimum (6)
-            num_tokens = max(6, num_tokens)
+        # L1 and L2: preserve standard minimum (6)
+        num_tokens = max(6, num_tokens)
 
         tokens_per_level.append(num_tokens)
 
@@ -416,6 +438,7 @@ def fill_missing_num_tokens(
     group_embedding_dim: int,
     n_samples: int = 10000,
     category_name: Optional[str] = None,
+    uniform_codebook_init: bool = False,
 ) -> List[Dict[str, Any]]:
     """Fill missing 'num_tokens' fields in level configs.
 
@@ -426,6 +449,8 @@ def fill_missing_num_tokens(
         group_embedding_dim: Embedding dimension from GroupedFeatureExtractor
         n_samples: Number of samples in dataset
         category_name: Optional category name (for logging)
+        uniform_codebook_init: If True, all levels use L0's token count.
+            Dead code resets will naturally prune to appropriate sizes.
 
     Returns:
         Updated levels with all num_tokens filled
@@ -440,6 +465,7 @@ def fill_missing_num_tokens(
         num_levels=num_levels,
         group_embedding_dim=group_embedding_dim,
         n_samples=n_samples,
+        uniform_codebook_init=uniform_codebook_init,
     )
 
     # Fill missing num_tokens, preserve explicit ones

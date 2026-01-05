@@ -50,6 +50,8 @@ class CategoricalVQVAEConfig:
         dropout: Dropout rate
         compression_ratios: Latent_dim scaling ratios [L0:L1:L2] relative to feature count
                            E.g. "0.5:1:1.5" means L0=feats×0.5, L1=feats×1.0, L2=feats×1.5
+        uniform_codebook_init: If True, all levels start with L0's token count.
+                           Dead code resets will naturally prune to appropriate sizes.
     """
 
     input_dim: int
@@ -64,6 +66,7 @@ class CategoricalVQVAEConfig:
     decay: float = 0.99
     dropout: float = 0.1
     compression_ratios: Optional[List[float]] = None  # Latent_dim ratios for autoscaling
+    uniform_codebook_init: bool = False  # If True, all levels start with L0's token count
 
     def __post_init__(self):
         """Validate configuration and set defaults."""
@@ -120,6 +123,7 @@ class CategoricalVQVAEConfig:
                 group_embedding_dim=category_feature_dim,
                 n_samples=10000,  # Fallback
                 category_name=cat,
+                uniform_codebook_init=self.uniform_codebook_init,
             )
 
             # Fill missing latent_dims SECOND

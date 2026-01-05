@@ -1111,6 +1111,7 @@ Output:
             use_ema=config.get("use_ema", True),
             decay=config.get("ema_decay", 0.99),  # Config uses "ema_decay", model uses "decay"
             compression_ratios=compression_ratios,
+            uniform_codebook_init=config.get("uniform_codebook_init", False),
         )
 
         # Build model - use wrapper for hybrid INITIAL encoding
