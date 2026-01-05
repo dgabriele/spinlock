@@ -163,21 +163,38 @@ class VQVAETrainer:
         """Train for one epoch.
 
         Returns:
-            Tuple of (average training loss, last batch)
+            Tuple of (average training loss, last batch features, last batch raw_ics)
         """
         self.model.train()
         total_loss = 0.0
         n_batches = 0
         last_batch = None
+        last_raw_ics = None
 
         for batch in self.train_loader:
             features = batch["features"].to(self.device)
 
-            # Forward pass
-            outputs = self.model(features)
+            # Handle raw_ics for hybrid INITIAL encoder (end-to-end CNN training)
+            raw_ics = batch.get("raw_ics")
+            if raw_ics is not None:
+                raw_ics = raw_ics.to(self.device)
+
+            # Forward pass (pass raw_ics if model supports hybrid INITIAL)
+            if raw_ics is not None and hasattr(self.model, 'initial_encoder'):
+                outputs = self.model(features, raw_ics=raw_ics)
+            elif raw_ics is not None and hasattr(self.model, '_orig_mod') and hasattr(self.model._orig_mod, 'initial_encoder'):
+                # Handle torch.compile wrapped model
+                outputs = self.model(features, raw_ics=raw_ics)
+            else:
+                outputs = self.model(features)
 
             # Compute loss
-            targets = {"features": features}
+            # For hybrid INITIAL models, use the expanded input_features as target
+            # (includes CNN embeddings that must be reconstructed)
+            if "input_features" in outputs:
+                targets = {"features": outputs["input_features"]}
+            else:
+                targets = {"features": features}
             losses = compute_total_loss(
                 outputs,
                 targets,
@@ -198,11 +215,12 @@ class VQVAETrainer:
             total_loss += loss.item()
             n_batches += 1
 
-            # Save last batch for dead code reset
+            # Save last batch for dead code reset (need both features and raw_ics for hybrid models)
             last_batch = features
+            last_raw_ics = raw_ics
 
         avg_loss = total_loss / n_batches
-        return avg_loss, last_batch
+        return avg_loss, last_batch, last_raw_ics
 
     def validate(self):
         """Validate on validation set.
@@ -218,11 +236,26 @@ class VQVAETrainer:
             for batch in self.val_loader:
                 features = batch["features"].to(self.device)
 
-                # Forward pass
-                outputs = self.model(features)
+                # Handle raw_ics for hybrid INITIAL encoder
+                raw_ics = batch.get("raw_ics")
+                if raw_ics is not None:
+                    raw_ics = raw_ics.to(self.device)
+
+                # Forward pass (pass raw_ics if model supports hybrid INITIAL)
+                if raw_ics is not None and hasattr(self.model, 'initial_encoder'):
+                    outputs = self.model(features, raw_ics=raw_ics)
+                elif raw_ics is not None and hasattr(self.model, '_orig_mod') and hasattr(self.model._orig_mod, 'initial_encoder'):
+                    # Handle torch.compile wrapped model
+                    outputs = self.model(features, raw_ics=raw_ics)
+                else:
+                    outputs = self.model(features)
 
                 # Compute loss
-                targets = {"features": features}
+                # For hybrid INITIAL models, use the expanded input_features as target
+                if "input_features" in outputs:
+                    targets = {"features": outputs["input_features"]}
+                else:
+                    targets = {"features": features}
                 losses = compute_total_loss(
                     outputs,
                     targets,
@@ -320,7 +353,7 @@ class VQVAETrainer:
             epoch_start = time.time()
 
             # Train
-            train_loss, last_batch = self.train_epoch()
+            train_loss, last_batch, last_raw_ics = self.train_epoch()
             self.history["train_loss"].append(train_loss)
 
             # Validate (only every N epochs or last epoch)
@@ -404,11 +437,12 @@ class VQVAETrainer:
                         val_loss,
                         self.early_stopping.counter,
                         per_category_utils,
-                        per_category_feature_counts
+                        per_category_feature_counts,
+                        raw_ics=last_raw_ics,
                     )
                 else:
                     # Legacy DeadCodeReset (fixed interval)
-                    self.dead_code_reset(self.model, last_batch, epoch)
+                    self.dead_code_reset(self.model, last_batch, epoch, raw_ics=last_raw_ics)
 
             # 2. Checkpointing (only when we validated)
             if should_validate and self.checkpointer is not None:

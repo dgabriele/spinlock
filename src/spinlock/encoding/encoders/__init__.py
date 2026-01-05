@@ -30,6 +30,7 @@ from .base import BaseEncoder
 from .identity import IdentityEncoder
 from .mlp import MLPEncoder
 from .initial_cnn import InitialCNNEncoder
+from .initial_hybrid import InitialHybridEncoder
 from .temporal_cnn import TemporalCNNEncoder
 
 
@@ -41,6 +42,8 @@ _ENCODER_REGISTRY: Dict[str, Type[BaseEncoder]] = {
     "MLPEncoder": MLPEncoder,
     "ic_cnn": InitialCNNEncoder,
     "InitialCNNEncoder": InitialCNNEncoder,
+    "initial_hybrid": InitialHybridEncoder,
+    "InitialHybridEncoder": InitialHybridEncoder,
     "td_cnn": TemporalCNNEncoder,
     "TemporalCNNEncoder": TemporalCNNEncoder,
 }

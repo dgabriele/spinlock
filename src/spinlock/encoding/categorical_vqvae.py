@@ -487,17 +487,19 @@ class CategoricalHierarchicalVQVAE(nn.Module):
         return tokens[:, start_idx:end_idx]
 
     def reset_dead_codes(
-        self, training_batch: torch.Tensor, percentile_threshold: float = 10.0
+        self, training_batch: torch.Tensor, percentile_threshold: float = 10.0, raw_ics=None
     ) -> int:
         """Reset unused codebook entries across all quantizers.
 
         Args:
             training_batch: Recent training batch [batch, input_dim]
             percentile_threshold: Percentile threshold (default 10.0)
+            raw_ics: Raw initial conditions (unused for non-hybrid models, for API consistency)
 
         Returns:
             Total number of codes reset
         """
+        # Note: raw_ics is ignored for non-hybrid models (VQVAEWithInitial uses it)
         # Encode to get latent vectors
         with torch.no_grad():
             z_list = self.encode(training_batch)

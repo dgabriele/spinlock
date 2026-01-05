@@ -111,19 +111,20 @@ class DeadCodeReset:
         self.max_reset_fraction = max_reset_fraction
         self.verbose = verbose
 
-    def __call__(self, model, training_batch, epoch: int) -> int:
+    def __call__(self, model, training_batch, epoch: int, raw_ics=None) -> int:
         """Reset dead codes if at interval.
 
         Args:
             model: CategoricalHierarchicalVQVAE model
             training_batch: Recent training batch [batch, input_dim]
             epoch: Current epoch
+            raw_ics: Raw initial conditions [batch, C, H, W] (for hybrid models)
 
         Returns:
             Number of dead codes reset
         """
         if self.interval > 0 and epoch > 0 and epoch % self.interval == 0:
-            n_reset = model.reset_dead_codes(training_batch, self.threshold)
+            n_reset = model.reset_dead_codes(training_batch, self.threshold, raw_ics=raw_ics)
             if self.verbose:
                 if n_reset > 0:
                     logger.info(f"  [DeadCodeReset] Epoch {epoch}: Reset {n_reset} dead codes")
@@ -349,7 +350,7 @@ class SmartDeadCodeReset:
         else:
             return self.base_threshold * 0.5  # e.g., 5.0 (bottom 5%)
 
-    def __call__(self, model, training_batch, epoch: int, current_util: float, current_val_loss: float, early_stopping_counter: int, per_category_utils: dict = None, per_category_feature_counts: dict = None) -> int:
+    def __call__(self, model, training_batch, epoch: int, current_util: float, current_val_loss: float, early_stopping_counter: int, per_category_utils: dict = None, per_category_feature_counts: dict = None, raw_ics=None) -> int:
         """Conditionally reset dead codes based on training state.
 
         Args:
@@ -361,6 +362,7 @@ class SmartDeadCodeReset:
             early_stopping_counter: Current early stopping counter
             per_category_utils: Optional dict of per-category utilization
             per_category_feature_counts: Optional dict of feature counts per category
+            raw_ics: Raw initial conditions [batch, C, H, W] (for hybrid models)
 
         Returns:
             Number of dead codes reset
@@ -374,7 +376,7 @@ class SmartDeadCodeReset:
 
         # Perform reset with adaptive threshold
         adaptive_threshold = self._get_adaptive_threshold(epoch)
-        n_reset = model.reset_dead_codes(training_batch, adaptive_threshold)
+        n_reset = model.reset_dead_codes(training_batch, adaptive_threshold, raw_ics=raw_ics)
 
         # Update state
         self.last_reset_epoch = epoch
