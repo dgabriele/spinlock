@@ -40,7 +40,7 @@ Spinlock builds **foundation models for scientific simulation**. The goal is to 
 - **Data:** Generate 100K+ operator trajectories with stratified parameter sampling
 - **Features:** Extract 500+ behavioral descriptors (spatial, spectral, temporal, causal)
 - **Tokenization:** VQ-VAE compresses behaviors into discrete tokens (~8-15 learned categories)
-- **Agent:** Transformer-based NOA learns to predict tokens from (θ, u₀) embeddings
+- **Agent:** U-AFNO NOA generates rollouts; frozen VQ-VAE encodes features → discrete behavioral tokens for loss
 
 **Downstream Applications:**
 
@@ -122,11 +122,14 @@ The goal is not anthropomorphic "intelligence," but **systematic discovery of al
 
 ## 🧠 Neural Operator Agents (NOA)
 
-Spinlock provides the data infrastructure for building **Neural Operator Agents**—systems that learn to understand, generate, and reason about dynamical behaviors through hierarchical behavioral tokenization.
+Spinlock provides the infrastructure for building **Neural Operator Agents (NOA)**—hybrid neural operator systems with discrete VQ-VAE perceptual loss that learn to understand, generate, and reason about dynamical behaviors.
 
-The NOA system represents a novel approach to learning general dynamical reasoning through self-directed exploration. Unlike task-specific ML systems, the NOA treats computational physics as the object of study, learning to predict, generate, and reason about operator behaviors through hierarchical behavioral tokenization.
+The NOA uses a **U-AFNO backbone** that operates directly in continuous function space, generating rollouts whose behavioral features are encoded into discrete tokens via a frozen VQ-VAE. This physics-native architecture enables self-consistent self-modeling and law discovery in the same function space as the dynamics being studied.
 
-**Key Innovation**: Topological positional encoding that maps parameter-space distance rather than chronological time, allowing the agent to reason about functional similarity across disparate operator "memories."
+**Key Innovations**:
+- **Physics-native backbone:** U-AFNO neural operator (not transformer on tokens) operating in continuous function space
+- **Discrete perceptual loss:** VQ-VAE encodes NOA outputs → behavioral tokens for loss computation
+- **Topological encoding:** Parameter-space distance (not chronological time) enables reasoning about functional similarity
 
 ### The NOA Vision: From Data to Systematic Discovery
 
@@ -135,13 +138,14 @@ The NOA system represents a novel approach to learning general dynamical reasoni
 - Multi-modal feature extraction (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL)
 - Data-driven behavioral taxonomy via hierarchical clustering
 
-**Phase 1: Single-Step Agent Mapping** (🔄 In Development)
-- Learn mappings from behavioral tokens → operator parameters + initial conditions
-- Hybrid loss: token reconstruction + feature-space matching
-- Interpretable behavioral axes for transparent understanding
+**Phase 1: U-AFNO Neural Operator Backbone** (🔄 In Development)
+- U-AFNO backbone generates rollouts from (θ, u₀) inputs
+- Frozen VQ-VAE encodes NOA outputs → discrete behavioral tokens for loss
+- Hybrid loss: VQ reconstruction + grid MSE + commitment
+- Physics-native architecture operating in continuous function space
 
 **Phase 2: Multi-Observation Context** (📋 Planned)
-- Transformer-based temporal encoder for operator sequences
+- Lightweight transformer/recurrent heads on VQ token sequences
 - Capture higher-order dependencies and temporal correlations
 - In-context learning of operator physics through attention mechanisms
 
@@ -176,19 +180,22 @@ See [docs/noa-roadmap.md](docs/noa-roadmap.md) for detailed architecture and imp
 ```mermaid
 flowchart TD
     NO[Stratified Neural Operators]
-    FE[Multi-Modal Feature Extraction<br/>INITIAL + ARCHITECTURE + SUMMARY + TEMPORAL]
+    FE[Multi-Modal Feature Extraction<br/>INITIAL + SUMMARY + TEMPORAL]
     VQVAE[Hierarchical VQ-VAE Tokenization]
     Tokens[Behavioral Token Vocabulary]
-    NOA[Neural Operator Agent<br/>Future: Phases 1-5]
+    NOA[Neural Operator Agent<br/>U-AFNO Backbone]
+    VQLoss[VQ-VAE Perceptual Loss]
 
     NO --> FE
     FE --> VQVAE
     VQVAE --> Tokens
-    Tokens --> NOA
+    VQVAE -.-> VQLoss
+    NOA --> VQLoss
 
     style NO fill:#e1f5e1,color:#000
     style VQVAE fill:#fff4e1,color:#000
     style NOA fill:#e1e8f5,color:#000
+    style VQLoss fill:#e1e8f5,color:#000
 ```
 
 ### Pipeline Stages
@@ -230,7 +237,7 @@ flowchart TD
 #### 4. Behavioral Vocabulary
 - **Discrete tokens** representing operator behavioral patterns
 - **Category-specific embeddings** preserving multi-modal structure
-- **Foundation for transformer-based agent reasoning** (Phase 2+)
+- **Foundation for U-AFNO agent training** (Phase 1) and **transformer heads** (Phase 2+)
 - **Visualization dashboards** - Engineering (metrics), Topological (t-SNE codebook space), Semantic (feature mappings)
 
 See [docs/architecture.md](docs/architecture.md) for detailed system design.

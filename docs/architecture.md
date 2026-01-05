@@ -190,6 +190,30 @@ See [VQ-VAE Training Guide](vqvae/training-guide.md) for details.
 - **Aggregate statistics:** Mean, variance, FFT visualization
 - **Video export:** MP4 and GIF generation
 
+### 8. Neural Operator Agent (NOA)
+**Location:** `src/spinlock/noa/` (planned), `src/spinlock/operators/u_afno.py` (backbone)
+
+The NOA is a **hybrid neural operator (U-AFNO backbone) with discrete VQ-VAE perceptual loss**:
+
+**Architecture:**
+- **Backbone:** U-AFNO neural operator (U-Net encoder + AFNO spectral bottleneck + decoder)
+- **Input:** θ (operator parameters) + u₀ (initial grid) + optional context
+- **Output:** Predicted rollout + feature heads (INITIAL-like, SUMMARY-like, TEMPORAL-like)
+- **Training Loss:** Frozen VQ-VAE encodes NOA outputs → discrete codes for loss computation
+
+**Why U-AFNO?**
+- **Physics-native:** Operates directly in continuous function space matching the studied dynamics
+- **Resolution-independent:** Spectral mixing captures global patterns regardless of grid size
+- **Self-consistent:** Enables emergent self-modeling and law discovery in the same function space
+- **Efficient:** Global receptive field via FFT-based mixing
+
+**Training Flow:**
+```
+(θ, u₀) → U-AFNO → Predicted Features → VQ-VAE (frozen) → Discrete Codes → Loss
+```
+
+See [NOA Roadmap](noa-roadmap.md) for development phases and [Phase 1 Baseline](baselines/phase1-uafno-vqvae.md) for architecture specification.
+
 ## Performance Characteristics
 
 ### Dataset Generation (Baseline 10K)
@@ -205,10 +229,10 @@ See [VQ-VAE Training Guide](vqvae/training-guide.md) for details.
 - **Memory optimization:** Streaming computation for large datasets
 
 ### VQ-VAE Training
-- **Input features:** ~500-600D after cleaning (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL concatenation)
+- **Input features:** ~300D after cleaning (INITIAL+SUMMARY+TEMPORAL; ARCHITECTURE excluded since NOA already knows θ)
 - **Categories:** ~8-15 automatically discovered via clustering
-- **Codebook sizes:** Configurable (typically 128-512 codes per level)
-- **Training time:** ~2-6 hours for 10K dataset (GPU)
+- **Codebook sizes:** Configurable (typically 24 codes per level with uniform initialization)
+- **Training time:** ~30-60 minutes for 100K dataset (GPU with torch.compile)
 
 ## Design Principles
 
@@ -256,7 +280,7 @@ These applications are secondary to the core goal of understanding operator beha
 ```mermaid
 flowchart TD
     Config[Config YAML]
-    Params[Parameter Vectors]
+    Params[Parameter Vectors θ]
     Operators[Neural Operators]
 
     Rollouts[Stochastic Rollouts]
@@ -266,16 +290,31 @@ flowchart TD
     VQVAE[VQ-VAE Model]
 
     Tokens[Behavioral Tokens]
-    NOA[Neural Operator Agent]
+
+    subgraph NOA[Neural Operator Agent]
+        UAFNO[U-AFNO Backbone]
+        Heads[Feature Heads]
+        VQLoss[VQ-VAE Loss]
+    end
 
     Config --> Params --> Operators
     Operators --> Rollouts --> Features
     Features --> Cleaned --> VQVAE
-    VQVAE --> Tokens --> NOA
+    VQVAE --> Tokens
+
+    Params --> UAFNO
+    UAFNO --> Heads
+    Heads --> VQLoss
+    VQVAE -.-> VQLoss
 
     style Config fill:#e1f5e1,color:#000
     style NOA fill:#e1e8f5,color:#000
+    style UAFNO fill:#e1e8f5,color:#000
+    style Heads fill:#e1e8f5,color:#000
+    style VQLoss fill:#e1e8f5,color:#000
 ```
+
+**NOA Architecture:** The Neural Operator Agent uses a U-AFNO backbone that takes operator parameters (θ) + initial conditions (u₀) as input. The U-AFNO generates rollouts whose features are encoded by a frozen VQ-VAE, producing discrete behavioral tokens used for loss computation.
 
 ## References
 

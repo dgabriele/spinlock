@@ -68,13 +68,24 @@ See [Feature Reference](feature-reference.md) for complete feature specification
 
 ## Joint Training
 
-The VQ-VAE jointly trains on all 4 feature families simultaneously. Rather than treating each family independently, hierarchical clustering discovers natural groupings that span multiple feature types, enabling holistic operator behavioral patterns.
+The VQ-VAE jointly trains on 3 behavioral feature families (INITIAL, SUMMARY, TEMPORAL). ARCHITECTURE is excluded because the NOA already knows operator parameters θ—including it would be redundant.
 
 This multi-modal approach allows the model to learn representations that integrate:
 - How initial conditions influence operator dynamics (INITIAL → input encoding)
-- How architectural choices determine behavioral regimes (ARCHITECTURE → structural priors)
 - Statistical signatures of emergent patterns (SUMMARY → episodic compression)
 - Temporal evolution and regime transitions (TEMPORAL → working memory sequences)
+
+## NOA Feature Heads
+
+In the Phase 1 NOA architecture, the U-AFNO backbone produces **auxiliary feature heads** aligned with these families:
+
+| Head | Source | Output | Purpose |
+|------|--------|--------|---------|
+| **INITIAL-like** | U-AFNO bottleneck at t=0 | 42D | Quality of generated initial conditions |
+| **SUMMARY-like** | Bottleneck across full trajectory | 128D | Aggregated behavioral statistics |
+| **TEMPORAL-like** | Skip connections over time | 128D | Trajectory dynamics embedding |
+
+This means features are **both extracted from datasets** (Phase 0) and **predicted by the NOA** (Phase 1+). The frozen VQ-VAE encodes both → discrete tokens, enabling loss computation via token reconstruction.
 
 ### Cognitive Architecture Analogues
 

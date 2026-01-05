@@ -2,14 +2,14 @@
 
 **A hierarchical, meta-cognitive neural operator system for learning, generating, and reflecting on complex dynamical behaviors with general intelligence capabilities.**
 
-This roadmap provides a practical blueprint for building a Neural Operator Agent (NOA) capable of mapping VQ-VAE token sequences to operators and initial conditions, producing rollouts consistent with observed dynamics, and developing self-referential understanding of its own generative behavior. The architecture provides a testbed for cognitive capabilities including working memory, compositional reasoning, episodic memory formation, meta-learning, and metacognitive monitoring—all grounded in measurable, empirically testable mechanisms.
+This roadmap provides a practical blueprint for building a Neural Operator Agent (NOA)—a **hybrid neural operator (U-AFNO backbone) with discrete VQ-VAE perceptual loss**. The NOA operates directly in continuous function space, generating rollouts whose behavioral features are encoded into discrete tokens via a frozen VQ-VAE. This physics-native architecture enables self-referential understanding of its own generative behavior while providing a testbed for cognitive capabilities including working memory, compositional reasoning, episodic memory formation, meta-learning, and metacognitive monitoring—all grounded in measurable, empirically testable mechanisms.
 
 ## Overview
 
 ```mermaid
 flowchart LR
     Phase0[Phase 0:<br/>Foundation]
-    Phase1[Phase 1:<br/>Single-Step Mapping]
+    Phase1[Phase 1:<br/>U-AFNO Backbone]
     Phase2[Phase 2:<br/>Working Memory &<br/>Composition]
     Phase3[Phase 3:<br/>Exploration &<br/>Memory Selection]
     Phase4[Phase 4:<br/>Metacognition &<br/>Self-Modeling]
@@ -145,35 +145,67 @@ Establish the data infrastructure and tokenization system that enables behaviora
 
 ---
 
-## Phase 1: Single-Step NOA Mapping
+## Phase 1: U-AFNO Neural Operator Backbone
 
 **Status:** 🔄 **IN DEVELOPMENT**
 
 ### Objective
-Establish baseline meta-operator mapping from tokens to operators and initial conditions.
+Train a U-AFNO neural operator as the NOA backbone, producing rollouts whose behavioral features are well-reconstructed by a frozen VQ-VAE tokenizer.
+
+### Why U-AFNO as NOA Backbone?
+
+- **Physics-native**: Operates directly in continuous function space matching the studied dynamics
+- **Resolution-independent**: Spectral mixing captures global patterns regardless of grid size
+- **Proven infrastructure**: Leverages existing dataset-generation U-AFNO architecture
+- **Self-consistent**: Enables emergent self-modeling and law discovery in the same function space
+- **Efficient**: 4–9× inference speedup vs pure CNN, with global receptive field via FFT
 
 ### Architecture
-- MLP or lightweight feedforward network
-- **Input:** Token sequence for a single rollout
-- **Output:** Parameters of a neural operator + INITIAL to reconstruct that rollout
 
-### Training
+**Backbone: U-AFNO Neural Operator**
+- **Input**: θ (operator parameters) + u₀ (initial grid) + optional context tokens
+- **Output**: Predicted next grid state + auxiliary feature heads
+- **Latent extraction**: Bottleneck spectral modes + multi-scale encoder skips via `get_intermediate_features()`
 
-**Loss Function (Hybrid):**
-1. **Token sequence reconstruction** - Discrete VQ-VAE alignment
-2. **Feature-space reconstruction** - Continuous SUMMARY matching
+**VQ-VAE Integration (Training Loss)**
+- Pre-trained VQ-VAE (from Phase 0) encodes NOA outputs → discrete behavioral codes
+- Training flow: NOA predictions → VQ encoder → codes → VQ decoder → reconstruction loss
+- VQ-VAE frozen during training (no gradient flow through tokenizer)
+- Discrete codes serve as targets for future phases (next-token prediction, curiosity)
 
-**Training Objective:**
-Minimize divergence between generated and target rollouts while preserving codebook semantics.
+**Feature Heads**
+The NOA produces auxiliary outputs aligned with Phase 0 feature families:
+- **INITIAL-like**: Snapshot characteristics of predicted state
+- **SUMMARY-like**: Aggregated behavioral statistics from rollout
+- **TEMPORAL-like**: Trajectory segment embeddings
 
-**Evaluation Metrics:**
-- Token reconstruction accuracy
-- Feature-space error (MSE on SDFs)
-- Stability of operator assignments across INITIAL regimes
-- Codebook utilization and coverage
+### First Training Task: NOA Rollout Feature Encoding
 
-### Key Emphasis
-This phase establishes the **baseline meta-operator mapping** essential before multi-step or self-referential capabilities.
+**Objective:** Train U-AFNO NOA to generate rollouts whose features are well-reconstructed by VQ-VAE, yielding high-quality discrete behavioral symbols.
+
+**Loss Structure (Hybrid):**
+1. **Primary Loss** — VQ-VAE reconstruction on NOA predicted features
+2. **Auxiliary Losses:**
+   - Next-step grid MSE (teacher-forced during training)
+   - Commitment loss from VQ-VAE (encourages discrete usage)
+   - Optional perceptual loss on bottleneck modes (L1 on spectral latents)
+
+**Training Dataset:**
+- Sample θ + u₀ pairs from existing stratified dataset (100K operators)
+- Ground-truth: features extracted via existing pipeline
+- Teacher forcing: use ground-truth rollouts during initial training phases
+
+**Why This Task First?**
+- Builds directly on existing VQ-VAE (already trained on dataset features)
+- Avoids full end-to-end training over 100k operators initially
+- Produces immediately usable discrete symbols for Phase 2 evaluation
+
+### Evaluation Metrics
+
+- **Rollout fidelity**: MSE over 256+ timesteps vs ground-truth operators
+- **VQ reconstruction quality**: Feature-space error after encode→decode
+- **Token distribution**: Entropy, codebook utilization, category coverage
+- **Behavioral clustering coherence**: Do NOA-generated rollouts cluster correctly?
 
 ### Validation Methodology
 
@@ -188,15 +220,18 @@ This phase establishes the **baseline meta-operator mapping** essential before m
 - **Failure case analysis**: When does the mapping break down and why?
 
 **Success Criteria** (Phase 1 → Phase 2):
-- Token reconstruction achieves <10% feature-space error
+- VQ reconstruction error < 0.15 on validation set
+- Discrete token distribution matches dataset distribution (entropy, usage)
+- Rollout fidelity (MSE) comparable to ground-truth operators
 - Manual inspection confirms behavioral categories are interpretable
-- Stability analysis shows consistent token assignments across runs
 
 ### Deliverables
-- [ ] NOA architecture implementation
-- [ ] Hybrid loss function
-- [ ] Training pipeline
+- [ ] U-AFNO NOA architecture implementation (reusing `operators/u_afno.py`)
+- [ ] VQ-VAE perceptual loss integration (frozen encoder)
+- [ ] Hybrid loss function (reconstruction + MSE + commitment)
+- [ ] Training pipeline with teacher forcing
 - [ ] Evaluation metrics and benchmarks
+- [ ] Baseline documentation (`docs/baselines/phase1-uafno-vqvae.md`)
 
 ---
 
@@ -208,9 +243,11 @@ This phase establishes the **baseline meta-operator mapping** essential before m
 Capture temporal correlations and higher-order operator dependencies across multiple observations, enabling compositional reasoning and working memory dynamics.
 
 ### Architecture Upgrade
-- **Transformer or attention-based temporal encoder**
-- **Input:** Sequence of tokenized rollouts across multiple observations or timesteps
-- **Output:** Contextualized operator parameters conditioned on multi-step patterns
+Building on the Phase 1 U-AFNO backbone:
+- **Lightweight transformer or recurrent heads** operating on sequences of discrete VQ codes produced by the U-AFNO backbone
+- **Input:** Sequence of VQ tokens from multiple rollouts/observations
+- **Output:** Contextualized predictions conditioned on multi-step patterns
+- **Key insight:** U-AFNO generates continuous rollouts → VQ-VAE produces discrete codes → transformer reasons over code sequences
 
 ### Cognitive Capabilities (Grounded in Mechanisms)
 
@@ -431,7 +468,7 @@ Every discovered "law" must be:
 
 This roadmap systematically integrates multiple advanced components:
 - **Tokenized latent representations** (Phase 0)
-- **Feature-based reconstruction** (Phase 1)
+- **U-AFNO neural operator backbone with VQ-VAE perceptual loss** (Phase 1)
 - **Multi-step attention & working memory** (Phase 2)
 - **Exploratory agency & memory selection** (Phase 3)
 - **Self-referential modeling & metacognition** (Phase 4)
