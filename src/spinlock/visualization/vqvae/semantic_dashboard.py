@@ -90,7 +90,7 @@ def plot_feature_category_matrix(ax: Axes, data: VQVAECheckpointData) -> None:
     # Remove y-ticks (too many features)
     ax.set_yticks([])
     ax.set_ylabel(f"Features ({num_features})")
-    ax.set_xlabel("Category")
+    # Skip xlabel - category names visible in tick labels, overlaps with panel below
     ax.set_title("Feature → Category Assignments", fontsize=12, fontweight="bold")
 
     # Add grid lines between families
@@ -114,8 +114,8 @@ def plot_category_sizes(ax: Axes, data: VQVAECheckpointData) -> None:
     # Labels
     ax.set_xticks(range(len(cat_names)))
     ax.set_xticklabels(short_labels, fontsize=9)
-    ax.set_xlabel("Category", fontsize=10)
-    ax.set_ylabel("Number of Features", fontsize=10)
+    # Skip xlabel - category names already visible in tick labels, and it overlaps with panel below
+    ax.set_ylabel("# Features", fontsize=10)
     ax.set_title("Category Sizes", fontsize=12, fontweight="bold")
 
     # Annotate bars with values
@@ -187,8 +187,8 @@ def plot_codebook_utilization(
     ax.set_yticklabels(short_labels, fontsize=8)
 
     ax.set_xlabel("Level")
-    ax.set_ylabel("Category")
-    ax.set_title("Codebook Utilization (N/M)", fontsize=12, fontweight="bold")
+    ax.set_ylabel("")  # Explicitly clear ylabel
+    ax.set_title("Codebook Utilization (N/M)", fontsize=12, fontweight="bold", pad=10)
 
     # Annotate cells with N/M values
     for i in range(num_cats):
