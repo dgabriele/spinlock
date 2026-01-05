@@ -181,9 +181,10 @@ def plot_reconstruction_bars(ax: Axes, data: VQVAECheckpointData) -> None:
         ax.set_title("Reconstruction MSE", fontsize=12, fontweight="bold")
         return
 
-    cats = sorted(mse.keys())
+    # Use data.category_names to match VQ layer order (NOT sorted())
+    cats = [c for c in data.category_names if c in mse]
     values = [mse[c] for c in cats]
-    short_labels = [c.replace("cluster_", "C") for c in cats]
+    short_labels = [c.replace("cluster_", "C").replace("architecture_isolated", "arch") for c in cats]
 
     # Color by performance (green=good, red=bad)
     cmap = plt.get_cmap("RdYlGn_r")
