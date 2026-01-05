@@ -188,7 +188,13 @@ def plot_codebook_utilization(
 
     ax.set_xlabel("Level")
     ax.set_ylabel("")  # Explicitly clear ylabel
-    ax.set_title("Codebook Utilization (N/M)", fontsize=12, fontweight="bold", pad=10)
+
+    # Compute summary stats for title
+    total_used = sum(used for cat_counts in util_counts.values() for used, _ in cat_counts.values())
+    total_codes = sum(total for cat_counts in util_counts.values() for _, total in cat_counts.values())
+    overall_util = total_used / total_codes if total_codes > 0 else 0
+
+    ax.set_title(f"Codebook Utilization: {total_used}/{total_codes} ({overall_util:.1%})", fontsize=11, fontweight="bold")
 
     # Annotate cells with N/M values
     for i in range(num_cats):
@@ -201,23 +207,6 @@ def plot_codebook_utilization(
     # Colorbar
     cbar = plt.colorbar(im, ax=ax, shrink=0.8)
     cbar.set_label("Utilization", fontsize=9)
-
-    # Add summary stats
-    total_used = sum(used for cat_counts in util_counts.values() for used, _ in cat_counts.values())
-    total_codes = sum(total for cat_counts in util_counts.values() for _, total in cat_counts.values())
-    overall_util = total_used / total_codes if total_codes > 0 else 0
-
-    # Place summary in top-right corner to avoid axis label overlap
-    ax.text(
-        0.98, 0.98,
-        f"Total: {total_used}/{total_codes} ({overall_util:.1%})",
-        transform=ax.transAxes,
-        ha="right",
-        va="top",
-        fontsize=8,
-        style="italic",
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
-    )
 
 
 def plot_category_correlation(ax: Axes, data: VQVAECheckpointData) -> None:
