@@ -26,9 +26,11 @@ Example:
 """
 
 from spinlock.features.registry import FeatureRegistry
+from spinlock.features.preprocessing import FeaturePreprocessor
 
 __all__ = [
     "FeatureRegistry",
+    "FeaturePreprocessor",
 ]
 
 __version__ = "1.0.0"

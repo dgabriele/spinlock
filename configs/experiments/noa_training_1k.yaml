@@ -1,0 +1,143 @@
+version: "1.0"
+
+metadata:
+  name: "noa_training_1k"
+  description: |
+    Small dataset WITH trajectories for NOA Phase 1 training.
+    Stores raw trajectory outputs for direct state-level supervision.
+    1k samples × 3 realizations × 64 timesteps ≈ 3GB
+  author: "Spinlock Team"
+  created: "2026-01-06"
+  purpose: |
+    Enable NOA training with state-level supervision (MSE on trajectories).
+    Feature-based loss alone doesn't provide sufficient gradient signal.
+
+# Simplified parameter space for fast generation
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 4]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: integer
+      bounds: [16, 48]
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5]
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["gelu"]
+      description: "Activation function"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.2]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian"]
+      description: "Stochastic noise distribution"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.001, 0.1]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+    noise_schedule:
+      type: choice
+      choices: ["constant"]
+      description: "Temporal noise schedule"
+
+    spatial_correlation:
+      type: continuous
+      bounds: [0.0, 0.2]
+      description: "Spatial correlation length for noise"
+
+  operator:
+    normalization:
+      type: choice
+      choices: ["instance"]
+      description: "Feature normalization"
+
+    grid_size:
+      type: choice
+      choices: [64]
+      description: "Spatial grid resolution (64x64 for faster generation)"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["residual"]
+      description: "Temporal update policy"
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 2
+    min_samples_per_stratum: 5
+
+  total_samples: 1000
+  batch_size: 4
+
+# Simulation
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "sampled"
+
+    # Simplified IC types (equal weight)
+    ic_type_weights:
+      gaussian_random_field_v2: 0.5  # Standard Gaussian noise
+      structured: 0.5                 # Sinusoids
+
+    gaussian_random_field_v2:
+      length_scale: 0.05
+      variance: 1.0
+
+    structured:
+      num_structures: 3
+      structure_types: ["stripe"]
+
+  precision: "float32"  # Full precision for training data quality
+
+  num_realizations: 3
+  num_timesteps: 64  # Short rollouts for manageable storage
+
+  extract_operator_features: true
+
+# Dataset generation configuration
+dataset:
+  output_path: "./datasets/noa_training_1k.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 10
+
+    # STORE TRAJECTORIES for NOA training!
+    store_trajectories: true
+
+logging:
+  level: "INFO"
