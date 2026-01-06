@@ -1,21 +1,25 @@
 #!/usr/bin/env python
-"""NOA Training with State-Level Supervision via CNO Replay.
+"""NOA Training with State-Level Supervision and Optional VQ-VAE Alignment.
 
-This script trains NOA using direct state-level supervision:
-- CNO operators are reconstructed from stored parameter vectors
-- CNO trajectories are replayed on-the-fly to produce target states
-- NOA learns by minimizing MSE on actual trajectory states (not features)
+This script trains NOA using a three-loss structure:
+1. L_traj: MSE on trajectories (primary, non-negotiable)
+2. L_latent: Pre-quantized latent alignment (optional, for semantic alignment)
+3. L_commit: VQ commitment loss (optional, for manifold adherence)
 
-This is the standard neural operator training approach:
-    loss = MSE(NOA_trajectory, CNO_trajectory)
+Loss = L_traj + λ1 * L_latent + λ2 * L_commit
 
-Key insight: Feature-based loss (MSE on extracted features) doesn't provide
-sufficient gradient signal for the model to learn. State-level supervision
-gives direct pixel-wise feedback.
+The VQ-VAE alignment is optional and enables NOA to "think" in terms of
+the VQ token vocabulary learned from CNO rollouts.
 
 Usage:
+    # State-only training
     poetry run python scripts/dev/train_noa_state_supervised.py --n-samples 500 --epochs 10
-    poetry run python scripts/dev/train_noa_state_supervised.py --n-samples 5000 --epochs 50 --batch-size 8
+
+    # With VQ-VAE alignment
+    poetry run python scripts/dev/train_noa_state_supervised.py \
+        --n-samples 500 --epochs 10 \
+        --vqvae-path checkpoints/production/100k_full_features \
+        --lambda-latent 0.1 --lambda-commit 0.5
 """
 
 import argparse
@@ -31,7 +35,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from spinlock.noa import NOABackbone, CNOReplayer
+from spinlock.noa import NOABackbone, CNOReplayer, VQVAEAlignmentLoss
 
 
 class NOAStateDataset(Dataset):
@@ -93,18 +97,26 @@ def train_epoch(
     optimizer: torch.optim.Optimizer,
     device: str,
     timesteps: int,
+    n_realizations: int = 1,
     state_weight: float = 1.0,
     clip_grad: float = 1.0,
+    alignment: VQVAEAlignmentLoss | None = None,
+    lambda_latent: float = 0.1,
+    lambda_commit: float = 0.5,
 ) -> dict:
-    """Train for one epoch with state-level supervision.
+    """Train for one epoch with state-level supervision and optional VQ-VAE alignment.
 
     For each batch:
     1. Replay CNO from IC -> target trajectory
     2. Run NOA from same IC -> predicted trajectory
-    3. Compute MSE loss on trajectory states
+    3. Compute MSE loss on trajectory states (L_traj)
+    4. Optionally compute VQ-VAE alignment losses (L_latent, L_commit)
     """
     noa.train()
     total_loss = 0.0
+    total_state = 0.0
+    total_latent = 0.0
+    total_commit = 0.0
     num_batches = 0
     start_time = time.time()
 
@@ -124,13 +136,17 @@ def train_epoch(
                 params_vector=params[b].numpy(),
                 ic=ic[b:b+1],  # [1, C, H, W]
                 timesteps=timesteps,
-                num_realizations=1,
+                num_realizations=n_realizations,
                 return_all_steps=True,
-            )  # [1, T+1, C, H, W]
+            )  # [1, M, T+1, C, H, W] if M>1 else [1, T+1, C, H, W]
             target_trajectories.append(target_traj)
 
-        # Stack: [B, T+1, C, H, W]
+        # Stack: [B, M, T+1, C, H, W] if M>1 else [B, T+1, C, H, W]
         target_trajectory = torch.cat(target_trajectories, dim=0)
+
+        # For M > 1, take mean across realizations for supervision
+        if n_realizations > 1 and target_trajectory.dim() == 6:
+            target_trajectory = target_trajectory.mean(dim=1)  # [B, T+1, C, H, W]
 
         # Compute state-level MSE loss
         # Skip IC (index 0) since it's given, only supervise predicted states
@@ -140,26 +156,72 @@ def train_epoch(
         state_loss = F.mse_loss(pred_states, target_states)
         loss = state_weight * state_loss
 
-        if torch.isnan(loss):
-            print(f"Warning: NaN loss at batch {batch_idx}")
+        # Add VQ-VAE alignment losses if enabled
+        latent_loss = torch.tensor(0.0, device=device)
+        commit_loss = torch.tensor(0.0, device=device)
+
+        if alignment is not None:
+            try:
+                align_losses = alignment.compute_losses(
+                    pred_trajectory=pred_states,
+                    target_trajectory=target_states,
+                    ic=ic,
+                )
+                latent_loss = align_losses['latent']
+                commit_loss = align_losses['commit']
+
+                loss = loss + lambda_latent * latent_loss + lambda_commit * commit_loss
+            except Exception as e:
+                if batch_idx == 0:
+                    print(f"  Warning: VQ-VAE alignment failed: {e}")
+
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"Warning: NaN/Inf loss at batch {batch_idx}")
             continue
 
         # Backward
         optimizer.zero_grad()
         loss.backward()
+
+        # Check for NaN in gradients (prevents weight corruption)
+        has_nan_grad = False
+        for name, param in noa.named_parameters():
+            if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
+                has_nan_grad = True
+                break
+
+        if has_nan_grad:
+            print(f"Warning: NaN/Inf gradients at batch {batch_idx}, skipping update")
+            optimizer.zero_grad()  # Clear corrupted gradients
+            continue
+
         torch.nn.utils.clip_grad_norm_(noa.parameters(), clip_grad)
         optimizer.step()
 
         total_loss += loss.item()
+        total_state += state_loss.item()
+        total_latent += latent_loss.item()
+        total_commit += commit_loss.item()
         num_batches += 1
 
         if (batch_idx + 1) % 10 == 0:
             avg = total_loss / num_batches
-            print(f"  Batch {batch_idx + 1}/{len(dataloader)}: state_loss={avg:.6f}")
+            avg_state = total_state / num_batches
+            if alignment is not None:
+                avg_latent = total_latent / num_batches
+                avg_commit = total_commit / num_batches
+                print(f"  Batch {batch_idx + 1}/{len(dataloader)}: "
+                      f"total={avg:.6f} state={avg_state:.6f} "
+                      f"latent={avg_latent:.6f} commit={avg_commit:.6f}")
+            else:
+                print(f"  Batch {batch_idx + 1}/{len(dataloader)}: state_loss={avg_state:.6f}")
 
     epoch_time = time.time() - start_time
     return {
         "total": total_loss / max(num_batches, 1),
+        "state": total_state / max(num_batches, 1),
+        "latent": total_latent / max(num_batches, 1),
+        "commit": total_commit / max(num_batches, 1),
         "time": epoch_time,
     }
 
@@ -171,10 +233,17 @@ def validate(
     dataloader: DataLoader,
     device: str,
     timesteps: int,
-) -> float:
-    """Validate with state-level loss."""
+    n_realizations: int = 1,
+    alignment: VQVAEAlignmentLoss | None = None,
+    lambda_latent: float = 0.1,
+    lambda_commit: float = 0.5,
+) -> dict:
+    """Validate with state-level loss and optional VQ-VAE alignment."""
     noa.eval()
     total_loss = 0.0
+    total_state = 0.0
+    total_latent = 0.0
+    total_commit = 0.0
     num_batches = 0
 
     for batch in dataloader:
@@ -191,23 +260,52 @@ def validate(
                 params_vector=params[b].numpy(),
                 ic=ic[b:b+1],
                 timesteps=timesteps,
-                num_realizations=1,
+                num_realizations=n_realizations,
                 return_all_steps=True,
             )
             target_trajectories.append(target_traj)
 
         target_trajectory = torch.cat(target_trajectories, dim=0)
 
+        # For M > 1, take mean across realizations for supervision
+        if n_realizations > 1 and target_trajectory.dim() == 6:
+            target_trajectory = target_trajectory.mean(dim=1)
+
         pred_states = pred_trajectory[:, 1:, :, :, :]
         target_states = target_trajectory[:, 1:, :, :, :]
 
-        loss = F.mse_loss(pred_states, target_states)
+        state_loss = F.mse_loss(pred_states, target_states)
+        loss = state_loss
+
+        latent_loss = torch.tensor(0.0, device=device)
+        commit_loss = torch.tensor(0.0, device=device)
+
+        if alignment is not None:
+            try:
+                align_losses = alignment.compute_losses(
+                    pred_trajectory=pred_states,
+                    target_trajectory=target_states,
+                    ic=ic,
+                )
+                latent_loss = align_losses['latent']
+                commit_loss = align_losses['commit']
+                loss = loss + lambda_latent * latent_loss + lambda_commit * commit_loss
+            except Exception:
+                pass
 
         if not torch.isnan(loss):
             total_loss += loss.item()
+            total_state += state_loss.item()
+            total_latent += latent_loss.item()
+            total_commit += commit_loss.item()
             num_batches += 1
 
-    return total_loss / max(num_batches, 1)
+    return {
+        "total": total_loss / max(num_batches, 1),
+        "state": total_state / max(num_batches, 1),
+        "latent": total_latent / max(num_batches, 1),
+        "commit": total_commit / max(num_batches, 1),
+    }
 
 
 def main():
@@ -272,6 +370,10 @@ def main():
         "--timesteps", type=int, default=32,
         help="Number of timesteps to supervise (shorter = faster training)"
     )
+    parser.add_argument(
+        "--n-realizations", type=int, default=1,
+        help="Number of stochastic realizations for CNO rollout (M > 1 enables realization aggregation)"
+    )
 
     # System
     parser.add_argument(
@@ -281,6 +383,20 @@ def main():
     parser.add_argument(
         "--seed", type=int, default=42,
         help="Random seed"
+    )
+
+    # VQ-VAE alignment (optional)
+    parser.add_argument(
+        "--vqvae-path", type=str, default=None,
+        help="Path to VQ-VAE checkpoint for alignment loss (optional)"
+    )
+    parser.add_argument(
+        "--lambda-latent", type=float, default=0.1,
+        help="Weight for latent alignment loss"
+    )
+    parser.add_argument(
+        "--lambda-commit", type=float, default=0.5,
+        help="Weight for VQ commitment loss"
     )
 
     args = parser.parse_args()
@@ -360,11 +476,28 @@ def main():
         weight_decay=args.weight_decay,
     )
 
+    # Initialize VQ-VAE alignment (optional)
+    alignment = None
+    if args.vqvae_path is not None:
+        print(f"\nLoading VQ-VAE alignment from: {args.vqvae_path}")
+        try:
+            alignment = VQVAEAlignmentLoss.from_checkpoint(
+                vqvae_path=args.vqvae_path,
+                device=device,
+            )
+            print(f"  VQ-VAE alignment enabled")
+            print(f"  λ_latent: {args.lambda_latent}")
+            print(f"  λ_commit: {args.lambda_commit}")
+        except Exception as e:
+            print(f"  Warning: Failed to load VQ-VAE: {e}")
+            print(f"  Continuing without VQ-VAE alignment")
+
     # Training loop
     print(f"\nTraining:")
     print(f"  epochs: {args.epochs}")
     print(f"  batch_size: {args.batch_size}")
     print(f"  timesteps: {args.timesteps}")
+    print(f"  n_realizations: {args.n_realizations}")
     print(f"  lr: {args.lr}")
 
     best_val_loss = float("inf")
@@ -381,25 +514,43 @@ def main():
             optimizer=optimizer,
             device=device,
             timesteps=args.timesteps,
+            n_realizations=args.n_realizations,
+            alignment=alignment,
+            lambda_latent=args.lambda_latent,
+            lambda_commit=args.lambda_commit,
         )
         history["train_loss"].append(train_result["total"])
 
         # Validate
-        val_loss = validate(
+        val_result = validate(
             noa=noa,
             replayer=replayer,
             dataloader=val_loader,
             device=device,
             timesteps=args.timesteps,
+            n_realizations=args.n_realizations,
+            alignment=alignment,
+            lambda_latent=args.lambda_latent,
+            lambda_commit=args.lambda_commit,
         )
-        history["val_loss"].append(val_loss)
+        history["val_loss"].append(val_result["total"])
 
         # Log
-        print(f"  Train: loss={train_result['total']:.6f} [{train_result['time']:.1f}s]")
-        print(f"  Val: loss={val_loss:.6f}")
+        if alignment is not None:
+            print(f"  Train: total={train_result['total']:.6f} "
+                  f"state={train_result['state']:.6f} "
+                  f"latent={train_result['latent']:.6f} "
+                  f"commit={train_result['commit']:.6f} [{train_result['time']:.1f}s]")
+            print(f"  Val: total={val_result['total']:.6f} "
+                  f"state={val_result['state']:.6f} "
+                  f"latent={val_result['latent']:.6f} "
+                  f"commit={val_result['commit']:.6f}")
+        else:
+            print(f"  Train: loss={train_result['total']:.6f} [{train_result['time']:.1f}s]")
+            print(f"  Val: loss={val_result['total']:.6f}")
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if val_result["total"] < best_val_loss:
+            best_val_loss = val_result["total"]
             print(f"  New best! (val_loss={best_val_loss:.6f})")
 
         # Clear replayer cache periodically to manage memory

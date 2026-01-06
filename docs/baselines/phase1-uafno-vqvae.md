@@ -1,8 +1,8 @@
-# NOA Phase 1 Baseline: U-AFNO Backbone with VQ-VAE Perceptual Loss
+# NOA Phase 1 Baseline: U-AFNO Backbone with VQ-VAE Alignment
 
-**Date:** January 5, 2026
-**Status:** IN DEVELOPMENT (Architecture Specification)
-**Dependencies:** VQ-VAE Baseline (`100k_full_features.h5`, `checkpoints/production/100k_3family_v1/`)
+**Date:** January 6, 2026
+**Status:** IMPLEMENTED - Core training infrastructure working
+**Dependencies:** VQ-VAE Baseline (`100k_full_features.h5`, `checkpoints/production/100k_full_features/`)
 
 ---
 
@@ -101,42 +101,59 @@ features = operator.get_intermediate_features(
 
 ## VQ-VAE Integration (Training Loss)
 
-### Frozen VQ-VAE as Perceptual Loss
+### Three-Loss Structure (Implemented)
 
-The Phase 0 VQ-VAE serves as a frozen "perceptual loss" encoder:
+**Location:** `src/spinlock/noa/vqvae_alignment.py`
+
+The Phase 1 training uses a three-loss structure that combines trajectory supervision with VQ-VAE alignment:
 
 ```python
-# Load frozen VQ-VAE
-vqvae = CategoricalHierarchicalVQVAE.from_checkpoint(
-    "checkpoints/production/100k_3family_v1/"
+L = L_traj + λ₁ * L_latent + λ₂ * L_commit
+```
+
+| Loss | Description | Default Weight |
+|------|-------------|----------------|
+| `L_traj` | MSE on trajectories vs CNO replay (physics fidelity) | 1.0 |
+| `L_latent` | Pre-quantized latent alignment (smooth gradients) | λ₁ = 0.1 |
+| `L_commit` | VQ commitment loss (manifold adherence) | λ₂ = 0.5 |
+
+**Why This Structure?**
+1. **L_traj**: Anchors physics correctness—NOA must match CNO trajectories
+2. **L_latent**: Uses pre-quantization embeddings for smooth gradients (avoids quantization artifacts)
+3. **L_commit**: Forces NOA outputs to be expressible in VQ vocabulary (manifold adherence)
+
+### Implementation Details
+
+```python
+from spinlock.noa import VQVAEAlignmentLoss
+
+# Load frozen VQ-VAE alignment module
+alignment = VQVAEAlignmentLoss.from_checkpoint(
+    vqvae_path="checkpoints/production/100k_full_features",
+    device="cuda",
 )
-vqvae.eval()
-for param in vqvae.parameters():
-    param.requires_grad = False
 
-# NOA training loop
-def compute_loss(noa, vqvae, theta, u0, ground_truth_features):
-    # Generate rollout
-    predicted_rollout = noa(theta, u0)
+# In training loop
+losses = alignment.compute_losses(pred_trajectory, target_trajectory, ic=ic)
+total_loss = state_loss + lambda_latent * losses['latent'] + lambda_commit * losses['commit']
+```
 
-    # Extract features from predicted rollout
-    predicted_features = extract_features(predicted_rollout)  # INITIAL, SUMMARY, TEMPORAL
+### TrajectoryFeatureExtractor
 
-    # VQ-VAE perceptual loss
-    with torch.no_grad():
-        # Encode ground truth
-        gt_z = vqvae.encode(ground_truth_features)
-        gt_z_q, gt_tokens, _ = vqvae.quantize(gt_z)
+**Location:** `src/spinlock/noa/vqvae_alignment.py:267`
 
-        # Encode predictions
-        pred_z = vqvae.encode(predicted_features)
-        pred_z_q, pred_tokens, _ = vqvae.quantize(pred_z)
+Extracts SUMMARY/TEMPORAL features from NOA-generated trajectories, matching VQ-VAE input format:
 
-    # Losses
-    vq_recon_loss = F.mse_loss(pred_z_q, gt_z_q)  # Code-space loss
-    grid_mse_loss = F.mse_loss(predicted_rollout, ground_truth_rollout)
+```python
+# Features extracted from trajectory
+summary_features = SummaryExtractor.extract_all(trajectory)  # Spatial, spectral, temporal stats
+temporal_agg = temporal_features.mean(dim=1)  # Aggregated temporal dynamics
 
-    return vq_recon_loss + grid_mse_loss
+# Config avoids NaN for M=1 realizations
+config = SummaryConfig(
+    realization_aggregation=["mean"],  # No std/cv (undefined for M=1)
+    temporal_aggregation=["mean"],      # No std (can produce NaN)
+)
 ```
 
 ### Why Frozen VQ-VAE?
@@ -146,7 +163,7 @@ def compute_loss(noa, vqvae, theta, u0, ground_truth_features):
 | **Frozen VQ-VAE** | Stable training, proven tokenization, no codebook drift | Less adaptive |
 | **Joint Training** | End-to-end optimization, potentially better alignment | Risk of codebook collapse, training instability |
 
-**Recommendation:** Start with frozen VQ-VAE for Phase 1. Consider joint fine-tuning in Phase 2 if needed.
+**Current Approach:** Frozen VQ-VAE for Phase 1. Consider joint fine-tuning in Phase 2 if needed.
 
 ---
 
@@ -174,54 +191,95 @@ The NOA produces auxiliary outputs aligned with Phase 0 feature families:
 
 ---
 
+## Training Infrastructure (Implemented)
+
+### CNO Replay for State Supervision
+
+**Location:** `src/spinlock/noa/cno_replay.py`
+
+The CNOReplayer reconstructs CNO operators from parameter vectors, enabling state-level supervision without storing full trajectories:
+
+```python
+from spinlock.noa import CNOReplayer
+
+# Create replayer from config
+replayer = CNOReplayer.from_config(
+    "configs/experiments/local_100k_optimized.yaml",
+    device="cuda",
+    cache_size=8,  # LRU cache for operator reuse
+)
+
+# Generate ground-truth trajectory from parameter vector
+target_trajectory = replayer.rollout(
+    params_vector=params,           # [D] parameter vector
+    ic=initial_condition,           # [1, C, H, W]
+    timesteps=32,
+    num_realizations=1,
+    return_all_steps=True,
+)  # Returns [1, T+1, C, H, W]
+```
+
+### Training Command
+
+```bash
+# Basic training (state-only)
+poetry run python scripts/dev/train_noa_state_supervised.py \
+    --n-samples 500 --epochs 10
+
+# With VQ-VAE alignment (recommended)
+poetry run python scripts/dev/train_noa_state_supervised.py \
+    --n-samples 500 --epochs 10 \
+    --vqvae-path checkpoints/production/100k_full_features \
+    --lambda-latent 0.1 --lambda-commit 0.5
+```
+
+### CLI Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--n-samples` | 1000 | Number of training samples |
+| `--epochs` | 50 | Training epochs |
+| `--batch-size` | 4 | Batch size (GPU memory limited) |
+| `--timesteps` | 32 | Supervision timesteps |
+| `--n-realizations` | 1 | Stochastic realizations |
+| `--vqvae-path` | None | VQ-VAE checkpoint for alignment |
+| `--lambda-latent` | 0.1 | Latent alignment weight |
+| `--lambda-commit` | 0.5 | Commitment loss weight |
+
+### Training Results (50 samples, 3 epochs)
+
+```
+Epoch 1/3
+  Train: total=0.979 state=0.978 latent=0.000044 commit=0.003
+  Val: total=0.714 (best)
+
+Epoch 2/3
+  Train: total=1.023 state=1.022 latent=0.000051 commit=0.003
+  Val: total=0.806
+
+Epoch 3/3
+  Train: total=0.958 state=0.956 latent=0.000043 commit=0.003
+  Val: total=0.722
+```
+
+Training completes without NaN collapse. Occasional NaN gradient warnings are safely skipped.
+
+### NaN Handling
+
+**Resolved issues:**
+- NaN gradient checking prevents weight corruption
+- Safe aggregation config (mean only) for M=1 realizations
+- `nan_to_num()` applied before/after normalization
+
+See `notes/RESUME-2026-01-06-vqvae-alignment-nan-fix.md` for details.
+
+---
+
 ## First Training Task: Rollout Feature Encoding
 
 ### Objective
 
 Train U-AFNO NOA to generate rollouts whose features are well-reconstructed by VQ-VAE, yielding high-quality discrete behavioral symbols.
-
-### Loss Structure (Hybrid)
-
-```python
-total_loss = (
-    1.0 * vq_reconstruction_loss      # Primary: VQ-VAE perceptual loss
-    + 0.5 * grid_mse_loss             # Auxiliary: Next-step prediction
-    + 0.25 * commitment_loss          # Auxiliary: VQ-VAE commitment term
-    + 0.1 * bottleneck_l1_loss        # Optional: Spectral latent regularization
-)
-```
-
-### Training Configuration
-
-```yaml
-training:
-  batch_size: 256                   # Memory-limited due to rollout generation
-  learning_rate: 1e-4               # Conservative for U-AFNO training
-  num_epochs: 200                   # Initial target
-  optimizer: "adamw"
-  weight_decay: 0.01
-
-  # Learning rate schedule
-  scheduler: "cosine"
-  warmup_epochs: 10
-
-  # Teacher forcing
-  teacher_forcing_ratio: 1.0        # Start with full teacher forcing
-  teacher_forcing_decay: 0.95       # Decay per epoch
-  min_teacher_forcing: 0.5          # Minimum ratio
-
-  # Rollout configuration
-  rollout_steps: 64                 # Start with shorter rollouts
-  realizations: 1                   # Single realization initially
-
-  # Validation
-  val_every_n_epochs: 5
-  early_stopping_patience: 30
-
-  # Checkpointing
-  save_every: 10
-  checkpoint_dir: "checkpoints/noa/phase1_uafno_v1"
-```
 
 ### Training Dataset
 
@@ -229,8 +287,8 @@ training:
 |--------|-------|
 | **θ (parameters)** | Sampled from existing stratified dataset (100K operators) |
 | **u₀ (initial grid)** | From `inputs/fields` in HDF5 |
-| **Ground-truth features** | From `features/summary/`, `features/temporal/` in HDF5 |
-| **Ground-truth rollouts** | Generate on-the-fly or pre-cache |
+| **Ground-truth trajectories** | Generated via CNOReplayer |
+| **VQ-VAE features** | Extracted from trajectories via TrajectoryFeatureExtractor |
 
 ---
 
@@ -435,36 +493,41 @@ class NOATrainer:
 
 ---
 
-## Files
+## Implementation Files
 
-| File | Description |
-|------|-------------|
-| `src/spinlock/operators/u_afno.py` | U-AFNO backbone (existing) |
-| `src/spinlock/noa/backbone.py` | NOA model class (to create) |
-| `src/spinlock/noa/losses.py` | VQ-VAE perceptual loss (to create) |
-| `src/spinlock/noa/training.py` | Training pipeline (to create) |
-| `configs/noa/phase1_uafno_v1.yaml` | Training configuration (to create) |
-| `checkpoints/noa/phase1_uafno_v1/` | Model checkpoints (to generate) |
+| File | Status | Description |
+|------|--------|-------------|
+| `src/spinlock/operators/u_afno.py` | ✅ | U-AFNO backbone |
+| `src/spinlock/noa/backbone.py` | ✅ | NOABackbone class (144M params) |
+| `src/spinlock/noa/vqvae_alignment.py` | ✅ | VQVAEAlignmentLoss, TrajectoryFeatureExtractor |
+| `src/spinlock/noa/cno_replay.py` | ✅ | CNOReplayer for state supervision |
+| `src/spinlock/noa/losses.py` | ✅ | VQVAEPerceptualLoss, FeatureProjector |
+| `src/spinlock/noa/training.py` | ✅ | Training utilities, NOAPhase1Trainer |
+| `scripts/dev/train_noa_state_supervised.py` | ✅ | Main training script |
 
 ---
 
 ## Dependencies
 
-- **VQ-VAE Baseline:** `checkpoints/production/100k_3family_v1/`
+- **VQ-VAE Checkpoint:** `checkpoints/production/100k_full_features/` (225D features)
 - **Dataset:** `datasets/100k_full_features.h5`
-- **U-AFNO:** `src/spinlock/operators/u_afno.py` (already implemented)
+- **Config:** `configs/experiments/local_100k_optimized.yaml` (for CNO replay)
 
 ---
 
-## Next Steps (Phase 2)
+## Next Steps
 
-After Phase 1 success criteria are met:
+### Remaining Phase 1 Tasks
+- [ ] Full-scale training run (1000+ samples, 50+ epochs)
+- [ ] Evaluation metrics and benchmarks
+- [ ] Hyperparameter tuning (λ₁, λ₂, learning rate)
 
+### Phase 2 (After Phase 1 Success Criteria Met)
 1. **Multi-step context:** Lightweight transformer heads on VQ code sequences
 2. **Curiosity-driven exploration:** Prediction error as exploration signal
 3. **Joint VQ-VAE fine-tuning:** Consider unfreezing VQ-VAE for end-to-end optimization
 
 ---
 
-**Generated:** January 5, 2026
-**Status:** ARCHITECTURE SPECIFICATION (Implementation Pending)
+**Generated:** January 6, 2026
+**Status:** IMPLEMENTED - Core training infrastructure working

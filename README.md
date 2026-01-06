@@ -138,10 +138,13 @@ The NOA uses a **U-AFNO backbone** that operates directly in continuous function
 - Multi-modal feature extraction (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL)
 - Data-driven behavioral taxonomy via hierarchical clustering
 
-**Phase 1: U-AFNO Neural Operator Backbone** (🔄 In Development)
-- U-AFNO backbone generates rollouts from (θ, u₀) inputs
-- Frozen VQ-VAE encodes NOA outputs → discrete behavioral tokens for loss
-- Hybrid loss: VQ reconstruction + grid MSE + commitment
+**Phase 1: U-AFNO Neural Operator Backbone** (🔄 In Development - Core Training Working)
+- U-AFNO backbone (144M parameters) generates rollouts from (θ, u₀) inputs
+- CNO replay provides state-level supervision (ground-truth trajectories)
+- **Three-loss training:** `L = L_traj + λ₁·L_latent + λ₂·L_commit`
+  - L_traj: MSE on trajectories (physics fidelity)
+  - L_latent: Pre-quantized VQ-VAE latent alignment (smooth gradients)
+  - L_commit: VQ commitment loss (manifold adherence)
 - Physics-native architecture operating in continuous function space
 
 **Phase 2: Multi-Observation Context** (📋 Planned)
@@ -167,7 +170,16 @@ The NOA uses a **U-AFNO backbone** that operates directly in continuous function
 - Symbolic regression: Distill discovered patterns into interpretable mathematical relationships
 - Falsifiability: Every discovered "law" must be testable and potentially refutable
 
-**Current Status:** Phase 0 complete, Phase 1 in development
+**Current Status:** Phase 0 complete, Phase 1 core training infrastructure working
+
+**Quick Start (Phase 1 Training):**
+```bash
+# Train NOA with VQ-VAE alignment
+poetry run python scripts/dev/train_noa_state_supervised.py \
+    --n-samples 500 --epochs 10 \
+    --vqvae-path checkpoints/production/100k_full_features \
+    --lambda-latent 0.1 --lambda-commit 0.5
+```
 
 See [docs/noa-roadmap.md](docs/noa-roadmap.md) for detailed architecture and implementation plan.
 

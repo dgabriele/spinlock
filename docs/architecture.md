@@ -191,15 +191,46 @@ See [VQ-VAE Training Guide](vqvae/training-guide.md) for details.
 - **Video export:** MP4 and GIF generation
 
 ### 8. Neural Operator Agent (NOA)
-**Location:** `src/spinlock/noa/` (planned), `src/spinlock/operators/u_afno.py` (backbone)
+**Location:** `src/spinlock/noa/`
 
 The NOA is a **hybrid neural operator (U-AFNO backbone) with discrete VQ-VAE perceptual loss**:
 
 **Architecture:**
-- **Backbone:** U-AFNO neural operator (U-Net encoder + AFNO spectral bottleneck + decoder)
-- **Input:** θ (operator parameters) + u₀ (initial grid) + optional context
-- **Output:** Predicted rollout + feature heads (INITIAL-like, SUMMARY-like, TEMPORAL-like)
-- **Training Loss:** Frozen VQ-VAE encodes NOA outputs → discrete codes for loss computation
+- **Backbone:** U-AFNO neural operator (144M parameters, U-Net encoder + AFNO spectral bottleneck + decoder)
+- **Input:** θ (operator parameters) + u₀ (initial grid)
+- **Output:** Predicted rollout trajectory [B, T, C, H, W]
+- **Training Loss:** Three-loss structure with CNO replay supervision
+
+**Implementation Files:**
+| File | Description |
+|------|-------------|
+| `src/spinlock/noa/backbone.py` | NOABackbone class (U-AFNO, 144M params) |
+| `src/spinlock/noa/vqvae_alignment.py` | VQVAEAlignmentLoss, TrajectoryFeatureExtractor |
+| `src/spinlock/noa/cno_replay.py` | CNOReplayer for state-level supervision |
+| `scripts/dev/train_noa_state_supervised.py` | Training script with VQ-VAE alignment |
+
+**Three-Loss Training Structure:**
+```
+L = L_traj + λ₁ * L_latent + λ₂ * L_commit
+
+L_traj:   MSE on trajectories (physics fidelity)           weight: 1.0
+L_latent: Pre-quantized latent alignment (smooth gradients) weight: λ₁ = 0.1
+L_commit: VQ commitment loss (manifold adherence)           weight: λ₂ = 0.5
+```
+
+**Training Flow:**
+```
+IC (u₀) → NOA Backbone → Predicted Trajectory
+                              ↓
+                   TrajectoryFeatureExtractor
+                              ↓
+                   standard_normalize() + nan_to_num()
+                              ↓
+                   VQ-VAE Encoder (frozen) → z_pre
+                              ↓
+            L_latent = MSE(z_pred_norm, z_target_norm)
+            L_commit = MSE(z_pre, sg(z_quantized))
+```
 
 **Why U-AFNO?**
 - **Physics-native:** Operates directly in continuous function space matching the studied dynamics
@@ -207,12 +238,7 @@ The NOA is a **hybrid neural operator (U-AFNO backbone) with discrete VQ-VAE per
 - **Self-consistent:** Enables emergent self-modeling and law discovery in the same function space
 - **Efficient:** Global receptive field via FFT-based mixing
 
-**Training Flow:**
-```
-(θ, u₀) → U-AFNO → Predicted Features → VQ-VAE (frozen) → Discrete Codes → Loss
-```
-
-See [NOA Roadmap](noa-roadmap.md) for development phases and [Phase 1 Baseline](baselines/phase1-uafno-vqvae.md) for architecture specification.
+See [NOA Roadmap](noa-roadmap.md) for development phases and [Phase 1 Baseline](baselines/phase1-uafno-vqvae.md) for architecture details.
 
 ## Performance Characteristics
 

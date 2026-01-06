@@ -147,7 +147,7 @@ Establish the data infrastructure and tokenization system that enables behaviora
 
 ## Phase 1: U-AFNO Neural Operator Backbone
 
-**Status:** 🔄 **IN DEVELOPMENT**
+**Status:** 🔄 **IN DEVELOPMENT** (Core training infrastructure complete)
 
 ### Objective
 Train a U-AFNO neural operator as the NOA backbone, producing rollouts whose behavioral features are well-reconstructed by a frozen VQ-VAE tokenizer.
@@ -166,6 +166,7 @@ Train a U-AFNO neural operator as the NOA backbone, producing rollouts whose beh
 - **Input**: θ (operator parameters) + u₀ (initial grid) + optional context tokens
 - **Output**: Predicted next grid state + auxiliary feature heads
 - **Latent extraction**: Bottleneck spectral modes + multi-scale encoder skips via `get_intermediate_features()`
+- **Implementation**: `src/spinlock/noa/backbone.py` (NOABackbone class, 144M parameters)
 
 **VQ-VAE Integration (Training Loss)**
 - Pre-trained VQ-VAE (from Phase 0) encodes NOA outputs → discrete behavioral codes
@@ -179,20 +180,44 @@ The NOA produces auxiliary outputs aligned with Phase 0 feature families:
 - **SUMMARY-like**: Aggregated behavioral statistics from rollout
 - **TEMPORAL-like**: Trajectory segment embeddings
 
+### Current Training Approach: Three-Loss Structure
+
+**Implemented in:** `src/spinlock/noa/vqvae_alignment.py`, `scripts/dev/train_noa_state_supervised.py`
+
+**Loss Structure:**
+```
+L = L_traj + λ₁ * L_latent + λ₂ * L_commit
+```
+
+| Loss | Description | Weight |
+|------|-------------|--------|
+| `L_traj` | MSE on trajectory states (physics fidelity) | 1.0 |
+| `L_latent` | Pre-quantized latent alignment | λ₁ = 0.1 |
+| `L_commit` | VQ commitment loss (manifold adherence) | λ₂ = 0.5 |
+
+**Why This Three-Loss Structure?**
+1. **L_traj**: Anchors physics correctness—NOA must match CNO trajectories
+2. **L_latent**: Uses pre-quantization embeddings for smooth gradients (avoids quantization artifacts)
+3. **L_commit**: Forces NOA outputs to be expressible in VQ vocabulary (manifold adherence)
+
+**Training Infrastructure:**
+- **CNOReplayer** (`src/spinlock/noa/cno_replay.py`): Reconstructs CNO operators from parameter vectors for state-level supervision
+- **VQVAEAlignmentLoss**: Handles checkpoint loading, feature normalization, and loss computation
+- **TrajectoryFeatureExtractor**: Extracts SUMMARY/TEMPORAL features from trajectory states
+
+**Current Results (200 samples, 15 epochs):**
+```
+Best validation loss: 0.29 (down from 1.78)
+Commit loss: 0.005 (decreasing → manifold adherence improving)
+```
+
 ### First Training Task: NOA Rollout Feature Encoding
 
 **Objective:** Train U-AFNO NOA to generate rollouts whose features are well-reconstructed by VQ-VAE, yielding high-quality discrete behavioral symbols.
 
-**Loss Structure (Hybrid):**
-1. **Primary Loss** — VQ-VAE reconstruction on NOA predicted features
-2. **Auxiliary Losses:**
-   - Next-step grid MSE (teacher-forced during training)
-   - Commitment loss from VQ-VAE (encourages discrete usage)
-   - Optional perceptual loss on bottleneck modes (L1 on spectral latents)
-
 **Training Dataset:**
 - Sample θ + u₀ pairs from existing stratified dataset (100K operators)
-- Ground-truth: features extracted via existing pipeline
+- Ground-truth: CNO rollouts via replay from parameter vectors
 - Teacher forcing: use ground-truth rollouts during initial training phases
 
 **Why This Task First?**
@@ -226,10 +251,12 @@ The NOA produces auxiliary outputs aligned with Phase 0 feature families:
 - Manual inspection confirms behavioral categories are interpretable
 
 ### Deliverables
-- [ ] U-AFNO NOA architecture implementation (reusing `operators/u_afno.py`)
-- [ ] VQ-VAE perceptual loss integration (frozen encoder)
-- [ ] Hybrid loss function (reconstruction + MSE + commitment)
-- [ ] Training pipeline with teacher forcing
+- [x] U-AFNO NOA architecture implementation (`src/spinlock/noa/backbone.py`)
+- [x] VQ-VAE perceptual loss integration (`src/spinlock/noa/vqvae_alignment.py`)
+- [x] Three-loss function (trajectory + latent + commitment)
+- [x] CNO replay for state-level supervision (`src/spinlock/noa/cno_replay.py`)
+- [x] Training script with VQ-VAE alignment options (`scripts/dev/train_noa_state_supervised.py`)
+- [ ] Full-scale training run (1000+ samples, 50+ epochs)
 - [ ] Evaluation metrics and benchmarks
 - [ ] Baseline documentation (`docs/baselines/phase1-uafno-vqvae.md`)
 
@@ -517,5 +544,12 @@ This approach could lead to novel insights and discoveries by allowing the syste
 - VQ-VAE tokenization: `src/spinlock/encoding/`
 - Dataset generation: `src/spinlock/dataset/`
 - Operator architectures: `src/spinlock/operators/` (CNN, U-AFNO)
+- NOA implementation: `src/spinlock/noa/`
+  - `backbone.py` - U-AFNO NOA backbone (144M parameters)
+  - `vqvae_alignment.py` - VQ-VAE three-loss alignment
+  - `cno_replay.py` - CNO replay for state supervision
+  - `training.py` - Training utilities
+- Training scripts: `scripts/dev/train_noa_state_supervised.py`
 
 For detailed architecture and implementation, see [architecture.md](architecture.md).
+For VQ-VAE alignment training details, see `notes/RESUME-2026-01-06-vqvae-alignment-nan-fix.md`.
