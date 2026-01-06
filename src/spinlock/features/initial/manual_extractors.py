@@ -310,8 +310,10 @@ class InitialManualExtractor:
         total_weight = weights.view(B, M, -1).sum(dim=-1, keepdim=True).unsqueeze(-1)  # [B, M, 1, 1]
 
         # Compute weighted centroid
-        cy = (weights * y_coords).view(B, M, -1).sum(dim=-1) / (total_weight.squeeze() + 1e-6)
-        cx = (weights * x_coords).view(B, M, -1).sum(dim=-1) / (total_weight.squeeze() + 1e-6)
+        # Squeeze only spatial dims (last two), keep B and M dims
+        total_weight_bm = total_weight.squeeze(-1).squeeze(-1)  # [B, M]
+        cy = (weights * y_coords).view(B, M, -1).sum(dim=-1) / (total_weight_bm + 1e-6)
+        cx = (weights * x_coords).view(B, M, -1).sum(dim=-1) / (total_weight_bm + 1e-6)
 
         # Distance from center (0.5, 0.5)
         dist = torch.sqrt((cy - 0.5)**2 + (cx - 0.5)**2)
@@ -367,8 +369,8 @@ class InitialManualExtractor:
         power_flat = power.view(B, M, -1)  # [B, M, H*W_half]
 
         # Weighted average
-        total_power = power_flat.sum(dim=-1, keepdim=True)
-        centroid = (power_flat * freqs).sum(dim=-1) / (total_power.squeeze() + 1e-6)
+        total_power = power_flat.sum(dim=-1, keepdim=True)  # [B, M, 1]
+        centroid = (power_flat * freqs).sum(dim=-1) / (total_power.squeeze(-1) + 1e-6)
 
         # Normalize
         centroid = centroid / (H * W_half)

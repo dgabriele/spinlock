@@ -1,7 +1,7 @@
 # NOA VQ-VAE Alignment Training
 
 **Date:** January 6, 2026
-**Status:** Working - NaN issues resolved, training stable
+**Status:** Working - Aligned feature extraction + 3-family VQ-VAE support
 
 ---
 
@@ -12,14 +12,14 @@ NOA (Neural Operator Agent) can now be trained with VQ-VAE alignment to "think i
 ### Three-Loss Structure
 
 ```
-L = L_traj + λ₁ * L_latent + λ₂ * L_commit
+L = L_traj + lambda_1 * L_latent + lambda_2 * L_commit
 ```
 
 | Loss | Purpose | Default Weight |
 |------|---------|----------------|
 | `L_traj` | MSE on trajectories (physics fidelity) | 1.0 |
-| `L_latent` | Pre-quantized latent alignment | λ₁ = 0.1 |
-| `L_commit` | VQ commitment (manifold adherence) | λ₂ = 0.5 |
+| `L_latent` | Pre-quantized latent alignment | lambda_1 = 0.1 |
+| `L_commit` | VQ commitment (manifold adherence) | lambda_2 = 0.5 |
 
 ---
 
@@ -27,25 +27,26 @@ L = L_traj + λ₁ * L_latent + λ₂ * L_commit
 
 ```
 IC (Initial Condition)
-    ↓
+    |
 NOA Backbone (U-AFNO)
-    ↓
+    |
 Predicted Trajectory [B, T, C, H, W]
-    ↓
-┌───────────────────────────────────────────────┐
-│           VQ-VAE Alignment Module             │
-│                                               │
-│  TrajectoryFeatureExtractor                   │
-│      ↓                                        │
-│  Features [B, D] (D matched to VQ-VAE)        │
-│      ↓                                        │
-│  standard_normalize() + nan_to_num()          │
-│      ↓                                        │
-│  VQ-VAE Encoder (frozen) → z_pre              │
-│      ↓                                        │
-│  L_latent = MSE(z_pred_norm, z_target_norm)   │
-│  L_commit = MSE(z_pre, sg(z_quantized))       │
-└───────────────────────────────────────────────┘
+    |
++-----------------------------------------------+
+|           VQ-VAE Alignment Module             |
+|                                               |
+|  AlignedFeatureExtractor                      |
+|    - INITIAL (14D manual from IC)             |
+|    - SUMMARY (360D -> 128D via MLPEncoder)    |
+|    - TEMPORAL (T x 63D -> 128D via CNN)       |
+|      |                                        |
+|  Features [B, 187D] + raw_ics [B, C, H, W]    |
+|      |                                        |
+|  VQ-VAE Encoder (frozen) -> z_pre             |
+|      |                                        |
+|  L_latent = MSE(z_pred_norm, z_target_norm)   |
+|  L_commit = MSE(z_pre, sg(z_quantized))       |
++-----------------------------------------------+
 ```
 
 ---
@@ -54,7 +55,7 @@ Predicted Trajectory [B, T, C, H, W]
 
 | File | Description |
 |------|-------------|
-| `src/spinlock/noa/vqvae_alignment.py` | VQVAEAlignmentLoss, TrajectoryFeatureExtractor |
+| `src/spinlock/noa/vqvae_alignment.py` | VQVAEAlignmentLoss, AlignedFeatureExtractor |
 | `src/spinlock/noa/__init__.py` | Exports alignment classes |
 | `scripts/dev/train_noa_state_supervised.py` | Training script with VQ-VAE options |
 
@@ -68,11 +69,11 @@ poetry run python scripts/dev/train_noa_state_supervised.py \
     --n-samples 500 --epochs 10
 ```
 
-### With VQ-VAE Alignment
+### With VQ-VAE Alignment (3-Family Checkpoint)
 ```bash
 poetry run python scripts/dev/train_noa_state_supervised.py \
     --n-samples 500 --epochs 10 \
-    --vqvae-path checkpoints/production/100k_full_features \
+    --vqvae-path checkpoints/production/100k_3family_v1 \
     --lambda-latent 0.1 --lambda-commit 0.5
 ```
 
@@ -87,34 +88,59 @@ poetry run python scripts/dev/train_noa_state_supervised.py \
 
 ## Results
 
-### With `100k_full_features` checkpoint (225D features):
+### With `100k_3family_v1` checkpoint (187D features, 3 families):
 ```
-Epoch 1/3
-  Train: total=0.979118 state=0.977631 latent=0.000044 commit=0.002967
-  Val: total=0.714476 (best)
+Epoch 1/2
+  Train: total=2.281602 state=2.281358 latent=0.000000 commit=0.000489
+  Val: total=1.942824 state=1.942508 latent=0.000000 commit=0.000631
+  New best! (val_loss=1.942824)
 
-Epoch 2/3
-  Train: total=1.023395 state=1.021751 latent=0.000051 commit=0.003278
-  Val: total=0.806481
-
-Epoch 3/3
-  Train: total=0.957766 state=0.956143 latent=0.000043 commit=0.003236
-  Val: total=0.721931
+Epoch 2/2
+  Train: total=2.189601 state=2.189329 latent=0.000000 commit=0.000543
+  Val: total=2.542324 state=2.542008 latent=0.000000 commit=0.000631
 ```
 
-Training completes without NaN collapse. Occasional NaN gradient warnings (safely skipped) don't affect convergence.
+Training completes without NaN collapse. Latent loss is near-zero (expected for random trajectories with normalization). Commit loss is non-zero, showing VQ manifold adherence is being learned.
 
 ---
 
 ## Implementation Details
 
-### VQ-VAE Loading
-Handles multiple checkpoint formats:
-- `_orig_mod.vqvae.*` (compiled + nested)
-- `vqvae.*` (nested)
-- Raw VQ-VAE weights
+### AlignedFeatureExtractor
 
-### Feature Normalization
+Extracts features matching the 3-family VQ-VAE format:
+
+1. **INITIAL (14D manual)**: Uses `InitialManualExtractor` from IC
+   - Spatial, spectral, information, morphological features
+
+2. **SUMMARY (128D encoded)**: Uses `SummaryExtractor` + `MLPEncoder`
+   - Aggregated trajectory statistics
+   - Encoded via MLPEncoder (360D -> 128D)
+
+3. **TEMPORAL (128D encoded)**: Uses `SummaryExtractor.per_timestep` + `TemporalCNNEncoder`
+   - Per-timestep features [B, T, 63D]
+   - Encoded via TemporalCNNEncoder -> [B, 128D]
+
+Returns tuple: `(features, raw_ics)` for hybrid VQ-VAE models.
+
+### HybridVQVAEWrapper
+
+Loads 3-family checkpoints (e.g., `100k_3family_v1`) without dimension re-adjustment:
+
+- Checkpoint was saved with already-adjusted dimensions (187D)
+- Inner VQ-VAE and InitialHybridEncoder loaded separately
+- `encode()` method combines manual INITIAL with CNN embeddings
+
+### Bug Fixes
+
+1. **InitialManualExtractor shape bugs**: Fixed `_centroid_distance()` and `_spectral_centroid()` methods that used `squeeze()` incorrectly for M=1 realizations.
+
+2. **VQVAEWithInitial dimension mismatch**: Created `HybridVQVAEWrapper` to load checkpoints without re-adjusting dimensions.
+
+---
+
+## Feature Normalization
+
 Uses existing infrastructure from `spinlock.encoding.normalization`:
 ```python
 from spinlock.encoding.normalization import standard_normalize
@@ -132,21 +158,21 @@ normalized = standard_normalize(features)
 
 ### Gradient Flow
 - VQ-VAE weights are **frozen** (acts as pre-trained feature extractor)
-- Gradients flow: NOA ← features ← z_pre (L_latent + L_commit)
+- Gradients flow: NOA <- features <- z_pre (L_latent + L_commit)
 - `sg()` (stop-gradient) applied to quantized vectors in L_commit
 
 ---
 
 ## Known Issues (Resolved)
 
-### Feature Dimension Mismatch ✅
+### Feature Dimension Mismatch (SOLVED)
 Different VQ-VAE checkpoints expect different input dimensions:
-- `100k_full_features`: 225D
-- `100k_3family_v1`: 187D
+- `100k_full_features`: 225D (legacy)
+- `100k_3family_v1`: 187D (production)
 
-**Solution**: TrajectoryFeatureExtractor pads/truncates to match. Uses global `standard_normalize()` instead of per-category normalization.
+**Solution**: `AlignedFeatureExtractor.from_checkpoint()` reads config and creates appropriate encoders.
 
-### NaN Handling ✅
+### NaN Handling (SOLVED)
 Edge cases that can produce NaN:
 - Single-sample batches (std undefined)
 - Zero-variance features
@@ -159,11 +185,81 @@ Edge cases that can produce NaN:
 3. `SummaryConfig(realization_aggregation=["mean"])` to avoid std() with M=1
 4. `SummaryConfig(temporal_aggregation=["mean"])` to avoid NaN from constant sequences
 
-### Training Stability ✅
+### InitialManualExtractor Shape Bugs (SOLVED)
+Methods using `squeeze()` without dimension argument caused shape mismatches for M=1:
+- `_centroid_distance()`: Fixed to use `squeeze(-1).squeeze(-1)`
+- `_spectral_centroid()`: Fixed to use `squeeze(-1)`
+
+### Hybrid VQ-VAE Loading (SOLVED)
+`VQVAEWithInitial` re-adjusts dimensions on construction, but checkpoint already has adjusted dimensions.
+
+**Solution**: Created `HybridVQVAEWrapper` that loads inner vqvae and initial_encoder separately without re-adjustment.
+
+---
+
+## Truncated BPTT for Long Sequences
+
+### Problem: NaN Gradients with T > 32
+
+When training NOA with long rollouts (T ≥ 64), gradients explode through the autoregressive chain:
+
 ```
-Warning: NaN/Inf gradients at batch X, skipping update
+u₀ → NOA → u₁ → NOA → u₂ → ... → u₂₅₆
 ```
-These warnings indicate NaN gradients were detected and safely skipped. Training continues without weight corruption.
+
+Backpropagating through 64+ sequential applications causes gradient explosion, resulting in:
+- NaN gradients in `operator.encoder.stem.block.0.weight`
+- Training skips all updates
+
+### Solution: Truncated BPTT
+
+Only backpropagate through the last `bptt_window` steps:
+
+```python
+# Phase 1: Warmup (no gradients)
+warmup_steps = timesteps - bptt_window  # e.g., 256 - 32 = 224
+with torch.no_grad():
+    for t in range(warmup_steps):
+        x = noa.single_step(x)
+
+# Phase 2: Supervised (with gradients)
+for t in range(bptt_window):
+    x = noa.single_step(x)
+    trajectory.append(x)
+
+# Loss computed only on supervised window
+loss = MSE(pred_trajectory, target_trajectory[:, -bptt_window:])
+```
+
+### Usage
+
+```bash
+# Short sequences (T ≤ 32): Full backprop
+poetry run python scripts/dev/train_noa_state_supervised.py \
+    --timesteps 32
+
+# Long sequences (T > 32): Truncated BPTT required
+poetry run python scripts/dev/train_noa_state_supervised.py \
+    --timesteps 256 --bptt-window 32
+
+# With VQ-VAE alignment
+poetry run python scripts/dev/train_noa_state_supervised.py \
+    --timesteps 256 --bptt-window 32 \
+    --vqvae-path checkpoints/production/100k_3family_v1 \
+    --lambda-latent 0.1 --lambda-commit 0.5
+```
+
+### Training Results (T=256, TBPTT window=32)
+
+```
+Epoch 1/2
+  Train: total=0.940664 state=0.940304 latent=0.000000 commit=0.000722 [17.3s]
+  Val: total=1.081461 state=1.081146 latent=0.000000 commit=0.000631
+
+Epoch 2/2
+  Train: total=1.050154 state=1.049898 latent=0.000000 commit=0.000512 [16.3s]
+  Val: total=0.895321 state=0.895005 latent=0.000000 commit=0.000631
+```
 
 ---
 

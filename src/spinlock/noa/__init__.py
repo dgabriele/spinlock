@@ -21,7 +21,7 @@ from .training import (
     generate_synthetic_data,
 )
 from .cno_replay import CNOReplayer
-from .vqvae_alignment import VQVAEAlignmentLoss, TrajectoryFeatureExtractor
+from .vqvae_alignment import VQVAEAlignmentLoss, TrajectoryFeatureExtractor, AlignedFeatureExtractor
 
 __all__ = [
     # Backbone
@@ -48,4 +48,5 @@ __all__ = [
     # VQ-VAE alignment for token-aligned training
     "VQVAEAlignmentLoss",
     "TrajectoryFeatureExtractor",
+    "AlignedFeatureExtractor",
 ]

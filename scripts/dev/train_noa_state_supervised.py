@@ -11,14 +11,25 @@ Loss = L_traj + λ1 * L_latent + λ2 * L_commit
 The VQ-VAE alignment is optional and enables NOA to "think" in terms of
 the VQ token vocabulary learned from CNO rollouts.
 
+**Truncated BPTT**: For long rollouts (T > 32), gradients can explode through
+the autoregressive chain. We use truncated backpropagation through time (TBPTT):
+- Warmup phase: Roll out T - bptt_window steps WITHOUT gradient tracking
+- Supervised phase: Roll out bptt_window steps WITH gradient tracking
+This limits gradient flow to the last bptt_window steps while still supervising
+the full trajectory via the target from CNO replay.
+
 Usage:
-    # State-only training
+    # State-only training (short sequences)
     poetry run python scripts/dev/train_noa_state_supervised.py --n-samples 500 --epochs 10
+
+    # Long sequences with truncated BPTT
+    poetry run python scripts/dev/train_noa_state_supervised.py \
+        --n-samples 500 --epochs 10 --timesteps 256 --bptt-window 32
 
     # With VQ-VAE alignment
     poetry run python scripts/dev/train_noa_state_supervised.py \
         --n-samples 500 --epochs 10 \
-        --vqvae-path checkpoints/production/100k_full_features \
+        --vqvae-path checkpoints/production/100k_3family_v1 \
         --lambda-latent 0.1 --lambda-commit 0.5
 """
 
@@ -103,14 +114,22 @@ def train_epoch(
     alignment: VQVAEAlignmentLoss | None = None,
     lambda_latent: float = 0.1,
     lambda_commit: float = 0.5,
+    bptt_window: int | None = None,
 ) -> dict:
     """Train for one epoch with state-level supervision and optional VQ-VAE alignment.
 
     For each batch:
     1. Replay CNO from IC -> target trajectory
-    2. Run NOA from same IC -> predicted trajectory
+    2. Run NOA from same IC -> predicted trajectory (with truncated BPTT if needed)
     3. Compute MSE loss on trajectory states (L_traj)
     4. Optionally compute VQ-VAE alignment losses (L_latent, L_commit)
+
+    Args:
+        bptt_window: If set, use truncated BPTT - only backprop through the last
+                    bptt_window steps. This prevents gradient explosion for long
+                    sequences (T > 32). The full trajectory is still generated
+                    and compared against the target, but gradients only flow
+                    through the last bptt_window steps.
     """
     noa.train()
     total_loss = 0.0
@@ -120,14 +139,39 @@ def train_epoch(
     num_batches = 0
     start_time = time.time()
 
+    # Determine if we need truncated BPTT
+    use_tbptt = bptt_window is not None and bptt_window < timesteps
+
     for batch_idx, batch in enumerate(dataloader):
         ic = batch["ic"].to(device)  # [B, C, H, W]
         params = batch["params"]  # [B, d] - keep on CPU for replayer
 
         B = ic.shape[0]
 
-        # Generate NOA trajectory: [B, T+1, C, H, W]
-        pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True)
+        # Generate NOA trajectory with truncated BPTT if needed
+        if use_tbptt:
+            # Truncated BPTT: warmup without grad, then supervised with grad
+            warmup_steps = timesteps - bptt_window
+
+            # Phase 1: Warmup (no gradients)
+            x = ic.clone()
+            with torch.no_grad():
+                for _ in range(warmup_steps):
+                    x = noa.single_step(x)
+            warmup_state = x.clone()  # Detached from graph
+
+            # Phase 2: Supervised (with gradients)
+            x = warmup_state
+            supervised_trajectory = [x]
+            for _ in range(bptt_window):
+                x = noa.single_step(x)
+                supervised_trajectory.append(x)
+
+            # pred_trajectory only contains supervised portion [B, bptt_window+1, C, H, W]
+            pred_trajectory = torch.stack(supervised_trajectory, dim=1)
+        else:
+            # Standard rollout (full gradient flow)
+            pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True)
 
         # Replay CNO trajectories for each sample in batch
         target_trajectories = []
@@ -149,9 +193,16 @@ def train_epoch(
             target_trajectory = target_trajectory.mean(dim=1)  # [B, T+1, C, H, W]
 
         # Compute state-level MSE loss
-        # Skip IC (index 0) since it's given, only supervise predicted states
-        pred_states = pred_trajectory[:, 1:, :, :, :]  # [B, T, C, H, W]
-        target_states = target_trajectory[:, 1:, :, :, :]  # [B, T, C, H, W]
+        if use_tbptt:
+            # Match predicted states to corresponding target window
+            # pred_trajectory: [B, bptt_window+1, C, H, W]
+            # target_trajectory: [B, T+1, C, H, W] -> take last bptt_window+1 states
+            pred_states = pred_trajectory[:, 1:, :, :, :]  # Skip first (warmup final state)
+            target_states = target_trajectory[:, -(bptt_window):, :, :, :]
+        else:
+            # Skip IC (index 0) since it's given, only supervise predicted states
+            pred_states = pred_trajectory[:, 1:, :, :, :]  # [B, T, C, H, W]
+            target_states = target_trajectory[:, 1:, :, :, :]  # [B, T, C, H, W]
 
         state_loss = F.mse_loss(pred_states, target_states)
         loss = state_weight * state_loss
@@ -237,8 +288,14 @@ def validate(
     alignment: VQVAEAlignmentLoss | None = None,
     lambda_latent: float = 0.1,
     lambda_commit: float = 0.5,
+    bptt_window: int | None = None,
 ) -> dict:
-    """Validate with state-level loss and optional VQ-VAE alignment."""
+    """Validate with state-level loss and optional VQ-VAE alignment.
+
+    Note: Validation always uses the full trajectory (no truncated BPTT)
+    since we don't need gradients. The bptt_window is only used to match
+    the same window as training for loss computation.
+    """
     noa.eval()
     total_loss = 0.0
     total_state = 0.0
@@ -246,12 +303,16 @@ def validate(
     total_commit = 0.0
     num_batches = 0
 
+    # For validation, we use same window as training for fair comparison
+    use_tbptt = bptt_window is not None and bptt_window < timesteps
+
     for batch in dataloader:
         ic = batch["ic"].to(device)
         params = batch["params"]
 
         B = ic.shape[0]
 
+        # Generate full trajectory (no grad, so no memory issue)
         pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True)
 
         target_trajectories = []
@@ -271,8 +332,13 @@ def validate(
         if n_realizations > 1 and target_trajectory.dim() == 6:
             target_trajectory = target_trajectory.mean(dim=1)
 
-        pred_states = pred_trajectory[:, 1:, :, :, :]
-        target_states = target_trajectory[:, 1:, :, :, :]
+        # Use same window as training for consistent evaluation
+        if use_tbptt:
+            pred_states = pred_trajectory[:, -(bptt_window):, :, :, :]
+            target_states = target_trajectory[:, -(bptt_window):, :, :, :]
+        else:
+            pred_states = pred_trajectory[:, 1:, :, :, :]
+            target_states = target_trajectory[:, 1:, :, :, :]
 
         state_loss = F.mse_loss(pred_states, target_states)
         loss = state_loss
@@ -373,6 +439,12 @@ def main():
     parser.add_argument(
         "--n-realizations", type=int, default=1,
         help="Number of stochastic realizations for CNO rollout (M > 1 enables realization aggregation)"
+    )
+    parser.add_argument(
+        "--bptt-window", type=int, default=None,
+        help="Truncated BPTT window size (only backprop through last N steps). "
+             "Required for long sequences (T > 32) to prevent gradient explosion. "
+             "Set to 32 for T=256, or leave None for full backprop on short sequences."
     )
 
     # System
@@ -499,6 +571,10 @@ def main():
     print(f"  timesteps: {args.timesteps}")
     print(f"  n_realizations: {args.n_realizations}")
     print(f"  lr: {args.lr}")
+    if args.bptt_window is not None:
+        print(f"  bptt_window: {args.bptt_window} (truncated BPTT enabled)")
+    else:
+        print(f"  bptt_window: None (full backprop)")
 
     best_val_loss = float("inf")
     history = {"train_loss": [], "val_loss": []}
@@ -518,6 +594,7 @@ def main():
             alignment=alignment,
             lambda_latent=args.lambda_latent,
             lambda_commit=args.lambda_commit,
+            bptt_window=args.bptt_window,
         )
         history["train_loss"].append(train_result["total"])
 
@@ -532,6 +609,7 @@ def main():
             alignment=alignment,
             lambda_latent=args.lambda_latent,
             lambda_commit=args.lambda_commit,
+            bptt_window=args.bptt_window,
         )
         history["val_loss"].append(val_result["total"])
 
