@@ -62,6 +62,7 @@ class NOABackbone(nn.Module):
         noise_scale: float = 0.05,
         use_checkpointing: bool = True,
         checkpoint_every: int = 16,
+        update_mode: str = "residual",  # "residual" or "autoregressive"
         **kwargs,
     ):
         super().__init__()
@@ -70,6 +71,8 @@ class NOABackbone(nn.Module):
         self.out_channels = out_channels
         self.use_checkpointing = use_checkpointing
         self.checkpoint_every = checkpoint_every
+        self.update_mode = update_mode
+        self.residual_scale = 0.1  # Scale down residuals initially
 
         # Build U-AFNO operator
         self.operator = UAFNOOperator(
@@ -111,13 +114,17 @@ class NOABackbone(nn.Module):
         """
         return self.rollout(u0, steps, return_all_steps, num_realizations)
 
+    def _single_step_for_checkpoint(self, x: torch.Tensor) -> torch.Tensor:
+        """Wrapper for single_step that works with torch.utils.checkpoint."""
+        return self.single_step(x)
+
     def _checkpointed_block(self, x: torch.Tensor, num_steps: int) -> torch.Tensor:
         """Run multiple steps as a checkpointed block.
 
         Used for gradient checkpointing - recomputes forward pass during backward.
         """
         for _ in range(num_steps):
-            x = self.operator(x)
+            x = self.single_step(x)
         return x
 
     def rollout(
@@ -172,7 +179,7 @@ class NOABackbone(nn.Module):
                 for _ in range(block_size):
                     # Checkpoint each step to allow collecting intermediates
                     x = checkpoint(
-                        self.operator,
+                        self._single_step_for_checkpoint,
                         x,
                         use_reentrant=False,
                     )
@@ -181,7 +188,7 @@ class NOABackbone(nn.Module):
         else:
             # Standard rollout (inference or single-output mode)
             for t in range(steps):
-                x = self.operator(x)
+                x = self.single_step(x)
                 if return_all_steps:
                     trajectory.append(x)
 
@@ -238,7 +245,12 @@ class NOABackbone(nn.Module):
         Returns:
             Next state [B, C, H, W]
         """
-        return self.operator(x)
+        if self.update_mode == "residual":
+            # u_{t+1} = u_t + scale * NOA(u_t) - Euler-style, better gradient flow
+            return x + self.residual_scale * self.operator(x)
+        else:
+            # u_{t+1} = NOA(u_t) - pure autoregressive
+            return self.operator(x)
 
     def get_intermediate_features(
         self,
@@ -281,6 +293,7 @@ def create_noa_backbone(config: Dict[str, Any]) -> NOABackbone:
             - dropout: Dropout rate (default: 0.1)
             - noise_type: Optional stochastic noise type
             - noise_scale: Noise scale (default: 0.05)
+            - update_mode: "residual" or "autoregressive" (default: "residual")
 
     Returns:
         Configured NOABackbone instance
@@ -295,4 +308,5 @@ def create_noa_backbone(config: Dict[str, Any]) -> NOABackbone:
         dropout=config.get("dropout", 0.1),
         noise_type=config.get("noise_type"),
         noise_scale=config.get("noise_scale", 0.05),
+        update_mode=config.get("update_mode", "residual"),
     )

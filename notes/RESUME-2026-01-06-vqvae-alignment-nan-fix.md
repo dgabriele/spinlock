@@ -9,17 +9,18 @@
 
 NOA (Neural Operator Agent) can now be trained with VQ-VAE alignment to "think in tokens" - producing outputs that are well-represented by the VQ-VAE's discrete vocabulary.
 
-### Three-Loss Structure
+### Two-Loss Structure
 
 ```
-L = L_traj + lambda_1 * L_latent + lambda_2 * L_commit
+L = L_traj + lambda * L_commit
 ```
 
 | Loss | Purpose | Default Weight |
 |------|---------|----------------|
 | `L_traj` | MSE on trajectories (physics fidelity) | 1.0 |
-| `L_latent` | Pre-quantized latent alignment | lambda_1 = 0.1 |
-| `L_commit` | VQ commitment (manifold adherence) | lambda_2 = 0.5 |
+| `L_commit` | VQ commitment (manifold adherence) | lambda = 0.5 |
+
+Note: L_latent was removed - it was always ~0 due to normalization washing out differences.
 
 ---
 
@@ -44,7 +45,6 @@ Predicted Trajectory [B, T, C, H, W]
 |      |                                        |
 |  VQ-VAE Encoder (frozen) -> z_pre             |
 |      |                                        |
-|  L_latent = MSE(z_pred_norm, z_target_norm)   |
 |  L_commit = MSE(z_pre, sg(z_quantized))       |
 +-----------------------------------------------+
 ```
@@ -74,12 +74,11 @@ poetry run python scripts/dev/train_noa_state_supervised.py \
 poetry run python scripts/dev/train_noa_state_supervised.py \
     --n-samples 500 --epochs 10 \
     --vqvae-path checkpoints/production/100k_3family_v1 \
-    --lambda-latent 0.1 --lambda-commit 0.5
+    --lambda-commit 0.5
 ```
 
 ### CLI Arguments
 - `--vqvae-path`: Path to VQ-VAE checkpoint directory
-- `--lambda-latent`: Weight for latent alignment loss (default: 0.1)
 - `--lambda-commit`: Weight for commitment loss (default: 0.5)
 - `--timesteps`: Number of timesteps to supervise (default: 32)
 - `--n-realizations`: Number of stochastic realizations for CNO rollout (default: 1)
@@ -158,7 +157,7 @@ normalized = standard_normalize(features)
 
 ### Gradient Flow
 - VQ-VAE weights are **frozen** (acts as pre-trained feature extractor)
-- Gradients flow: NOA <- features <- z_pre (L_latent + L_commit)
+- Gradients flow: NOA <- features <- z_pre (L_commit)
 - `sg()` (stop-gradient) applied to quantized vectors in L_commit
 
 ---
@@ -246,7 +245,7 @@ poetry run python scripts/dev/train_noa_state_supervised.py \
 poetry run python scripts/dev/train_noa_state_supervised.py \
     --timesteps 256 --bptt-window 32 \
     --vqvae-path checkpoints/production/100k_3family_v1 \
-    --lambda-latent 0.1 --lambda-commit 0.5
+    --lambda-commit 0.5
 ```
 
 ### Training Results (T=256, TBPTT window=32)

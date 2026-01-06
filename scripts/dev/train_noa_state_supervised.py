@@ -1,12 +1,11 @@
 #!/usr/bin/env python
 """NOA Training with State-Level Supervision and Optional VQ-VAE Alignment.
 
-This script trains NOA using a three-loss structure:
+This script trains NOA using a two-loss structure:
 1. L_traj: MSE on trajectories (primary, non-negotiable)
-2. L_latent: Pre-quantized latent alignment (optional, for semantic alignment)
-3. L_commit: VQ commitment loss (optional, for manifold adherence)
+2. L_commit: VQ commitment loss (optional, for manifold adherence)
 
-Loss = L_traj + λ1 * L_latent + λ2 * L_commit
+Loss = L_traj + λ * L_commit
 
 The VQ-VAE alignment is optional and enables NOA to "think" in terms of
 the VQ token vocabulary learned from CNO rollouts.
@@ -30,7 +29,7 @@ Usage:
     poetry run python scripts/dev/train_noa_state_supervised.py \
         --n-samples 500 --epochs 10 \
         --vqvae-path checkpoints/production/100k_3family_v1 \
-        --lambda-latent 0.1 --lambda-commit 0.5
+        --lambda-commit 0.5
 """
 
 import argparse
@@ -112,9 +111,13 @@ def train_epoch(
     state_weight: float = 1.0,
     clip_grad: float = 1.0,
     alignment: VQVAEAlignmentLoss | None = None,
-    lambda_latent: float = 0.1,
     lambda_commit: float = 0.5,
     bptt_window: int | None = None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+    save_fn = None,
+    save_every: int = 0,
+    global_step: int = 0,
+    log_every: int = 1,
 ) -> dict:
     """Train for one epoch with state-level supervision and optional VQ-VAE alignment.
 
@@ -122,7 +125,7 @@ def train_epoch(
     1. Replay CNO from IC -> target trajectory
     2. Run NOA from same IC -> predicted trajectory (with truncated BPTT if needed)
     3. Compute MSE loss on trajectory states (L_traj)
-    4. Optionally compute VQ-VAE alignment losses (L_latent, L_commit)
+    4. Optionally compute VQ-VAE commitment loss (L_commit)
 
     Args:
         bptt_window: If set, use truncated BPTT - only backprop through the last
@@ -134,7 +137,6 @@ def train_epoch(
     noa.train()
     total_loss = 0.0
     total_state = 0.0
-    total_latent = 0.0
     total_commit = 0.0
     num_batches = 0
     start_time = time.time()
@@ -207,8 +209,7 @@ def train_epoch(
         state_loss = F.mse_loss(pred_states, target_states)
         loss = state_weight * state_loss
 
-        # Add VQ-VAE alignment losses if enabled
-        latent_loss = torch.tensor(0.0, device=device)
+        # Add VQ-VAE commitment loss if enabled
         commit_loss = torch.tensor(0.0, device=device)
 
         if alignment is not None:
@@ -218,10 +219,8 @@ def train_epoch(
                     target_trajectory=target_states,
                     ic=ic,
                 )
-                latent_loss = align_losses['latent']
                 commit_loss = align_losses['commit']
-
-                loss = loss + lambda_latent * latent_loss + lambda_commit * commit_loss
+                loss = loss + lambda_commit * commit_loss
             except Exception as e:
                 if batch_idx == 0:
                     print(f"  Warning: VQ-VAE alignment failed: {e}")
@@ -248,32 +247,41 @@ def train_epoch(
 
         torch.nn.utils.clip_grad_norm_(noa.parameters(), clip_grad)
         optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
 
+        global_step += 1
         total_loss += loss.item()
         total_state += state_loss.item()
-        total_latent += latent_loss.item()
         total_commit += commit_loss.item()
         num_batches += 1
 
-        if (batch_idx + 1) % 10 == 0:
-            avg = total_loss / num_batches
+        # Periodic checkpoint
+        if save_every > 0 and save_fn is not None and global_step % save_every == 0:
+            save_fn(f"step_{global_step}")
+
+        # Logging
+        if (batch_idx + 1) % log_every == 0:
+            batch_time = (time.time() - start_time) / num_batches
             avg_state = total_state / num_batches
+            lr = scheduler.get_last_lr()[0] if scheduler else optimizer.param_groups[0]['lr']
+
             if alignment is not None:
-                avg_latent = total_latent / num_batches
                 avg_commit = total_commit / num_batches
-                print(f"  Batch {batch_idx + 1}/{len(dataloader)}: "
-                      f"total={avg:.6f} state={avg_state:.6f} "
-                      f"latent={avg_latent:.6f} commit={avg_commit:.6f}")
+                print(f"  [{batch_idx + 1}/{len(dataloader)}] "
+                      f"state={avg_state:.4f} commit={avg_commit:.6f} "
+                      f"lr={lr:.2e} {batch_time:.1f}s/batch")
             else:
-                print(f"  Batch {batch_idx + 1}/{len(dataloader)}: state_loss={avg_state:.6f}")
+                print(f"  [{batch_idx + 1}/{len(dataloader)}] "
+                      f"state={avg_state:.4f} lr={lr:.2e} {batch_time:.1f}s/batch")
 
     epoch_time = time.time() - start_time
     return {
         "total": total_loss / max(num_batches, 1),
         "state": total_state / max(num_batches, 1),
-        "latent": total_latent / max(num_batches, 1),
         "commit": total_commit / max(num_batches, 1),
         "time": epoch_time,
+        "global_step": global_step,
     }
 
 
@@ -286,20 +294,13 @@ def validate(
     timesteps: int,
     n_realizations: int = 1,
     alignment: VQVAEAlignmentLoss | None = None,
-    lambda_latent: float = 0.1,
     lambda_commit: float = 0.5,
     bptt_window: int | None = None,
 ) -> dict:
-    """Validate with state-level loss and optional VQ-VAE alignment.
-
-    Note: Validation always uses the full trajectory (no truncated BPTT)
-    since we don't need gradients. The bptt_window is only used to match
-    the same window as training for loss computation.
-    """
+    """Validate with state-level loss and optional VQ-VAE alignment."""
     noa.eval()
     total_loss = 0.0
     total_state = 0.0
-    total_latent = 0.0
     total_commit = 0.0
     num_batches = 0
 
@@ -343,7 +344,6 @@ def validate(
         state_loss = F.mse_loss(pred_states, target_states)
         loss = state_loss
 
-        latent_loss = torch.tensor(0.0, device=device)
         commit_loss = torch.tensor(0.0, device=device)
 
         if alignment is not None:
@@ -353,23 +353,20 @@ def validate(
                     target_trajectory=target_states,
                     ic=ic,
                 )
-                latent_loss = align_losses['latent']
                 commit_loss = align_losses['commit']
-                loss = loss + lambda_latent * latent_loss + lambda_commit * commit_loss
+                loss = loss + lambda_commit * commit_loss
             except Exception:
                 pass
 
         if not torch.isnan(loss):
             total_loss += loss.item()
             total_state += state_loss.item()
-            total_latent += latent_loss.item()
             total_commit += commit_loss.item()
             num_batches += 1
 
     return {
         "total": total_loss / max(num_batches, 1),
         "state": total_state / max(num_batches, 1),
-        "latent": total_latent / max(num_batches, 1),
         "commit": total_commit / max(num_batches, 1),
     }
 
@@ -447,6 +444,35 @@ def main():
              "Set to 32 for T=256, or leave None for full backprop on short sequences."
     )
 
+    # LR scheduling
+    parser.add_argument(
+        "--warmup-steps", type=int, default=0,
+        help="Number of warmup steps for LR scheduler"
+    )
+    parser.add_argument(
+        "--lr-schedule", type=str, default="cosine",
+        choices=["cosine", "constant"],
+        help="Learning rate schedule"
+    )
+
+    # Checkpointing
+    parser.add_argument(
+        "--checkpoint-dir", type=str, default="checkpoints/noa",
+        help="Directory to save checkpoints"
+    )
+    parser.add_argument(
+        "--save-every", type=int, default=1000,
+        help="Save checkpoint every N batches (0 = only save at epoch end)"
+    )
+    parser.add_argument(
+        "--log-every", type=int, default=1,
+        help="Log progress every N batches"
+    )
+    parser.add_argument(
+        "--early-stop-patience", type=int, default=2,
+        help="Stop if no improvement for N epochs (0 = disabled)"
+    )
+
     # System
     parser.add_argument(
         "--device", type=str, default="cuda",
@@ -461,10 +487,6 @@ def main():
     parser.add_argument(
         "--vqvae-path", type=str, default=None,
         help="Path to VQ-VAE checkpoint for alignment loss (optional)"
-    )
-    parser.add_argument(
-        "--lambda-latent", type=float, default=0.1,
-        help="Weight for latent alignment loss"
     )
     parser.add_argument(
         "--lambda-commit", type=float, default=0.5,
@@ -548,6 +570,32 @@ def main():
         weight_decay=args.weight_decay,
     )
 
+    # Create LR scheduler
+    total_steps = len(train_loader) * args.epochs
+    scheduler = None
+    if args.lr_schedule == "cosine":
+        from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+        if args.warmup_steps > 0:
+            warmup = LinearLR(optimizer, start_factor=0.1, total_iters=args.warmup_steps)
+            cosine = CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup_steps)
+            scheduler = SequentialLR(optimizer, [warmup, cosine], milestones=[args.warmup_steps])
+        else:
+            scheduler = CosineAnnealingLR(optimizer, T_max=total_steps)
+
+    # Setup checkpointing
+    checkpoint_dir = Path(args.checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_checkpoint(name: str):
+        path = checkpoint_dir / f"{name}.pt"
+        torch.save({
+            "model_state_dict": noa.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+            "args": vars(args),
+        }, path)
+        print(f"  Saved checkpoint: {path}")
+
     # Initialize VQ-VAE alignment (optional)
     alignment = None
     if args.vqvae_path is not None:
@@ -558,7 +606,6 @@ def main():
                 device=device,
             )
             print(f"  VQ-VAE alignment enabled")
-            print(f"  λ_latent: {args.lambda_latent}")
             print(f"  λ_commit: {args.lambda_commit}")
         except Exception as e:
             print(f"  Warning: Failed to load VQ-VAE: {e}")
@@ -575,8 +622,17 @@ def main():
         print(f"  bptt_window: {args.bptt_window} (truncated BPTT enabled)")
     else:
         print(f"  bptt_window: None (full backprop)")
+    print(f"  lr_schedule: {args.lr_schedule}")
+    if args.warmup_steps > 0:
+        print(f"  warmup_steps: {args.warmup_steps}")
+    print(f"  checkpoint_dir: {args.checkpoint_dir}")
+    print(f"  save_every: {args.save_every} batches")
+    print(f"  log_every: {args.log_every} batches")
+    print(f"  early_stop_patience: {args.early_stop_patience} epochs")
 
     best_val_loss = float("inf")
+    epochs_without_improvement = 0
+    global_step = 0
     history = {"train_loss": [], "val_loss": []}
 
     for epoch in range(args.epochs):
@@ -592,10 +648,15 @@ def main():
             timesteps=args.timesteps,
             n_realizations=args.n_realizations,
             alignment=alignment,
-            lambda_latent=args.lambda_latent,
             lambda_commit=args.lambda_commit,
             bptt_window=args.bptt_window,
+            scheduler=scheduler,
+            save_fn=save_checkpoint,
+            save_every=args.save_every,
+            global_step=global_step,
+            log_every=args.log_every,
         )
+        global_step = train_result["global_step"]
         history["train_loss"].append(train_result["total"])
 
         # Validate
@@ -607,7 +668,6 @@ def main():
             timesteps=args.timesteps,
             n_realizations=args.n_realizations,
             alignment=alignment,
-            lambda_latent=args.lambda_latent,
             lambda_commit=args.lambda_commit,
             bptt_window=args.bptt_window,
         )
@@ -617,11 +677,9 @@ def main():
         if alignment is not None:
             print(f"  Train: total={train_result['total']:.6f} "
                   f"state={train_result['state']:.6f} "
-                  f"latent={train_result['latent']:.6f} "
                   f"commit={train_result['commit']:.6f} [{train_result['time']:.1f}s]")
             print(f"  Val: total={val_result['total']:.6f} "
                   f"state={val_result['state']:.6f} "
-                  f"latent={val_result['latent']:.6f} "
                   f"commit={val_result['commit']:.6f}")
         else:
             print(f"  Train: loss={train_result['total']:.6f} [{train_result['time']:.1f}s]")
@@ -629,7 +687,19 @@ def main():
 
         if val_result["total"] < best_val_loss:
             best_val_loss = val_result["total"]
+            epochs_without_improvement = 0
             print(f"  New best! (val_loss={best_val_loss:.6f})")
+            save_checkpoint("best_model")
+        else:
+            epochs_without_improvement += 1
+
+        # Save epoch checkpoint
+        save_checkpoint(f"epoch_{epoch + 1}")
+
+        # Early stopping
+        if args.early_stop_patience > 0 and epochs_without_improvement >= args.early_stop_patience:
+            print(f"\n  Early stopping: no improvement for {args.early_stop_patience} epochs")
+            break
 
         # Clear replayer cache periodically to manage memory
         replayer.clear_cache()
@@ -639,6 +709,7 @@ def main():
     print("=" * 60)
     print(f"Best validation loss: {best_val_loss:.6f}")
     print(f"Final train loss: {history['train_loss'][-1]:.6f}")
+    print(f"Checkpoints saved to: {checkpoint_dir}")
 
 
 if __name__ == "__main__":

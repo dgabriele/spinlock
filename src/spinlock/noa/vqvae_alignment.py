@@ -1,18 +1,11 @@
 """VQ-VAE Alignment Loss for NOA Training.
 
-Implements the three-loss structure for token-aligned NOA training:
+Implements two-loss structure for token-aligned NOA training:
 1. L_traj: MSE on trajectories (handled externally, not in this module)
-2. L_latent: Pre-quantized latent alignment
-3. L_commit: VQ commitment regularizer (manifold adherence)
+2. L_commit: VQ commitment regularizer (manifold adherence)
 
 The key insight is that we use PRE-quantization embeddings for smooth gradients,
 and add a commitment loss to force NOA outputs onto the VQ manifold.
-
-This module handles:
-- Loading VQ-VAE from checkpoint
-- Feature extraction from trajectories
-- Per-category normalization
-- Latent alignment and commitment loss computation
 
 Usage:
     alignment = VQVAEAlignmentLoss.from_checkpoint(
@@ -22,7 +15,7 @@ Usage:
 
     # In training loop
     losses = alignment.compute_losses(pred_trajectory, target_trajectory, ic)
-    total_loss = state_loss + 0.1 * losses['latent'] + 0.5 * losses['commit']
+    total_loss = state_loss + lambda_commit * losses['commit']
 """
 
 import torch
@@ -36,10 +29,10 @@ from pathlib import Path
 class VQVAEAlignmentLoss(nn.Module):
     """VQ-VAE alignment loss for NOA training.
 
-    Computes two loss components:
-    1. L_latent: MSE between normalized pre-quantization latents
-    2. L_commit: MSE between pre-quant latent and quantized (stop-grad)
+    Computes commitment loss:
+    L_commit: MSE between pre-quant latent and quantized (stop-grad)
 
+    This ensures NOA outputs are expressible in the VQ-VAE vocabulary.
     The VQ-VAE weights are FROZEN - it acts as a pre-trained feature extractor.
     """
 
@@ -115,55 +108,32 @@ class VQVAEAlignmentLoss(nn.Module):
 
         Args:
             pred_trajectory: NOA predicted trajectory [B, T, C, H, W] or [B, M, T, C, H, W]
-            target_trajectory: CNO target trajectory [B, T, C, H, W] or [B, M, T, C, H, W]
+            target_trajectory: CNO target trajectory (unused, kept for API compat)
             ic: Initial condition [B, C, H, W] (optional, for initial features)
 
         Returns:
             Dictionary with:
-                - 'latent': Pre-quantized latent alignment loss
                 - 'commit': VQ commitment loss (manifold adherence)
                 - 'z_pred': Pre-quantized latent for pred (for logging)
-                - 'z_target': Pre-quantized latent for target (for logging)
         """
-        # Extract features from trajectories
-        # Handle both old (single output) and new (tuple output) extractors
+        # Extract features from predicted trajectory
         pred_result = self.feature_extractor(pred_trajectory, ic=ic)
-        target_result = self.feature_extractor(target_trajectory, ic=ic)
 
         if isinstance(pred_result, tuple):
             pred_features, pred_raw_ics = pred_result
-            target_features, target_raw_ics = target_result
         else:
             pred_features = pred_result
-            target_features = target_result
             pred_raw_ics = ic
-            target_raw_ics = ic
 
         # Normalize features
         pred_norm = self._normalize_features(pred_features)
-        target_norm = self._normalize_features(target_features)
 
-        # Encode to pre-quantization latents
-        # Handle VQVAEWithInitial (takes raw_ics) vs regular VQ-VAE
-        with torch.no_grad():
-            if self._is_hybrid_model and target_raw_ics is not None:
-                z_target_list = self.vqvae.encode(target_norm, raw_ics=target_raw_ics)
-            else:
-                z_target_list = self.vqvae.encode(target_norm)
-            z_target = torch.cat(z_target_list, dim=1)  # [B, total_latent_dim]
-
-        # Encode pred (gradients flow through feature_extractor)
+        # Encode pred to pre-quantization latents
         if self._is_hybrid_model and pred_raw_ics is not None:
             z_pred_list = self.vqvae.encode(pred_norm, raw_ics=pred_raw_ics)
         else:
             z_pred_list = self.vqvae.encode(pred_norm)
         z_pred = torch.cat(z_pred_list, dim=1)  # [B, total_latent_dim]
-
-        # L_latent: Normalized MSE between pre-quant latents
-        # Normalize per-channel for stable training
-        z_pred_norm = F.normalize(z_pred, p=2, dim=-1)
-        z_target_norm = F.normalize(z_target, p=2, dim=-1)
-        latent_loss = F.mse_loss(z_pred_norm, z_target_norm)
 
         # L_commit: Force pred to be close to its quantized version
         # This ensures NOA outputs are expressible in VQ vocabulary
@@ -172,10 +142,8 @@ class VQVAEAlignmentLoss(nn.Module):
         commit_loss = F.mse_loss(z_pred, z_q_pred.detach())
 
         return {
-            'latent': latent_loss,
             'commit': commit_loss,
             'z_pred': z_pred.detach(),
-            'z_target': z_target.detach(),
         }
 
     @classmethod
