@@ -1,0 +1,84 @@
+# NOA Training Configuration - VQ-led (Creative Observer)
+#
+# This configuration trains NOA with symbolic coherence as the primary objective.
+# L_recon (VQ reconstruction) is the primary loss, with L_traj as a regularizer.
+#
+# Usage:
+#   poetry run python scripts/dev/train_noa_unified.py \
+#       --loss-mode vq_led \
+#       --config configs/noa/vq_led_creative.yaml
+#
+# Philosophy:
+#   The Neural Operator Agent (NOA) is fundamentally a creative observer of
+#   dynamical systems. Rather than merely simulating trajectories with rigid
+#   fidelity to ground-truth rollouts, NOA generates its own "ideas" of
+#   evolution—pathways that may diverge from observed reality but remain
+#   coherent and meaningful when translated into VQ-VAE behavioral tokens.
+#
+#   A "wrong" rollout by traditional MSE metrics may represent a novel
+#   perspective on dynamics—much like how different neural activation patterns
+#   in human brains converge on shared concepts despite varying implementations.
+
+# Training paradigm
+loss:
+  mode: vq_led
+  weights:
+    recon: 1.0     # Primary: VQ reconstruction quality
+    commit: 0.5    # Primary: VQ commitment (embedding sharpness)
+    traj: 0.3      # Auxiliary: Physics regularizer (prevents drift)
+
+# NOA backbone architecture
+backbone:
+  type: u_afno
+  base_channels: 32
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  update_mode: residual
+
+# Training parameters
+training:
+  epochs: 10
+  batch_size: 4
+  lr: 1.0e-4
+  weight_decay: 0.01
+  timesteps: 256
+  bptt_window: 32    # Truncated BPTT for long sequences
+  warmup_steps: 500
+  lr_schedule: cosine
+  clip_grad: 1.0
+
+# VQ-VAE alignment (required for vq_led)
+vqvae:
+  checkpoint: checkpoints/production/100k_3family_v1
+  # L_latent not used in vq_led mode
+  enable_latent_loss: false
+
+# Checkpointing
+checkpointing:
+  save_every: 1000
+  log_every: 10
+  early_stop_patience: 3
+
+# Data
+data:
+  dataset: datasets/100k_full_features.h5
+  n_samples: 5000
+  val_split: 0.1
+  n_realizations: 1
+
+# Notes on hyperparameters:
+#
+# λ_traj = 0.3:
+#   This lower weight (compared to 1.0 in MSE-led) allows NOA to deviate
+#   from physics ground truth while still maintaining a grounding connection.
+#   If NOA generates "wrong" but symbolically coherent outputs, that's valued.
+#   Increase to 0.5 if physical accuracy is still important.
+#
+# λ_recon = 1.0:
+#   Primary loss - measures how well NOA outputs can be expressed in VQ vocabulary.
+#   High reconstruction quality means the trajectory is "meaningful" in token space.
+#
+# λ_commit = 0.5:
+#   Forces NOA's encoded outputs close to discrete codebook entries.
+#   Higher values mean sharper token assignments (less ambiguity).

@@ -1,0 +1,59 @@
+# NOA Training Configuration - MSE-led (Physics First)
+#
+# This configuration trains NOA with physics fidelity as the primary objective.
+# L_traj (trajectory MSE) is the primary loss, with VQ alignment as auxiliary.
+#
+# Usage:
+#   poetry run python scripts/dev/train_noa_unified.py \
+#       --loss-mode mse_led \
+#       --config configs/noa/mse_led_baseline.yaml
+#
+# Philosophy: Replicate ground truth exactly.
+
+# Training paradigm
+loss:
+  mode: mse_led
+  weights:
+    traj: 1.0      # Primary: trajectory matching
+    commit: 0.5    # Auxiliary: VQ commitment
+    latent: 0.1    # Auxiliary: NOA-VQ latent alignment
+
+# NOA backbone architecture
+backbone:
+  type: u_afno
+  base_channels: 32
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  update_mode: residual
+
+# Training parameters
+training:
+  epochs: 10
+  batch_size: 4
+  lr: 1.0e-4
+  weight_decay: 0.01
+  timesteps: 256
+  bptt_window: 32    # Truncated BPTT for long sequences
+  warmup_steps: 500
+  lr_schedule: cosine
+  clip_grad: 1.0
+
+# VQ-VAE alignment
+vqvae:
+  checkpoint: checkpoints/production/100k_3family_v1
+  enable_latent_loss: true
+  latent_sample_steps: 3
+
+# Checkpointing
+checkpointing:
+  save_every: 1000   # Save every N batches
+  log_every: 10
+  early_stop_patience: 3
+
+# Data
+data:
+  dataset: datasets/100k_full_features.h5
+  n_samples: 5000
+  val_split: 0.1
+  n_realizations: 1

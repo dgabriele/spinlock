@@ -460,6 +460,10 @@ class VQVAEAlignmentLoss(nn.Module):
                     """Quantize latents."""
                     return self.vqvae.quantize(z_list)
 
+                def decode(self, z_q_list):
+                    """Decode quantized latents to feature space."""
+                    return self.vqvae.decode(z_q_list)
+
                 def _combine_features(self, features, raw_ics):
                     """Combine manual features with CNN embeddings."""
                     # Extract manual INITIAL features

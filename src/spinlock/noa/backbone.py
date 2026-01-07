@@ -22,9 +22,10 @@ from torch.utils.checkpoint import checkpoint
 from typing import Optional, Dict, Any, List
 
 from spinlock.operators.u_afno import UAFNOOperator
+from spinlock.noa.base_backbone import BaseNOABackbone
 
 
-class NOABackbone(nn.Module):
+class NOABackbone(BaseNOABackbone):
     """Minimal U-AFNO wrapper for NOA Phase 1 prototype.
 
     Generates autoregressive trajectories from initial conditions.
@@ -67,8 +68,8 @@ class NOABackbone(nn.Module):
     ):
         super().__init__()
 
-        self.in_channels = in_channels
-        self.out_channels = out_channels
+        self._in_channels = in_channels
+        self._out_channels = out_channels
         self.use_checkpointing = use_checkpointing
         self.checkpoint_every = checkpoint_every
         self.update_mode = update_mode
@@ -269,14 +270,14 @@ class NOABackbone(nn.Module):
         return self.operator.get_intermediate_features(x, extract_from=extract_from)
 
     @property
-    def num_parameters(self) -> int:
-        """Total number of parameters."""
-        return sum(p.numel() for p in self.parameters())
+    def in_channels(self) -> int:
+        """Number of input channels expected by the backbone."""
+        return self._in_channels
 
     @property
-    def num_trainable_parameters(self) -> int:
-        """Number of trainable parameters."""
-        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+    def out_channels(self) -> int:
+        """Number of output channels produced by the backbone."""
+        return self._out_channels
 
 
 def create_noa_backbone(config: Dict[str, Any]) -> NOABackbone:

@@ -261,6 +261,48 @@ Categories are discovered automatically from INITIAL + SUMMARY + TEMPORAL featur
 
 ---
 
+## Why "Categories"? A Philosophical and Practical Choice
+
+The term **categories** for the data-driven groupings produced by orthogonality-weighted clustering (and then refined as top-level codebooks in the hierarchical VQ-VAE) is deliberate. It carries a specific philosophical and practical connotation that distinguishes it from alternatives like "clusters," "modes," "prototypes," or "factors."
+
+### Philosophical Sense: Aristotelian/Kantian Categories
+
+The groupings are intended to function as **fundamental ways of understanding emergent behavior** in dynamical systems—akin to classical philosophical categories (substance, quantity, relation, etc.) that structure perception of reality. These are not mere statistical clusters but **conceptual lenses** through which the continuous chaos of rollouts is coarse-grained into interpretable primitives.
+
+By calling them "categories," the project signals that they are meant to be the basic "kinds" or "forms" that dynamical behaviors can take, regardless of specific parameters or initial conditions.
+
+### Cognitive/Perceptual Sense
+
+In the NOA's "mind," categories are the **perceptual building blocks**—the agent "sees" the world through these coarse filters first (top-level codebooks), then refines within them (lower levels). This mirrors human categorical perception: we don't experience raw sensory flux but pre-structured concepts ("chair," "motion," "stability").
+
+The orthogonality weighting explicitly encourages **independence between categories**, reinforcing their role as distinct, non-overlapping modes of interpretation.
+
+### Practical Distinction from Other Terms
+
+| Term | Connotation | Why Not for Spinlock |
+|------|-------------|---------------------|
+| **Clusters** | Statistical data density | Too neutral—implies only where data is dense, not conceptual primacy or interpretability |
+| **Modes** | Multimodal distributions or vibrational modes | Too physical/spectral—overlaps with AFNO Fourier terminology |
+| **Prototypes** | Exemplar-based (like k-means centers) | Feels like single representative points, not hierarchical perceptual lenses |
+| **Factors** | Latent variables in probabilistic models (e.g., factor analysis) | Lacks the hierarchical, perceptual flavor; too statistical |
+| **Categories** | High-level, discrete ways of carving up the manifold | ✅ The first step in turning continuous physics into symbolic thought |
+
+### The Emergent Language of Computation
+
+**Long-term vision:** Categories are chosen to evoke conceptual, perceptual, and almost **ontological** groupings—the basic "kinds of behavior" that the agent uses to make sense of its dynamical reality, rather than mere statistical artifacts.
+
+This framing keeps the long-term vision in sight: these categories are the **seeds of an emergent "language of computation"** that NOA might one day use for genuine reasoning and discovery. Just as human cognition operates over conceptual categories rather than raw sensory data, NOA operates over behavioral categories rather than raw feature vectors.
+
+| Human Cognition | NOA Cognition |
+|-----------------|---------------|
+| Raw sensory flux → categorical perception ("chair", "motion") | Raw trajectories → categorical encoding (behavioral tokens) |
+| Categories enable symbolic reasoning | Categories enable compositional understanding |
+| Language built on categorical concepts | "Language of computation" built on behavioral categories |
+
+**In summary:** "Categories" signals that these groupings are not incidental statistical artifacts but the foundational vocabulary for understanding dynamical systems—the conceptual primitives from which higher-level reasoning emerges.
+
+---
+
 ## Feature Cleaning Summary
 
 The VQ-VAE training pipeline applies automatic feature cleaning:

@@ -337,6 +337,28 @@ class CategoricalHierarchicalVQVAE(nn.Module):
         """
         return [decoder(z_q) for decoder, z_q in zip(self.partial_decoders, z_q_list)]
 
+    def decode(self, z_q_list: List[torch.Tensor]) -> torch.Tensor:
+        """Decode quantized vectors to feature space.
+
+        Unified decode interface for VQ-VAE reconstruction.
+        This is the reconstruction step: z_q → x_recon
+
+        Used in tokenizable-led NOA training as:
+            x_recon = vqvae.decode(z_q_list)
+            L_recon = MSE(x_recon, x_original)
+
+        Philosophy: This enables NOA to be evaluated on whether its outputs
+        are "expressible" in the VQ vocabulary, not just accurate to physics.
+        A high-quality decode means the NOA trajectory is symbolically coherent.
+
+        Args:
+            z_q_list: List of N×L quantized vectors (from quantize())
+
+        Returns:
+            Reconstructed features [batch, input_dim]
+        """
+        return self.decode_shared(z_q_list)
+
     def compute_orthogonality_loss(self, z_list: List[torch.Tensor]) -> torch.Tensor:
         """Compute orthogonality loss across all latent vectors.
 

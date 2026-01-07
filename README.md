@@ -141,10 +141,16 @@ The NOA uses a **U-AFNO backbone** that operates directly in continuous function
 **Phase 1: U-AFNO Neural Operator Backbone** (🔄 In Development - Core Training Working)
 - U-AFNO backbone (144M parameters) generates rollouts from (θ, u₀) inputs
 - CNO replay provides state-level supervision (ground-truth trajectories)
-- **Three-loss training:** `L = L_traj + λ₁·L_latent + λ₂·L_commit`
-  - L_traj: MSE on trajectories (physics fidelity)
-  - L_latent: Pre-quantized VQ-VAE latent alignment (smooth gradients)
-  - L_commit: VQ commitment loss (manifold adherence)
+- **Two Training Paradigms** (togglable via `--loss-mode`):
+
+  | Mode | Philosophy | Primary Loss | Use Case |
+  |------|------------|--------------|----------|
+  | **MSE-led** | Physics fidelity first | L_traj (trajectory MSE) | Exact trajectory matching |
+  | **VQ-led** | Symbolic coherence first | L_recon (VQ reconstruction) | Creative interpretation |
+
+  - **MSE-led:** `L = λ_traj·L_traj + λ_commit·L_commit + λ_latent·L_latent`
+  - **VQ-led:** `L = λ_recon·L_recon + λ_commit·L_commit + λ_traj·L_traj`
+
 - Physics-native architecture operating in continuous function space
 
 **Phase 2: Multi-Observation Context** (📋 Planned)
@@ -174,24 +180,30 @@ The NOA uses a **U-AFNO backbone** that operates directly in continuous function
 
 **Quick Start (Phase 1 Training):**
 ```bash
-# Train NOA with full VQ-VAE alignment (L_traj + L_commit + L_latent)
-poetry run python scripts/dev/train_noa_state_supervised.py \
+# MSE-led: Physics fidelity first (primary: trajectory matching)
+poetry run python scripts/dev/train_noa_unified.py \
+    --loss-mode mse_led \
     --dataset datasets/100k_full_features.h5 \
     --vqvae-path checkpoints/production/100k_3family_v1 \
     --n-samples 5000 --epochs 10 --batch-size 4 \
-    --lr 3e-4 --bptt-window 32 --warmup-steps 500 --timesteps 256 \
-    --lambda-commit 0.5 --enable-latent-loss --lambda-latent 0.5 \
-    --latent-sample-steps 8 --save-every 200
+    --lambda-traj 1.0 --lambda-commit 0.5 --enable-latent-loss --lambda-latent 0.1
+
+# VQ-led: Symbolic coherence first (primary: VQ reconstruction)
+poetry run python scripts/dev/train_noa_unified.py \
+    --loss-mode vq_led \
+    --dataset datasets/100k_full_features.h5 \
+    --vqvae-path checkpoints/production/100k_3family_v1 \
+    --n-samples 5000 --epochs 10 --batch-size 4 \
+    --lambda-recon 1.0 --lambda-commit 0.5 --lambda-traj 0.3
 ```
 
 **Resume from checkpoint:**
 ```bash
-# Resume interrupted training
-poetry run python scripts/dev/train_noa_state_supervised.py \
+poetry run python scripts/dev/train_noa_unified.py \
     --resume checkpoints/noa/step_200.pt \
+    --loss-mode mse_led \
     --dataset datasets/100k_full_features.h5 \
-    --vqvae-path checkpoints/production/100k_3family_v1 \
-    --epochs 10 --batch-size 4 --enable-latent-loss
+    --vqvae-path checkpoints/production/100k_3family_v1
 ```
 
 **Evaluate alignment quality:**
@@ -307,6 +319,23 @@ See [docs/features/](docs/features/) for detailed feature definitions and extrac
 ## 🎛️ VQ-VAE Behavioral Tokenization
 
 The VQ-VAE pipeline transforms continuous behavioral features into discrete tokens—a compositional vocabulary for describing neural operator dynamics.
+
+### Why "Categories"?
+
+The term **categories** for the top-level groupings produced by orthogonality-weighted clustering is deliberate. These are not mere statistical clusters but conceptual primitives through which continuous dynamical behavior is coarse-grained into interpretable structure.
+
+| Term | Why Not | Categories Are Different |
+|------|---------|--------------------------|
+| **Clusters** | Too neutral—implies data density, not conceptual primacy | Categories are the basic "kinds" of behavior, not density modes |
+| **Modes** | Suggests spectral/vibrational modes (overlaps with AFNO terminology) | Categories are perceptual, not physical |
+| **Prototypes** | Feels exemplar-based (like k-means centers) | Categories are hierarchical lenses, not single points |
+| **Factors** | Evokes latent variables without hierarchical structure | Categories have multi-level refinement |
+
+**Philosophical grounding:** Categories function as fundamental ways of understanding emergent behavior—akin to Aristotelian/Kantian categories that structure perception of reality. In the NOA's "mind," categories are perceptual building blocks: the agent "sees" the world through these coarse filters first (top-level codebooks), then refines within them (lower levels). The orthogonality weighting explicitly encourages independence, reinforcing their role as distinct, non-overlapping modes of interpretation.
+
+**Long-term vision:** These categories are seeds of an emergent "language of computation" that NOA may use for reasoning and discovery—the first step in turning continuous physics into symbolic thought.
+
+📖 **See also:** [docs/baselines/100k-full-features-vqvae.md](docs/baselines/100k-full-features-vqvae.md) for the full terminology discussion.
 
 ### Production Baseline: 100K Full Features
 
