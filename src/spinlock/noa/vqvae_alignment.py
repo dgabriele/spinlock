@@ -44,6 +44,9 @@ class VQVAEAlignmentLoss(nn.Module):
         group_indices: Dict[str, List[int]],
         device: str = "cuda",
         is_hybrid_model: bool = False,
+        noa: Optional[nn.Module] = None,
+        enable_latent_loss: bool = False,
+        latent_sample_steps: int = 3,
     ):
         """Initialize alignment loss.
 
@@ -54,6 +57,9 @@ class VQVAEAlignmentLoss(nn.Module):
             group_indices: Category → feature indices mapping
             device: Computation device
             is_hybrid_model: Whether VQ-VAE is a VQVAEWithInitial (takes raw ICs)
+            noa: NOA backbone for latent loss (required if enable_latent_loss=True)
+            enable_latent_loss: Enable L_latent (NOA-VQ latent alignment)
+            latent_sample_steps: Number of timesteps to sample for latent loss (3=default, -1=all)
         """
         super().__init__()
 
@@ -68,6 +74,122 @@ class VQVAEAlignmentLoss(nn.Module):
         for param in self.vqvae.parameters():
             param.requires_grad = False
         self.vqvae.eval()
+
+        # Latent alignment components (optional)
+        self.enable_latent_loss = enable_latent_loss
+        self.latent_sample_steps = latent_sample_steps
+        self.noa = noa
+
+        if enable_latent_loss:
+            if noa is None:
+                raise ValueError("enable_latent_loss=True requires noa parameter")
+
+            from spinlock.noa.latent_projector import LatentProjector
+
+            # Infer dimensions dynamically
+            vq_latent_dim = self._infer_vq_latent_dim(vqvae)
+            noa_latent_dim = self._infer_noa_latent_dim(noa)
+
+            # Create projector with inferred dimensions
+            self.latent_projector = LatentProjector(
+                noa_latent_dim=noa_latent_dim,
+                vq_latent_dim=vq_latent_dim,
+            ).to(self.device)
+        else:
+            self.latent_projector = None
+
+    def _infer_vq_latent_dim(self, vqvae: nn.Module) -> int:
+        """Infer VQ-VAE latent dimension from model architecture.
+
+        Returns:
+            Total latent dimension (sum across all category encoders)
+        """
+        # Get input dimension - try multiple approaches
+        input_dim = None
+
+        if hasattr(vqvae, 'vqvae'):  # HybridVQVAEWrapper
+            if hasattr(vqvae.vqvae, 'input_dim'):
+                input_dim = vqvae.vqvae.input_dim
+        elif hasattr(vqvae, 'input_dim'):
+            input_dim = vqvae.input_dim
+
+        # Try to infer from encoder if not found
+        if input_dim is None and hasattr(vqvae, 'group_encoders'):
+            # Get first encoder's input dimension
+            first_encoder = list(vqvae.group_encoders.values())[0]
+            if hasattr(first_encoder, 'encoder') and hasattr(first_encoder.encoder[0], 'in_features'):
+                # This is the total input across all groups
+                input_dim = first_encoder.encoder[0].in_features
+
+        # Fallback: try the feature extractor's output dimension
+        if input_dim is None and hasattr(self, 'feature_extractor'):
+            if hasattr(self.feature_extractor, 'input_dim'):
+                input_dim = self.feature_extractor.input_dim
+
+        # Last resort: conservative default
+        if input_dim is None:
+            input_dim = 187
+
+        dummy_input = torch.zeros(1, input_dim, device=next(vqvae.parameters()).device)
+
+        with torch.no_grad():
+            # For VQVAEWithInitial (hybrid models), need dummy IC too
+            if hasattr(vqvae, 'initial_encoder'):
+                # Infer grid size from NOA (if available) or use conservative default
+                grid_size = 64
+                if self.noa is not None:
+                    grid_size = self._infer_grid_size(self.noa)
+
+                dummy_ic = torch.zeros(1, 1, grid_size, grid_size, device=dummy_input.device)
+                z_list = vqvae.encode(dummy_input, raw_ics=dummy_ic)
+            else:
+                z_list = vqvae.encode(dummy_input)
+
+            # Concatenate to get total dimension
+            z_total = torch.cat(z_list, dim=1)
+            return z_total.shape[1]
+
+    def _infer_noa_latent_dim(self, noa: nn.Module) -> int:
+        """Infer NOA bottleneck feature dimension.
+
+        Returns:
+            Channel dimension of bottleneck features
+        """
+        grid_size = self._infer_grid_size(noa)
+
+        dummy_state = torch.zeros(1, noa.in_channels, grid_size, grid_size,
+                                   device=next(noa.parameters()).device)
+
+        with torch.no_grad():
+            features = noa.get_intermediate_features(dummy_state, extract_from="bottleneck")
+            bottleneck = features['bottleneck']  # [1, C, H, W]
+            return bottleneck.shape[1]  # Return channel dimension
+
+    def _infer_grid_size(self, noa: nn.Module) -> int:
+        """Infer grid size from NOA operator architecture.
+
+        Returns:
+            Grid size (H = W assumed square)
+        """
+        # Try to infer from U-AFNO operator config if available
+        if hasattr(noa, 'operator'):
+            # U-AFNO typically works with power-of-2 grids
+            # Test with common grid sizes
+            test_sizes = [64, 128, 256]
+
+            for size in test_sizes:
+                try:
+                    dummy = torch.zeros(1, noa.in_channels, size, size,
+                                        device=next(noa.parameters()).device)
+                    with torch.no_grad():
+                        _ = noa.operator(dummy)
+                    # If successful, this is a valid grid size
+                    return size
+                except:
+                    continue
+
+        # Fallback default
+        return 64
 
     def _normalize_features(self, features: torch.Tensor) -> torch.Tensor:
         """Apply feature cleaning and normalization using existing infrastructure.
@@ -97,6 +219,57 @@ class VQVAEAlignmentLoss(nn.Module):
         normalized = torch.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0)
 
         return normalized
+
+    def _compute_latent_alignment(
+        self,
+        pred_trajectory: torch.Tensor,
+        vq_latents: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute latent alignment loss between NOA and VQ-VAE.
+
+        Args:
+            pred_trajectory: [B, T, C, H, W] predicted states
+            vq_latents: [B, D_vq] VQ encoder pre-quantization latents
+
+        Returns:
+            Scalar latent alignment loss
+        """
+        B, T, C, H, W = pred_trajectory.shape
+
+        # Determine timesteps to sample
+        if self.latent_sample_steps <= 0 or self.latent_sample_steps >= T:
+            # Sample all timesteps
+            sample_indices = list(range(T))
+        else:
+            # Sample evenly spaced timesteps
+            sample_indices = [int(i * (T - 1) / (self.latent_sample_steps - 1))
+                            for i in range(self.latent_sample_steps)]
+
+        noa_latents_sampled = []
+
+        for t in sample_indices:
+            state_t = pred_trajectory[:, t, :, :, :]  # [B, C, H, W]
+
+            # Extract bottleneck features from NOA
+            noa_features = self.noa.get_intermediate_features(
+                state_t,
+                extract_from="bottleneck"
+            )
+            bottleneck = noa_features['bottleneck']  # [B, C_noa, H', W']
+
+            # Project to VQ space
+            proj_latent = self.latent_projector(bottleneck)  # [B, D_vq]
+            noa_latents_sampled.append(proj_latent)
+
+        # Aggregate across sampled timesteps (mean pooling for stability)
+        noa_latents_trajectory = torch.stack(noa_latents_sampled, dim=1)  # [B, n_samples, D_vq]
+        noa_latents_aggregated = noa_latents_trajectory.mean(dim=1)  # [B, D_vq]
+
+        # Compute MSE between NOA latents and VQ latents
+        # No normalization - this is the key difference from previous failed attempt
+        latent_loss = F.mse_loss(noa_latents_aggregated, vq_latents.detach())
+
+        return latent_loss
 
     def compute_losses(
         self,
@@ -141,10 +314,20 @@ class VQVAEAlignmentLoss(nn.Module):
         z_q_pred = torch.cat(z_q_pred_list, dim=1)
         commit_loss = F.mse_loss(z_pred, z_q_pred.detach())
 
-        return {
+        losses = {
             'commit': commit_loss,
             'z_pred': z_pred.detach(),
         }
+
+        # L_latent: NOA-VQ latent alignment (optional)
+        if self.enable_latent_loss and self.latent_projector is not None:
+            latent_loss = self._compute_latent_alignment(
+                pred_trajectory=pred_trajectory,
+                vq_latents=z_pred,
+            )
+            losses['latent'] = latent_loss
+
+        return losses
 
     @classmethod
     def from_checkpoint(
@@ -153,6 +336,9 @@ class VQVAEAlignmentLoss(nn.Module):
         device: str = "cuda",
         feature_extractor: Optional[nn.Module] = None,
         use_aligned_extractor: bool = True,
+        noa: Optional[nn.Module] = None,
+        enable_latent_loss: bool = False,
+        latent_sample_steps: int = 3,
     ) -> "VQVAEAlignmentLoss":
         """Load alignment loss from VQ-VAE checkpoint.
 
@@ -164,6 +350,9 @@ class VQVAEAlignmentLoss(nn.Module):
             use_aligned_extractor: If True, use AlignedFeatureExtractor for
                                   3-family models (default). If False, use legacy
                                   TrajectoryFeatureExtractor.
+            noa: NOA backbone for latent loss (required if enable_latent_loss=True)
+            enable_latent_loss: Enable L_latent (NOA-VQ latent alignment)
+            latent_sample_steps: Number of timesteps to sample for latent loss (3=default, -1=all)
 
         Returns:
             Configured VQVAEAlignmentLoss instance
@@ -345,6 +534,9 @@ class VQVAEAlignmentLoss(nn.Module):
             group_indices=group_indices,
             device=device,
             is_hybrid_model=is_hybrid_model,
+            noa=noa,
+            enable_latent_loss=enable_latent_loss,
+            latent_sample_steps=latent_sample_steps,
         )
 
 

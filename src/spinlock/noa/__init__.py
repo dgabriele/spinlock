@@ -22,6 +22,7 @@ from .training import (
 )
 from .cno_replay import CNOReplayer
 from .vqvae_alignment import VQVAEAlignmentLoss, TrajectoryFeatureExtractor, AlignedFeatureExtractor
+from .latent_projector import LatentProjector
 
 __all__ = [
     # Backbone
@@ -49,4 +50,5 @@ __all__ = [
     "VQVAEAlignmentLoss",
     "TrajectoryFeatureExtractor",
     "AlignedFeatureExtractor",
+    "LatentProjector",
 ]

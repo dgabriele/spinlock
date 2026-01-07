@@ -112,6 +112,7 @@ def train_epoch(
     clip_grad: float = 1.0,
     alignment: VQVAEAlignmentLoss | None = None,
     lambda_commit: float = 0.5,
+    lambda_latent: float = 0.1,
     bptt_window: int | None = None,
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
     save_fn = None,
@@ -136,8 +137,9 @@ def train_epoch(
     """
     noa.train()
     total_loss = 0.0
-    total_state = 0.0
+    total_traj = 0.0  # Trajectory MSE loss (physics fidelity)
     total_commit = 0.0
+    total_latent = 0.0
     num_batches = 0
     start_time = time.time()
 
@@ -163,14 +165,11 @@ def train_epoch(
             warmup_state = x.clone()  # Detached from graph
 
             # Phase 2: Supervised (with gradients)
-            x = warmup_state
-            supervised_trajectory = [x]
-            for _ in range(bptt_window):
-                x = noa.single_step(x)
-                supervised_trajectory.append(x)
+            # Use rollout() to leverage gradient checkpointing
+            supervised_traj = noa.rollout(warmup_state, steps=bptt_window, return_all_steps=True)
 
             # pred_trajectory only contains supervised portion [B, bptt_window+1, C, H, W]
-            pred_trajectory = torch.stack(supervised_trajectory, dim=1)
+            pred_trajectory = supervised_traj
         else:
             # Standard rollout (full gradient flow)
             pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True)
@@ -211,6 +210,7 @@ def train_epoch(
 
         # Add VQ-VAE commitment loss if enabled
         commit_loss = torch.tensor(0.0, device=device)
+        latent_loss = torch.tensor(0.0, device=device)
 
         if alignment is not None:
             try:
@@ -221,6 +221,11 @@ def train_epoch(
                 )
                 commit_loss = align_losses['commit']
                 loss = loss + lambda_commit * commit_loss
+
+                # Add L_latent if enabled
+                if 'latent' in align_losses:
+                    latent_loss = align_losses['latent']
+                    loss = loss + lambda_latent * latent_loss
             except Exception as e:
                 if batch_idx == 0:
                     print(f"  Warning: VQ-VAE alignment failed: {e}")
@@ -252,8 +257,9 @@ def train_epoch(
 
         global_step += 1
         total_loss += loss.item()
-        total_state += state_loss.item()
+        total_traj += state_loss.item()
         total_commit += commit_loss.item()
+        total_latent += latent_loss.item()
         num_batches += 1
 
         # Periodic checkpoint
@@ -263,23 +269,33 @@ def train_epoch(
         # Logging
         if (batch_idx + 1) % log_every == 0:
             batch_time = (time.time() - start_time) / num_batches
-            avg_state = total_state / num_batches
+            avg_traj = total_traj / num_batches
+            avg_total = total_loss / num_batches
             lr = scheduler.get_last_lr()[0] if scheduler else optimizer.param_groups[0]['lr']
 
             if alignment is not None:
                 avg_commit = total_commit / num_batches
-                print(f"  [{batch_idx + 1}/{len(dataloader)}] "
-                      f"state={avg_state:.4f} commit={avg_commit:.6f} "
-                      f"lr={lr:.2e} {batch_time:.1f}s/batch")
+                avg_latent = total_latent / num_batches
+                if alignment.enable_latent_loss:
+                    print(f"  [{batch_idx + 1}/{len(dataloader)}] "
+                          f"loss={avg_total:.4f} traj={avg_traj:.4f} commit={avg_commit:.6f} "
+                          f"latent={avg_latent:.6f} "
+                          f"lr={lr:.2e} {batch_time:.1f}s/b")
+                else:
+                    print(f"  [{batch_idx + 1}/{len(dataloader)}] "
+                          f"loss={avg_total:.4f} traj={avg_traj:.4f} commit={avg_commit:.6f} "
+                          f"lr={lr:.2e} {batch_time:.1f}s/b")
             else:
                 print(f"  [{batch_idx + 1}/{len(dataloader)}] "
-                      f"state={avg_state:.4f} lr={lr:.2e} {batch_time:.1f}s/batch")
+                      f"loss={avg_total:.4f} traj={avg_traj:.4f} "
+                      f"lr={lr:.2e} {batch_time:.1f}s/b")
 
     epoch_time = time.time() - start_time
     return {
         "total": total_loss / max(num_batches, 1),
-        "state": total_state / max(num_batches, 1),
+        "traj": total_traj / max(num_batches, 1),
         "commit": total_commit / max(num_batches, 1),
+        "latent": total_latent / max(num_batches, 1),
         "time": epoch_time,
         "global_step": global_step,
     }
@@ -492,6 +508,18 @@ def main():
         "--lambda-commit", type=float, default=0.5,
         help="Weight for VQ commitment loss"
     )
+    parser.add_argument(
+        "--enable-latent-loss", action="store_true",
+        help="Enable L_latent (NOA-VQ latent alignment)"
+    )
+    parser.add_argument(
+        "--lambda-latent", type=float, default=0.1,
+        help="Weight for latent alignment loss (default: 0.1)"
+    )
+    parser.add_argument(
+        "--latent-sample-steps", type=int, default=3,
+        help="Number of timesteps to sample for latent loss (default: 3, use -1 for all)"
+    )
 
     args = parser.parse_args()
 
@@ -560,6 +588,7 @@ def main():
         encoder_levels=args.encoder_levels,
         modes=args.modes,
         afno_blocks=args.afno_blocks,
+        use_checkpointing=True,  # Keep enabled to reduce activation memory
     ).to(device)
     print(f"  Parameters: {noa.num_parameters:,}")
 
@@ -604,9 +633,19 @@ def main():
             alignment = VQVAEAlignmentLoss.from_checkpoint(
                 vqvae_path=args.vqvae_path,
                 device=device,
+                noa=noa,
+                enable_latent_loss=args.enable_latent_loss,
+                latent_sample_steps=args.latent_sample_steps,
             )
             print(f"  VQ-VAE alignment enabled")
             print(f"  λ_commit: {args.lambda_commit}")
+            if args.enable_latent_loss:
+                print(f"  λ_latent: {args.lambda_latent}")
+                sample_info = f"all timesteps" if args.latent_sample_steps <= 0 else f"{args.latent_sample_steps} sampled"
+                print(f"  Latent sampling: {sample_info}")
+                print(f"  VQ latent dim: {alignment.latent_projector.vq_latent_dim}")
+                print(f"  NOA latent dim: {alignment.latent_projector.noa_latent_dim}")
+                print(f"  Projector parameters: {alignment.latent_projector.num_parameters:,}")
         except Exception as e:
             print(f"  Warning: Failed to load VQ-VAE: {e}")
             print(f"  Continuing without VQ-VAE alignment")
@@ -649,6 +688,7 @@ def main():
             n_realizations=args.n_realizations,
             alignment=alignment,
             lambda_commit=args.lambda_commit,
+            lambda_latent=args.lambda_latent,
             bptt_window=args.bptt_window,
             scheduler=scheduler,
             save_fn=save_checkpoint,
