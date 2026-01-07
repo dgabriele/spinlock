@@ -1,7 +1,7 @@
 version: "1.0"
 
 metadata:
-  name: "u_afno_baseline_10k"
+  name: "u_afno_baseline_100k"
   description: |
     U-AFNO neural operator dataset with global spectral mixing via AFNO bottleneck.
     Uses U-Net encoder/decoder architecture with AFNO spectral processing for
@@ -137,7 +137,7 @@ sampling:
     check_discrepancy: true
     check_correlation: true
 
-  total_samples: 10000  # Full 10K baseline
+  total_samples: 100000  # Full 100K baseline
   batch_size: 1  # Single operator per batch for float32 memory
 
 # Simulation configuration
@@ -217,7 +217,7 @@ simulation:
 
 # Dataset storage configuration
 dataset:
-  output_path: "./datasets/u_afno_baseline_10k.h5"
+  output_path: "./datasets/u_afno_baseline_100k.h5"
 
   storage:
     backend: "hdf5"
@@ -228,14 +228,17 @@ dataset:
 
 logging:
   level: "INFO"
+  format: "structured"
 
-# Feature extraction (learned features disabled for now due to memory constraints)
+# Feature extraction configuration
+# Extract INITIAL + SUMMARY + TEMPORAL features for VQ-VAE training
 features:
+  initial:
+    enabled: true  # Enable INITIAL family (IC features)
+  temporal:
+    enabled: true  # Enable TEMPORAL family (per-timestep time series)
   summary:
-    enabled: true
-    summary_mode: "manual"  # Manual features only
-    learned:
-      enabled: false  # Disabled - requires more GPU memory
+    enabled: true  # Enable SUMMARY family (aggregated scalars)
 
 # =============================================================================
 # U-AFNO Architecture Notes
