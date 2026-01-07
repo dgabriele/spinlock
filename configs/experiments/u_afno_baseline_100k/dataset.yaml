@@ -82,8 +82,8 @@ parameter_space:
 
     grid_size:
       type: choice
-      choices: [128]
-      description: "Spatial grid resolution (128x128)"
+      choices: [64]
+      description: "Spatial grid resolution (64x64)"
 
   evolution:
     update_policy:
@@ -247,14 +247,14 @@ features:
 # U-AFNO combines U-Net and AFNO for multi-scale spectral processing:
 #
 # Architecture Flow:
-#   Input [B, 3, 128, 128]
+#   Input [B, 3, 64, 64]
 #       |
 #       v
 #   U-Net Encoder (2-4 levels of downsampling)
-#       |-- Level 0: 128x128 -> 64x64 (skip connection)
-#       |-- Level 1: 64x64 -> 32x32 (skip connection)
-#       |-- Level 2: 32x32 -> 16x16 (skip connection, if encoder_levels=3)
-#       |-- Level 3: 16x16 -> 8x8 (skip connection, if encoder_levels=4)
+#       |-- Level 0: 64x64 -> 32x32 (skip connection)
+#       |-- Level 1: 32x32 -> 16x16 (skip connection)
+#       |-- Level 2: 16x16 -> 8x8 (skip connection, if encoder_levels=3)
+#       |-- Level 3: 8x8 -> 4x4 (skip connection, if encoder_levels=4)
 #       |
 #       v
 #   AFNO Bottleneck (2-6 stacked blocks)
@@ -268,7 +268,7 @@ features:
 #       |-- Reconstruct to original resolution
 #       |
 #       v
-#   Output [B, 3, 128, 128]
+#   Output [B, 3, 64, 64]
 #
 # Key Hyperparameters:
 # - modes: Higher = more high-frequency detail, but more compute
