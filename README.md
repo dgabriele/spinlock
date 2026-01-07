@@ -174,14 +174,37 @@ The NOA uses a **U-AFNO backbone** that operates directly in continuous function
 
 **Quick Start (Phase 1 Training):**
 ```bash
-# Train NOA with VQ-VAE alignment
+# Train NOA with full VQ-VAE alignment (L_traj + L_commit + L_latent)
 poetry run python scripts/dev/train_noa_state_supervised.py \
-    --n-samples 500 --epochs 10 \
-    --vqvae-path checkpoints/production/100k_full_features \
-    --lambda-latent 0.1 --lambda-commit 0.5
+    --dataset datasets/100k_full_features.h5 \
+    --vqvae-path checkpoints/production/100k_3family_v1 \
+    --n-samples 5000 --epochs 10 --batch-size 4 \
+    --lr 3e-4 --bptt-window 32 --warmup-steps 500 --timesteps 256 \
+    --lambda-commit 0.5 --enable-latent-loss --lambda-latent 0.5 \
+    --latent-sample-steps 8 --save-every 200
 ```
 
-See [docs/noa-roadmap.md](docs/noa-roadmap.md) for detailed architecture and implementation plan.
+**Resume from checkpoint:**
+```bash
+# Resume interrupted training
+poetry run python scripts/dev/train_noa_state_supervised.py \
+    --resume checkpoints/noa/step_200.pt \
+    --dataset datasets/100k_full_features.h5 \
+    --vqvae-path checkpoints/production/100k_3family_v1 \
+    --epochs 10 --batch-size 4 --enable-latent-loss
+```
+
+**Evaluate alignment quality:**
+```bash
+# Run comprehensive diagnostics after training
+poetry run python scripts/dev/diagnose_latent_alignment.py \
+    --noa-checkpoint checkpoints/noa/best_model.pt \
+    --vqvae-path checkpoints/production/100k_3family_v1 \
+    --dataset datasets/100k_full_features.h5 \
+    --n-samples 100
+```
+
+See [docs/noa-training-guide.md](docs/noa-training-guide.md) for complete training documentation including hyperparameter tuning, checkpointing, and troubleshooting. See [docs/noa-roadmap.md](docs/noa-roadmap.md) for detailed architecture and implementation plan.
 
 ---
 
