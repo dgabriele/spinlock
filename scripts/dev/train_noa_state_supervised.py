@@ -311,13 +311,15 @@ def validate(
     n_realizations: int = 1,
     alignment: VQVAEAlignmentLoss | None = None,
     lambda_commit: float = 0.5,
+    lambda_latent: float = 0.1,
     bptt_window: int | None = None,
 ) -> dict:
     """Validate with state-level loss and optional VQ-VAE alignment."""
     noa.eval()
     total_loss = 0.0
-    total_state = 0.0
+    total_traj = 0.0
     total_commit = 0.0
+    total_latent = 0.0
     num_batches = 0
 
     # For validation, we use same window as training for fair comparison
@@ -361,6 +363,7 @@ def validate(
         loss = state_loss
 
         commit_loss = torch.tensor(0.0, device=device)
+        latent_loss = torch.tensor(0.0, device=device)
 
         if alignment is not None:
             try:
@@ -371,19 +374,25 @@ def validate(
                 )
                 commit_loss = align_losses['commit']
                 loss = loss + lambda_commit * commit_loss
+
+                if 'latent' in align_losses:
+                    latent_loss = align_losses['latent']
+                    loss = loss + lambda_latent * latent_loss
             except Exception:
                 pass
 
         if not torch.isnan(loss):
             total_loss += loss.item()
-            total_state += state_loss.item()
+            total_traj += state_loss.item()
             total_commit += commit_loss.item()
+            total_latent += latent_loss.item()
             num_batches += 1
 
     return {
         "total": total_loss / max(num_batches, 1),
-        "state": total_state / max(num_batches, 1),
+        "traj": total_traj / max(num_batches, 1),
         "commit": total_commit / max(num_batches, 1),
+        "latent": total_latent / max(num_batches, 1),
     }
 
 
@@ -709,21 +718,32 @@ def main():
             n_realizations=args.n_realizations,
             alignment=alignment,
             lambda_commit=args.lambda_commit,
+            lambda_latent=args.lambda_latent,
             bptt_window=args.bptt_window,
         )
         history["val_loss"].append(val_result["total"])
 
         # Log
         if alignment is not None:
-            print(f"  Train: total={train_result['total']:.6f} "
-                  f"state={train_result['state']:.6f} "
-                  f"commit={train_result['commit']:.6f} [{train_result['time']:.1f}s]")
-            print(f"  Val: total={val_result['total']:.6f} "
-                  f"state={val_result['state']:.6f} "
-                  f"commit={val_result['commit']:.6f}")
+            if alignment.enable_latent_loss:
+                print(f"  Train: total={train_result['total']:.6f} "
+                      f"traj={train_result['traj']:.6f} "
+                      f"commit={train_result['commit']:.6f} "
+                      f"latent={train_result['latent']:.6f} [{train_result['time']:.1f}s]")
+                print(f"  Val:   total={val_result['total']:.6f} "
+                      f"traj={val_result['traj']:.6f} "
+                      f"commit={val_result['commit']:.6f} "
+                      f"latent={val_result['latent']:.6f}")
+            else:
+                print(f"  Train: total={train_result['total']:.6f} "
+                      f"traj={train_result['traj']:.6f} "
+                      f"commit={train_result['commit']:.6f} [{train_result['time']:.1f}s]")
+                print(f"  Val:   total={val_result['total']:.6f} "
+                      f"traj={val_result['traj']:.6f} "
+                      f"commit={val_result['commit']:.6f}")
         else:
             print(f"  Train: loss={train_result['total']:.6f} [{train_result['time']:.1f}s]")
-            print(f"  Val: loss={val_result['total']:.6f}")
+            print(f"  Val:   loss={val_result['total']:.6f}")
 
         if val_result["total"] < best_val_loss:
             best_val_loss = val_result["total"]
