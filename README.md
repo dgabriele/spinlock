@@ -496,6 +496,45 @@ For detailed installation instructions, platform-specific guides, and troublesho
 
 ---
 
+## 🔮 Future Directions
+
+### Multi-Agent Token Communication
+
+The VQ-led training paradigm enables a critical capability for collaborative discovery: **discrete symbolic communication between agents**. By operating over shared VQ-VAE token vocabularies, multiple NOA instances can engage in compositional reasoning, emergent communication protocols, and collaborative parameter space exploration.
+
+**Key insight:** VQ-led models produce discrete behavioral tokens that enable inter-agent communication, while MSE-led models provide physics-accurate execution. The optimal architecture uses **both** in complementary roles:
+
+| VQ-Led (System 1) | MSE-Led (System 2) |
+|-------------------|-------------------|
+| Fast symbolic reasoning | Precise physics execution |
+| Token-based communication | Continuous trajectories |
+| Collaborative exploration | Ground-truth verification |
+| Categorical classification | Quantitative prediction |
+
+**Example workflow:**
+```python
+# Agent A: Fast symbolic screening (VQ-led)
+for theta in search_space:
+    tokens = vq_led_noa(theta, u0)
+    if tokens match TARGET_CATEGORY:
+        send_message(agent_b, tokens, theta)
+
+# Agent B: Precise verification (MSE-led)
+for (tokens, theta) in messages:
+    trajectory = mse_led_noa(theta, u0)
+    evaluate_exact_metrics(trajectory)
+```
+
+**Research directions:**
+- Emergent compositional communication protocols
+- Hierarchical multi-resolution discourse (L0/L1/L2 tokens)
+- Token-based theory of mind
+- Cross-domain behavioral transfer via shared vocabulary
+
+📖 **Full documentation:** [docs/future/multiagent-token-communication.md](docs/future/multiagent-token-communication.md)
+
+---
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please see our contributing guidelines for:

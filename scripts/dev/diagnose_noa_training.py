@@ -1,15 +1,17 @@
 #!/usr/bin/env python
-"""Diagnostic script to analyze NaN gradients in NOA training.
+"""Diagnostic script to analyze NOA training health.
 
 This script loads a checkpoint and provides detailed transparency into:
 1. Which specific layers/parameters have NaN gradients
 2. Gradient magnitudes and statistics across the model
 3. Trajectory value ranges and potential numerical issues
 4. Feature extraction outputs for debugging
+5. Support for both MSE-led and VQ-led training modes
+6. Proper TBPTT simulation matching actual training
 
 Usage:
     poetry run python scripts/dev/diagnose_noa_training.py \
-        --checkpoint checkpoints/noa/step_500.pt \
+        --checkpoint checkpoints/noa_vq_led/best_model.pt \
         --dataset datasets/100k_full_features.h5 \
         --config configs/experiments/local_100k_optimized.yaml \
         --n-samples 5
@@ -25,6 +27,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from spinlock.noa import NOABackbone, CNOReplayer, VQVAEAlignmentLoss
+from spinlock.noa.losses import MSELedLoss, VQLedLoss
 import h5py
 from torch.utils.data import Dataset
 
@@ -227,52 +230,82 @@ def diagnose_backward_pass(
     params: torch.Tensor,
     timesteps: int,
     device: str,
-    alignment: VQVAEAlignmentLoss = None,
-    lambda_commit: float = 0.5,
+    loss_fn: MSELedLoss | VQLedLoss,
+    bptt_window: int | None = None,
+    clip_grad: float = 1.0,
 ):
-    """Run a backward pass and analyze gradients."""
+    """Run a backward pass and analyze gradients (with TBPTT if configured)."""
     print("\n" + "=" * 80)
     print("BACKWARD PASS DIAGNOSTICS")
     print("=" * 80)
 
-    # Forward pass
-    pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True)
-    target_trajectory = replayer.rollout(
-        params_vector=params[0].numpy(),
-        ic=ic[0:1],
-        timesteps=timesteps,
-        num_realizations=1,
-        return_all_steps=True,
-    )
+    # Check if using TBPTT
+    use_tbptt = bptt_window is not None and bptt_window < timesteps
 
-    # Compute loss
+    if use_tbptt:
+        print(f"\nUsing TBPTT: warmup {timesteps - bptt_window} steps, supervised {bptt_window} steps")
+        warmup_steps = timesteps - bptt_window
+
+        # Warmup phase (no gradients)
+        x = ic
+        with torch.no_grad():
+            for _ in range(warmup_steps):
+                x = noa.single_step(x)
+
+        # Supervised phase (with gradients)
+        pred_trajectory = noa.rollout(x, steps=bptt_window, return_all_steps=True)
+
+        # Generate target for supervised window only
+        target_trajectory = replayer.rollout(
+            params_vector=params[0].numpy(),
+            ic=ic[0:1],
+            timesteps=timesteps,
+            num_realizations=1,
+            return_all_steps=True,
+        )
+        # Extract the supervised window from target
+        target_trajectory = target_trajectory[:, -bptt_window-1:, :, :, :]
+
+    else:
+        print(f"\nNo TBPTT: full backprop through {timesteps} steps")
+        # Full trajectory with gradients
+        pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True)
+        target_trajectory = replayer.rollout(
+            params_vector=params[0].numpy(),
+            ic=ic[0:1],
+            timesteps=timesteps,
+            num_realizations=1,
+            return_all_steps=True,
+        )
+
+    # Compute loss using unified loss function
     pred_states = pred_trajectory[:, 1:, :, :, :]
     target_states = target_trajectory[:, 1:, :, :, :]
-    state_loss = F.mse_loss(pred_states, target_states)
-    loss = state_loss
 
-    # Add VQ alignment if enabled
-    commit_loss = torch.tensor(0.0, device=device)
-    if alignment is not None:
-        try:
-            align_losses = alignment.compute_losses(
-                pred_trajectory=pred_states,
-                target_trajectory=target_states,
-                ic=ic,
-            )
-            commit_loss = align_losses['commit']
-            loss = loss + lambda_commit * commit_loss
-        except Exception as e:
-            print(f"  ⚠️  ERROR: VQ-VAE alignment failed: {e}")
+    loss_output = loss_fn.compute(
+        pred_trajectory=pred_states,
+        target_trajectory=target_states,
+        ic=ic,
+        noa=noa,
+    )
 
-    print(f"\nTotal loss: {loss.item():.6f}")
-    print(f"  State loss: {state_loss.item():.6f}")
-    print(f"  Commit loss: {commit_loss.item():.6f}")
+    print(f"\nLoss function: {loss_fn.__class__.__name__}")
+    print(f"  Leading loss: {loss_fn.leading_loss_name}")
+    print(f"\nLoss breakdown:")
+    for name, value in loss_output.metrics.items():
+        if name != 'total':
+            is_leading = '(PRIMARY)' if name == loss_fn.leading_loss_name else ''
+            print(f"  {name}: {value:.6f} {is_leading}")
+    print(f"  total: {loss_output.metrics['total']:.6f}")
 
     # Backward pass
     print("\nComputing gradients...")
     noa.zero_grad()
-    loss.backward()
+    loss_output.total.backward()
+
+    # Apply gradient clipping (like actual training)
+    print(f"Applying gradient clipping (max_norm={clip_grad})...")
+    torch.nn.utils.clip_grad_norm_(noa.parameters(), clip_grad)
 
     # Analyze gradients
     print("\n" + "=" * 80)
@@ -396,13 +429,25 @@ def main():
     checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
     ckpt_args = checkpoint['args']
 
+    # Detect loss mode
+    loss_mode = checkpoint.get('loss_mode', ckpt_args.get('loss_mode', 'mse_led'))
+
     print(f"\nCheckpoint training configuration:")
+    print(f"  loss_mode: {loss_mode}")
     print(f"  n_samples: {ckpt_args['n_samples']}")
     print(f"  batch_size: {ckpt_args['batch_size']}")
     print(f"  timesteps: {ckpt_args['timesteps']}")
     print(f"  bptt_window: {ckpt_args.get('bptt_window', 'None')}")
     print(f"  vqvae_path: {ckpt_args.get('vqvae_path', 'None')}")
-    print(f"  lambda_commit: {ckpt_args.get('lambda_commit', 0.0)}")
+
+    if loss_mode == 'mse_led':
+        print(f"  lambda_traj: {ckpt_args.get('lambda_traj', 1.0)}")
+        print(f"  lambda_commit: {ckpt_args.get('lambda_commit', 0.5)}")
+        print(f"  lambda_latent: {ckpt_args.get('lambda_latent', 0.1)}")
+    elif loss_mode == 'vq_led':
+        print(f"  lambda_recon: {ckpt_args.get('lambda_recon', 1.0)}")
+        print(f"  lambda_commit: {ckpt_args.get('lambda_commit', 0.5)}")
+        print(f"  lambda_traj: {ckpt_args.get('lambda_traj', 0.3)}")
 
     # Check for TBPTT issue
     timesteps = args.timesteps if args.timesteps is not None else ckpt_args['timesteps']
@@ -417,19 +462,6 @@ def main():
         print(f"  Training with timesteps={timesteps} WITHOUT truncated BPTT!")
         print(f"  This WILL cause gradient explosion and NaN gradients.")
         print(f"\n  SOLUTION: Add --bptt-window 32 to training command")
-        print(f"\n  Recommended command:")
-        print(f"  poetry run python scripts/dev/train_noa_state_supervised.py \\")
-        print(f"      --dataset {ckpt_args['dataset']} \\")
-        print(f"      --vqvae-path {ckpt_args.get('vqvae_path', 'checkpoints/production/100k_3family_v1')} \\")
-        print(f"      --n-samples {ckpt_args['n_samples']} \\")
-        print(f"      --epochs {ckpt_args['epochs']} \\")
-        print(f"      --batch-size {ckpt_args['batch_size']} \\")
-        print(f"      --lr {ckpt_args['lr']} \\")
-        print(f"      --warmup-steps {ckpt_args.get('warmup_steps', 500)} \\")
-        print(f"      --timesteps {timesteps} \\")
-        print(f"      --bptt-window 32 \\  # <-- ADD THIS!")
-        print(f"      --save-every {ckpt_args.get('save_every', 100)} \\")
-        print(f"      --early-stop-patience {ckpt_args.get('early_stop_patience', 1)}")
     elif timesteps > 32 and bptt_window is not None:
         print(f"\n✅ Configuration OK: Using TBPTT with window={bptt_window}")
     else:
@@ -471,6 +503,32 @@ def main():
         except Exception as e:
             print(f"  ⚠️  Failed to load VQ-VAE: {e}")
 
+    # Create loss function based on mode
+    print(f"\nCreating {loss_mode} loss function")
+    if loss_mode == 'mse_led':
+        loss_fn = MSELedLoss(
+            lambda_traj=ckpt_args.get('lambda_traj', 1.0),
+            lambda_commit=ckpt_args.get('lambda_commit', 0.5),
+            lambda_latent=ckpt_args.get('lambda_latent', 0.1),
+            vqvae_alignment=alignment,
+        )
+    elif loss_mode == 'vq_led':
+        if alignment is None:
+            print("  ⚠️  ERROR: vq_led mode requires VQ-VAE alignment")
+            sys.exit(1)
+        loss_fn = VQLedLoss(
+            lambda_recon=ckpt_args.get('lambda_recon', 1.0),
+            lambda_commit=ckpt_args.get('lambda_commit', 0.5),
+            lambda_traj=ckpt_args.get('lambda_traj', 0.3),
+            vqvae_alignment=alignment,
+        )
+    else:
+        print(f"  ⚠️  ERROR: Unknown loss mode: {loss_mode}")
+        sys.exit(1)
+
+    print(f"  Leading loss: {loss_fn.leading_loss_name}")
+    print(f"  Auxiliary losses: {loss_fn.auxiliary_loss_names}")
+
     # Get test sample
     sample = dataset[0]
     ic = sample['ic'].unsqueeze(0).to(device)
@@ -480,8 +538,9 @@ def main():
     with torch.enable_grad():
         diagnose_forward_pass(noa, replayer, ic, params, timesteps, device, alignment)
         diagnose_backward_pass(
-            noa, replayer, ic, params, timesteps, device, alignment,
-            lambda_commit=ckpt_args.get('lambda_commit', 0.5)
+            noa, replayer, ic, params, timesteps, device, loss_fn,
+            bptt_window=bptt_window,
+            clip_grad=1.0,
         )
 
     print("\n" + "=" * 80)
