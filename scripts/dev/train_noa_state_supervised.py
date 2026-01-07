@@ -147,7 +147,17 @@ def train_epoch(
     # Determine if we need truncated BPTT
     use_tbptt = bptt_window is not None and bptt_window < timesteps
 
+    # Calculate batches to skip if resuming mid-epoch
+    batches_to_skip = global_step % len(dataloader) if global_step > 0 else 0
+    if batches_to_skip > 0:
+        print(f"  Skipping first {batches_to_skip} batches (already processed)...")
+
     for batch_idx, batch in enumerate(dataloader):
+        # Skip already-processed batches when resuming
+        if batch_idx < batches_to_skip:
+            if (batch_idx + 1) % 50 == 0:
+                print(f"    Skipped {batch_idx + 1}/{batches_to_skip} batches...")
+            continue
         ic = batch["ic"].to(device)  # [B, C, H, W]
         params = batch["params"]  # [B, d] - keep on CPU for replayer
 
@@ -702,6 +712,9 @@ def main():
         print(f"\nResuming from checkpoint: {args.resume}")
         checkpoint = torch.load(args.resume, map_location=device)
 
+        # Detect old vs new checkpoint format
+        is_old_checkpoint = 'global_step' not in checkpoint
+
         # Load model state
         noa.load_state_dict(checkpoint['model_state_dict'])
         print(f"  ✓ Loaded model weights")
@@ -710,18 +723,76 @@ def main():
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         print(f"  ✓ Loaded optimizer state")
 
-        # Load scheduler state
-        if scheduler is not None and checkpoint.get('scheduler_state_dict') is not None:
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            print(f"  ✓ Loaded scheduler state")
-
-        # Load training state
+        # Load training state (with fallbacks for old checkpoints)
         start_epoch = checkpoint.get('epoch', 0)
         global_step = checkpoint.get('global_step', 0)
         history = checkpoint.get('history', {"train_loss": [], "val_loss": []})
         best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+
+        # Try to infer global_step from filename if old checkpoint
+        if is_old_checkpoint:
+            import re
+            filename = Path(args.resume).stem  # e.g., "step_200" or "epoch_1"
+
+            # Try to extract step number from filename
+            step_match = re.search(r'step_(\d+)', filename)
+            if step_match:
+                inferred_step = int(step_match.group(1))
+                global_step = inferred_step
+                print(f"  ⚠ Old checkpoint format detected - inferred global_step={global_step} from filename")
+
+            # Try to extract epoch number from filename
+            epoch_match = re.search(r'epoch_(\d+)', filename)
+            if epoch_match:
+                inferred_epoch = int(epoch_match.group(1)) - 1  # Convert to 0-indexed
+                start_epoch = inferred_epoch
+                # Estimate global_step from epoch (will be approximate)
+                batches_per_epoch = len(train_loader)
+                global_step = (start_epoch + 1) * batches_per_epoch  # Start of next epoch
+                print(f"  ⚠ Old checkpoint format detected - inferred epoch={start_epoch}, global_step={global_step}")
+
+            if not step_match and not epoch_match:
+                print(f"  ⚠⚠ WARNING: Old checkpoint format with no step/epoch info!")
+                print(f"      Training will restart from beginning with loaded weights.")
+                print(f"      LR schedule will restart (may cause issues).")
+                print(f"      Recommend: Save new checkpoint and use that for future resumes.")
+
+        # Handle scheduler state carefully
+        if scheduler is not None and checkpoint.get('scheduler_state_dict') is not None:
+            # For old checkpoints, need to sync scheduler with inferred global_step
+            if is_old_checkpoint and global_step > 0:
+                print(f"  ⚠ Syncing scheduler to step {global_step}...")
+                # Load the saved scheduler state first
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+                # Then step it to catch up (scheduler tracks its own step counter)
+                # SequentialLR uses _last_epoch internally
+                if hasattr(scheduler, '_last_epoch'):
+                    # Manually set the scheduler's internal counter
+                    scheduler._last_epoch = global_step
+                    # Update LR based on new step
+                    scheduler._step_count = global_step + 1
+                    for param_group, lr in zip(optimizer.param_groups, scheduler.get_last_lr()):
+                        param_group['lr'] = lr
+                    print(f"  ✓ Scheduler synced to step {global_step}, lr={scheduler.get_last_lr()[0]:.2e}")
+                else:
+                    print(f"  ⚠ Could not sync scheduler (unexpected type)")
+            else:
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                print(f"  ✓ Loaded scheduler state")
+
+        # Calculate resume position
+        batches_per_epoch = len(train_loader)
+        batches_into_epoch = global_step % batches_per_epoch
+        completed_epochs = global_step // batches_per_epoch
+
         print(f"  ✓ Resuming from epoch {start_epoch + 1}, step {global_step}")
-        print(f"  ✓ Best val loss so far: {best_val_loss:.6f}")
+        if batches_into_epoch > 0:
+            print(f"    (Will skip first {batches_into_epoch} batches of epoch {start_epoch + 1})")
+        if best_val_loss < float('inf'):
+            print(f"  ✓ Best val loss so far: {best_val_loss:.6f}")
+        else:
+            print(f"  ✓ No validation history (first epoch incomplete)")
 
         # Load alignment/projector state if available
         if alignment is not None and alignment.latent_projector is not None:
@@ -729,7 +800,13 @@ def main():
                 alignment.latent_projector.load_state_dict(checkpoint['alignment_state'])
                 print(f"  ✓ Loaded latent projector weights")
             else:
-                print(f"  ⚠ No projector weights in checkpoint (will start from scratch)")
+                if is_old_checkpoint:
+                    print(f"  ⚠⚠ WARNING: Old checkpoint has no projector weights!")
+                    print(f"      Projector will restart from random initialization.")
+                    print(f"      L_latent training will be inconsistent with pre-crash training.")
+                    print(f"      Recommend: Either disable --enable-latent-loss or train from scratch.")
+                else:
+                    print(f"  ⚠ No projector weights in checkpoint (checkpoint saved without L_latent)")
 
     # Update checkpoint state for save_checkpoint closure
     _checkpoint_state['alignment'] = alignment
