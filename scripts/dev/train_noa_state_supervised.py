@@ -119,6 +119,7 @@ def train_epoch(
     save_every: int = 0,
     global_step: int = 0,
     log_every: int = 1,
+    checkpoint_state: dict = None,
 ) -> dict:
     """Train for one epoch with state-level supervision and optional VQ-VAE alignment.
 
@@ -264,6 +265,8 @@ def train_epoch(
 
         # Periodic checkpoint
         if save_every > 0 and save_fn is not None and global_step % save_every == 0:
+            if checkpoint_state is not None:
+                checkpoint_state['global_step'] = global_step
             save_fn(f"step_{global_step}")
 
         # Logging
@@ -486,6 +489,10 @@ def main():
         help="Directory to save checkpoints"
     )
     parser.add_argument(
+        "--resume", type=str, default=None,
+        help="Path to checkpoint to resume from (e.g., checkpoints/noa/step_200.pt)"
+    )
+    parser.add_argument(
         "--save-every", type=int, default=1000,
         help="Save checkpoint every N batches (0 = only save at epoch end)"
     )
@@ -624,14 +631,39 @@ def main():
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    # Will be populated by save_checkpoint closure
+    _checkpoint_state = {
+        'epoch': 0,
+        'global_step': 0,
+        'history': None,
+        'best_val_loss': float('inf'),
+        'alignment': None,
+    }
+
     def save_checkpoint(name: str):
         path = checkpoint_dir / f"{name}.pt"
-        torch.save({
+        checkpoint = {
             "model_state_dict": noa.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+            "epoch": _checkpoint_state['epoch'],
+            "global_step": _checkpoint_state['global_step'],
+            "history": _checkpoint_state['history'],
+            "best_val_loss": _checkpoint_state['best_val_loss'],
+            "config": {
+                'base_channels': args.base_channels,
+                'encoder_levels': args.encoder_levels,
+                'modes': args.modes,
+                'afno_blocks': args.afno_blocks,
+            },
             "args": vars(args),
-        }, path)
+        }
+
+        # Save alignment/projector state if enabled
+        if _checkpoint_state['alignment'] is not None and _checkpoint_state['alignment'].latent_projector is not None:
+            checkpoint["alignment_state"] = _checkpoint_state['alignment'].latent_projector.state_dict()
+
+        torch.save(checkpoint, path)
         print(f"  Saved checkpoint: {path}")
 
     # Initialize VQ-VAE alignment (optional)
@@ -659,6 +691,52 @@ def main():
             print(f"  Warning: Failed to load VQ-VAE: {e}")
             print(f"  Continuing without VQ-VAE alignment")
 
+    # Resume from checkpoint (optional)
+    start_epoch = 0
+    best_val_loss = float("inf")
+    epochs_without_improvement = 0
+    global_step = 0
+    history = {"train_loss": [], "val_loss": []}
+
+    if args.resume is not None:
+        print(f"\nResuming from checkpoint: {args.resume}")
+        checkpoint = torch.load(args.resume, map_location=device)
+
+        # Load model state
+        noa.load_state_dict(checkpoint['model_state_dict'])
+        print(f"  ✓ Loaded model weights")
+
+        # Load optimizer state
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        print(f"  ✓ Loaded optimizer state")
+
+        # Load scheduler state
+        if scheduler is not None and checkpoint.get('scheduler_state_dict') is not None:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            print(f"  ✓ Loaded scheduler state")
+
+        # Load training state
+        start_epoch = checkpoint.get('epoch', 0)
+        global_step = checkpoint.get('global_step', 0)
+        history = checkpoint.get('history', {"train_loss": [], "val_loss": []})
+        best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+        print(f"  ✓ Resuming from epoch {start_epoch + 1}, step {global_step}")
+        print(f"  ✓ Best val loss so far: {best_val_loss:.6f}")
+
+        # Load alignment/projector state if available
+        if alignment is not None and alignment.latent_projector is not None:
+            if 'alignment_state' in checkpoint:
+                alignment.latent_projector.load_state_dict(checkpoint['alignment_state'])
+                print(f"  ✓ Loaded latent projector weights")
+            else:
+                print(f"  ⚠ No projector weights in checkpoint (will start from scratch)")
+
+    # Update checkpoint state for save_checkpoint closure
+    _checkpoint_state['alignment'] = alignment
+    _checkpoint_state['history'] = history
+    _checkpoint_state['best_val_loss'] = best_val_loss
+    _checkpoint_state['global_step'] = global_step
+
     # Training loop
     print(f"\nTraining:")
     print(f"  epochs: {args.epochs}")
@@ -677,13 +755,10 @@ def main():
     print(f"  save_every: {args.save_every} batches")
     print(f"  log_every: {args.log_every} batches")
     print(f"  early_stop_patience: {args.early_stop_patience} epochs")
+    if args.resume is not None:
+        print(f"  resuming: from epoch {start_epoch + 1}, step {global_step}")
 
-    best_val_loss = float("inf")
-    epochs_without_improvement = 0
-    global_step = 0
-    history = {"train_loss": [], "val_loss": []}
-
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         print(f"\nEpoch {epoch + 1}/{args.epochs}")
 
         # Train
@@ -704,6 +779,7 @@ def main():
             save_every=args.save_every,
             global_step=global_step,
             log_every=args.log_every,
+            checkpoint_state=_checkpoint_state,
         )
         global_step = train_result["global_step"]
         history["train_loss"].append(train_result["total"])
@@ -745,9 +821,16 @@ def main():
             print(f"  Train: loss={train_result['total']:.6f} [{train_result['time']:.1f}s]")
             print(f"  Val:   loss={val_result['total']:.6f}")
 
+        # Update checkpoint state
+        _checkpoint_state['epoch'] = epoch
+        _checkpoint_state['global_step'] = global_step
+        _checkpoint_state['history'] = history
+        _checkpoint_state['best_val_loss'] = best_val_loss
+
         if val_result["total"] < best_val_loss:
             best_val_loss = val_result["total"]
             epochs_without_improvement = 0
+            _checkpoint_state['best_val_loss'] = best_val_loss
             print(f"  New best! (val_loss={best_val_loss:.6f})")
             save_checkpoint("best_model")
         else:
