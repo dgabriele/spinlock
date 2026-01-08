@@ -138,7 +138,7 @@ sampling:
     check_correlation: true
 
   total_samples: 100000  # Full 100K baseline
-  batch_size: 2  # Single operator per batch for float32 memory
+  batch_size: 2  # Doubled from Phase 1 optimizations (async building eliminates GPU idle)
 
 # Simulation configuration
 simulation:
