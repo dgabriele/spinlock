@@ -138,7 +138,7 @@ sampling:
     check_correlation: true
 
   total_samples: 100000  # Full 100K baseline
-  batch_size: 2  # Doubled from Phase 1 optimizations (async building eliminates GPU idle)
+  batch_size: 4  # Phase 3 optimization (1.05× speedup, 2.28 GB peak memory)
 
 # Simulation configuration
 simulation:
