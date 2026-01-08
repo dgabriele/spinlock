@@ -208,8 +208,6 @@ class FeatureExtractionPipeline:
                     per_timestep_gpu = self.summary_extractor.extract_per_timestep(batch_outputs)
                     per_timestep_np = per_timestep_gpu.cpu().numpy()
                     del per_timestep_gpu
-                    if self.device.type == "cuda":
-                        torch.cuda.empty_cache()
 
                 # Stage 2: Extract per-trajectory (SUMMARY) features
                 per_trajectory_gpu = self.summary_extractor.extract_per_trajectory(batch_outputs)
@@ -223,15 +221,11 @@ class FeatureExtractionPipeline:
                     )
                     aggregated_list.append(agg_gpu.cpu())
                     del agg_gpu
-                    if self.device.type == "cuda":
-                        torch.cuda.empty_cache()
 
                 aggregated_np = torch.cat(aggregated_list, dim=1).numpy()
 
                 # Free GPU memory
                 del per_trajectory_gpu, aggregated_list
-                if self.device.type == "cuda":
-                    torch.cuda.empty_cache()
 
             # Extract learned features (for "learned" and "hybrid" modes)
             if summary_mode in ("learned", "hybrid"):
@@ -245,8 +239,6 @@ class FeatureExtractionPipeline:
                 )
                 learned_np = learned_gpu.cpu().numpy()
                 del learned_gpu
-                if self.device.type == "cuda":
-                    torch.cuda.empty_cache()
 
             return per_timestep_np, per_trajectory_np, aggregated_np, learned_np
 
@@ -871,21 +863,19 @@ class DatasetGenerationPipeline:
                             )
                             self.stats["storage_time"] += time.time() - store_start
 
-                            # Aggressive memory cleanup after HDF5 write
+                            # Memory cleanup after HDF5 write
                             del batch_inputs, batch_outputs, metadata
                             if operators is not None:
                                 for op in operators:
                                     del op
                                 del operators
-                            if self.device.type == "cuda":
-                                torch.cuda.empty_cache()
 
                             self.stats["samples_generated"] += actual_batch_size
                             group_processed += actual_batch_size
                             pbar.update(actual_batch_size)
 
-                            # Periodic garbage collection (every 5 batches instead of 10)
-                            if group_processed % (5 * current_batch_size) == 0:
+                            # Periodic garbage collection and cache clear (every 20 batches)
+                            if group_processed % (20 * current_batch_size) == 0:
                                 gc.collect()
                                 if self.device.type == "cuda":
                                     torch.cuda.empty_cache()
@@ -1078,8 +1068,6 @@ class DatasetGenerationPipeline:
         for op in operators:
             del op
         del operators
-        if self.device.type == "cuda":
-            torch.cuda.empty_cache()
         gc.collect()  # Force garbage collection
 
         return inputs, outputs
@@ -1548,8 +1536,6 @@ class DatasetGenerationPipeline:
             for op in operators:
                 del op
             del operators
-            if self.device.type == "cuda":
-                torch.cuda.empty_cache()
             gc.collect()  # Force garbage collection
 
         # OPTIMIZATION: Skip padding for single grid size datasets

@@ -138,7 +138,7 @@ sampling:
     check_correlation: true
 
   total_samples: 100000  # Full 100K baseline
-  batch_size: 1  # Single operator per batch for float32 memory
+  batch_size: 2  # Single operator per batch for float32 memory
 
 # Simulation configuration
 simulation:
@@ -211,7 +211,7 @@ simulation:
 
   precision: "float32"  # float16 causes cuDNN errors with complex FFT in AFNO
   num_realizations: 3  # Full realizations (no learned features)
-  num_timesteps: 500   # Full timesteps
+  num_timesteps: 256   # Full timesteps
 
   extract_operator_features: false
 
