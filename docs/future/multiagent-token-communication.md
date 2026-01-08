@@ -463,5 +463,5 @@ The dual-model architecture (VQ-led for reasoning, MSE-led for execution) provid
 ---
 
 **Status:** Conceptual framework ready for implementation
-**Next Steps:** Implement two-agent prototype, measure communication efficiency gains
+**MVP Idea:** Implement two-agent prototype, measure communication efficiency gains
 **Timeline:** Research direction for 2026+
