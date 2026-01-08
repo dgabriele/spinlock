@@ -72,8 +72,10 @@ examples/*/output/
 .DS_Store
 Thumbs.db
 
-# CUDA
+# CUDA & Compiled artifacts
 *.ptx
 *.cubin
+*.o
+*.a
 .env
 datasets/*.backup
