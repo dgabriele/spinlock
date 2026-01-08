@@ -182,7 +182,8 @@ class SpectralMixingBlock(BaseBlock):
         )
 
         # Place in output (low-frequency region)
-        out_fft[:, :, :modes_h, :modes_w] = torch.complex(out_real, out_imag)
+        # Ensure float32 for complex (ComplexHalf not fully supported)
+        out_fft[:, :, :modes_h, :modes_w] = torch.complex(out_real.float(), out_imag.float())
 
         return out_fft
 

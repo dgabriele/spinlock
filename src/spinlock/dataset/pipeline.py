@@ -36,6 +36,7 @@ from ..cloud.storage import StorageBackend, LocalHDF5Backend
 from ..cloud.execution import ExecutionBackend, LocalExecutionBackend
 from ..sampling import StratifiedSobolSampler
 from ..operators import OperatorBuilder, NeuralOperator
+from ..operators.async_builder import AsyncOperatorBuilder
 from ..operators.partitioning import get_architecture_signature, bucket_channels
 from ..operators.training import OperatorTrainer
 from ..execution import ParallelExecutor, AdaptiveBatchSizer, MemoryManager
@@ -322,6 +323,9 @@ class DatasetGenerationPipeline:
         # Feature extraction pipeline (initialized when needed)
         self._feature_pipeline: Optional[FeatureExtractionPipeline] = None
         self._async_feature_writer: Optional[AsyncFeatureWriter] = None
+
+        # Async operator builder for pipelined generation (Phase 2 optimization)
+        self._async_operator_builder: Optional[AsyncOperatorBuilder] = None
 
         # Training logging flag
         self._first_batch_logged = False
@@ -808,6 +812,16 @@ class DatasetGenerationPipeline:
             # Process each grid size group separately
             print(f"Stage 2-4: Generating dataset (group-by-grid-size strategy)...\n")
 
+            # Initialize async operator builder for pipelined generation (Phase 2 optimization)
+            self._async_operator_builder = AsyncOperatorBuilder(
+                device=str(self.device),
+                max_queue_size=2,  # Build batch N+1 while running batch N
+                operator_builder=self.operator_builder,
+                operator_type=self.config.simulation.operator_type,
+                config=self.config,
+            )
+            self._async_operator_builder.start()
+
             with tqdm(total=num_samples, desc="Generating") as pbar:
                 for grid_size in sorted(grid_size_groups.keys()):
                     indices = grid_size_groups[grid_size]
@@ -819,6 +833,7 @@ class DatasetGenerationPipeline:
                     current_batch_size = batch_size
                     min_batch_size = 1
                     group_processed = 0
+                    batch_count = 0  # Track batch number for async building
 
                     # Intelligent batch size search state
                     max_safe_batch_size = None  # Will be determined through search
@@ -841,11 +856,41 @@ class DatasetGenerationPipeline:
                                 and self._feature_pipeline.needs_operators
                             )
 
-                            # Process batch with this grid size
+                            # PHASE 2 OPTIMIZATION: Async operator building
+                            # For first batch: submit current batch
+                            # For subsequent batches: get current (already submitted in previous iteration)
+                            pre_built_operators = None
+                            if batch_count == 0:
+                                # First batch: submit current batch now
+                                self._async_operator_builder.submit_batch(
+                                    param_batch,
+                                    batch_id=batch_count,
+                                )
+
+                            # Get CURRENT batch operators (blocks if not ready yet)
+                            pre_built_operators, _ = self._async_operator_builder.get_batch(
+                                batch_id=batch_count, timeout=120.0
+                            )
+
+                            # Submit NEXT batch to async builder (if exists)
+                            # This will build while current batch runs inference
+                            next_batch_start = batch_end_idx
+                            if next_batch_start < len(indices):
+                                next_batch_end = min(next_batch_start + current_batch_size, len(indices))
+                                next_param_batch = group_params[next_batch_start:next_batch_end]
+                                self._async_operator_builder.submit_batch(
+                                    next_param_batch,
+                                    batch_id=batch_count + 1,
+                                )
+
+                            # Process batch with async-built operators
                             batch_inputs, batch_outputs, metadata, operators = self._process_batch_with_metadata(
                                 param_batch, actual_batch_size, grid_size,
-                                keep_operators=needs_operators
+                                keep_operators=needs_operators,
+                                pre_built_operators=pre_built_operators
                             )
+
+                            batch_count += 1  # Increment for next iteration
 
                             # Train operators if learned features are enabled
                             if operators is not None and self._should_train_operators():
@@ -932,6 +977,16 @@ class DatasetGenerationPipeline:
             print(f"\n✓ Dataset saved: {self.config.dataset.output_path}")
 
         finally:
+            # Stop async operator builder (Phase 2 optimization)
+            if self._async_operator_builder is not None:
+                self._async_operator_builder.stop()
+                # Print stats
+                stats = self._async_operator_builder.get_stats()
+                print(f"\nAsync Operator Builder Stats:")
+                print(f"  Batches built: {stats['batches_built']}")
+                print(f"  Total build time: {stats['total_build_time']:.2f}s")
+                print(f"  Avg build time/batch: {stats['avg_build_time_per_batch']:.2f}s")
+
             # Ensure storage backend is properly closed
             self._storage_backend.close()
 
@@ -1346,6 +1401,7 @@ class DatasetGenerationPipeline:
     def _process_batch_with_metadata(
         self, param_batch: NDArray[np.float64], batch_size: int, grid_size: int,
         keep_operators: bool = False,
+        pre_built_operators: Optional[List[torch.nn.Module]] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, Dict[str, Any], Optional[List[torch.nn.Module]]]:
         """
         Process a batch with grid-size-specific logic and metadata tracking.
@@ -1355,6 +1411,7 @@ class DatasetGenerationPipeline:
             batch_size: Batch size
             grid_size: Grid size for this batch
             keep_operators: If True, return operators for learned feature extraction
+            pre_built_operators: Pre-built operators from async builder (Phase 2 opt)
 
         Returns:
             Tuple of (inputs, outputs, metadata, operators)
@@ -1365,7 +1422,8 @@ class DatasetGenerationPipeline:
         """
         # Process batch with variable grid size and track IC types used
         inputs, outputs, ic_types_used, operators = self._process_batch_variable_size_with_tracking(
-            param_batch, batch_size, grid_size, keep_operators=keep_operators
+            param_batch, batch_size, grid_size, keep_operators=keep_operators,
+            pre_built_operators=pre_built_operators
         )
 
         # Extract metadata from parameters
@@ -1403,6 +1461,7 @@ class DatasetGenerationPipeline:
     def _process_batch_variable_size_with_tracking(
         self, param_batch: NDArray[np.float64], batch_size: int, grid_size: int,
         keep_operators: bool = False,
+        pre_built_operators: Optional[List[torch.nn.Module]] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, list[str], Optional[List[torch.nn.Module]]]:
         """
         Process batch with variable grid size and track IC types used.
@@ -1412,6 +1471,7 @@ class DatasetGenerationPipeline:
             batch_size: Batch size
             grid_size: Grid size for this batch
             keep_operators: If True, return operators instead of deleting them
+            pre_built_operators: Pre-built operators from async builder (Phase 2 opt)
 
         Returns:
             Tuple of (inputs, outputs, ic_types_used, operators)
@@ -1420,43 +1480,50 @@ class DatasetGenerationPipeline:
             - ic_types_used: List of IC types used for each sample
             - operators: List of operators if keep_operators=True, else None
         """
-        # Build operators with this grid size
-        operators = []
+        # Build operators with this grid size (or use pre-built from async builder)
+        if pre_built_operators is not None:
+            # Phase 2 optimization: Use pre-built operators from async builder
+            operators = pre_built_operators
+        else:
+            # Legacy synchronous building
+            operators = []
 
         fixed_input_channels = 3
         fixed_output_channels = 3
 
-        for params in param_batch:
-            param_dict = self._map_single_parameter_set(params)
+        if pre_built_operators is None:
+            # Synchronous operator building (legacy path)
+            for params in param_batch:
+                param_dict = self._map_single_parameter_set(params)
 
-            # Override grid_size (already extracted)
-            param_dict["input_channels"] = fixed_input_channels
-            param_dict["output_channels"] = fixed_output_channels
-            param_dict["grid_size"] = grid_size
+                # Override grid_size (already extracted)
+                param_dict["input_channels"] = fixed_input_channels
+                param_dict["output_channels"] = fixed_output_channels
+                param_dict["grid_size"] = grid_size
 
-            # Set seed for deterministic operator initialization
-            # Note: Global seed derived from batch position
-            # For deterministic replay: torch.manual_seed(op_global_idx)
-            torch.manual_seed(hash(str(params)) % (2**31))  # Deterministic per params
+                # Set seed for deterministic operator initialization
+                # Note: Global seed derived from batch position
+                # For deterministic replay: torch.manual_seed(op_global_idx)
+                torch.manual_seed(hash(str(params)) % (2**31))  # Deterministic per params
 
-            # Build operator (dispatch based on operator_type config)
-            operator_type = self.config.simulation.operator_type
-            if operator_type == "u_afno":
-                model = self.operator_builder.build_u_afno(param_dict)
-            else:
-                model = self.operator_builder.build_simple_cnn(param_dict)
-            operator = NeuralOperator(model)
+                # Build operator (dispatch based on operator_type config)
+                operator_type = self.config.simulation.operator_type
+                if operator_type == "u_afno":
+                    model = self.operator_builder.build_u_afno(param_dict)
+                else:
+                    model = self.operator_builder.build_simple_cnn(param_dict)
+                operator = NeuralOperator(model)
 
-            # Prepare for inference
-            operator = MemoryManager.optimize_for_inference(operator)
-            operator = operator.to(self.device)
+                # Prepare for inference
+                operator = MemoryManager.optimize_for_inference(operator)
+                operator = operator.to(self.device)
 
-            # Phase 1 CUDA optimization: Use compiled template for same-architecture operators
-            # This replaces the disabled per-operator compile with partition-aware caching
-            # Speedup: 1.3-1.5× from torch.compile kernel reuse
-            operator = self._get_or_create_compiled_template(param_dict, operator)
+                # Phase 1 CUDA optimization: Use compiled template for same-architecture operators
+                # This replaces the disabled per-operator compile with partition-aware caching
+                # Speedup: 1.3-1.5× from torch.compile kernel reuse
+                operator = self._get_or_create_compiled_template(param_dict, operator)
 
-            operators.append(operator)
+                operators.append(operator)
 
         # Generate input fields with this grid size
         input_generator = InputFieldGenerator(
