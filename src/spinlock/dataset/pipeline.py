@@ -592,7 +592,13 @@ class DatasetGenerationPipeline:
         print(f"  Max correlation: {validation_metrics['max_correlation']:.6f}")
 
         # Phase 1 CUDA optimization: Pre-compile templates before timed generation
-        warmup_time = self._warmup_compiled_templates(parameters)
+        # Can be disabled via config if causing OOM with large sample counts
+        perf_config = self.config.simulation.performance
+        if perf_config.warmup_templates:
+            warmup_time = self._warmup_compiled_templates(parameters)
+        else:
+            warmup_time = 0.0
+            print("Template warmup disabled (templates compiled on-demand)\n")
         self.stats["warmup_time"] = warmup_time
 
         # Stage 2-4: Generate dataset in batches

@@ -378,6 +378,7 @@ class PerformanceConfig(BaseModel):
     # Groups operators by (num_layers, channels_bucket, kernel_size) and compiles ONE
     # kernel per partition, reusing it across all operators with same architecture.
     partition_by_architecture: bool = True  # Default: enabled
+    warmup_templates: bool = False  # Pre-compile all templates (can OOM with 100+ architectures)
     channel_bucket_size: int = 16  # Bucket channels in groups (16, 32, 48, 64)
     compile_mode: Literal["reduce-overhead", "max-autotune", "default"] = "reduce-overhead"
 
