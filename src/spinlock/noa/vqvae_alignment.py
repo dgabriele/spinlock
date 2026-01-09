@@ -291,35 +291,36 @@ class VQVAEAlignmentLoss(nn.Module):
         return normalized
 
     def _apply_feature_cleaning(self, features: torch.Tensor) -> torch.Tensor:
-        """Apply feature cleaning mask to match VQ-VAE input dimensions.
+        """Apply feature selection to match VQ-VAE input dimensions.
 
-        This is necessary for VQ-led loss where VQ-VAE was trained on cleaned features.
-        The feature extractor produces all raw features, but VQ-VAE expects only
-        the subset that passed cleaning during its training.
+        This is necessary for VQ-led loss where VQ-VAE was trained on a subset of features.
+        The feature extractor produces all features (e.g., 187), but VQ-VAE expects only
+        the subset defined by group_indices (e.g., 171).
 
         Args:
-            features: [B, D_raw] raw extracted features
+            features: [B, D_extractor] features from feature extractor
 
         Returns:
-            features_cleaned: [B, D_clean] features after applying mask
-                             where D_clean = number of True values in feature_mask
+            features_selected: [B, D_vqvae] features after selecting VQ-VAE subset
+                              where D_vqvae = sum of lengths of all group_indices
         """
-        if self.feature_mask is None:
-            # No cleaning needed - VQ-VAE trained on all features
-            return features
+        # Collect all feature indices used by VQ-VAE from group_indices
+        all_indices = []
+        for group_name in sorted(self.group_indices.keys()):  # Sort for consistency
+            all_indices.extend(self.group_indices[group_name])
 
-        # Convert mask to torch if needed
-        if isinstance(self.feature_mask, np.ndarray):
-            mask_tensor = torch.from_numpy(self.feature_mask).to(features.device)
-        else:
-            mask_tensor = self.feature_mask
+        # Sort indices to maintain order
+        all_indices = sorted(all_indices)
 
-        # Apply mask to select only cleaned features
-        # feature_mask has shape [D_raw] with boolean values
-        # features has shape [B, D_raw]
-        features_cleaned = features[:, mask_tensor]
+        # Convert to tensor
+        indices_tensor = torch.tensor(all_indices, dtype=torch.long, device=features.device)
 
-        return features_cleaned
+        # Select features
+        # features has shape [B, D_extractor]
+        # indices_tensor has shape [D_vqvae]
+        features_selected = features[:, indices_tensor]
+
+        return features_selected
 
     def _compute_latent_alignment(
         self,
