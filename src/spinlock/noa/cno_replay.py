@@ -235,10 +235,21 @@ class CNOReplayer:
             try:
                 x = operator(x)
 
+                # Force CUDA synchronization to catch hangs early
+                if x.is_cuda:
+                    torch.cuda.synchronize()
+
                 # Check for NaN/Inf to prevent hangs
                 if torch.isnan(x).any() or torch.isinf(x).any():
                     raise ValueError(
                         f"NaN/Inf detected in operator output at step {step+1}/{timesteps}"
+                    )
+
+                # Check for abnormally large values that might cause issues
+                max_val = torch.abs(x).max().item()
+                if max_val > 1e6:
+                    raise ValueError(
+                        f"Abnormally large values detected ({max_val:.2e}) at step {step+1}/{timesteps}"
                     )
 
                 if return_all_steps:
