@@ -187,6 +187,10 @@ def train_epoch(
         # Replay CNO trajectories with error handling
         # Note: Some parameter vectors can cause CUDA hangs in training context
         # (high GPU memory pressure) even though they work in isolation
+        # Clear CUDA cache before each rollout to reduce memory pressure
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         target_trajectories = []
         skip_batch = False
         for b in range(B):
