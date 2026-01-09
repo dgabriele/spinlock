@@ -151,9 +151,10 @@ behavior      structural      categories       vocabulary
 **Location:** `src/spinlock/encoding/`
 
 - **Automatic feature cleaning:** NaN removal, variance filtering, deduplication
-- **Category discovery:** Hierarchical clustering across all feature families
-- **Hierarchical VQ:** 3-level discrete latent space (coarse → medium → fine)
-- **Joint training:** Unified representations across INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL
+- **Category discovery:** Correlation-based hierarchical clustering with orphan reassignment (100% feature assignment)
+- **Adaptive compression ratios:** Per-category latent dimensions computed from feature characteristics (variance, dimensionality, information content, correlation)
+- **Hierarchical VQ:** 3-level discrete latent space per category (coarse → medium → fine)
+- **Joint training:** Unified representations across INITIAL+SUMMARY+TEMPORAL (ARCHITECTURE excluded; NOA already knows operator parameters θ)
 
 #### Interpretability Properties
 
@@ -254,11 +255,15 @@ See [NOA Roadmap](noa-roadmap.md) for development phases and [Phase 1 Baseline](
 - **GPU acceleration:** Batch processing for INITIAL, SUMMARY, TEMPORAL features
 - **Memory optimization:** Streaming computation for large datasets
 
-### VQ-VAE Training
-- **Input features:** ~300D after cleaning (INITIAL+SUMMARY+TEMPORAL; ARCHITECTURE excluded since NOA already knows θ)
-- **Categories:** ~8-15 automatically discovered via clustering
-- **Codebook sizes:** Configurable (typically 24 codes per level with uniform initialization)
-- **Training time:** ~30-60 minutes for 100K dataset (GPU with torch.compile)
+### VQ-VAE Training (Production Baseline: 100K Operators)
+- **Input features:** ~200D after cleaning (from 298D encoded: INITIAL 42D + SUMMARY 128D + TEMPORAL 128D)
+- **Categories:** 10 auto-discovered via correlation-based clustering
+- **Adaptive compression ratios:** Per-category latent dimensions computed from feature characteristics
+  - Example: High-variance categories get less compression (0.25:0.75:2.0) for detail preservation
+  - Example: High-redundancy categories get more compression (0.3:0.7:1.2) for efficiency
+- **Codebook sizes:** Uniform initialization (all levels start with L0's size, natural pruning via EMA)
+- **Performance:** 98.4% reconstruction quality, 43.9% codebook utilization, 0.997 topographic similarity
+- **Training time:** ~1 hour for 100K dataset (550 epochs, batch_size=1024, GPU with torch.compile)
 
 ## Design Principles
 
