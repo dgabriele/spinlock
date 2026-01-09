@@ -148,11 +148,15 @@ class VQLedLoss(BaseNOALoss):
         # Normalize features using alignment's normalization
         features_norm = self.alignment._normalize_features(pred_features)
 
+        # Apply feature cleaning to match VQ-VAE input dimensions
+        # VQ-VAE was trained on cleaned features, so we need to apply the same cleaning
+        features_cleaned = self.alignment._apply_feature_cleaning(features_norm)
+
         # Encode to pre-quantization latents
         if self.alignment._is_hybrid_model and pred_raw_ics is not None:
-            z_list = self.alignment.vqvae.encode(features_norm, raw_ics=pred_raw_ics)
+            z_list = self.alignment.vqvae.encode(features_cleaned, raw_ics=pred_raw_ics)
         else:
-            z_list = self.alignment.vqvae.encode(features_norm)
+            z_list = self.alignment.vqvae.encode(features_cleaned)
 
         z = torch.cat(z_list, dim=1)  # [B, total_latent_dim]
 
@@ -164,7 +168,8 @@ class VQLedLoss(BaseNOALoss):
         # Decode quantized latents back to feature space
         # This measures how well the trajectory is "expressible" in VQ vocabulary
         recon_features = self.alignment.vqvae.decode(z_q_list)
-        recon_loss = F.mse_loss(recon_features, features_norm)
+        # Compare with cleaned features (both have same dimension now)
+        recon_loss = F.mse_loss(recon_features, features_cleaned)
 
         # L_commit: Commitment loss (embedding sharpness)
         # Forces pre-quantization latents close to quantized codes
