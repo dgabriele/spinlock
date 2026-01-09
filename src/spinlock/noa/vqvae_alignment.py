@@ -109,6 +109,8 @@ class VQVAEAlignmentLoss(nn.Module):
         noa: Optional[nn.Module] = None,
         enable_latent_loss: bool = False,
         latent_sample_steps: int = 3,
+        feature_mask: Optional[np.ndarray] = None,
+        feature_cleaning_params: Optional[Dict[str, Any]] = None,
     ):
         """Initialize alignment loss.
 
@@ -122,6 +124,8 @@ class VQVAEAlignmentLoss(nn.Module):
             noa: NOA backbone for latent loss (required if enable_latent_loss=True)
             enable_latent_loss: Enable L_latent (NOA-VQ latent alignment)
             latent_sample_steps: Number of timesteps to sample for latent loss (3=default, -1=all)
+            feature_mask: Boolean mask for feature cleaning (from VQ-VAE training)
+            feature_cleaning_params: Feature cleaning parameters (from VQ-VAE training)
         """
         super().__init__()
 
@@ -131,6 +135,10 @@ class VQVAEAlignmentLoss(nn.Module):
         self.normalization_stats = normalization_stats
         self.group_indices = group_indices
         self._is_hybrid_model = is_hybrid_model
+
+        # Store feature cleaning info (needed for VQ-led loss)
+        self.feature_mask = feature_mask
+        self.feature_cleaning_params = feature_cleaning_params
 
         # Freeze VQ-VAE weights
         for param in self.vqvae.parameters():
@@ -281,6 +289,37 @@ class VQVAEAlignmentLoss(nn.Module):
         normalized = torch.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0)
 
         return normalized
+
+    def _apply_feature_cleaning(self, features: torch.Tensor) -> torch.Tensor:
+        """Apply feature cleaning mask to match VQ-VAE input dimensions.
+
+        This is necessary for VQ-led loss where VQ-VAE was trained on cleaned features.
+        The feature extractor produces all raw features, but VQ-VAE expects only
+        the subset that passed cleaning during its training.
+
+        Args:
+            features: [B, D_raw] raw extracted features
+
+        Returns:
+            features_cleaned: [B, D_clean] features after applying mask
+                             where D_clean = number of True values in feature_mask
+        """
+        if self.feature_mask is None:
+            # No cleaning needed - VQ-VAE trained on all features
+            return features
+
+        # Convert mask to torch if needed
+        if isinstance(self.feature_mask, np.ndarray):
+            mask_tensor = torch.from_numpy(self.feature_mask).to(features.device)
+        else:
+            mask_tensor = self.feature_mask
+
+        # Apply mask to select only cleaned features
+        # feature_mask has shape [D_raw] with boolean values
+        # features has shape [B, D_raw]
+        features_cleaned = features[:, mask_tensor]
+
+        return features_cleaned
 
     def _compute_latent_alignment(
         self,
@@ -452,9 +491,11 @@ class VQVAEAlignmentLoss(nn.Module):
 
         # Get input_dim from model_config if available, otherwise from feature_mask
         input_dim = model_config.get('input_dim')
-        if input_dim is None and 'feature_mask' in checkpoint:
+        feature_mask = checkpoint.get('feature_mask', None)
+        feature_cleaning_params = checkpoint.get('feature_cleaning_params', None)
+
+        if input_dim is None and feature_mask is not None:
             # Count number of True values in feature_mask
-            feature_mask = checkpoint['feature_mask']
             if hasattr(feature_mask, '__len__'):
                 input_dim = int(np.sum(feature_mask))
         if input_dim is None:
@@ -633,6 +674,8 @@ class VQVAEAlignmentLoss(nn.Module):
             noa=noa,
             enable_latent_loss=enable_latent_loss,
             latent_sample_steps=latent_sample_steps,
+            feature_mask=feature_mask,
+            feature_cleaning_params=feature_cleaning_params,
         )
 
 
