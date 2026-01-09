@@ -184,17 +184,28 @@ def train_epoch(
         else:
             pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True)
 
-        # Replay CNO trajectories
+        # Replay CNO trajectories with error handling
         target_trajectories = []
+        skip_batch = False
         for b in range(B):
-            target_traj = replayer.rollout(
-                params_vector=params[b].numpy(),
-                ic=ic[b:b+1],
-                timesteps=timesteps,
-                num_realizations=n_realizations,
-                return_all_steps=True,
-            )
-            target_trajectories.append(target_traj)
+            try:
+                target_traj = replayer.rollout(
+                    params_vector=params[b].numpy(),
+                    ic=ic[b:b+1],
+                    timesteps=timesteps,
+                    num_realizations=n_realizations,
+                    return_all_steps=True,
+                )
+                target_trajectories.append(target_traj)
+            except (ValueError, RuntimeError) as e:
+                # CNO rollout failed (NaN/Inf, CUDA error, or abnormal values)
+                print(f"  Warning: CNO rollout failed for sample {b} in batch {batch_idx}: {e}")
+                skip_batch = True
+                break
+
+        if skip_batch:
+            continue
+
         target_trajectory = torch.cat(target_trajectories, dim=0)
 
         if n_realizations > 1 and target_trajectory.dim() == 6:
