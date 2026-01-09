@@ -1,0 +1,75 @@
+batch_size: 512
+category_assignment: auto
+checkpoint_dir: !!python/object/apply:pathlib._local.PosixPath
+- diagnostics/vqvae_baseline_100epoch_deterministic
+commitment_cost: 0.45
+compression_ratios: 0.5:1.0:1.5
+dataset_path: !!python/object/apply:pathlib._local.PosixPath
+- datasets/100k_full_features.h5
+dead_code_max_reset_fraction: 0.25
+dead_code_reset_interval: null
+dead_code_threshold: 10.0
+decay: 0.99
+dropout: 0.0
+early_stopping_min_delta: 0.01
+early_stopping_patience: 100
+epochs: 100
+eval_interval: 200
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      cnn_embedding_dim: 28
+      encode_manual: false
+      in_channels: 1
+      manual_dim: 14
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      activation: relu
+      batch_norm: true
+      dropout: 0.1
+      hidden_dims:
+      - 512
+      - 256
+      output_dim: 128
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      architecture: resnet1d_3
+      embedding_dim: 128
+feature_cleaning:
+  deduplicate_threshold: 0.99
+  enabled: true
+  outlier_method: percentile
+  percentile_range:
+  - 0.5
+  - 99.5
+  use_intelligent_dedup: true
+  variance_threshold: 1e-10
+group_embedding_dim: 256
+group_hidden_dim: 128
+informativeness_weight: 0.1
+learning_rate: 0.0007
+log_interval: 50
+max_clusters: 25
+max_samples: 10000
+min_features_per_category: 3
+num_categories_auto: null
+optimizer: adam
+orthogonality_target: 0.15
+orthogonality_weight: 0.1
+output_dir: diagnostics/vqvae_baseline_100epoch_deterministic
+random_seed: 42
+reconstruction_weight: 1.0
+save_every: null
+scheduler: null
+topo_samples: 64
+topo_weight: 0.02
+use_ema: true
+use_torch_compile: false
+val_every_n_epochs: 5
+verbose: true
+vq_weight: 1.0
+wandb: false
+warmup_epochs: 0

@@ -12,6 +12,7 @@ Architecture:
 Ported from unisim.system.models.categorical_vqvae (100% generic, simplified).
 """
 
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,6 +29,8 @@ from .latent_dim_defaults import (
     compute_default_num_tokens,
     parse_compression_ratios,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -70,16 +73,38 @@ class CategoricalVQVAEConfig:
 
     def __post_init__(self):
         """Validate configuration and set defaults."""
-        # Parse compression_ratios string to List[float] if provided
+        # Parse compression_ratios: can be string, list, or dict (per-category)
         parsed_compression_ratios = None
+        per_category_ratios = None
+        auto_strategy = "balanced"  # Default strategy for auto mode
+
         if self.compression_ratios is not None:
             if isinstance(self.compression_ratios, str):
-                # Assume 3 levels if parsing from string
-                parsed_compression_ratios = parse_compression_ratios(
-                    self.compression_ratios, num_levels=3
-                )
+                if self.compression_ratios.lower() == "auto":
+                    # Auto mode: will compute adaptive ratios per category
+                    parsed_compression_ratios = "auto"
+                    logger.info(
+                        "Compression ratios set to 'auto' mode. "
+                        "Adaptive ratios will be computed per category based on feature characteristics."
+                    )
+                    logger.warning(
+                        "AUTO mode requires category_features to be provided during training. "
+                        "If using this config for training, ensure features are available."
+                    )
+                else:
+                    # Assume 3 levels if parsing from string (e.g., "0.5:1:1.5")
+                    parsed_compression_ratios = parse_compression_ratios(
+                        self.compression_ratios, num_levels=3
+                    )
             elif isinstance(self.compression_ratios, list):
+                # Uniform ratios for all categories
                 parsed_compression_ratios = self.compression_ratios
+            elif isinstance(self.compression_ratios, dict):
+                # Per-category ratios (from adaptive computation)
+                per_category_ratios = self.compression_ratios
+                logger.info(
+                    f"Using adaptive per-category compression ratios for {len(per_category_ratios)} categories"
+                )
 
         # Derive categories from group_indices
         if self.group_indices is None:
@@ -127,12 +152,22 @@ class CategoricalVQVAEConfig:
             )
 
             # Fill missing latent_dims SECOND
+            # Use per-category ratios if available, otherwise use uniform ratios
+            cat_compression_ratios = parsed_compression_ratios
+            if per_category_ratios is not None and cat in per_category_ratios:
+                cat_compression_ratios = per_category_ratios[cat]
+                logger.info(
+                    f"Category '{cat}': using adaptive compression ratios {cat_compression_ratios}"
+                )
+
             self.levels[cat] = fill_missing_latent_dims(
                 levels=self.levels[cat],
                 group_embedding_dim=category_feature_dim,
                 n_samples=10000,  # Fallback
                 category_name=cat,
-                compression_ratios=parsed_compression_ratios,
+                compression_ratios=cat_compression_ratios,
+                category_features=None,  # Not needed - ratios pre-computed
+                auto_strategy=auto_strategy,
             )
 
             # Validate all levels have required fields

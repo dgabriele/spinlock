@@ -339,22 +339,26 @@ The term **categories** for the top-level groupings produced by orthogonality-we
 
 ### Production Baseline: 100K Full Features
 
-Our production model achieves **0.9517 quality** with **66.7% codebook utilization** on 100,000 operators:
+Our production model achieves **98.4% quality** with **43.9% codebook utilization** on 100,000 operators:
 
 | Metric | Value |
 |--------|-------|
-| Val Loss | **0.172** |
-| Input Features | 175 (after cleaning from 282 raw) |
-| Categories Discovered | 15 (1 isolated + 14 clustered) |
+| Val Loss | **0.115** |
+| Reconstruction Quality | **0.984** (98.4%) |
+| Reconstruction Error | **0.016** |
+| Input Features | ~200 (after cleaning from 298 encoded) |
+| Categories Discovered | **10** (auto-discovered via clustering) |
 | Hierarchical Levels | 3 (coarse → medium → fine) |
-| Total Codebooks | 45 (15 categories × 3 levels) |
-| Reconstruction Error | 0.048 |
+| Total Codebooks | 30 (10 categories × 3 levels) |
+| Codebook Utilization | **43.9%** |
+| Topographic Similarity | **0.997** (post-quantization) |
 
 **Key design choices:**
+- **Adaptive compression ratios**: Per-category ratios computed from feature characteristics (variance, dimensionality, information, correlation)
 - **Hybrid INITIAL encoder** with end-to-end CNN training (14D manual + 28D learned)
-- **Pure clustering** for category discovery (no gradient refinement)
-- **Auto-scaling codebook sizes** via compression ratios (0.5 coarse, 1.5 fine)
-- **Dead code resets** prune unused codes, right-sizing vocabulary to data
+- **Pure clustering** for category discovery with orphan reassignment (100% feature assignment)
+- **Higher commitment cost** (0.35) for improved codebook utilization
+- **Correlation > variance**: Clustering prioritizes correlation patterns over variance scale
 
 ### Visualization Dashboards
 

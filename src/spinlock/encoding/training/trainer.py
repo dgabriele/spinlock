@@ -12,6 +12,7 @@ Ported from unisim.system.training.trainer (simplified, removed multimodal/IC su
 
 import torch
 import torch.nn as nn
+import numpy as np
 from torch.utils.data import DataLoader
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -53,6 +54,14 @@ class VQVAETrainer:
         val_every_n_epochs: int = 5,
         # Logging
         verbose: bool = True,
+        # Metadata for checkpoint reproducibility
+        config: Optional[dict] = None,
+        group_indices: Optional[dict] = None,
+        normalization_stats: Optional[dict] = None,
+        feature_names: Optional[list] = None,
+        encoder_state_dicts: Optional[dict] = None,
+        feature_mask: Optional[np.ndarray] = None,
+        feature_cleaning_params: Optional[dict] = None,
     ):
         """Initialize trainer.
 
@@ -76,6 +85,13 @@ class VQVAETrainer:
             use_torch_compile: Use torch.compile() for JIT compilation
             val_every_n_epochs: Validate every N epochs
             verbose: Whether to print progress
+            config: Full raw training config for reproducibility
+            group_indices: Category to feature indices mapping
+            normalization_stats: Normalization statistics per category
+            feature_names: Feature names list
+            encoder_state_dicts: State dicts for frozen input encoders (MLPEncoder, etc.)
+            feature_mask: Boolean array indicating which features survived cleaning
+            feature_cleaning_params: Feature cleaning parameters for reproducibility
         """
         # Configure logging if verbose
         if verbose and not logger.handlers:
@@ -149,9 +165,22 @@ class VQVAETrainer:
                 verbose=verbose,
             )
             if verbose:
-                logger.info(f"Using DeadCodeReset (legacy, fixed interval={dead_code_reset_interval})")
+                if dead_code_reset_interval == 0:
+                    logger.info("DeadCodeReset: disabled")
+                else:
+                    logger.info(f"Using DeadCodeReset (legacy, fixed interval={dead_code_reset_interval})")
         self.checkpointer = (
-            Checkpointer(checkpoint_dir, verbose=verbose)
+            Checkpointer(
+                checkpoint_dir,
+                verbose=verbose,
+                config=config,
+                group_indices=group_indices,
+                normalization_stats=normalization_stats,
+                feature_names=feature_names,
+                encoder_state_dicts=encoder_state_dicts,
+                feature_mask=feature_mask,
+                feature_cleaning_params=feature_cleaning_params,
+            )
             if checkpoint_dir is not None
             else None
         )

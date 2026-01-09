@@ -1,0 +1,33 @@
+================================================================================
+VQ-VAE RECONSTRUCTION ERROR DIAGNOSTIC REPORT
+================================================================================
+
+Per-Family Reconstruction Errors:
+----------------------------------------
+cluster_1      : MSE=0.001673, dims=18
+cluster_2      : MSE=2715.069824, dims=37
+cluster_3      : MSE=0.440816, dims=5
+cluster_4      : MSE=1475.124146, dims=9
+cluster_5      : MSE=3826.693115, dims=14
+cluster_6      : MSE=2297.056885, dims=14
+cluster_7      : MSE=3165.354736, dims=25
+cluster_9      : MSE=3124.034912, dims=10
+
+Codebook Utilization:
+----------------------------------------
+Average Utilization: 44.5%
+Average Perplexity: 2.4
+Total Dead Codes: 213
+
+Recommendations:
+----------------------------------------
+1. ⚠️  'cluster_5' family has 2286756.2x higher reconstruction error than others (MSE=3826.693115). Consider increasing compression ratio to allocate more latent capacity (e.g., [0.25, 0.75, 2.0]).
+2. ⚠️  Low codebook utilization (44.5%). Consider reducing codebook sizes or increasing beta (commitment loss weight) to encourage better code usage.
+3. ⚠️  213 dead codes detected across quantizers. Consider enabling dead code reset (dead_code_reset_interval=1000, threshold=10.0).
+4. ⚠️  High error in cluster_2 dimensions: dim28, dim14, dim15. Investigate feature extraction for these dimensions.
+5. ⚠️  High error in cluster_3 dimensions: dim0, dim2, dim4. Investigate feature extraction for these dimensions.
+6. ⚠️  High error in cluster_4 dimensions: dim2, dim0, dim1. Investigate feature extraction for these dimensions.
+7. ⚠️  High error in cluster_5 dimensions: dim5, dim7, dim0. Investigate feature extraction for these dimensions.
+8. ⚠️  High error in cluster_6 dimensions: dim5, dim7, dim1. Investigate feature extraction for these dimensions.
+9. ⚠️  High error in cluster_7 dimensions: dim9, dim10, dim3. Investigate feature extraction for these dimensions.
+10. ⚠️  High error in cluster_9 dimensions: dim4, dim2, dim3. Investigate feature extraction for these dimensions.

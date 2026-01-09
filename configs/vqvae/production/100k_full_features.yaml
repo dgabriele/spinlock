@@ -46,9 +46,15 @@ model:
   # Hierarchical levels (empty for autoscaling)
   levels: []
 
+  # Adaptive compression ratios (NEW)
+  # Set to "auto" to compute ratios based on feature characteristics
+  # (variance, dimensionality, information content, correlation)
+  compression_ratios: "auto"
+  auto_compression_strategy: "balanced"  # Options: "variance", "dimensionality", "information", "balanced"
+
   # VQ-VAE hyperparameters
   uniform_codebook_init: true  # All levels start with L0's size, dead code resets prune naturally
-  commitment_cost: 0.25
+  commitment_cost: 0.35  # Increased to encourage codebook usage
   use_ema: true
   decay: 0.99
   dropout: 0.1
@@ -79,6 +85,8 @@ training:
     method: "clustering"  # Pure clustering - better for reconstruction
     # No isolated families needed - INITIAL, SUMMARY, TEMPORAL are all behavioral statistics
     isolated_families: []
+    # Orphan reassignment - guarantee 100% feature assignment
+    reassign_orphans: true  # Reassign features from too-small clusters to nearest cluster
     # Gradient refinement parameters (only used when method='gradient' or 'hybrid')
     gradient_epochs: 500
     gradient_lr: 0.01

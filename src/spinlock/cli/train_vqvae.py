@@ -6,7 +6,7 @@ Trains categorical hierarchical VQ-VAE for operator feature tokenization.
 
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import sys
 import warnings
 import yaml
@@ -457,9 +457,26 @@ Output:
         import numpy as np
         import h5py
         import time
+        import random
         from pathlib import Path
 
         start_time = time.time()
+
+        # Set all random seeds for reproducibility
+        # This ensures deterministic encoder initialization, clustering, and training
+        seed = config.get('random_seed', 42)
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        # For full determinism (prevents CUDNN non-determinism)
+        # Note: This may slightly reduce performance but ensures reproducibility
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+        if verbose:
+            print(f"Random seed: {seed} (deterministic mode enabled)")
 
         # Flatten nested config structure for internal training code
         # NOTE: This is an internal implementation detail. The training code
@@ -509,9 +526,10 @@ Output:
             print("Loading dataset and features...")
 
         # Load features from dataset
-        # Returns (features, feature_names, raw_ics, initial_info)
+        # Returns (features, feature_names, raw_ics, initial_info, encoder_state_dicts)
         # raw_ics and initial_info are non-None when using hybrid INITIAL encoding
-        features, feature_names, raw_ics, initial_info = self._load_features(config)
+        # encoder_state_dicts contains frozen encoder weights for reproducibility
+        features, feature_names, raw_ics, initial_info, encoder_state_dicts = self._load_features(config)
 
         if verbose:
             print(f"Loaded {features.shape[0]} samples with {features.shape[1]} features")
@@ -522,6 +540,10 @@ Output:
         # Check both old flat format and new feature_cleaning section
         feature_cleaning = config.get("feature_cleaning", {})
         clean_enabled = feature_cleaning.get("enabled", config.get("clean_features", True))
+
+        # Initialize preprocessing metadata for checkpoint reproducibility
+        feature_mask = None
+        feature_cleaning_params = None
 
         if clean_enabled:
             if verbose:
@@ -535,16 +557,38 @@ Output:
             if max_var_thresh is not None:
                 max_var_thresh = float(max_var_thresh)
 
+            # Capture cleaning parameters for reproducibility
+            variance_threshold = float(feature_cleaning.get("variance_threshold", config.get("variance_threshold", 1e-10)))
+            deduplicate_threshold = float(feature_cleaning.get("deduplicate_threshold", config.get("deduplicate_threshold", 0.99)))
+            use_intelligent_dedup = bool(feature_cleaning.get("use_intelligent_dedup", config.get("use_intelligent_dedup", True)))
+            outlier_method = str(feature_cleaning.get("outlier_method", config.get("outlier_method", "percentile")))
+            percentile_range = tuple(feature_cleaning.get("percentile_range", config.get("percentile_range", [0.5, 99.5])))
+            iqr_multiplier = float(feature_cleaning.get("iqr_multiplier", config.get("iqr_multiplier", 1.5)))
+            mad_threshold = float(feature_cleaning.get("mad_threshold", config.get("mad_threshold", 3.0)))
+            max_cv_threshold = float(feature_cleaning.get("max_cv_threshold", config.get("max_cv_threshold", 100.0)))
+
+            feature_cleaning_params = {
+                "variance_threshold": variance_threshold,
+                "max_variance_threshold": max_var_thresh,
+                "max_cv_threshold": max_cv_threshold,
+                "deduplicate_threshold": deduplicate_threshold,
+                "use_intelligent_dedup": use_intelligent_dedup,
+                "outlier_method": outlier_method,
+                "percentile_range": list(percentile_range),
+                "iqr_multiplier": iqr_multiplier,
+                "mad_threshold": mad_threshold,
+            }
+
             processor = FeatureProcessor(
-                variance_threshold=float(feature_cleaning.get("variance_threshold", config.get("variance_threshold", 1e-10))),
+                variance_threshold=variance_threshold,
                 max_variance_threshold=max_var_thresh,
-                max_cv_threshold=float(feature_cleaning.get("max_cv_threshold", config.get("max_cv_threshold", 100.0))),
-                deduplicate_threshold=float(feature_cleaning.get("deduplicate_threshold", config.get("deduplicate_threshold", 0.99))),
-                use_intelligent_dedup=bool(feature_cleaning.get("use_intelligent_dedup", config.get("use_intelligent_dedup", True))),
-                outlier_method=str(feature_cleaning.get("outlier_method", config.get("outlier_method", "percentile"))),
-                percentile_range=tuple(feature_cleaning.get("percentile_range", config.get("percentile_range", [0.5, 99.5]))),
-                iqr_multiplier=float(feature_cleaning.get("iqr_multiplier", config.get("iqr_multiplier", 1.5))),
-                mad_threshold=float(feature_cleaning.get("mad_threshold", config.get("mad_threshold", 3.0))),
+                max_cv_threshold=max_cv_threshold,
+                deduplicate_threshold=deduplicate_threshold,
+                use_intelligent_dedup=use_intelligent_dedup,
+                outlier_method=outlier_method,
+                percentile_range=percentile_range,
+                iqr_multiplier=iqr_multiplier,
+                mad_threshold=mad_threshold,
                 verbose=verbose,
             )
 
@@ -571,12 +615,21 @@ Output:
                     print(f"  Protected {initial_info['manual_dim']} INITIAL features from cleaning")
 
                 # Clean non-INITIAL features
-                cleaned_features, feature_mask, cleaned_names = processor.clean(
+                cleaned_features, feature_mask_non_initial, cleaned_names = processor.clean(
                     features_for_cleaning, names_for_cleaning
                 )
 
+                # Reconstruct full feature_mask including INITIAL features (all True for INITIAL)
+                # feature_mask maps original 270D → final cleaned dimension
+                feature_mask = np.zeros(features.shape[1], dtype=bool)
+                # Mark INITIAL features as kept (they were protected)
+                feature_mask[initial_offset:initial_end] = True
+                # Insert non-INITIAL mask values
+                non_initial_indices = list(range(initial_offset)) + list(range(initial_end, features.shape[1]))
+                feature_mask[non_initial_indices] = feature_mask_non_initial
+
                 # Count how many features before INITIAL were removed
-                features_removed_before = sum(1 for i, kept in enumerate(feature_mask) if not kept and i < initial_offset)
+                features_removed_before = sum(1 for i, kept in enumerate(feature_mask_non_initial) if not kept and i < initial_offset)
 
                 # Reattach INITIAL features at the adjusted offset
                 new_offset = initial_offset - features_removed_before
@@ -632,12 +685,30 @@ Output:
                 print("\nLoading categories from checkpoint...")
 
             checkpoint = torch.load(config["resume_from"], weights_only=False)
-            group_indices = checkpoint["group_indices"]
 
-            if verbose:
-                print(f"Loaded {len(group_indices)} categories from checkpoint")
+            # Load from model_config (authoritative source)
+            if "model_config" in checkpoint and "group_indices" in checkpoint["model_config"]:
+                group_indices = checkpoint["model_config"]["group_indices"]
+                if verbose:
+                    print(f"Loaded {len(group_indices)} categories from model_config")
+            else:
+                return self.error(
+                    "Checkpoint missing model_config['group_indices']. "
+                    "This checkpoint may be from an old version. Please retrain."
+                )
         else:
             return self.error("Must specify category_assignment='auto', category_mapping_file, or resume_from")
+
+        # Pre-compute adaptive compression ratios if "auto" mode
+        # IMPORTANT: Do this BEFORE normalization so variance information is preserved!
+        if verbose:
+            print(f"\nDebug: group_indices before adaptive compression:")
+            for cat_name, indices in sorted(group_indices.items()):
+                print(f"  {cat_name}: {len(indices)} indices → features shape: {features[:, indices].shape}")
+
+        config = self._precompute_compression_ratios(
+            config, features, group_indices, verbose
+        )
 
         # Per-category normalization
         if verbose:
@@ -653,6 +724,11 @@ Output:
 
         if verbose:
             print(f"Saved normalization stats to {stats_path}")
+
+        if verbose:
+            print(f"\nDebug: group_indices before model building:")
+            for cat_name, indices in sorted(group_indices.items()):
+                print(f"  {cat_name}: {len(indices)} indices → normalized features shape: {normalized_features[:, indices].shape}")
 
         # Build VQ-VAE model
         if verbose:
@@ -675,8 +751,21 @@ Output:
         # Create trainer
         if verbose:
             print("\nInitializing trainer...")
+            if encoder_state_dicts:
+                print(f"  Captured {len(encoder_state_dicts)} frozen encoder state dicts")
 
-        trainer = self._create_trainer(model, train_loader, val_loader, config)
+        trainer = self._create_trainer(
+            model,
+            train_loader,
+            val_loader,
+            config,
+            group_indices,
+            normalization_stats,
+            feature_names,
+            encoder_state_dicts,
+            feature_mask,
+            feature_cleaning_params,
+        )
 
         # Load checkpoint if resuming
         if config.get("resume_from"):
@@ -711,6 +800,9 @@ Output:
             config,
             history,
             final_model_path,
+            encoder_state_dicts,
+            feature_mask,
+            feature_cleaning_params,
         )
 
         # Save training history
@@ -746,6 +838,95 @@ Output:
 
         return 0
 
+    def _precompute_compression_ratios(
+        self,
+        config: Dict[str, Any],
+        features: np.ndarray,
+        group_indices: Dict[str, List[int]],
+        verbose: bool = False
+    ) -> Dict[str, Any]:
+        """Pre-compute adaptive compression ratios if config specifies "auto".
+
+        This runs BEFORE normalization to analyze raw feature characteristics
+        and compute optimal compression ratios per category.
+
+        IMPORTANT: Features must be UN-normalized (cleaned but not standardized)
+        so that variance information is preserved for adaptive computation.
+
+        Args:
+            config: Training configuration
+            features: Cleaned but UN-normalized features [N, D]
+            group_indices: Category → feature indices mapping
+            verbose: Whether to print progress
+
+        Returns:
+            Updated config with computed compression ratios
+        """
+        from spinlock.encoding.latent_dim_defaults import compute_adaptive_compression_ratios
+
+        # Check if compression_ratios is set to "auto"
+        compression_ratios = config.get('compression_ratios')
+        if compression_ratios != "auto":
+            return config  # No auto mode, return unchanged
+
+        if verbose:
+            print("\n" + "=" * 70)
+            print("ADAPTIVE COMPRESSION RATIO COMPUTATION")
+            print("=" * 70)
+            print(f"Analyzing {len(group_indices)} categories to compute optimal ratios...")
+
+        # Get strategy (default: balanced)
+        auto_strategy = config.get('auto_compression_strategy', 'balanced')
+
+        # Compute adaptive ratios per category
+        # IMPORTANT: Iterate in group_indices order (NOT sorted) to maintain consistency
+        # with category order used in model initialization
+        ratios_per_category = {}
+        metrics_per_category = {}
+
+        for cat_name in group_indices.keys():  # Preserve insertion order
+            cat_indices = group_indices[cat_name]
+            cat_features = features[:, cat_indices]  # [N, cat_dim]
+
+            # Compute adaptive ratios
+            ratios = compute_adaptive_compression_ratios(
+                features=cat_features,
+                category_name=cat_name,
+                strategy=auto_strategy
+            )
+
+            ratios_per_category[cat_name] = ratios
+
+            # Get metrics for logging
+            from spinlock.encoding.latent_dim_defaults import analyze_category_characteristics
+            metrics = analyze_category_characteristics(cat_features)
+            metrics_per_category[cat_name] = metrics
+
+            if verbose:
+                print(f"\n  {cat_name}:")
+                print(f"    Features: {len(cat_indices)}")
+                print(f"    Variance:      {metrics['variance_score']:.3f}")
+                print(f"    Dimensionality: {metrics['dimensionality_score']:.3f}")
+                print(f"    Information:   {metrics['information_score']:.3f}")
+                print(f"    Correlation:   {metrics['correlation_score']:.3f}")
+                print(f"    → Ratios: {ratios} (L0={ratios[0]}, L1={ratios[1]}, L2={ratios[2]})")
+
+        # Store computed ratios in config
+        config['compression_ratios_computed'] = ratios_per_category
+        config['compression_ratios_metrics'] = metrics_per_category
+        config['compression_ratios_strategy'] = auto_strategy
+
+        # Replace "auto" with per-category ratios for model initialization
+        # The CategoricalVQVAEConfig will use these per-category ratios
+        config['compression_ratios_per_category'] = ratios_per_category
+
+        if verbose:
+            print("\n" + "=" * 70)
+            print(f"✓ Adaptive compression ratios computed using '{auto_strategy}' strategy")
+            print("=" * 70 + "\n")
+
+        return config
+
     def _load_features(self, config: Dict[str, Any]) -> tuple:
         """Load features from HDF5 dataset.
 
@@ -762,9 +943,10 @@ Output:
         - Raw ICs: /inputs/fields [N, M, H, W] or [N, M, C, H, W]
 
         Returns:
-            Tuple of (features, feature_names, raw_ics, initial_info)
+            Tuple of (features, feature_names, raw_ics, initial_info, encoder_state_dicts)
             raw_ics is None if no hybrid INITIAL encoding
             initial_info contains offset/count for hybrid encoder
+            encoder_state_dicts contains state dicts for all frozen encoders used
         """
         import h5py
         import numpy as np
@@ -785,6 +967,7 @@ Output:
         all_feature_names = []
         raw_ics = None
         initial_info = None
+        encoder_state_dicts = {}  # Store state dicts for frozen encoders
 
         with h5py.File(dataset_path, "r") as f:
             for family_idx, feature_family in enumerate(feature_families):
@@ -905,6 +1088,13 @@ Output:
                     encoder = encoder.to(device)
                     encoder.eval()
 
+                    # Save encoder state dict for checkpoint reproducibility
+                    encoder_state_dicts[feature_family] = {
+                        'encoder_name': encoder_name,
+                        'encoder_params': encoder_params,
+                        'state_dict': encoder.state_dict(),
+                    }
+
                     # Apply encoder in batches
                     batch_size = 1024
                     encoded_features = []
@@ -943,7 +1133,7 @@ Output:
         else:
             features = all_features[0]
 
-        return features, all_feature_names, raw_ics, initial_info
+        return features, all_feature_names, raw_ics, initial_info, encoder_state_dicts
 
     def _load_category_mapping(self, mapping_file: Path) -> Dict[str, list]:
         """Load category mapping from JSON file."""
@@ -1007,6 +1197,8 @@ Output:
             device=cat_config.get("device", "cuda"),
             # Family isolation - place specified families in dedicated categories
             isolated_families=cat_config.get("isolated_families"),
+            # Orphan reassignment - guarantee 100% feature assignment
+            reassign_orphans=cat_config.get("reassign_orphans", False),
         )
 
         # Compute assignments
@@ -1095,22 +1287,51 @@ Output:
         if factors is not None and len(factors) == 0:
             factors = None  # Empty list = autoscaling
 
-        # Parse compression_ratios from config (e.g., "0.5:1:1.5" → [0.5, 1.0, 1.5])
+        # Handle compression_ratios: can be string, list, or per-category dict
         compression_ratios_str = config.get("compression_ratios")
+        compression_ratios_per_category = config.get("compression_ratios_per_category")
         compression_ratios = None
-        if compression_ratios_str is not None:
-            compression_ratios = parse_compression_ratios(compression_ratios_str)
+
+        if compression_ratios_per_category is not None:
+            # Auto mode was used - we have per-category ratios
+            # Convert to the format expected by CategoricalVQVAEConfig
+            # We'll pass the per-category dict directly as 'levels' with compression info
+            if verbose:
+                print("Using adaptive per-category compression ratios")
+
+            # Build per-category levels with computed compression ratios
+            levels_dict = {}
+            for cat_name, ratios in compression_ratios_per_category.items():
+                # Create empty level configs - latent_dims will be auto-computed
+                # using these compression ratios
+                levels_dict[cat_name] = [
+                    {'num_tokens': None, 'latent_dim': None},
+                    {'num_tokens': None, 'latent_dim': None},
+                    {'num_tokens': None, 'latent_dim': None},
+                ]
+
+            # Use the per-category ratios dict
+            # We'll need to handle this in the model initialization
+            factors = levels_dict
+            compression_ratios = compression_ratios_per_category
+        elif compression_ratios_str is not None:
+            # Check if auto mode
+            if compression_ratios_str.lower() == "auto":
+                compression_ratios = "auto"  # Pass "auto" string to model
+            else:
+                # Parse compression_ratios from config (e.g., "0.5:1:1.5" → [0.5, 1.0, 1.5])
+                compression_ratios = parse_compression_ratios(compression_ratios_str)
 
         vqvae_config = CategoricalVQVAEConfig(
             input_dim=features.shape[1],
             group_indices=group_indices,
             group_embedding_dim=config.get("group_embedding_dim", 64),
             group_hidden_dim=config.get("group_hidden_dim", 128),
-            levels=factors,  # None = auto-compute
+            levels=factors,  # None = auto-compute, or dict with per-category levels
             commitment_cost=config.get("commitment_cost", 0.45),
             use_ema=config.get("use_ema", True),
             decay=config.get("ema_decay", 0.99),  # Config uses "ema_decay", model uses "decay"
-            compression_ratios=compression_ratios,
+            compression_ratios=compression_ratios,  # Can be list or dict
             uniform_codebook_init=config.get("uniform_codebook_init", False),
         )
 
@@ -1203,8 +1424,20 @@ Output:
 
         return train_loader, val_loader
 
-    def _create_trainer(self, model, train_loader, val_loader, config: Dict[str, Any]):
-        """Create VQVAETrainer."""
+    def _create_trainer(
+        self,
+        model,
+        train_loader,
+        val_loader,
+        config: Dict[str, Any],
+        group_indices: Dict[str, List[int]],
+        normalization_stats: Dict[str, Any],
+        feature_names: List[str],
+        encoder_state_dicts: Optional[Dict[str, Any]] = None,
+        feature_mask: Optional[np.ndarray] = None,
+        feature_cleaning_params: Optional[Dict[str, Any]] = None,
+    ):
+        """Create VQVAETrainer with full metadata for checkpoint reproducibility."""
         from spinlock.encoding.training import VQVAETrainer
         from pathlib import Path
 
@@ -1232,6 +1465,14 @@ Output:
             use_torch_compile=config.get("use_torch_compile", True),
             val_every_n_epochs=config.get("val_every_n_epochs", 5),
             verbose=config.get("verbose", True),
+            # Metadata for checkpoint reproducibility
+            config=config,
+            group_indices=group_indices,
+            normalization_stats=normalization_stats,
+            feature_names=feature_names,
+            encoder_state_dicts=encoder_state_dicts,
+            feature_mask=feature_mask,
+            feature_cleaning_params=feature_cleaning_params,
         )
 
         return trainer
@@ -1246,22 +1487,57 @@ Output:
         config,
         history,
         path: Path,
+        encoder_state_dicts: Optional[Dict[str, Any]] = None,
+        feature_mask: Optional[np.ndarray] = None,
+        feature_cleaning_params: Optional[Dict[str, Any]] = None,
     ):
-        """Save final model checkpoint."""
-        import torch
+        """Save final model checkpoint with full metadata for reproducibility.
 
+        Args:
+            feature_mask: Boolean array indicating which features survived cleaning.
+                         This allows diagnostics to reproduce the exact feature space.
+            feature_cleaning_params: Exact parameters used for feature cleaning
+                                    (variance thresholds, dedup params, etc.)
+        """
+        import torch
+        import random
+
+        # Store complete checkpoint with full config for reproducibility
         checkpoint = {
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
-            "group_indices": group_indices,
+            # DEPRECATED: Use model_config['group_indices'] instead (this is pre-model-init version)
+            "pre_model_group_indices": group_indices,
             "normalization_stats": normalization_stats,
             "feature_names": feature_names,
-            "config": config,
+            "config": config,  # Full raw config (includes families, adaptive ratios, etc.)
             "history": history,
         }
 
-        # Add model config
+        # Add encoder state dicts if available
+        if encoder_state_dicts is not None:
+            checkpoint["encoder_state_dicts"] = encoder_state_dicts
+
+        # Add feature preprocessing metadata for reproducibility
+        if feature_mask is not None:
+            checkpoint["feature_mask"] = feature_mask
+        if feature_cleaning_params is not None:
+            checkpoint["feature_cleaning_params"] = feature_cleaning_params
+
+        # Capture PRNG states for full reproducibility
+        checkpoint["prng_states"] = {
+            "random_seed": config.get("random_seed", 42),
+            "torch_rng_state": torch.get_rng_state(),
+            "numpy_rng_state": np.random.get_state(),
+            "python_rng_state": random.getstate(),
+        }
+        if torch.cuda.is_available():
+            checkpoint["prng_states"]["cuda_rng_state"] = torch.cuda.get_rng_state()
+
+        # Also store VQ-VAE model config for easy loading
         if hasattr(model, "config"):
+            # Store the actual VQVAEConfig object's key attributes
+            # This is redundant with config['model'] but makes loading easier
             config_dict = {
                 "input_dim": model.config.input_dim,
                 "group_indices": model.config.group_indices,
@@ -1269,7 +1545,7 @@ Output:
                 "group_hidden_dim": model.config.group_hidden_dim,
             }
 
-            # Add per-category levels
+            # Add per-category levels (important for reconstruction)
             if hasattr(model.config, "levels") and model.config.levels:
                 config_dict["levels"] = model.config.levels
 

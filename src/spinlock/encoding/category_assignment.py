@@ -91,6 +91,7 @@ class DynamicCategoryAssignment(CategoryAssignment):
         subsample_excess_fraction: float = 0.1,
         device: str = "cuda",
         isolated_families: Optional[List[str]] = None,
+        reassign_orphans: bool = False,
     ):
         """Initialize dynamic category assignment.
 
@@ -109,6 +110,8 @@ class DynamicCategoryAssignment(CategoryAssignment):
             isolated_families: List of feature family names (e.g., ["architecture"]) that
                 should be placed in their own dedicated categories, separate from clustering.
                 Useful for features that have fundamentally different statistical properties.
+            reassign_orphans: If True, features in too-small clusters are reassigned to
+                nearest valid cluster. Guarantees 100% feature assignment (default: False).
         """
         if method not in ("clustering", "gradient", "hybrid"):
             raise ValueError(f"Unknown method: {method}. Use 'clustering', 'gradient', or 'hybrid'")
@@ -125,6 +128,7 @@ class DynamicCategoryAssignment(CategoryAssignment):
         self.subsample_excess_fraction = subsample_excess_fraction
         self.device = device
         self.isolated_families = isolated_families
+        self.reassign_orphans = reassign_orphans
 
         # Cached assignments (computed on first call to assign_categories)
         self._assignments = None
@@ -223,6 +227,7 @@ class DynamicCategoryAssignment(CategoryAssignment):
             max_samples_for_clustering=self.max_samples_for_clustering,
             max_clusters=self.max_clusters,
             isolated_families=self.isolated_families,
+            reassign_orphans=self.reassign_orphans,
         )
 
         return assignments

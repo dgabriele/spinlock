@@ -1,0 +1,325 @@
+auto_compression_strategy: balanced
+batch_size: 512
+category_assignment: auto
+checkpoint_dir: !!python/object/apply:pathlib._local.PosixPath
+- diagnostics/vqvae_adaptive_100epoch_v2
+commitment_cost: 0.45
+compression_ratios: auto
+compression_ratios_computed: &id002
+  cluster_1:
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - &id001 !!python/object/apply:numpy.dtype
+      args:
+      - f8
+      - false
+      - true
+      state: !!python/tuple
+      - 3
+      - <
+      - null
+      - null
+      - null
+      - -1
+      - -1
+      - 0
+    - !!binary |
+      4XoUrkfh2j8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      16NwPQrX+z8=
+  cluster_10:
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      16NwPQrX0z8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      4XoUrkfh6j8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      uB6F61G4/j8=
+  cluster_11:
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      exSuR+F61D8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      KVyPwvUo7D8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAAAEA=
+  cluster_12:
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      MzMzMzMz0z8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      4XoUrkfh6j8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      uB6F61G4/j8=
+  cluster_2:
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA4D8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      CtejcD0K8z8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      rkfhehSu/z8=
+  cluster_4:
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA4D8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      PQrXo3A98j8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      mpmZmZmZ/T8=
+  cluster_5:
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      16NwPQrX0z8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      4XoUrkfh6j8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      uB6F61G4/j8=
+  cluster_6:
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      MzMzMzMz0z8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      4XoUrkfh6j8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      uB6F61G4/j8=
+  cluster_7:
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      H4XrUbge1T8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      exSuR+F67D8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAAAEA=
+  cluster_8:
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      MzMzMzMz0z8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      4XoUrkfh6j8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      uB6F61G4/j8=
+  cluster_9:
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA4D8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      CtejcD0K8z8=
+  - !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      hetRuB6F/z8=
+compression_ratios_metrics:
+  cluster_1:
+    correlation_score: 0.8213725931247849
+    dimensionality_score: 0.6886177335457992
+    information_score: 0.9994146227836609
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAA4BQSxD8=
+  cluster_10:
+    correlation_score: 0.7959978797673378
+    dimensionality_score: 0.6007619328947519
+    information_score: 0.9890220165252686
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  cluster_11:
+    correlation_score: 0.7395222174859678
+    dimensionality_score: 0.4216379923242304
+    information_score: 0.9911671280860901
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  cluster_12:
+    correlation_score: 0.715276859599655
+    dimensionality_score: 0.5384272503221113
+    information_score: 0.984103798866272
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  cluster_2:
+    correlation_score: 0.5774638996639831
+    dimensionality_score: 0.3882367670984233
+    information_score: 0.9999998807907104
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAIKHmkz8=
+  cluster_4:
+    correlation_score: 0.7914006656262279
+    dimensionality_score: 0.4989219858054781
+    information_score: 0.9990716576576233
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAgPb0yT8=
+  cluster_5:
+    correlation_score: 0.7726087656249867
+    dimensionality_score: 0.6262830509731586
+    information_score: 0.9829234480857849
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  cluster_6:
+    correlation_score: 0.7102602183429392
+    dimensionality_score: 0.5557708294077383
+    information_score: 0.9810104370117188
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  cluster_7:
+    correlation_score: 0.8587030990965518
+    dimensionality_score: 0.4505714496710639
+    information_score: 0.9948292374610901
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  cluster_8:
+    correlation_score: 0.7618731758948464
+    dimensionality_score: 0.5384272503221113
+    information_score: 0.985986590385437
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  cluster_9:
+    correlation_score: 0.6436439690514658
+    dimensionality_score: 0.30038096644737594
+    information_score: 0.9999999403953552
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAgAYwkj8=
+compression_ratios_per_category: *id002
+compression_ratios_strategy: balanced
+dataset_path: !!python/object/apply:pathlib._local.PosixPath
+- datasets/100k_full_features.h5
+dead_code_max_reset_fraction: 0.25
+dead_code_reset_interval: null
+dead_code_threshold: 10.0
+decay: 0.99
+dropout: 0.1
+early_stopping_min_delta: 0.01
+early_stopping_patience: 50
+epochs: 100
+eval_interval: 200
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      cnn_embedding_dim: 28
+      encode_manual: false
+      in_channels: 1
+      manual_dim: 14
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      activation: relu
+      batch_norm: true
+      dropout: 0.1
+      hidden_dims:
+      - 512
+      - 256
+      output_dim: 128
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      architecture: resnet1d_3
+      embedding_dim: 128
+feature_cleaning:
+  deduplicate_threshold: 0.99
+  enabled: true
+  mad_threshold: 3.0
+  outlier_method: percentile
+  percentile_range:
+  - 0.5
+  - 99.5
+  use_intelligent_dedup: true
+  variance_threshold: 1.0e-10
+group_embedding_dim: 256
+group_hidden_dim: 128
+informativeness_weight: 0.1
+learning_rate: 0.0007
+log_interval: 50
+max_clusters: 25
+max_samples: 10000
+min_features_per_category: 3
+num_categories_auto: null
+optimizer: adam
+orthogonality_target: 0.15
+orthogonality_weight: 0.1
+output_dir: diagnostics/vqvae_adaptive_100epoch_v2
+random_seed: 42
+reconstruction_weight: 1.0
+save_every: null
+scheduler: null
+topo_samples: 64
+topo_weight: 0.02
+use_ema: true
+use_torch_compile: false
+val_every_n_epochs: 5
+verbose: true
+vq_weight: 1.0
+wandb: false
+warmup_epochs: 0

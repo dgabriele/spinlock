@@ -1,0 +1,33 @@
+================================================================================
+VQ-VAE RECONSTRUCTION ERROR DIAGNOSTIC REPORT
+================================================================================
+
+Per-Family Reconstruction Errors:
+----------------------------------------
+cluster_1      : MSE=0.001184, dims=18
+cluster_2      : MSE=3406.895020, dims=37
+cluster_3      : MSE=0.397813, dims=5
+cluster_4      : MSE=1027.883179, dims=9
+cluster_5      : MSE=1212.368896, dims=14
+cluster_6      : MSE=1340.432983, dims=14
+cluster_7      : MSE=1969.761841, dims=25
+cluster_9      : MSE=810.440857, dims=10
+
+Codebook Utilization:
+----------------------------------------
+Average Utilization: 40.5%
+Average Perplexity: 1.9
+Total Dead Codes: 239
+
+Recommendations:
+----------------------------------------
+1. ⚠️  'cluster_2' family has 2876974.6x higher reconstruction error than others (MSE=3406.895020). Consider increasing compression ratio to allocate more latent capacity (e.g., [0.25, 0.75, 2.0]).
+2. ⚠️  Low codebook utilization (40.5%). Consider reducing codebook sizes or increasing beta (commitment loss weight) to encourage better code usage.
+3. ⚠️  239 dead codes detected across quantizers. Consider enabling dead code reset (dead_code_reset_interval=1000, threshold=10.0).
+4. ⚠️  High error in cluster_2 dimensions: dim21, dim13, dim9. Investigate feature extraction for these dimensions.
+5. ⚠️  High error in cluster_3 dimensions: dim0, dim2, dim4. Investigate feature extraction for these dimensions.
+6. ⚠️  High error in cluster_4 dimensions: dim1, dim0, dim2. Investigate feature extraction for these dimensions.
+7. ⚠️  High error in cluster_5 dimensions: dim1, dim2, dim4. Investigate feature extraction for these dimensions.
+8. ⚠️  High error in cluster_6 dimensions: dim1, dim0, dim3. Investigate feature extraction for these dimensions.
+9. ⚠️  High error in cluster_7 dimensions: dim4, dim7, dim9. Investigate feature extraction for these dimensions.
+10. ⚠️  High error in cluster_9 dimensions: dim1, dim0, dim3. Investigate feature extraction for these dimensions.

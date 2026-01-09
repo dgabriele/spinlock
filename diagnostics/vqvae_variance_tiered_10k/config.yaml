@@ -1,0 +1,243 @@
+auto_compression_strategy: balanced
+batch_size: 512
+category_assignment: auto
+checkpoint_dir: !!python/object/apply:pathlib._local.PosixPath
+- diagnostics/vqvae_variance_tiered_10k
+commitment_cost: 0.45
+compression_ratios: auto
+compression_ratios_computed: &id002
+  low_var_cluster_1:
+  - 0.4
+  - 1.0
+  - 1.8
+  low_var_cluster_2:
+  - 0.4
+  - 1.0
+  - 1.8
+  low_var_cluster_3:
+  - 0.4
+  - 1.0
+  - 1.8
+  low_var_cluster_4:
+  - 0.4
+  - 1.0
+  - 1.8
+  low_var_cluster_5:
+  - 0.4
+  - 1.0
+  - 1.8
+  low_var_cluster_7:
+  - 0.4
+  - 1.0
+  - 1.8
+  low_var_cluster_9:
+  - 0.4
+  - 1.0
+  - 1.8
+  near_zero_var_cluster_1:
+  - 0.3
+  - 0.7
+  - 1.2
+  near_zero_var_cluster_2:
+  - 0.3
+  - 0.7
+  - 1.2
+  near_zero_var_cluster_3:
+  - 0.3
+  - 0.7
+  - 1.2
+  near_zero_var_cluster_4:
+  - 0.3
+  - 0.7
+  - 1.2
+  near_zero_var_cluster_5:
+  - 0.3
+  - 0.7
+  - 1.2
+compression_ratios_metrics:
+  low_var_cluster_1:
+    correlation_score: 0.6470914135342976
+    dimensionality_score: 0.5195737064824407
+    information_score: 0.9865148663520813
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - &id001 !!python/object/apply:numpy.dtype
+      args:
+      - f8
+      - false
+      - true
+      state: !!python/tuple
+      - 3
+      - <
+      - null
+      - null
+      - null
+      - -1
+      - -1
+      - 0
+    - !!binary |
+      AAAAAAAA8D8=
+  low_var_cluster_2:
+    correlation_score: 0.8274261207764605
+    dimensionality_score: 0.4505714496710639
+    information_score: 0.9951153993606567
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  low_var_cluster_3:
+    correlation_score: 0.6237084944204927
+    dimensionality_score: 0.4989219858054781
+    information_score: 0.9870027899742126
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  low_var_cluster_4:
+    correlation_score: 0.887574885118185
+    dimensionality_score: 0.3882367670984233
+    information_score: 1.0
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  low_var_cluster_5:
+    correlation_score: 0.5961644895350116
+    dimensionality_score: 0.4216379923242304
+    information_score: 0.9947576522827148
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  low_var_cluster_7:
+    correlation_score: 0.8141093027092864
+    dimensionality_score: 0.5718284755479184
+    information_score: 0.9997894167900085
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAIOoKwz8=
+  low_var_cluster_9:
+    correlation_score: 0.6793760416787742
+    dimensionality_score: 0.4505714496710639
+    information_score: 0.9991881251335144
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAA4MnHsT8=
+  near_zero_var_cluster_1:
+    correlation_score: 0.5306452111217304
+    dimensionality_score: 0.34873150258179014
+    information_score: 1.0
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  near_zero_var_cluster_2:
+    correlation_score: 0.6758781554806421
+    dimensionality_score: 0.613898019286257
+    information_score: 0.9888402223587036
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAAAA8D8=
+  near_zero_var_cluster_3:
+    correlation_score: 0.556960650942552
+    dimensionality_score: 0.34873150258179014
+    information_score: 1.0000001192092896
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAJLcjz8=
+  near_zero_var_cluster_4:
+    correlation_score: 0.663974323944897
+    dimensionality_score: 0.3882367670984233
+    information_score: 1.0
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAAAE1guz8=
+  near_zero_var_cluster_5:
+    correlation_score: 0.6109204440708957
+    dimensionality_score: 0.4505714496710639
+    information_score: 0.9999983310699463
+    variance_score: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      AAAA4PMbvD8=
+compression_ratios_per_category: *id002
+compression_ratios_strategy: balanced
+dataset_path: !!python/object/apply:pathlib._local.PosixPath
+- datasets/100k_full_features.h5
+dead_code_max_reset_fraction: 0.25
+dead_code_reset_interval: null
+dead_code_threshold: 10.0
+decay: 0.99
+dropout: 0.0
+early_stopping_min_delta: 0.01
+early_stopping_patience: 100
+epochs: 100
+eval_interval: 200
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      cnn_embedding_dim: 28
+      encode_manual: false
+      in_channels: 1
+      manual_dim: 14
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      activation: relu
+      batch_norm: true
+      dropout: 0.1
+      hidden_dims:
+      - 512
+      - 256
+      output_dim: 128
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      architecture: resnet1d_3
+      embedding_dim: 128
+feature_cleaning:
+  deduplicate_threshold: 0.99
+  enabled: true
+  outlier_method: percentile
+  percentile_range:
+  - 0.5
+  - 99.5
+  use_intelligent_dedup: true
+  variance_threshold: 1.0e-10
+group_embedding_dim: 256
+group_hidden_dim: 128
+informativeness_weight: 0.1
+learning_rate: 0.0007
+levels: []
+log_interval: 50
+max_clusters: 25
+max_samples: 10000
+min_features_per_category: 3
+num_categories_auto: null
+optimizer: adam
+orthogonality_target: 0.15
+orthogonality_weight: 0.1
+output_dir: diagnostics/vqvae_variance_tiered_10k
+random_seed: 42
+reconstruction_weight: 1.0
+save_every: null
+scheduler: null
+topo_samples: 64
+topo_weight: 0.02
+use_ema: true
+use_torch_compile: false
+use_variance_tiers: true
+val_every_n_epochs: 5
+variance_tier_thresholds:
+  low: 50.0
+  medium: 300.0
+  near_zero: 1.0
+verbose: true
+vq_weight: 1.0
+wandb: false
+warmup_epochs: 0

@@ -1,0 +1,31 @@
+================================================================================
+VQ-VAE RECONSTRUCTION ERROR DIAGNOSTIC REPORT
+================================================================================
+
+Per-Family Reconstruction Errors:
+----------------------------------------
+cluster_1      : MSE=0.001198, dims=19
+cluster_2      : MSE=2939.077148, dims=39
+cluster_3      : MSE=0.449599, dims=5
+cluster_4      : MSE=3487.140381, dims=31
+cluster_5      : MSE=2016.982422, dims=18
+cluster_6      : MSE=3956.054688, dims=12
+cluster_7      : MSE=2607.775391, dims=25
+
+Codebook Utilization:
+----------------------------------------
+Average Utilization: 37.3%
+Average Perplexity: 2.2
+Total Dead Codes: 228
+
+Recommendations:
+----------------------------------------
+1. ⚠️  'cluster_6' family has 3302334.6x higher reconstruction error than others (MSE=3956.054688). Consider increasing compression ratio to allocate more latent capacity (e.g., [0.25, 0.75, 2.0]).
+2. ⚠️  Low codebook utilization (37.3%). Consider reducing codebook sizes or increasing beta (commitment loss weight) to encourage better code usage.
+3. ⚠️  228 dead codes detected across quantizers. Consider enabling dead code reset (dead_code_reset_interval=1000, threshold=10.0).
+4. ⚠️  High error in cluster_2 dimensions: dim26, dim20, dim27. Investigate feature extraction for these dimensions.
+5. ⚠️  High error in cluster_3 dimensions: dim0, dim2, dim4. Investigate feature extraction for these dimensions.
+6. ⚠️  High error in cluster_4 dimensions: dim3, dim16, dim18. Investigate feature extraction for these dimensions.
+7. ⚠️  High error in cluster_5 dimensions: dim0, dim1, dim4. Investigate feature extraction for these dimensions.
+8. ⚠️  High error in cluster_6 dimensions: dim6, dim1, dim5. Investigate feature extraction for these dimensions.
+9. ⚠️  High error in cluster_7 dimensions: dim4, dim5, dim7. Investigate feature extraction for these dimensions.

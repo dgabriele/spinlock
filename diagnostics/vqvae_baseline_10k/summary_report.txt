@@ -1,0 +1,42 @@
+================================================================================
+VQ-VAE RECONSTRUCTION ERROR DIAGNOSTIC REPORT
+================================================================================
+
+Per-Family Reconstruction Errors:
+----------------------------------------
+cluster_1      : MSE=0.116534, dims=16
+cluster_2      : MSE=3611.906250, dims=33
+cluster_3      : MSE=494.381256, dims=9
+cluster_4      : MSE=0.077545, dims=5
+cluster_5      : MSE=1821.457642, dims=13
+cluster_6      : MSE=883.278748, dims=17
+cluster_7      : MSE=2559.784180, dims=19
+cluster_8      : MSE=831.358276, dims=16
+cluster_9      : MSE=213.059479, dims=5
+cluster_10     : MSE=1101.239868, dims=14
+cluster_11     : MSE=1332.686279, dims=16
+cluster_12     : MSE=1729.076660, dims=24
+
+Codebook Utilization:
+----------------------------------------
+Average Utilization: 20.4%
+Average Perplexity: 2.5
+Total Dead Codes: 693
+
+Recommendations:
+----------------------------------------
+1. ⚠️  'cluster_2' family has 46578.3x higher reconstruction error than others (MSE=3611.906250). Consider increasing compression ratio to allocate more latent capacity (e.g., [0.25, 0.75, 2.0]).
+2. ⚠️  Low codebook utilization (20.4%). Consider reducing codebook sizes or increasing beta (commitment loss weight) to encourage better code usage.
+3. ⚠️  693 dead codes detected across quantizers. Consider enabling dead code reset (dead_code_reset_interval=1000, threshold=10.0).
+4. ⚠️  High error in cluster_1 dimensions: dim8, dim1, dim13. Investigate feature extraction for these dimensions.
+5. ⚠️  High error in cluster_2 dimensions: dim23, dim24, dim19. Investigate feature extraction for these dimensions.
+6. ⚠️  High error in cluster_3 dimensions: dim8, dim0, dim4. Investigate feature extraction for these dimensions.
+7. ⚠️  High error in cluster_4 dimensions: dim0, dim4, dim1. Investigate feature extraction for these dimensions.
+8. ⚠️  High error in cluster_5 dimensions: dim1, dim3, dim2. Investigate feature extraction for these dimensions.
+9. ⚠️  High error in cluster_6 dimensions: dim1, dim0, dim3. Investigate feature extraction for these dimensions.
+10. ⚠️  High error in cluster_7 dimensions: dim5, dim0, dim7. Investigate feature extraction for these dimensions.
+11. ⚠️  High error in cluster_8 dimensions: dim0, dim3, dim4. Investigate feature extraction for these dimensions.
+12. ⚠️  High error in cluster_9 dimensions: dim1, dim0, dim4. Investigate feature extraction for these dimensions.
+13. ⚠️  High error in cluster_10 dimensions: dim0, dim4, dim5. Investigate feature extraction for these dimensions.
+14. ⚠️  High error in cluster_11 dimensions: dim2, dim3, dim0. Investigate feature extraction for these dimensions.
+15. ⚠️  High error in cluster_12 dimensions: dim5, dim11, dim10. Investigate feature extraction for these dimensions.

@@ -1,0 +1,32 @@
+================================================================================
+VQ-VAE RECONSTRUCTION ERROR DIAGNOSTIC REPORT
+================================================================================
+
+Per-Family Reconstruction Errors:
+----------------------------------------
+cluster_1      : MSE=5716.128906, dims=23
+cluster_2      : MSE=3401.158203, dims=11
+cluster_3      : MSE=5092.624512, dims=14
+cluster_4      : MSE=6650.351074, dims=11
+cluster_5      : MSE=0.333222, dims=17
+cluster_6      : MSE=4031.942627, dims=33
+cluster_7      : MSE=94.373077, dims=12
+
+Codebook Utilization:
+----------------------------------------
+Average Utilization: 41.2%
+Average Perplexity: 2.6
+Total Dead Codes: 208
+
+Recommendations:
+----------------------------------------
+1. ⚠️  'cluster_4' family has 19957.7x higher reconstruction error than others (MSE=6650.351074). Consider increasing compression ratio to allocate more latent capacity (e.g., [0.25, 0.75, 2.0]).
+2. ⚠️  Low codebook utilization (41.2%). Consider reducing codebook sizes or increasing beta (commitment loss weight) to encourage better code usage.
+3. ⚠️  208 dead codes detected across quantizers. Consider enabling dead code reset (dead_code_reset_interval=1000, threshold=10.0).
+4. ⚠️  High error in cluster_1 dimensions: dim2, dim12, dim5. Investigate feature extraction for these dimensions.
+5. ⚠️  High error in cluster_2 dimensions: dim6, dim3, dim1. Investigate feature extraction for these dimensions.
+6. ⚠️  High error in cluster_3 dimensions: dim8, dim13, dim2. Investigate feature extraction for these dimensions.
+7. ⚠️  High error in cluster_4 dimensions: dim2, dim4, dim1. Investigate feature extraction for these dimensions.
+8. ⚠️  High error in cluster_5 dimensions: dim12, dim11, dim8. Investigate feature extraction for these dimensions.
+9. ⚠️  High error in cluster_6 dimensions: dim6, dim8, dim15. Investigate feature extraction for these dimensions.
+10. ⚠️  High error in cluster_7 dimensions: dim8, dim10, dim0. Investigate feature extraction for these dimensions.
