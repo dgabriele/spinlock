@@ -222,7 +222,7 @@ class CNOReplayer:
         seed: Optional[int],
         return_all_steps: bool,
     ) -> torch.Tensor:
-        """Single realization rollout."""
+        """Single realization rollout with NaN/Inf detection."""
         if seed is not None:
             torch.manual_seed(seed)
             if torch.cuda.is_available():
@@ -231,10 +231,24 @@ class CNOReplayer:
         trajectory = [ic] if return_all_steps else []
         x = ic
 
-        for _ in range(timesteps):
-            x = operator(x)
-            if return_all_steps:
-                trajectory.append(x)
+        for step in range(timesteps):
+            try:
+                x = operator(x)
+
+                # Check for NaN/Inf to prevent hangs
+                if torch.isnan(x).any() or torch.isinf(x).any():
+                    raise ValueError(
+                        f"NaN/Inf detected in operator output at step {step+1}/{timesteps}"
+                    )
+
+                if return_all_steps:
+                    trajectory.append(x)
+
+            except RuntimeError as e:
+                # CUDA errors can cause hangs - fail fast
+                raise RuntimeError(
+                    f"CUDA error in operator rollout at step {step+1}/{timesteps}: {e}"
+                ) from e
 
         if return_all_steps:
             return torch.stack(trajectory, dim=1)  # [B, T+1, C, H, W]
