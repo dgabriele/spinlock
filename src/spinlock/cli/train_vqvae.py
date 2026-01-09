@@ -181,6 +181,39 @@ Output:
             help="Print detailed progress information",
         )
 
+        # Adaptive tuning options
+        tuning_group = parser.add_argument_group("adaptive tuning options")
+
+        tuning_group.add_argument(
+            "--enable-adaptive-tuning",
+            action="store_true",
+            help="Enable upfront adaptive MSE tuning phase before full training",
+        )
+
+        tuning_group.add_argument(
+            "--tuning-epochs",
+            type=int,
+            default=50,
+            metavar="N",
+            help="Epochs per category during tuning phase (default: 50)",
+        )
+
+        tuning_group.add_argument(
+            "--tuning-samples",
+            type=int,
+            default=10000,
+            metavar="N",
+            help="Samples to use for tuning phase (default: 10000)",
+        )
+
+        tuning_group.add_argument(
+            "--max-sweeps",
+            type=int,
+            default=3,
+            metavar="N",
+            help="Maximum categories to run compression sweeps for (default: 3)",
+        )
+
     def execute(self, args: Namespace) -> int:
         """Execute VQ-VAE training."""
         # Validate config exists
@@ -218,7 +251,7 @@ Output:
 
         # Execute training
         try:
-            return self._run_training(config, args.verbose)
+            return self._run_training(config, args)
         except KeyboardInterrupt:
             print("\n\nTraining interrupted by user", file=sys.stderr)
             return 130
@@ -440,7 +473,7 @@ Output:
 
         print("=" * 70 + "\n")
 
-    def _run_training(self, config: Dict[str, Any], verbose: bool) -> int:
+    def _run_training(self, config: Dict[str, Any], args: Namespace) -> int:
         """
         Run VQ-VAE training pipeline.
 
@@ -460,6 +493,7 @@ Output:
         import random
         from pathlib import Path
 
+        verbose = args.verbose
         start_time = time.time()
 
         # Set all random seeds for reproducibility
@@ -709,6 +743,90 @@ Output:
         config = self._precompute_compression_ratios(
             config, features, group_indices, verbose
         )
+
+        # Run adaptive tuning if enabled
+        if args.enable_adaptive_tuning and not config.get("resume_from"):
+            from spinlock.encoding.training.tuning_trainer import run_adaptive_tuning_workflow
+            import json
+
+            if verbose:
+                print("\n" + "=" * 70)
+                print("RUNNING ADAPTIVE MSE TUNING")
+                print("=" * 70)
+
+            # Get initial compression ratios (either from auto-compute or config)
+            initial_compression_ratios = config.get("compression_ratios_per_category")
+
+            # If compression ratios weren't computed automatically, create uniform dict
+            if initial_compression_ratios is None:
+                compression_ratios_str = config.get("compression_ratios")
+                if compression_ratios_str:
+                    from spinlock.encoding.latent_dim_defaults import parse_compression_ratios
+                    if compression_ratios_str.lower() == "auto":
+                        # This shouldn't happen since _precompute_compression_ratios should have handled it
+                        initial_compression_ratios = {
+                            cat: [0.5, 1.0, 1.5] for cat in group_indices.keys()
+                        }
+                    else:
+                        ratios = parse_compression_ratios(compression_ratios_str)
+                        initial_compression_ratios = {
+                            cat: ratios for cat in group_indices.keys()
+                        }
+                else:
+                    # Default to [0.5, 1.0, 1.5] for all categories
+                    initial_compression_ratios = {
+                        cat: [0.5, 1.0, 1.5] for cat in group_indices.keys()
+                    }
+
+            # Create temporary dataset file for tuning
+            import tempfile
+            import h5py
+
+            with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+                tmp_dataset_path = tmp_file.name
+
+            # Write features to temporary HDF5 file
+            with h5py.File(tmp_dataset_path, 'w') as f:
+                f.create_dataset('features', data=features)
+
+            try:
+                # Run adaptive tuning workflow
+                optimized_ratios = run_adaptive_tuning_workflow(
+                    dataset_path=tmp_dataset_path,
+                    group_indices=group_indices,
+                    initial_compression_ratios=initial_compression_ratios,
+                    tuning_epochs=args.tuning_epochs,
+                    tuning_samples=args.tuning_samples,
+                    max_sweeps=args.max_sweeps,
+                    device=config.get("device", "cuda")
+                )
+
+                # Replace initial ratios with optimized ratios
+                config["compression_ratios_per_category"] = optimized_ratios
+                config["compression_ratios_optimized"] = True
+
+                # Save tuning report
+                tuning_report_path = output_dir / "adaptive_tuning_report.json"
+                tuning_report = {
+                    "initial_ratios": initial_compression_ratios,
+                    "optimized_ratios": optimized_ratios,
+                    "tuning_config": {
+                        "tuning_epochs": args.tuning_epochs,
+                        "tuning_samples": args.tuning_samples,
+                        "max_sweeps": args.max_sweeps
+                    }
+                }
+                with open(tuning_report_path, "w") as f:
+                    json.dump(tuning_report, f, indent=2)
+
+                if verbose:
+                    print(f"\nTuning report saved: {tuning_report_path}")
+
+            finally:
+                # Clean up temporary dataset
+                import os
+                if os.path.exists(tmp_dataset_path):
+                    os.unlink(tmp_dataset_path)
 
         # Per-category normalization
         if verbose:
