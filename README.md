@@ -34,11 +34,11 @@ Spinlock enables systematic exploration of neural operator parameter spaces to b
 
 Spinlock builds **foundation models for scientific simulation**. The goal is to pre-train Neural Operator Agents on diverse dynamical behaviors, then apply them to downstream tasks across physics, biology, climate modeling, and engineering—similar to how language models pre-train on text corpora before fine-tuning.
 
-**The ML Problem:** Given a neural operator with parameters θ and initial condition u₀, predict behavioral properties of the trajectory u(t) without running expensive rollouts.
+**Initial Prototype:** The first system explores a specific prediction task as a feasibility demonstration: given a neural operator with parameters θ and initial condition u₀, predict behavioral properties without expensive rollouts.
 
-**Our Approach:**
-- **Data:** Generate 100K+ operator trajectories with stratified parameter sampling
-- **Features:** Extract 500+ behavioral descriptors (spatial, spectral, temporal, causal)
+The prototype implementation:
+- **Data:** 100K+ operator trajectories with stratified parameter sampling
+- **Features:** 500+ behavioral descriptors (spatial, spectral, temporal, causal)
 - **Tokenization:** VQ-VAE compresses behaviors into discrete tokens (~8-15 learned categories)
 - **Agent:** U-AFNO NOA generates rollouts; frozen VQ-VAE encodes features → discrete behavioral tokens for loss
 
@@ -73,7 +73,7 @@ The name "Spinlock" draws inspiration from **quantum field spinlocking**—a phe
 
 **Core Thesis**: The discovery of truly novel computational structures requires minimizing human-imposed semantic bias at every level of the pipeline.
 
-Spinlock is designed around a radical premise: **we don't know what we're looking for**. Rather than pre-defining behavioral categories or imposing domain-specific taxonomies, the system treats neural operator space as fundamentally alien territory to be explored without preconceptions.
+Spinlock is designed around a radical premise: **there are no predetermined targets**. Rather than pre-defining behavioral categories or imposing domain-specific taxonomies, the system treats neural operator space as fundamentally alien territory to be explored without preconceptions.
 
 #### Bias-Minimizing Design Principles
 
@@ -108,7 +108,7 @@ This shift enables:
 - **Emergent taxonomies** that reflect the true structure of the computational physics
 - **General dynamical reasoning** applicable beyond any single domain
 
-By minimizing bias, we maximize the potential for **genuine discovery**: finding structure and semantics that are truly alien, emergent, and potentially fundamental to understanding computation as a physical process.
+By minimizing bias, the system maximizes the potential for **genuine discovery**: finding structure and semantics that are truly alien, emergent, and potentially fundamental to understanding computation as a physical process.
 
 ### Design Philosophy
 
