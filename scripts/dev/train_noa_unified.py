@@ -168,18 +168,9 @@ def train_epoch(
                 print(f"    Skipped {batch_idx + 1}/{batches_to_skip} batches...")
             continue
 
-        # Detailed logging for debugging batch 84 hang
-        if batch_idx in [84]:
-            print(f"\n  [DEBUG] Starting batch {batch_idx}...")
-            print(f"  [DEBUG]   Step 1: Loading IC and params from batch...")
-
         ic = batch["ic"].to(device)
         params = batch["params"]
         B = ic.shape[0]
-
-        if batch_idx in [84]:
-            print(f"  [DEBUG]   Step 2: IC shape {ic.shape}, params shape {params.shape}")
-            print(f"  [DEBUG]   Step 3: Starting NOA forward pass...")
 
         # Generate NOA trajectory with truncated BPTT if needed
         if use_tbptt:
@@ -193,17 +184,15 @@ def train_epoch(
         else:
             pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True)
 
-        if batch_idx in [84]:
-            print(f"  [DEBUG]   Step 4: NOA forward complete, pred shape {pred_trajectory.shape}")
-            print(f"  [DEBUG]   Step 5: Starting CNO replay for {B} samples...")
-
-        # Replay CNO trajectories with error handling and detailed logging
+        # Replay CNO trajectories with error handling
+        # Note: Some parameter vectors can cause CUDA hangs in training context
+        # (high GPU memory pressure) even though they work in isolation
         target_trajectories = []
         skip_batch = False
         for b in range(B):
             try:
                 # Log which sample we're about to process (for debugging hangs)
-                if batch_idx in [84] or (batch_idx + 1) % 10 == 0:  # Log every 10 batches
+                if (batch_idx + 1) % 10 == 0:  # Log every 10 batches
                     print(f"  [DEBUG] Batch {batch_idx}, sample {b}/{B}, params hash: {hash(tuple(params[b].numpy().tolist()))}")
 
                 target_traj = replayer.rollout(
@@ -214,24 +203,17 @@ def train_epoch(
                     return_all_steps=True,
                 )
                 target_trajectories.append(target_traj)
-                if batch_idx in [84]:
-                    print(f"  [DEBUG]     Sample {b} rollout complete, shape {target_traj.shape}")
             except (ValueError, RuntimeError) as e:
                 # CNO rollout failed (NaN/Inf, CUDA error, or abnormal values)
                 print(f"  Warning: CNO rollout failed for sample {b} in batch {batch_idx}: {e}")
+                print(f"          Sample index: {batch['sample_idx'][b].item()}, params: {params[b].numpy()}")
                 skip_batch = True
                 break
 
         if skip_batch:
             continue
 
-        if batch_idx in [84]:
-            print(f"  [DEBUG]   Step 6: All CNO rollouts complete, concatenating...")
-
         target_trajectory = torch.cat(target_trajectories, dim=0)
-
-        if batch_idx in [84]:
-            print(f"  [DEBUG]   Step 7: Target trajectory shape {target_trajectory.shape}, computing loss...")
 
         if n_realizations > 1 and target_trajectory.dim() == 6:
             target_trajectory = target_trajectory.mean(dim=1)
