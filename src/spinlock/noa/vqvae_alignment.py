@@ -26,6 +26,68 @@ from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 
 
+def _reconstruct_levels_from_checkpoint(
+    state_dict: Dict[str, torch.Tensor],
+    group_indices: Dict[str, List[int]]
+) -> Dict[str, List[Dict]]:
+    """Reconstruct per-category levels dict from VQ layer dimensions in checkpoint.
+
+    This provides backward compatibility for old checkpoints that have levels=[]
+    instead of the new per-category levels dict.
+
+    Args:
+        state_dict: Model state dict with 'vqvae.vq_layers.X.embedding.weight' keys
+        group_indices: Dict mapping category name -> list of feature indices
+
+    Returns:
+        Dict mapping category name -> list of level configs
+        Example: {
+            'cluster_1': [
+                {'num_tokens': 16, 'latent_dim': 4},
+                {'num_tokens': 16, 'latent_dim': 8},
+                {'num_tokens': 16, 'latent_dim': 12}
+            ],
+            ...
+        }
+    """
+    # Extract VQ layer dimensions from embeddings
+    vq_dims = []
+    layer_idx = 0
+    while True:
+        key = f'vqvae.vq_layers.{layer_idx}.embedding.weight'
+        if key not in state_dict:
+            break
+        embedding = state_dict[key]
+        num_tokens, latent_dim = embedding.shape
+        vq_dims.append({'num_tokens': int(num_tokens), 'latent_dim': int(latent_dim)})
+        layer_idx += 1
+
+    # Determine number of categories and levels per category
+    num_categories = len(group_indices)
+    if len(vq_dims) % num_categories != 0:
+        raise ValueError(
+            f"Cannot reconstruct levels: {len(vq_dims)} VQ layers is not "
+            f"divisible by {num_categories} categories"
+        )
+
+    num_levels = len(vq_dims) // num_categories
+
+    # Distribute layers to categories
+    # Assumption: VQ layers are stored in category-major order
+    # (cat0_L0, cat0_L1, cat0_L2, cat1_L0, cat1_L1, cat1_L2, ...)
+    levels_dict = {}
+    category_names = list(group_indices.keys())
+
+    for cat_idx, cat_name in enumerate(category_names):
+        cat_levels = []
+        for level_idx in range(num_levels):
+            vq_layer_idx = cat_idx * num_levels + level_idx
+            cat_levels.append(vq_dims[vq_layer_idx])
+        levels_dict[cat_name] = cat_levels
+
+    return levels_dict
+
+
 class VQVAEAlignmentLoss(nn.Module):
     """VQ-VAE alignment loss for NOA training.
 
@@ -380,10 +442,23 @@ class VQVAEAlignmentLoss(nn.Module):
             normalization_stats = checkpoint.get('normalization_stats', {})
 
         # Get config and families
+        # Try model_config first (has actual VQ-VAE params), fall back to training config
+        model_config = checkpoint.get('model_config', {})
         config = checkpoint.get('config', {})
-        families = checkpoint.get('families', {})
-        group_indices = config.get('group_indices', checkpoint.get('group_indices', {}))
+        families = config.get('families', checkpoint.get('families', {}))
+        # Use model_config.group_indices (actual indices used during training)
+        group_indices = model_config.get('group_indices', checkpoint.get('pre_model_group_indices', config.get('group_indices', {})))
         state_dict = checkpoint['model_state_dict']
+
+        # Get input_dim from model_config if available, otherwise from feature_mask
+        input_dim = model_config.get('input_dim')
+        if input_dim is None and 'feature_mask' in checkpoint:
+            # Count number of True values in feature_mask
+            feature_mask = checkpoint['feature_mask']
+            if hasattr(feature_mask, '__len__'):
+                input_dim = int(np.sum(feature_mask))
+        if input_dim is None:
+            input_dim = 187  # Default fallback
 
         # Detect hybrid model (VQVAEWithInitial) by checking for initial_encoder
         is_hybrid_model = any('initial_encoder' in k for k in state_dict.keys())
@@ -407,14 +482,31 @@ class VQVAEAlignmentLoss(nn.Module):
             cnn_dim = initial_config.get('cnn_embedding_dim', 28)
             in_channels = initial_config.get('in_channels', 1)
 
-            # The checkpoint's input_dim is already adjusted (187D)
-            # The inner VQ-VAE expects this dimension
+            # Reconstruct levels from checkpoint if needed (backward compatibility)
+            # Old checkpoints have levels=[] which needs to be reconstructed from VQ layer dimensions
+            # Try model_config.levels first (actual levels used during training)
+            levels_from_config = model_config.get('levels') or config.get('levels')
+            if levels_from_config is None or (isinstance(levels_from_config, list) and len(levels_from_config) == 0):
+                # Get group_indices from checkpoint (try multiple keys)
+                actual_group_indices = (
+                    checkpoint.get('pre_model_group_indices') or
+                    checkpoint.get('group_indices') or
+                    config.get('group_indices') or
+                    group_indices
+                )
+                # Extract VQ layer dimensions from state_dict (keys have 'vqvae.' prefix)
+                vqvae_state = {k: v for k, v in state_dict.items() if k.startswith('vqvae.')}
+                levels_from_config = _reconstruct_levels_from_checkpoint(
+                    state_dict=vqvae_state,
+                    group_indices=actual_group_indices
+                )
+
             vqvae_config = CategoricalVQVAEConfig(
-                input_dim=config.get('input_dim', 187),
+                input_dim=input_dim,
                 group_indices=group_indices,
                 group_embedding_dim=config.get('group_embedding_dim', 256),
                 group_hidden_dim=config.get('group_hidden_dim', 512),
-                levels=config.get('levels'),
+                levels=levels_from_config,
             )
 
             # Create inner VQ-VAE
