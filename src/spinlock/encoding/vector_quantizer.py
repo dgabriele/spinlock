@@ -19,6 +19,7 @@ References:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 from typing import Dict, Tuple
 
 
@@ -132,7 +133,25 @@ class VectorQuantizer(nn.Module):
 
         # Reshape to original shape
         quantized = quantized.view(input_shape)
-        encodings = encodings.view(*input_shape[:-1], self.num_embeddings)
+        try:
+            encodings = encodings.view(*input_shape[:-1], self.num_embeddings)
+        except RuntimeError as e:
+            # Add debugging info for dimension mismatches
+            expected_shape = list(input_shape[:-1]) + [self.num_embeddings]
+            actual_elements = encodings.numel()
+            expected_elements = int(np.prod(expected_shape))
+            raise RuntimeError(
+                f"VectorQuantizer dimension mismatch:\n"
+                f"  Input shape: {input_shape}\n"
+                f"  embedding_dim (self): {self.embedding_dim}\n"
+                f"  num_embeddings (self): {self.num_embeddings}\n"
+                f"  flat_input shape: {flat_input.shape}\n"
+                f"  encodings shape: {encodings.shape}\n"
+                f"  encodings.numel(): {actual_elements}\n"
+                f"  trying to view as: {expected_shape}\n"
+                f"  expected elements: {expected_elements}\n"
+                f"Original error: {e}"
+            ) from e
 
         losses = {
             "loss": loss,

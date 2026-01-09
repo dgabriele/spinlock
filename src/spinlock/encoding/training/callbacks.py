@@ -9,6 +9,7 @@ Ported from unisim.system.training.callbacks (100% generic).
 """
 
 import torch
+import numpy as np
 from pathlib import Path
 from typing import Optional
 import logging
@@ -123,7 +124,7 @@ class DeadCodeReset:
         Returns:
             Number of dead codes reset
         """
-        if self.interval > 0 and epoch > 0 and epoch % self.interval == 0:
+        if self.interval is not None and self.interval > 0 and epoch > 0 and epoch % self.interval == 0:
             n_reset = model.reset_dead_codes(training_batch, self.threshold, raw_ics=raw_ics)
             if self.verbose:
                 if n_reset > 0:
@@ -405,6 +406,13 @@ class Checkpointer:
         checkpoint_dir: Path,
         save_every: Optional[int] = None,
         verbose: bool = True,
+        config: Optional[dict] = None,
+        group_indices: Optional[dict] = None,
+        normalization_stats: Optional[dict] = None,
+        feature_names: Optional[list] = None,
+        encoder_state_dicts: Optional[dict] = None,
+        feature_mask: Optional[np.ndarray] = None,
+        feature_cleaning_params: Optional[dict] = None,
     ):
         """Initialize checkpointer.
 
@@ -412,11 +420,27 @@ class Checkpointer:
             checkpoint_dir: Directory to save checkpoints
             save_every: Save checkpoint every N epochs (None = only save best)
             verbose: Whether to print messages
+            config: Full training config (includes families, etc.) for reproducibility
+            group_indices: Category to feature index mapping
+            normalization_stats: Feature normalization statistics
+            feature_names: List of feature names
+            encoder_state_dicts: State dicts for frozen input encoders (MLPEncoder, etc.)
+            feature_mask: Boolean array indicating which features survived cleaning
+            feature_cleaning_params: Feature cleaning parameters for reproducibility
         """
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.save_every = save_every
         self.verbose = verbose
+
+        # Store metadata for checkpoint saving
+        self.config = config
+        self.group_indices = group_indices
+        self.normalization_stats = normalization_stats
+        self.feature_names = feature_names
+        self.encoder_state_dicts = encoder_state_dicts
+        self.feature_mask = feature_mask
+        self.feature_cleaning_params = feature_cleaning_params
 
         self.best_loss = float("inf")
 
@@ -473,7 +497,24 @@ class Checkpointer:
             "metrics": metrics,
         }
 
-        # Save model config for categorical models
+        # Add full training metadata for reproducibility (if provided)
+        if self.config is not None:
+            checkpoint["config"] = self.config  # Full raw config (includes families, etc.)
+        if self.group_indices is not None:
+            # DEPRECATED: Use model_config['group_indices'] instead (this is pre-model-init version)
+            checkpoint["pre_model_group_indices"] = self.group_indices
+        if self.normalization_stats is not None:
+            checkpoint["normalization_stats"] = self.normalization_stats
+        if self.feature_names is not None:
+            checkpoint["feature_names"] = self.feature_names
+        if self.encoder_state_dicts is not None:
+            checkpoint["encoder_state_dicts"] = self.encoder_state_dicts
+        if self.feature_mask is not None:
+            checkpoint["feature_mask"] = self.feature_mask
+        if self.feature_cleaning_params is not None:
+            checkpoint["feature_cleaning_params"] = self.feature_cleaning_params
+
+        # Also save model config for easy loading
         if hasattr(model, "config"):
             config_dict = {
                 "input_dim": model.config.input_dim,
@@ -491,7 +532,7 @@ class Checkpointer:
             elif hasattr(model.config, "levels") and model.config.levels is not None:
                 config_dict["levels"] = model.config.levels
 
-            checkpoint["config"] = config_dict
+            checkpoint["model_config"] = config_dict
 
         torch.save(checkpoint, path)
 

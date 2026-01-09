@@ -216,15 +216,16 @@ def hierarchical_clustering_assignment(
     max_samples_for_clustering: int = 50000,
     max_clusters: int = 50,
     isolated_families: Optional[List[str]] = None,
+    reassign_orphans: bool = False,
 ) -> Dict[str, List[int]]:
     """Assign features to clusters using hierarchical clustering.
 
     Uses correlation distance (1 - |correlation|) with Ward linkage to cluster
     features based on their statistical similarity.
 
-    **IMPORTANT**: For large datasets (>50K samples), subsamples for clustering
-    to avoid prohibitive computational cost. Category discovery is based on
-    feature correlations, which are stable with representative subsampling.
+    For large datasets (>50K samples), subsamples for clustering to avoid
+    prohibitive computational cost. Category discovery is based on feature
+    correlations, which are stable with representative subsampling.
 
     Args:
         features: [N_samples, N_features] data
@@ -238,6 +239,9 @@ def hierarchical_clustering_assignment(
         isolated_families: List of feature family names (e.g., ["architecture"]) that
             should be placed in their own dedicated categories, separate from clustering.
             Feature names must have format "family::name" for family detection.
+        reassign_orphans: If True, features in too-small clusters are reassigned to
+            nearest valid cluster by correlation distance. If False (default), small
+            clusters are skipped. Set to True to guarantee 100% feature assignment.
 
     Returns:
         Dict mapping category_name -> list of feature indices
@@ -304,6 +308,7 @@ def hierarchical_clustering_assignment(
     else:
         logger.info(f"Using all {N_samples:,} samples for clustering")
 
+    # === CORRELATION-BASED CLUSTERING ===
     # Auto-determine num_clusters if not specified
     # Use clustering subset (excluding isolated families)
     if num_clusters is None:
@@ -340,19 +345,25 @@ def hierarchical_clustering_assignment(
     # Build category assignments
     # Note: cluster_indices are indices into clustering_features, need to map back
     assignments = {}
-    skipped_clusters = []
+    orphaned_features = []  # Track features in too-small clusters (if reassigning)
 
     for cluster_id in range(1, num_clusters + 1):
         # These are indices into the clustering subset
         subset_indices = np.where(labels == cluster_id)[0].tolist()
 
-        # Skip clusters that are too small
+        # Handle small clusters
         if len(subset_indices) < min_features_per_cluster:
-            skipped_clusters.append((cluster_id, len(subset_indices)))
-            logger.warning(
-                f"Skipping cluster_{cluster_id}: only {len(subset_indices)} features "
-                f"(min={min_features_per_cluster})"
-            )
+            if reassign_orphans:
+                logger.info(
+                    f"cluster_{cluster_id}: only {len(subset_indices)} features (will reassign)"
+                )
+                # Track orphaned features for reassignment
+                orphaned_features.extend(subset_indices)
+            else:
+                logger.warning(
+                    f"Skipping cluster_{cluster_id}: only {len(subset_indices)} features "
+                    f"(min={min_features_per_cluster})"
+                )
             continue
 
         # Map back to original feature indices
@@ -371,6 +382,40 @@ def hierarchical_clustering_assignment(
         logger.info(
             f"✓ {category_name}: {len(original_indices)} features - {preview}"
         )
+
+    # Reassign orphaned features to nearest valid cluster
+    if orphaned_features and len(assignments) > 0:
+        logger.info(f"\nReassigning {len(orphaned_features)} orphaned features to nearest clusters...")
+
+        for orphan_idx in orphaned_features:
+            # Find nearest cluster by correlation distance
+            orphan_feature = clustering_features[:, orphan_idx]
+            min_dist = float('inf')
+            best_cluster = None
+
+            for cluster_name, cluster_orig_indices in assignments.items():
+                # Get cluster features from original feature space
+                cluster_subset_indices = [clustering_indices.index(idx) for idx in cluster_orig_indices]
+                cluster_features = clustering_features[:, cluster_subset_indices]
+                cluster_centroid = cluster_features.mean(axis=1)
+
+                # Correlation distance
+                corr_matrix = np.corrcoef(orphan_feature, cluster_centroid)
+                dist = 1.0 - abs(corr_matrix[0, 1])
+
+                if dist < min_dist:
+                    min_dist = dist
+                    best_cluster = cluster_name
+
+            if best_cluster is not None:
+                # Reassign orphan to best cluster
+                orphan_original_idx = clustering_indices[orphan_idx]
+                assignments[best_cluster].append(orphan_original_idx)
+                logger.debug(
+                    f"  ↳ Reassigned feature {feature_names[orphan_original_idx]} to {best_cluster} (dist={min_dist:.3f})"
+                )
+
+        logger.info(f"✓ All {len(orphaned_features)} orphaned features reassigned")
 
     # Merge isolated assignments with clustered assignments
     all_assignments = {**isolated_assignments, **assignments}
