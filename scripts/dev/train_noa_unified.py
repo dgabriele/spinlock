@@ -168,6 +168,12 @@ def train_epoch(
                 print(f"    Skipped {batch_idx + 1}/{batches_to_skip} batches...")
             continue
 
+        # TEMPORARY: Skip problematic batches that cause CUDA hangs
+        # TODO: Identify root cause of these specific parameter vectors
+        if batch_idx in [83, 84, 85]:
+            print(f"  [SKIP] Batch {batch_idx} (known CUDA hang issue)")
+            continue
+
         ic = batch["ic"].to(device)
         params = batch["params"]
         B = ic.shape[0]
@@ -184,11 +190,15 @@ def train_epoch(
         else:
             pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True)
 
-        # Replay CNO trajectories with error handling
+        # Replay CNO trajectories with error handling and detailed logging
         target_trajectories = []
         skip_batch = False
         for b in range(B):
             try:
+                # Log which sample we're about to process (for debugging hangs)
+                if (batch_idx + 1) % 10 == 0:  # Log every 10 batches
+                    print(f"  [DEBUG] Batch {batch_idx}, sample {b}/{B}, params hash: {hash(tuple(params[b].numpy().tolist()))}")
+
                 target_traj = replayer.rollout(
                     params_vector=params[b].numpy(),
                     ic=ic[b:b+1],
