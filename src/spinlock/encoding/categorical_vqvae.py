@@ -112,14 +112,19 @@ class CategoricalVQVAEConfig:
         self.categories = list(self.group_indices.keys())
 
         # Initialize per-category levels if not provided
-        if self.levels is None:
+        # Handle backward compatibility: old checkpoints may have levels=[] (list)
+        if self.levels is None or (isinstance(self.levels, list) and len(self.levels) == 0):
             # Auto-create empty levels for each category (will be filled by auto-scaling)
             self.levels = {cat: [] for cat in self.categories}
-        else:
+        elif isinstance(self.levels, dict):
             # Validate all categories are specified
             for cat in self.categories:
                 if cat not in self.levels:
                     raise ValueError(f"Missing category '{cat}' in levels config")
+        else:
+            raise ValueError(
+                f"levels must be None, empty list (backward compat), or dict. Got: {type(self.levels)}"
+            )
 
         # Fill missing latent_dims and num_tokens for each category
         for cat in self.categories:
