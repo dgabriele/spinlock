@@ -8,13 +8,17 @@ MSE-led (MSELedLoss):
     Use when exact trajectory matching is critical.
 
 VQ-led (VQLedLoss):
-    Symbolic coherence first. L_recon is primary, L_traj is auxiliary.
+    Symbolic coherence first. L_recon/L_latent is primary, L_traj is auxiliary.
     Use for "creative observer" training where meaningful deviation is allowed.
 
-Both losses inherit from BaseNOALoss and return standardized LossOutput.
+Feature-space (FeatureSpaceLoss):
+    Direct feature alignment. Bypasses frozen VQ encoder for validation.
+    Use as baseline to prove gradient hypothesis before VQ-led unfreezing.
+
+All losses inherit from BaseNOALoss and return standardized LossOutput.
 
 Example:
-    >>> from spinlock.noa.losses import MSELedLoss, VQLedLoss
+    >>> from spinlock.noa.losses import MSELedLoss, VQLedLoss, FeatureSpaceLoss
     >>>
     >>> # Physics-first training
     >>> mse_loss = MSELedLoss(lambda_traj=1.0, lambda_commit=0.5)
@@ -22,6 +26,12 @@ Example:
     >>> # Creative observer training
     >>> vq_loss = VQLedLoss(
     ...     lambda_recon=1.0, lambda_commit=0.5, lambda_traj=0.3,
+    ...     vqvae_alignment=alignment,
+    ... )
+    >>>
+    >>> # Feature-space validation
+    >>> feature_loss = FeatureSpaceLoss(
+    ...     lambda_feature=1.0, lambda_traj=0.3,
     ...     vqvae_alignment=alignment,
     ... )
 """

@@ -18,6 +18,7 @@ from .visualize_initial_types import VisualizeInitialTypesCommand
 from .visualize_vqvae import VisualizeVQVAECommand
 from .extract_features import ExtractFeaturesCommand
 from .train_vqvae import TrainVQVAECommand
+from .train_meta_operator import TrainMetaOperatorCommand
 
 __all__ = [
     "CLICommand",
@@ -31,6 +32,7 @@ __all__ = [
     "VisualizeVQVAECommand",
     "ExtractFeaturesCommand",
     "TrainVQVAECommand",
+    "TrainMetaOperatorCommand",
     "main",
 ]
 
@@ -80,6 +82,7 @@ For more help on a specific command:
         VisualizeVQVAECommand(),
         ExtractFeaturesCommand(),
         TrainVQVAECommand(),
+        TrainMetaOperatorCommand(),
     ]
 
     for command in commands:

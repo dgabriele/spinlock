@@ -1,0 +1,49 @@
+# Meta-Operator Training Configuration
+# Stage 1 of two-stage training: Train NOA on pure physics (trajectory matching)
+
+# Model architecture
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 32
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+
+# Training hyperparameters
+training:
+  n_samples: 10000  # Number of samples to use (or 100K for full training)
+  batch_size: 8
+  epochs: 50
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-6
+  clip_grad: 1.0
+  timesteps: 32
+
+# Loss configuration (pure physics)
+loss:
+  lambda_traj: 1.0
+  # Optional instrumental regularizers (future)
+  lambda_smoothness: 0.0  # Smoothness penalty (not implemented yet)
+  lambda_energy: 0.0      # Energy conservation (not implemented yet)
+
+# Data configuration
+data:
+  dataset_path: "data/production/100k_3family_v1"
+  val_split: 0.1
+  num_workers: 4
+
+  # CNO configuration (for target trajectory generation)
+  cno_config: "configs/unisim/production.yaml"
+  cno_checkpoint_dir: "checkpoints/unisim_production"
+
+# Checkpointing
+checkpointing:
+  save_dir: "checkpoints/meta_operator"
+  save_every: 5  # Save checkpoint every N epochs
+  keep_best: true  # Keep best checkpoint (lowest validation loss)
+
+# Device and seed
+device: "cuda"
+seed: 42
