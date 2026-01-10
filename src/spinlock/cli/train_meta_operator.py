@@ -722,7 +722,7 @@ Output:
         for batch_idx, batch in enumerate(dataloader):
             ic = batch["ic"].to(device)
             params = batch["params"]
-            indices = batch.get("index")  # Dataset indices for this batch
+            indices = batch.get("sample_idx")  # Dataset indices for this batch
             B = ic.shape[0]
 
             # Get oracle tokens for this batch if token conditioning is enabled
@@ -839,7 +839,7 @@ Output:
             for batch_idx, batch in enumerate(dataloader):
                 ic = batch["ic"].to(device)
                 params = batch["params"]
-                indices = batch.get("index")  # Dataset indices for this batch
+                indices = batch.get("sample_idx")  # Dataset indices for this batch
                 B = ic.shape[0]
 
                 # Get oracle tokens for this batch if token conditioning is enabled
