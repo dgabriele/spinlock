@@ -1,0 +1,46 @@
+# Experiment 2B: Token-Conditioned MNO Baseline (1K samples)
+# Tests token conditioning with oracle tokens
+# Validates that conditioning doesn't hurt performance
+
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 32  # Standard capacity (same as 2A)
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+
+  # Token conditioning (NEW)
+  token_conditioning: true
+  token_embed_dim: 64       # Embedding dimension after projection
+  num_tokens: 21            # 7 categories × 3 levels
+  vqvae_checkpoint: "checkpoints/production/100k_full_features/best_model.pt"
+
+training:
+  n_samples: 1000
+  batch_size: 4
+  epochs: 30
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4   # From 1E (Phase 1 winner)
+  clip_grad: 0.5         # From 1E
+  timesteps: 32
+  early_stopping_patience: 10
+
+loss:
+  lambda_traj: 1.0
+
+data:
+  dataset_path: "datasets/100k_full_features.h5"
+  oracle_token_path: "datasets/100k_oracle_tokens_1k.h5"  # Pre-computed oracle tokens
+  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/experiments/phase2/exp2b_token_baseline"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42
