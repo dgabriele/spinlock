@@ -19,7 +19,6 @@ Usage:
 import argparse
 import h5py
 import torch
-import yaml
 from tqdm import tqdm
 from pathlib import Path
 
@@ -29,12 +28,11 @@ from spinlock.encoding.categorical_vqvae import CategoricalHierarchicalVQVAE
 
 def load_cno_replayer(config_path: str, device: torch.device) -> CNOReplayer:
     """Load CNO replayer from config."""
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-
-    replayer = CNOReplayer.from_config(config)
-    replayer = replayer.to(device)
-    replayer.eval()
+    replayer = CNOReplayer.from_config(
+        config_path=config_path,
+        device=str(device),
+        cache_size=8,
+    )
     return replayer
 
 
