@@ -381,6 +381,56 @@ Output:
 
         print("Initializing training...")
 
+        # Handle token conditioning setup
+        token_conditioning = config["model"].get("token_conditioning", False)
+        if token_conditioning:
+            print("Setting up token conditioning...")
+
+            # Load VQ-VAE checkpoint to extract codebook sizes
+            vqvae_checkpoint = config["model"].get("vqvae_checkpoint")
+            if not vqvae_checkpoint:
+                return self.error(
+                    "Token conditioning enabled but vqvae_checkpoint not specified in model config"
+                )
+
+            if not Path(vqvae_checkpoint).exists():
+                return self.error(f"VQ-VAE checkpoint not found: {vqvae_checkpoint}")
+
+            print(f"  Loading VQ-VAE config from: {vqvae_checkpoint}")
+            vqvae_ckpt = torch.load(vqvae_checkpoint, map_location='cpu')
+
+            # Extract codebook sizes from VQ-VAE config
+            # The VQ-VAE config should have category information with codebook sizes
+            vqvae_config = vqvae_ckpt.get("config", {})
+            codebook_sizes = []
+
+            # Extract from categories structure (N categories × L levels)
+            if "categories" in vqvae_config:
+                for category in vqvae_config["categories"]:
+                    for level in category.get("levels", []):
+                        num_embeddings = level.get("num_embeddings", 64)
+                        codebook_sizes.append(num_embeddings)
+            else:
+                # Fallback: try to infer from model state
+                # Look for vq_layers in the state dict
+                state_dict = vqvae_ckpt.get("model_state_dict", {})
+                vq_layer_keys = [k for k in state_dict.keys() if "codebook" in k and "vq_layers" in k]
+                for key in sorted(vq_layer_keys):
+                    codebook = state_dict[key]
+                    num_embeddings = codebook.shape[0]
+                    codebook_sizes.append(num_embeddings)
+
+            if not codebook_sizes:
+                return self.error(
+                    f"Could not extract codebook sizes from VQ-VAE checkpoint.\n"
+                    f"Expected 'categories' in config or 'vq_layers.*.codebook' in state_dict"
+                )
+
+            print(f"  ✓ Extracted {len(codebook_sizes)} codebook sizes: {codebook_sizes[:5]}...")
+
+            # Add codebook sizes to model config
+            config["model"]["codebook_sizes"] = codebook_sizes
+
         # Create model
         print("Creating NOA backbone...")
         noa = NOABackbone(**config["model"])
@@ -430,6 +480,38 @@ Output:
             [train_size, val_size],
             generator=torch.Generator().manual_seed(seed),
         )
+
+        # Load oracle tokens if token conditioning is enabled
+        oracle_tokens = None
+        train_token_indices = None
+        val_token_indices = None
+
+        if token_conditioning:
+            oracle_token_path = config["data"].get("oracle_token_path")
+            if not oracle_token_path:
+                return self.error(
+                    "Token conditioning enabled but oracle_token_path not specified in data config"
+                )
+
+            if not Path(oracle_token_path).exists():
+                return self.error(f"Oracle token file not found: {oracle_token_path}")
+
+            print(f"Loading oracle tokens from: {oracle_token_path}")
+            import h5py
+            token_file = h5py.File(oracle_token_path, 'r')
+            oracle_tokens_full = torch.tensor(token_file["tokens"][:], dtype=torch.long)
+            token_file.close()
+
+            # Get the indices used by train/val split
+            train_indices = train_dataset.indices
+            val_indices = val_dataset.indices
+
+            # Create index mapping (dataset index -> oracle token)
+            oracle_tokens = oracle_tokens_full
+            train_token_indices = train_indices
+            val_token_indices = val_indices
+
+            print(f"  ✓ Loaded {len(oracle_tokens)} oracle tokens ({oracle_tokens.shape[1]} tokens per sample)")
 
         train_loader = DataLoader(
             train_dataset,
@@ -529,6 +611,8 @@ Output:
                 clip_grad=config["training"].get("clip_grad", 1.0),
                 log_every=args.log_every,
                 accumulation_steps=config["training"].get("gradient_accumulation_steps", 1),
+                oracle_tokens=oracle_tokens,
+                token_indices=train_token_indices,
             )
 
             # Validate
@@ -539,6 +623,8 @@ Output:
                 dataloader=val_loader,
                 device=device,
                 timesteps=config["training"]["timesteps"],
+                oracle_tokens=oracle_tokens,
+                token_indices=val_token_indices,
             )
 
             # Update scheduler
@@ -621,6 +707,8 @@ Output:
         clip_grad=1.0,
         log_every=10,
         accumulation_steps=1,
+        oracle_tokens=None,
+        token_indices=None,
     ) -> dict:
         """Train for one epoch with gradient accumulation."""
         noa.train()
@@ -634,10 +722,18 @@ Output:
         for batch_idx, batch in enumerate(dataloader):
             ic = batch["ic"].to(device)
             params = batch["params"]
+            indices = batch.get("index")  # Dataset indices for this batch
             B = ic.shape[0]
 
+            # Get oracle tokens for this batch if token conditioning is enabled
+            batch_tokens = None
+            if oracle_tokens is not None and token_indices is not None and indices is not None:
+                # Map batch indices to oracle token indices
+                batch_token_indices = [token_indices[idx] for idx in indices]
+                batch_tokens = oracle_tokens[batch_token_indices].to(device)
+
             # Generate NOA rollout
-            pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True)
+            pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True, tokens=batch_tokens)
 
             # Generate CNO targets
             # Only clear cache if memory usage > 90% (avoid unnecessary serialization)
@@ -731,6 +827,8 @@ Output:
         dataloader,
         device,
         timesteps,
+        oracle_tokens=None,
+        token_indices=None,
     ) -> dict:
         """Validate for one epoch."""
         noa.eval()
@@ -741,10 +839,18 @@ Output:
             for batch_idx, batch in enumerate(dataloader):
                 ic = batch["ic"].to(device)
                 params = batch["params"]
+                indices = batch.get("index")  # Dataset indices for this batch
                 B = ic.shape[0]
 
+                # Get oracle tokens for this batch if token conditioning is enabled
+                batch_tokens = None
+                if oracle_tokens is not None and token_indices is not None and indices is not None:
+                    # Map batch indices to oracle token indices
+                    batch_token_indices = [token_indices[idx] for idx in indices]
+                    batch_tokens = oracle_tokens[batch_token_indices].to(device)
+
                 # Generate NOA rollout
-                pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True)
+                pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True, tokens=batch_tokens)
 
                 # Generate CNO targets
                 target_trajectories = []
