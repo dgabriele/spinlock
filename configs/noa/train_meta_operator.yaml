@@ -30,13 +30,12 @@ loss:
 
 # Data configuration
 data:
-  dataset_path: "data/production/100k_3family_v1"
+  dataset_path: "datasets/100k_full_features.h5"
   val_split: 0.1
   num_workers: 4
 
   # CNO configuration (for target trajectory generation)
-  cno_config: "configs/unisim/production.yaml"
-  cno_checkpoint_dir: "checkpoints/unisim_production"
+  cno_config: "configs/experiments/local_100k_optimized.yaml"
 
 # Checkpointing
 checkpointing:
