@@ -443,8 +443,18 @@ Output:
 
             print(f"  ✓ Extracted {len(codebook_sizes)} codebook sizes: {codebook_sizes[:5]}...")
 
-            # Add codebook sizes to model config
+            # Auto-determine token conditioning parameters from VQ-VAE
+            num_tokens = len(codebook_sizes)
+
+            # Override config values with runtime-determined values
             config["model"]["codebook_sizes"] = codebook_sizes
+            config["model"]["num_tokens"] = num_tokens
+
+            # Use config defaults if not specified, but prefer runtime values
+            if "token_embed_dim" not in config["model"]:
+                config["model"]["token_embed_dim"] = 64  # Default
+
+            print(f"  ✓ Token conditioning setup: {num_tokens} tokens, embed_dim={config['model']['token_embed_dim']}")
 
         # Create model
         print("Creating NOA backbone...")

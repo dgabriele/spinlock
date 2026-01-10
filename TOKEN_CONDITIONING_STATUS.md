@@ -135,9 +135,11 @@ Input: (u₀, tokens)
 
 | Component | Parameters |
 |-----------|------------|
-| **Token Embedding** | ~44K (21 tokens × 32 embed_dim + projection) |
+| **Token Embedding** | ~75K (36 tokens × 32 embed_dim + projection) |
 | **U-AFNO** | ~145M (adjusted input channels: 65 instead of 1) |
 | **Total** | ~145M (< 1% overhead from token conditioning) |
+
+**Note**: Token count (36) and codebook sizes are **auto-determined at runtime** from the VQ-VAE checkpoint, not hardcoded in configs. This ensures compatibility when VQ-VAE structure changes.
 
 ---
 
