@@ -368,9 +368,8 @@ Output:
 
     def _run_training(self, config: Dict[str, Any], args: Namespace) -> int:
         """Execute training pipeline."""
-        from spinlock.noa import NOABackbone
+        from spinlock.noa import NOABackbone, CNOReplayer
         from spinlock.noa.losses import MSELedLoss
-        from spinlock.operators.cno_replayer import CNOReplayer
         from spinlock.operators.state_dataset import NOAStateDataset
 
         device = config.get("device", "cuda")
@@ -400,21 +399,18 @@ Output:
 
         # Create CNO replayer
         print("Loading CNO replayer...")
-        # TODO: Need to get CNO config and checkpoint from config
-        # For now, assume they're in the data section
         cno_config = config["data"].get("cno_config")
-        cno_checkpoint_dir = config["data"].get("cno_checkpoint_dir")
 
-        if not cno_config or not cno_checkpoint_dir:
+        if not cno_config:
             return self.error(
                 "Data section missing CNO configuration.\n"
-                "Required fields: cno_config, cno_checkpoint_dir"
+                "Required field: cno_config (path to CNO config YAML)"
             )
 
-        replayer = CNOReplayer(
+        replayer = CNOReplayer.from_config(
             config_path=cno_config,
-            checkpoint_dir=cno_checkpoint_dir,
             device=device,
+            cache_size=8,
         )
         print(f"  ✓ CNO replayer loaded")
 
