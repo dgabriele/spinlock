@@ -399,25 +399,40 @@ Output:
             print(f"  Loading VQ-VAE config from: {vqvae_checkpoint}")
             vqvae_ckpt = torch.load(vqvae_checkpoint, map_location='cpu')
 
-            # Extract codebook sizes from VQ-VAE config
-            # The VQ-VAE config should have category information with codebook sizes
+            # Extract codebook sizes from VQ-VAE checkpoint
             vqvae_config = vqvae_ckpt.get("config", {})
+            state_dict = vqvae_ckpt.get("model_state_dict", {})
             codebook_sizes = []
 
-            # Extract from categories structure (N categories × L levels)
-            if "categories" in vqvae_config:
+            # Method 1: Extract from config['levels'] structure (hierarchical VQ-VAE)
+            if "levels" in vqvae_config and isinstance(vqvae_config["levels"], dict):
+                # levels is a dict like: {'cluster_1': [{'num_tokens': 24, ...}, ...], ...}
+                for category_name, category_levels in vqvae_config["levels"].items():
+                    for level in category_levels:
+                        num_tokens = level.get("num_tokens", level.get("num_embeddings", 64))
+                        codebook_sizes.append(num_tokens)
+            # Method 2: Extract from categories structure (alternative format)
+            elif "categories" in vqvae_config:
                 for category in vqvae_config["categories"]:
                     for level in category.get("levels", []):
                         num_embeddings = level.get("num_embeddings", 64)
                         codebook_sizes.append(num_embeddings)
+            # Method 3: Fallback to state dict inspection
             else:
-                # Fallback: try to infer from model state
-                # Look for vq_layers in the state dict
-                state_dict = vqvae_ckpt.get("model_state_dict", {})
-                vq_layer_keys = [k for k in state_dict.keys() if "codebook" in k and "vq_layers" in k]
-                for key in sorted(vq_layer_keys):
-                    codebook = state_dict[key]
-                    num_embeddings = codebook.shape[0]
+                # Look for vq_layers embedding weights in state dict
+                import re
+                vq_embedding_keys = [k for k in state_dict.keys()
+                                     if "vq_layers" in k and "embedding.weight" in k]
+
+                # Sort by layer index
+                def extract_layer_idx(key):
+                    match = re.search(r'vq_layers\.(\d+)\.', key)
+                    return int(match.group(1)) if match else 0
+
+                vq_embedding_keys_sorted = sorted(vq_embedding_keys, key=extract_layer_idx)
+
+                for key in vq_embedding_keys_sorted:
+                    num_embeddings = state_dict[key].shape[0]
                     codebook_sizes.append(num_embeddings)
 
             if not codebook_sizes:
