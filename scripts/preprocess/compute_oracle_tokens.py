@@ -23,8 +23,7 @@ import yaml
 from tqdm import tqdm
 from pathlib import Path
 
-from spinlock.operators.cno import CNOReplayer
-from spinlock.noa.feature_extraction import AlignedFeatureExtractor
+from spinlock.noa import CNOReplayer, AlignedFeatureExtractor
 from spinlock.encoding.categorical_vqvae import CategoricalHierarchicalVQVAE
 
 
@@ -56,7 +55,20 @@ def main():
     # Load dataset
     print(f"Loading dataset: {args.dataset}")
     dataset = h5py.File(args.dataset, 'r')
-    n_samples_total = len(dataset["initial_conditions"])
+
+    # Determine dataset structure
+    if "initial_conditions" in dataset:
+        # NOA training dataset format
+        ic_key = "initial_conditions"
+        params_key = "parameters"
+    elif "inputs" in dataset and "fields" in dataset["inputs"]:
+        # Feature extraction dataset format
+        ic_key = "inputs/fields"
+        params_key = "parameters/params"
+    else:
+        raise ValueError(f"Unknown dataset format. Expected 'initial_conditions' or 'inputs/fields'")
+
+    n_samples_total = len(dataset[ic_key])
     n_samples = args.n_samples if args.n_samples is not None else n_samples_total
     n_samples = min(n_samples, n_samples_total)
     print(f"  {n_samples} samples to process (out of {n_samples_total} total)")
@@ -80,16 +92,20 @@ def main():
     print("Determining token shape...")
     with torch.no_grad():
         dummy_ic = torch.randn(1, 1, 64, 64, device=device)
-        dummy_params_dict = {}
-        for key in dataset["parameters"].keys():
-            param_data = dataset["parameters"][key]
-            # Handle scalar vs array parameters
-            if param_data.shape == (n_samples_total,):
-                dummy_params_dict[key] = torch.tensor([param_data[0]], device=device, dtype=torch.float32)
-            else:
-                dummy_params_dict[key] = torch.tensor([param_data[0]], device=device, dtype=torch.float32)
 
-        dummy_traj = replayer.rollout(dummy_ic, dummy_params_dict)
+        # Load first parameter vector
+        if params_key == "parameters/params":
+            # Array format: [N, param_dim]
+            dummy_params = torch.tensor(dataset[params_key][0:1], device=device, dtype=torch.float32)
+        else:
+            # Dict format: {key: [N]}
+            dummy_params_dict = {}
+            for key in dataset[params_key].keys():
+                param_data = dataset[params_key][key]
+                dummy_params_dict[key] = torch.tensor([param_data[0]], device=device, dtype=torch.float32)
+            dummy_params = dummy_params_dict
+
+        dummy_traj = replayer.rollout(dummy_ic, dummy_params)
         dummy_features = feature_extractor(dummy_traj, ic=dummy_ic)
         dummy_tokens = vqvae.get_tokens(dummy_features)
         num_tokens = dummy_tokens.shape[1]
@@ -115,25 +131,41 @@ def main():
             batch_size = end_idx - start_idx
 
             # Load batch of initial conditions
-            ics = torch.tensor(
-                dataset["initial_conditions"][start_idx:end_idx],
-                device=device,
-                dtype=torch.float32,
-            )  # [B, 1, 64, 64]
+            ic_data = dataset[ic_key][start_idx:end_idx]
+            # Handle different IC formats
+            if ic_data.ndim == 4:
+                # Format: [B, M, H, W] - take first realization
+                ics = torch.tensor(ic_data[:, 0, :, :], device=device, dtype=torch.float32).unsqueeze(1)  # [B, 1, H, W]
+            elif ic_data.ndim == 3:
+                # Format: [B, H, W]
+                ics = torch.tensor(ic_data, device=device, dtype=torch.float32).unsqueeze(1)  # [B, 1, H, W]
+            else:
+                raise ValueError(f"Unexpected IC shape: {ic_data.shape}")
 
             # Load batch of parameters
-            params_dict = {}
-            for key in dataset["parameters"].keys():
-                param_data = dataset["parameters"][key][start_idx:end_idx]
-                params_dict[key] = torch.tensor(param_data, device=device, dtype=torch.float32)
+            if params_key == "parameters/params":
+                # Array format: [N, param_dim]
+                params = torch.tensor(
+                    dataset[params_key][start_idx:end_idx],
+                    device=device,
+                    dtype=torch.float32,
+                )
+            else:
+                # Dict format: {key: [N]}
+                params = {}
+                for key in dataset[params_key].keys():
+                    param_data = dataset[params_key][key][start_idx:end_idx]
+                    params[key] = torch.tensor(param_data, device=device, dtype=torch.float32)
 
             # Generate trajectories using CNO
             try:
-                trajectories = replayer.rollout(ics, params_dict)  # [B, T, 1, 64, 64]
+                trajectories = replayer.rollout(ics, params)  # [B, T, 1, 64, 64]
             except Exception as e:
                 print(f"\nError generating trajectory for batch {start_idx}-{end_idx}: {e}")
                 print(f"IC shape: {ics.shape}")
-                print(f"Params: {list(params_dict.keys())}")
+                print(f"Params type: {type(params)}")
+                if isinstance(params, dict):
+                    print(f"Params keys: {list(params.keys())}")
                 raise
 
             # Extract features
