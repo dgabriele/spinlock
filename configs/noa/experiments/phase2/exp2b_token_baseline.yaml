@@ -32,7 +32,7 @@ loss:
 
 data:
   dataset_path: "datasets/100k_full_features.h5"
-  oracle_token_path: "datasets/100k_oracle_tokens_1k.h5"  # Pre-computed oracle tokens
+  oracle_token_path: "datasets/100k_oracle_tokens_1k_dummy.h5"  # Dummy random tokens for infrastructure testing
   cno_config: "configs/experiments/local_100k_optimized.yaml"
   val_split: 0.1
   num_workers: 4
