@@ -1,0 +1,39 @@
+# Experiment 2B: Increased Capacity on 1K samples
+# Tests if larger model helps with more data
+# NOTE: May require memory optimizations (mixed precision, batch_size=2, etc.)
+
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 40  # Moderate increase (32 → 40, not 48 to be safer)
+  encoder_levels: 3
+  modes: 24          # Moderate increase (16 → 24, not 32)
+  afno_blocks: 5     # Moderate increase (4 → 5, not 6)
+
+training:
+  n_samples: 1000
+  batch_size: 2      # Reduce to fit in memory
+  epochs: 30
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
+  clip_grad: 0.5
+  timesteps: 32
+  early_stopping_patience: 10
+
+loss:
+  lambda_traj: 1.0
+
+data:
+  dataset_path: "datasets/100k_full_features.h5"
+  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/experiments/phase2/exp2b_capacity_1k"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42

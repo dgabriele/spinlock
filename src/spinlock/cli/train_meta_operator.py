@@ -454,10 +454,28 @@ Output:
             weight_decay=config["training"].get("weight_decay", 1e-6),
         )
 
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=config["training"]["epochs"],
-        )
+        # Create LR scheduler with optional warmup
+        from torch.optim.lr_scheduler import LinearLR, SequentialLR
+
+        warmup_steps = config["training"].get("warmup_steps", 0)
+        if warmup_steps > 0:
+            # Warmup: LR ramps from 0.1x to 1.0x over warmup_steps
+            warmup = LinearLR(optimizer, start_factor=0.1, total_iters=warmup_steps)
+            # Cosine: LR decays from 1.0x to 0 over remaining epochs
+            total_epochs = config["training"]["epochs"]
+            cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=total_epochs - warmup_steps if warmup_steps < total_epochs else 1,
+            )
+            # Sequential: warmup first, then cosine
+            scheduler = SequentialLR(optimizer, [warmup, cosine], milestones=[warmup_steps])
+            print(f"  ✓ LR schedule: {warmup_steps}-step warmup + cosine decay")
+        else:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=config["training"]["epochs"],
+            )
+            print(f"  ✓ LR schedule: cosine decay (no warmup)")
 
         # Resume from checkpoint if specified
         start_epoch = 0
@@ -491,6 +509,10 @@ Output:
         print("Training")
         print(f"{'='*70}\n")
 
+        # Early stopping setup
+        early_stopping_patience = config["training"].get("early_stopping_patience", 0)
+        epochs_without_improvement = 0
+
         # Training loop
         for epoch in range(start_epoch, config["training"]["epochs"]):
             print(f"Epoch {epoch + 1}/{config['training']['epochs']}")
@@ -506,6 +528,7 @@ Output:
                 timesteps=config["training"]["timesteps"],
                 clip_grad=config["training"].get("clip_grad", 1.0),
                 log_every=args.log_every,
+                accumulation_steps=config["training"].get("gradient_accumulation_steps", 1),
             )
 
             # Validate
@@ -548,9 +571,10 @@ Output:
                 )
                 print(f"  Saved checkpoint: {checkpoint_path}")
 
-            # Save best checkpoint
+            # Save best checkpoint and check early stopping
             if val_metrics['loss'] < best_val_loss:
                 best_val_loss = val_metrics['loss']
+                epochs_without_improvement = 0  # Reset counter
                 best_checkpoint_path = save_dir / "meta_operator_best.pt"
                 self._save_checkpoint(
                     path=best_checkpoint_path,
@@ -563,6 +587,13 @@ Output:
                     config=config,
                 )
                 print(f"  New best checkpoint: {best_checkpoint_path} (val_loss={best_val_loss:.6f})")
+            else:
+                epochs_without_improvement += 1
+
+                if early_stopping_patience > 0 and epochs_without_improvement >= early_stopping_patience:
+                    print(f"\n⚠ Early stopping triggered: no improvement for {early_stopping_patience} epochs")
+                    print(f"  Best validation loss: {best_val_loss:.6f} (epoch {epoch + 1 - early_stopping_patience})")
+                    break  # Exit training loop
 
             print()
 
@@ -589,12 +620,16 @@ Output:
         timesteps,
         clip_grad=1.0,
         log_every=10,
+        accumulation_steps=1,
     ) -> dict:
-        """Train for one epoch."""
+        """Train for one epoch with gradient accumulation."""
         noa.train()
         total_loss = 0.0
         num_batches = 0
         start_time = time.time()
+
+        # Initialize gradients outside loop for accumulation
+        optimizer.zero_grad()
 
         for batch_idx, batch in enumerate(dataloader):
             ic = batch["ic"].to(device)
@@ -605,8 +640,12 @@ Output:
             pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True)
 
             # Generate CNO targets
+            # Only clear cache if memory usage > 90% (avoid unnecessary serialization)
             if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+                allocated = torch.cuda.memory_allocated(device)
+                max_allocated = torch.cuda.max_memory_allocated(device)
+                if max_allocated > 0 and allocated / max_allocated > 0.9:
+                    torch.cuda.empty_cache()
 
             target_trajectories = []
             skip_batch = False
@@ -651,11 +690,15 @@ Output:
                 print(f"  Warning: NaN/Inf loss at batch {batch_idx}")
                 continue
 
-            # Optimize
-            optimizer.zero_grad()
-            loss_output.total.backward()
-            torch.nn.utils.clip_grad_norm_(noa.parameters(), clip_grad)
-            optimizer.step()
+            # Gradient accumulation: scale loss and accumulate gradients
+            scaled_loss = loss_output.total / accumulation_steps
+            scaled_loss.backward()
+
+            # Only step optimizer every N batches
+            if (batch_idx + 1) % accumulation_steps == 0:
+                torch.nn.utils.clip_grad_norm_(noa.parameters(), clip_grad)
+                optimizer.step()
+                optimizer.zero_grad()
 
             # Accumulate metrics
             total_loss += loss_output.total.item()
@@ -665,6 +708,12 @@ Output:
             if (batch_idx + 1) % log_every == 0:
                 avg_loss = total_loss / num_batches
                 print(f"  Batch {batch_idx + 1}/{len(dataloader)}: loss={avg_loss:.6f}")
+
+        # Handle leftover gradients at end of epoch
+        if (batch_idx + 1) % accumulation_steps != 0:
+            torch.nn.utils.clip_grad_norm_(noa.parameters(), clip_grad)
+            optimizer.step()
+            optimizer.zero_grad()
 
         elapsed = time.time() - start_time
         avg_loss = total_loss / num_batches if num_batches > 0 else float('inf')
