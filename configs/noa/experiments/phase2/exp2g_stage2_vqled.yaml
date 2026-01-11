@@ -1,0 +1,76 @@
+# Experiment 2G: Stage 2 VQ-Led Fine-Tuning from Exp 2F Epoch 1 Checkpoint
+# Stage 2 of two-stage curriculum: VQ-led self-regulation training
+#
+# Approach:
+# - Load from exp2f epoch 1 checkpoint (val loss 1.097 - EXCEPTIONAL)
+# - Remove token conditioning (input is just (θ, u₀))
+# - Switch to VQ-led losses (L_recon + L_commit primary, L_traj auxiliary)
+# - Fine-tune to internalize VQ structure autonomously
+#
+# Goal: Produce VQ-compatible rollouts without token scaffolding
+# Success: > 90% token consistency with CNO rollouts
+
+# Resume from Stage 1 checkpoint (MUST be at top level, not under training)
+resume_from: "checkpoints/experiments/phase2/exp2f_256step_tbptt/meta_operator_best.pt"
+
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 40          # Same as exp2f (226M params)
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+
+  # Token conditioning parameters (needed for checkpoint loading, but tokens not used)
+  # The model architecture must match exp2f to load the checkpoint
+  token_conditioning: true   # Keep enabled to load checkpoint
+  token_embed_dim: 64
+  vqvae_checkpoint: "checkpoints/production/100k_3family_v2/best_model.pt"
+  # NOTE: Tokens will NOT be passed during training - model must self-regulate
+  # NOTE: Using v2 checkpoint with per-family normalization stats
+
+training:
+  n_samples: 1000
+  batch_size: 1              # REDUCED for VQ-led (more memory than Stage 1)
+  epochs: 15                 # Shorter fine-tuning (not cold start)
+  learning_rate: 2.0e-5      # REDUCED: 40% of exp2f (fine-tuning, not training)
+  warmup_steps: 1350         # 1.5 epochs × 900 batches (bs=1)
+  weight_decay: 1.0e-4
+  clip_grad: 0.5
+
+  # Long-horizon training with truncated BPTT (same as Stage 1)
+  timesteps: 256             # Full rollout
+  bptt_window: 32            # Backprop window
+
+  early_stopping_patience: 8  # Reduced (fine-tuning converges faster)
+
+loss:
+  # VQ-LED MODE: VQ reconstruction primary, physics auxiliary
+  mode: "vq_led"
+  lambda_recon: 2.0          # VQ reconstruction (PRIMARY) - increased from 1.0 to make recon dominant
+  lambda_commit: 0.5         # VQ commitment (PRIMARY)
+  lambda_traj: 0.2           # Physics regularizer (AUXILIARY) - reduced from 0.3 to balance gradient
+
+data:
+  dataset_path: "datasets/100k_full_features.h5"
+  # NO ground_truth_token_path - token conditioning disabled for Stage 2
+  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+# VQ-VAE alignment (for VQ-led losses)
+vqvae:
+  checkpoint: "checkpoints/production/100k_3family_v2/best_model.pt"
+  freeze: true               # VQ-VAE weights frozen (acts as feature extractor)
+  use_aligned_extractor: true  # Use AlignedFeatureExtractor for 3-family models
+  # NOTE: Normalization stats automatically loaded from VQ-VAE checkpoint
+  # NOTE: Using v2 checkpoint with proper per-family normalization stats
+
+checkpointing:
+  save_dir: "checkpoints/experiments/phase2/exp2g_stage2_vqled"
+  save_every: 3              # More frequent (fine-tuning shorter)
+  keep_best: true
+
+device: "cuda"
+seed: 42

@@ -16,6 +16,10 @@ Usage:
     # In training loop
     losses = alignment.compute_losses(pred_trajectory, target_trajectory, ic)
     total_loss = state_loss + lambda_commit * losses['commit']
+
+Checkpoint Loading:
+    For details on VQ-VAE checkpoint structure, normalization stats, and
+    loading procedures, see: docs/vqvae/checkpoint-format.md
 """
 
 import torch
@@ -261,34 +265,7 @@ class VQVAEAlignmentLoss(nn.Module):
         # Fallback default
         return 64
 
-    def _normalize_features(self, features: torch.Tensor) -> torch.Tensor:
-        """Apply feature cleaning and normalization using existing infrastructure.
-
-        Uses FeaturePreprocessor for NaN handling and standard normalization.
-
-        Args:
-            features: Raw features [batch, D]
-
-        Returns:
-            Cleaned and normalized features [batch, D]
-        """
-        from spinlock.encoding.normalization import standard_normalize
-
-        # First: replace any NaN/Inf values with 0 (FeaturePreprocessor cleans known bad indices,
-        # but we may have NaN from dynamic extraction)
-        features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # Skip normalization if batch size is 1 (can't compute meaningful std)
-        if features.shape[0] < 2:
-            return features
-
-        # Use global standard normalization
-        normalized = standard_normalize(features)
-
-        # Final safety: replace any NaN/Inf from normalization (e.g., zero-variance features)
-        normalized = torch.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0)
-
-        return normalized
+    # NOTE: _normalize_features() method removed - normalization now handled by UnifiedFeaturePipeline
 
     def _apply_feature_cleaning(self, features: torch.Tensor) -> torch.Tensor:
         """Apply feature selection to match VQ-VAE input dimensions.
@@ -441,6 +418,7 @@ class VQVAEAlignmentLoss(nn.Module):
         noa: Optional[nn.Module] = None,
         enable_latent_loss: bool = False,
         latent_sample_steps: int = 3,
+        normalization_stats_file: Optional[str] = None,
     ) -> "VQVAEAlignmentLoss":
         """Load alignment loss from VQ-VAE checkpoint.
 
@@ -455,6 +433,11 @@ class VQVAEAlignmentLoss(nn.Module):
             noa: NOA backbone for latent loss (required if enable_latent_loss=True)
             enable_latent_loss: Enable L_latent (NOA-VQ latent alignment)
             latent_sample_steps: Number of timesteps to sample for latent loss (3=default, -1=all)
+            normalization_stats_file: Optional path to external normalization stats file.
+                                     If provided and checkpoint lacks normalization_stats,
+                                     loads stats from this file instead. Required for
+                                     Stage 2 VQ-led training if VQ-VAE was trained without
+                                     normalization.
 
         Returns:
             Configured VQVAEAlignmentLoss instance
@@ -475,11 +458,35 @@ class VQVAEAlignmentLoss(nn.Module):
         # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-        # Load normalization stats
-        if stats_path.exists():
-            normalization_stats = dict(np.load(stats_path, allow_pickle=True))
-        else:
-            normalization_stats = checkpoint.get('normalization_stats', {})
+        # Load normalization stats from checkpoint
+        # They're stored at top-level in the checkpoint dict (not in config)
+        normalization_stats = checkpoint.get('normalization_stats')
+
+        # If not in checkpoint, try loading from external file
+        if normalization_stats is None and normalization_stats_file is not None:
+            print(f"  Loading normalization stats from: {normalization_stats_file}")
+            stats_data = torch.load(normalization_stats_file, map_location='cpu', weights_only=False)
+            # Remove metadata key if present
+            normalization_stats = {k: v for k, v in stats_data.items() if k != '_metadata'}
+            print(f"  ✓ Loaded {len([k for k in normalization_stats if 'mean' in k])} feature groups")
+
+        # Convert NormalizationStats objects to flat dict format
+        # VQ-VAE checkpoint stores stats as {cluster_N: NormalizationStats(mean, std)}
+        # but _normalize_features() expects {cluster_N_mean: [...], cluster_N_std: [...]}
+        if normalization_stats is not None:
+            from spinlock.encoding.normalization import NormalizationStats
+
+            # Check if conversion is needed (first value is NormalizationStats object)
+            first_key = list(normalization_stats.keys())[0] if normalization_stats else None
+            if first_key and isinstance(normalization_stats[first_key], NormalizationStats):
+                # Convert to flat dict format
+                flat_stats = {}
+                for group_name, stats_obj in normalization_stats.items():
+                    # Convert numpy arrays to lists for JSON serialization
+                    flat_stats[f"{group_name}_mean"] = stats_obj.mean.tolist() if hasattr(stats_obj.mean, 'tolist') else list(stats_obj.mean)
+                    flat_stats[f"{group_name}_std"] = stats_obj.std.tolist() if hasattr(stats_obj.std, 'tolist') else list(stats_obj.std)
+                normalization_stats = flat_stats
+                print(f"  ✓ Converted {len(normalization_stats) // 2} normalization groups to flat format")
 
         # Get config and families
         # Try model_config first (has actual VQ-VAE params), fall back to training config
@@ -490,7 +497,7 @@ class VQVAEAlignmentLoss(nn.Module):
         group_indices = model_config.get('group_indices', checkpoint.get('pre_model_group_indices', config.get('group_indices', {})))
         state_dict = checkpoint['model_state_dict']
 
-        # Get input_dim from model_config if available, otherwise from feature_mask
+        # Get input_dim from model_config if available, otherwise from feature_mask or config
         input_dim = model_config.get('input_dim')
         feature_mask = checkpoint.get('feature_mask', None)
         feature_cleaning_params = checkpoint.get('feature_cleaning_params', None)
@@ -500,7 +507,8 @@ class VQVAEAlignmentLoss(nn.Module):
             if hasattr(feature_mask, '__len__'):
                 input_dim = int(np.sum(feature_mask))
         if input_dim is None:
-            input_dim = 187  # Default fallback
+            # Try config.input_dim before falling back to default
+            input_dim = config.get('input_dim', 225)  # Default to 225 for production models
 
         # Detect hybrid model (VQVAEWithInitial) by checking for initial_encoder
         is_hybrid_model = any('initial_encoder' in k for k in state_dict.keys())
@@ -754,182 +762,70 @@ class TrajectoryFeatureExtractor(nn.Module):
 class AlignedFeatureExtractor(nn.Module):
     """Extract features from trajectories matching 3-family VQ-VAE format.
 
-    This extractor produces features compatible with production VQ-VAE checkpoints
-    (e.g., 100k_3family_v1) by extracting and encoding features in the same way
-    as dataset generation + VQ-VAE training:
+    This is a thin wrapper around UnifiedFeaturePipeline to ensure VQ-VAE training
+    and meta-operator training use IDENTICAL feature extraction and normalization.
 
-    1. INITIAL (14D manual): Basic spatial/spectral stats from IC
-    2. SUMMARY (128D encoded): Trajectory-level aggregated stats via MLPEncoder
-    3. TEMPORAL (128D encoded): Per-timestep time series via TemporalCNNEncoder
+    Features: 14D INITIAL + 128D SUMMARY (encoded) + 128D TEMPORAL (encoded) = 270D
 
-    The encoders are loaded from the VQ-VAE checkpoint to ensure alignment.
+    The pipeline handles:
+    1. Feature extraction (per-family)
+    2. Encoding (using frozen VQ-VAE encoders)
+    3. Normalization (per-family mean/std from VQ-VAE checkpoint)
 
-    For VQVAEWithInitial models, this extractor also returns raw ICs for the
-    CNN portion of InitialHybridEncoder (trained end-to-end in VQ-VAE).
+    This replaces the old 200+ line implementation with a DRY solution.
     """
 
     def __init__(
         self,
-        input_dim: int = 187,
+        pipeline: "UnifiedFeaturePipeline",
+        input_dim: int = 270,
         device: str = "cuda",
-        summary_encoder: Optional[nn.Module] = None,
-        temporal_encoder: Optional[nn.Module] = None,
     ):
         """Initialize aligned feature extractor.
 
         Args:
-            input_dim: Expected output dimension (after concatenation + cleanup)
+            pipeline: UnifiedFeaturePipeline with loaded encoders and normalization
+            input_dim: Expected output dimension (270D for 3-family VQ-VAE)
             device: Computation device
-            summary_encoder: Pre-trained MLPEncoder for SUMMARY features
-            temporal_encoder: Pre-trained TemporalCNNEncoder for TEMPORAL features
         """
         super().__init__()
-
+        self.pipeline = pipeline
         self.input_dim = input_dim
         self.device = torch.device(device)
-
-        # Store encoders (frozen, from VQ-VAE checkpoint)
-        self.summary_encoder = summary_encoder
-        self.temporal_encoder = temporal_encoder
-
-        if summary_encoder is not None:
-            summary_encoder.to(self.device)
-            summary_encoder.eval()
-            for p in summary_encoder.parameters():
-                p.requires_grad = False
-
-        if temporal_encoder is not None:
-            temporal_encoder.to(self.device)
-            temporal_encoder.eval()
-            for p in temporal_encoder.parameters():
-                p.requires_grad = False
-
-        # Import extractors
-        from spinlock.features.summary.config import SummaryConfig
-        from spinlock.features.summary.extractors import SummaryExtractor
-        from spinlock.features.initial.manual_extractors import InitialManualExtractor
-
-        # INITIAL extractor (manual 14D features from IC)
-        self.initial_extractor = InitialManualExtractor(device=self.device)
-
-        # SUMMARY extractor with config matching dataset generation
-        summary_config = SummaryConfig(
-            realization_aggregation=["mean"],
-            temporal_aggregation=["mean"],
-        )
-        self.summary_extractor = SummaryExtractor(device=self.device, config=summary_config)
-
-        # Feature dimensions (before encoding)
-        self.initial_dim = 14  # Manual INITIAL features
-        self.summary_raw_dim = 360  # Raw SUMMARY aggregated features
-        self.temporal_raw_dim = 63  # Per-timestep TEMPORAL features
 
     def forward(
         self,
         trajectory: torch.Tensor,
         ic: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Extract features from trajectory.
+        """Extract features from trajectory using unified pipeline.
 
         Args:
             trajectory: Trajectory tensor [B, T, C, H, W] or [B, M, T, C, H, W]
-            ic: Initial condition [B, C, H, W] (required for INITIAL features)
+            ic: Initial condition [B, C, H, W] (optional, extracted from trajectory[0] if None)
 
         Returns:
             Tuple of:
-            - features: Flat feature vector [B, input_dim]
+            - features: Normalized feature vector [B, 270D]
             - raw_ics: Raw ICs [B, C, H, W] for VQ-VAE's InitialHybridEncoder
         """
-        B = trajectory.shape[0]
-
         # Handle multi-realization trajectories
         if trajectory.dim() == 6:
             # [B, M, T, C, H, W] - use first realization
             trajectory = trajectory[:, 0]  # [B, T, C, H, W]
 
-        # Add realization dimension for extractor: [B, T, C, H, W] -> [B, 1, T, C, H, W]
-        traj_with_m = trajectory.unsqueeze(1)
+        # Extract IC if not provided
+        if ic is None:
+            ic = trajectory[:, 0]  # [B, C, H, W]
 
-        # === INITIAL features (14D manual) ===
-        if ic is not None:
-            # Extract manual INITIAL features from IC
-            # InitialManualExtractor expects [B, M, C, H, W], add M=1 dim
-            ic_with_m = ic.unsqueeze(1)  # [B, 1, C, H, W]
-            initial_features = self.initial_extractor.extract_all(ic_with_m)  # [B, 1, 14]
-            initial_features = initial_features.squeeze(1)  # [B, 14]
-        else:
-            # Use trajectory's first frame as IC approximation
-            ic_approx = trajectory[:, 0]  # [B, C, H, W]
-            ic_with_m = ic_approx.unsqueeze(1)  # [B, 1, C, H, W]
-            initial_features = self.initial_extractor.extract_all(ic_with_m)  # [B, 1, 14]
-            initial_features = initial_features.squeeze(1)  # [B, 14]
+        # Extract and normalize features using unified pipeline
+        # Pipeline outputs: 14D + 128D + 128D = 270D (already normalized)
+        features = self.pipeline(trajectory, ic, normalize=True)
 
-        # === SUMMARY features ===
-        summary_result = self.summary_extractor.extract_all(traj_with_m)
-
-        # Get aggregated SUMMARY features
-        if 'aggregated_mean' in summary_result:
-            summary_raw = summary_result['aggregated_mean']  # [B, D_summary]
-        else:
-            summary_raw = summary_result['per_trajectory'].squeeze(1)  # [B, D_summary]
-
-        # Encode SUMMARY if encoder provided
-        if self.summary_encoder is not None:
-            # Pad/truncate to expected input dim
-            if summary_raw.shape[1] < self.summary_raw_dim:
-                pad = torch.zeros(B, self.summary_raw_dim - summary_raw.shape[1],
-                                  device=summary_raw.device, dtype=summary_raw.dtype)
-                summary_raw = torch.cat([summary_raw, pad], dim=1)
-            elif summary_raw.shape[1] > self.summary_raw_dim:
-                summary_raw = summary_raw[:, :self.summary_raw_dim]
-
-            summary_encoded = self.summary_encoder(summary_raw)  # [B, 128]
-        else:
-            # No encoder - use raw (will be truncated later)
-            summary_encoded = summary_raw
-
-        # === TEMPORAL features ===
-        # Get per-timestep features [B, T, D_temporal]
-        temporal_raw = summary_result['per_timestep']  # [B, T, D_temporal]
-
-        # Encode TEMPORAL if encoder provided
-        if self.temporal_encoder is not None:
-            # Pad/truncate feature dimension to expected input
-            if temporal_raw.shape[2] < self.temporal_raw_dim:
-                pad = torch.zeros(B, temporal_raw.shape[1],
-                                  self.temporal_raw_dim - temporal_raw.shape[2],
-                                  device=temporal_raw.device, dtype=temporal_raw.dtype)
-                temporal_raw = torch.cat([temporal_raw, pad], dim=2)
-            elif temporal_raw.shape[2] > self.temporal_raw_dim:
-                temporal_raw = temporal_raw[:, :, :self.temporal_raw_dim]
-
-            temporal_encoded = self.temporal_encoder(temporal_raw)  # [B, 128]
-        else:
-            # No encoder - aggregate via mean
-            temporal_encoded = temporal_raw.mean(dim=1)  # [B, D_temporal]
-
-        # === Concatenate all features ===
-        features = torch.cat([
-            initial_features,  # [B, 14]
-            summary_encoded,   # [B, 128] or [B, D_summary]
-            temporal_encoded,  # [B, 128] or [B, D_temporal]
-        ], dim=1)
-
-        # Handle dimension mismatch (pad/truncate to input_dim)
-        if features.shape[1] < self.input_dim:
-            padding = torch.zeros(B, self.input_dim - features.shape[1],
-                                  device=features.device, dtype=features.dtype)
-            features = torch.cat([features, padding], dim=1)
-        elif features.shape[1] > self.input_dim:
-            features = features[:, :self.input_dim]
-
-        # Clean NaN/Inf
+        # Clean NaN/Inf (safety)
         features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Return features and raw ICs (for VQ-VAE's InitialHybridEncoder)
-        raw_ics = ic if ic is not None else trajectory[:, 0]
-
-        return features, raw_ics
+        return features, ic
 
     @classmethod
     def from_checkpoint(
@@ -937,17 +833,17 @@ class AlignedFeatureExtractor(nn.Module):
         checkpoint_path: str,
         device: str = "cuda",
     ) -> "AlignedFeatureExtractor":
-        """Create extractor with encoders loaded from VQ-VAE checkpoint.
+        """Create extractor with pipeline loaded from VQ-VAE checkpoint.
 
         Args:
             checkpoint_path: Path to VQ-VAE checkpoint directory or .pt file
             device: Computation device
 
         Returns:
-            Configured AlignedFeatureExtractor with encoders from checkpoint
+            Configured AlignedFeatureExtractor with UnifiedFeaturePipeline
         """
         from pathlib import Path
-        from spinlock.encoding.encoders import get_encoder
+        from spinlock.encoding import UnifiedFeaturePipeline
 
         path = Path(checkpoint_path)
         if path.is_dir():
@@ -955,42 +851,80 @@ class AlignedFeatureExtractor(nn.Module):
         else:
             checkpoint_file = path
 
+        # Load checkpoint to check if it has per-family normalization stats
         checkpoint = torch.load(checkpoint_file, map_location=device, weights_only=False)
-        config = checkpoint.get('config', {})
-        families = checkpoint.get('families', {})
+        norm_stats = checkpoint.get('normalization_stats', {})
 
-        input_dim = config.get('input_dim', 187)
+        # Check if checkpoint has new per-family format
+        has_new_format = (
+            'initial' in norm_stats and
+            'summary' in norm_stats and
+            'temporal' in norm_stats
+        )
 
-        # Create encoders from family configs
-        summary_encoder = None
-        temporal_encoder = None
+        if has_new_format:
+            # New checkpoint format - use UnifiedFeaturePipeline directly
+            print("  ✓ Loading UnifiedFeaturePipeline from checkpoint (per-family normalization)")
+            pipeline = UnifiedFeaturePipeline.from_checkpoint(str(checkpoint_file), device=device)
+        else:
+            # Old checkpoint format - create pipeline with temporary identity normalization
+            # This avoids dimension mismatches while maintaining correct feature dimensions
+            print("  ⚠ Old checkpoint format detected (cluster-based normalization)")
+            print("    Creating UnifiedFeaturePipeline with identity normalization (mean=0, std=1)")
+            print("    VQ-VAE should be retrained with new format for proper normalization")
 
-        if 'summary' in families:
-            summary_config = families['summary']
-            encoder_name = summary_config.get('encoder')
-            if encoder_name and encoder_name not in ['identity', 'IdentityEncoder', 'initial_hybrid']:
-                params = summary_config.get('encoder_params', {})
-                # Get input_dim from raw feature size
-                summary_encoder = get_encoder(
-                    encoder_name,
-                    input_dim=360,  # Raw SUMMARY dimension
-                    **params
-                )
+            # Create pipeline from checkpoint (loads encoders)
+            try:
+                pipeline = UnifiedFeaturePipeline.from_checkpoint(str(checkpoint_file), device=device)
+            except KeyError:
+                # If checkpoint is missing some fields, build pipeline manually from config
+                from spinlock.encoding import InitialFeatureExtractor, SummaryFeatureExtractor, TemporalFeatureExtractor
+                from spinlock.encoding.encoders import get_encoder
 
-        if 'temporal' in families:
-            temporal_config = families['temporal']
-            encoder_name = temporal_config.get('encoder')
-            if encoder_name and encoder_name not in ['identity', 'IdentityEncoder', 'initial_hybrid']:
-                params = temporal_config.get('encoder_params', {})
-                temporal_encoder = get_encoder(
-                    encoder_name,
-                    input_dim=63,  # Per-timestep TEMPORAL feature dimension
-                    **params
-                )
+                families = checkpoint.get('families', checkpoint.get('config', {}).get('families', {}))
+
+                # Load encoders
+                summary_encoder = None
+                temporal_encoder = None
+
+                if 'summary' in families:
+                    summary_config = families['summary']
+                    encoder_name = summary_config.get('encoder')
+                    if encoder_name and encoder_name not in ['identity', 'IdentityEncoder']:
+                        params = summary_config.get('encoder_params', {})
+                        summary_encoder = get_encoder(encoder_name, input_dim=360, **params)
+
+                if 'temporal' in families:
+                    temporal_config = families['temporal']
+                    encoder_name = temporal_config.get('encoder')
+                    if encoder_name and encoder_name not in ['identity', 'IdentityEncoder']:
+                        params = temporal_config.get('encoder_params', {})
+                        temporal_encoder = get_encoder(encoder_name, input_dim=63, **params)
+
+                # Create extractors
+                initial = InitialFeatureExtractor(device=device)
+                summary = SummaryFeatureExtractor(summary_encoder, device=device) if summary_encoder else None
+                temporal = TemporalFeatureExtractor(temporal_encoder, device=device) if temporal_encoder else None
+
+                pipeline = UnifiedFeaturePipeline(initial, summary, temporal)
+
+            # Set identity normalization (mean=0, std=1) to avoid dimension mismatches
+            # This doesn't normalize features but avoids the dimension mismatch that was causing huge losses
+            pipeline.initial.normalization_stats = (
+                torch.zeros(14, device=device),
+                torch.ones(14, device=device)
+            )
+            pipeline.summary.normalization_stats = (
+                torch.zeros(128, device=device),
+                torch.ones(128, device=device)
+            )
+            pipeline.temporal.normalization_stats = (
+                torch.zeros(128, device=device),
+                torch.ones(128, device=device)
+            )
 
         return cls(
-            input_dim=input_dim,
+            pipeline=pipeline,
+            input_dim=270,
             device=device,
-            summary_encoder=summary_encoder,
-            temporal_encoder=temporal_encoder,
         )

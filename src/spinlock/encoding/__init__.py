@@ -86,6 +86,13 @@ from .latent_dim_defaults import (
 from .grouped_feature_extractor import GroupedFeatureExtractor, GroupMLP
 from .categorical_projector import CategoricalProjector
 from .training import VQVAETrainer, EarlyStopping, DeadCodeReset, Checkpointer
+from .unified_feature_pipeline import (
+    UnifiedFeaturePipeline,
+    FamilyFeatureExtractor,
+    InitialFeatureExtractor,
+    SummaryFeatureExtractor,
+    TemporalFeatureExtractor,
+)
 
 __all__ = [
     # Main model
@@ -138,4 +145,10 @@ __all__ = [
     "EarlyStopping",
     "DeadCodeReset",
     "Checkpointer",
+    # Unified feature pipeline
+    "UnifiedFeaturePipeline",
+    "FamilyFeatureExtractor",
+    "InitialFeatureExtractor",
+    "SummaryFeatureExtractor",
+    "TemporalFeatureExtractor",
 ]
