@@ -570,6 +570,33 @@ Output:
             if initial_info is not None:
                 print(f"  Hybrid INITIAL: {initial_info['manual_dim']}D manual + {initial_info['cnn_dim']}D CNN (end-to-end)")
 
+        # Compute per-family normalization stats for meta-operator training
+        # Features at this point are already encoded: 14D (INITIAL) + 128D (SUMMARY) + 128D (TEMPORAL)
+        # These stats will be saved to checkpoint for UnifiedFeaturePipeline
+        if verbose:
+            print("\nComputing per-family normalization statistics...")
+
+        import torch
+        per_family_stats = {
+            'initial': (
+                torch.from_numpy(features[:, :14].mean(axis=0)).float(),
+                torch.from_numpy(features[:, :14].std(axis=0)).float()
+            ),
+            'summary': (
+                torch.from_numpy(features[:, 14:142].mean(axis=0)).float(),
+                torch.from_numpy(features[:, 14:142].std(axis=0)).float()
+            ),
+            'temporal': (
+                torch.from_numpy(features[:, 142:270].mean(axis=0)).float(),
+                torch.from_numpy(features[:, 142:270].std(axis=0)).float()
+            ),
+        }
+
+        if verbose:
+            print(f"  INITIAL (14D):  mean=[{per_family_stats['initial'][0].min():.3f}, {per_family_stats['initial'][0].max():.3f}], std=[{per_family_stats['initial'][1].min():.3f}, {per_family_stats['initial'][1].max():.3f}]")
+            print(f"  SUMMARY (128D): mean=[{per_family_stats['summary'][0].min():.3f}, {per_family_stats['summary'][0].max():.3f}], std=[{per_family_stats['summary'][1].min():.3f}, {per_family_stats['summary'][1].max():.3f}]")
+            print(f"  TEMPORAL (128D): mean=[{per_family_stats['temporal'][0].min():.3f}, {per_family_stats['temporal'][0].max():.3f}], std=[{per_family_stats['temporal'][1].min():.3f}, {per_family_stats['temporal'][1].max():.3f}]")
+
         # Clean features (remove NaN, zero-variance, duplicates, cap outliers)
         # Check both old flat format and new feature_cleaning section
         feature_cleaning = config.get("feature_cleaning", {})
@@ -883,6 +910,7 @@ Output:
             encoder_state_dicts,
             feature_mask,
             feature_cleaning_params,
+            per_family_stats,
         )
 
         # Load checkpoint if resuming
@@ -1554,6 +1582,7 @@ Output:
         encoder_state_dicts: Optional[Dict[str, Any]] = None,
         feature_mask: Optional[np.ndarray] = None,
         feature_cleaning_params: Optional[Dict[str, Any]] = None,
+        per_family_stats: Optional[Dict[str, tuple]] = None,
     ):
         """Create VQVAETrainer with full metadata for checkpoint reproducibility."""
         from spinlock.encoding.training import VQVAETrainer
@@ -1587,6 +1616,7 @@ Output:
             config=config,
             group_indices=group_indices,
             normalization_stats=normalization_stats,
+            per_family_normalization_stats=per_family_stats,
             feature_names=feature_names,
             encoder_state_dicts=encoder_state_dicts,
             feature_mask=feature_mask,

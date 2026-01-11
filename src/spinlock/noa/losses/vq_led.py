@@ -35,6 +35,12 @@ Example:
     ... )
     >>> output = loss_fn.compute(pred_trajectory, target_trajectory, ic, noa)
     >>> output.total.backward()
+
+Documentation:
+    - Two-stage curriculum (Stage 2 uses VQ-led): docs/two-stage-curriculum-architecture.md
+    - Training guide: docs/noa-training-guide.md
+    - Base loss interface: src/spinlock/noa/base_loss.py
+    - VQ-VAE checkpoint format: docs/vqvae/checkpoint-format.md
 """
 
 import torch
@@ -145,18 +151,20 @@ class VQLedLoss(BaseNOALoss):
             pred_features = pred_result
             pred_raw_ics = ic
 
-        # Normalize features using alignment's normalization
-        features_norm = self.alignment._normalize_features(pred_features)
+        # Features are already normalized by UnifiedFeaturePipeline in AlignedFeatureExtractor
+        # No need to normalize again - just use pred_features directly
+        features_norm = pred_features
 
-        # Apply feature cleaning to match VQ-VAE input dimensions
-        # VQ-VAE was trained on cleaned features, so we need to apply the same cleaning
-        features_cleaned = self.alignment._apply_feature_cleaning(features_norm)
+        # Apply feature selection to match VQ-VAE's expected input dimensions
+        # UnifiedFeaturePipeline outputs 270D, but VQ-VAE was trained on 171D subset
+        features_selected = self.alignment._apply_feature_cleaning(features_norm)
 
         # Encode to pre-quantization latents
+        # VQ-VAE's feature_extractor internally selects only group_indices
         if self.alignment._is_hybrid_model and pred_raw_ics is not None:
-            z_list = self.alignment.vqvae.encode(features_cleaned, raw_ics=pred_raw_ics)
+            z_list = self.alignment.vqvae.encode(features_selected, raw_ics=pred_raw_ics)
         else:
-            z_list = self.alignment.vqvae.encode(features_cleaned)
+            z_list = self.alignment.vqvae.encode(features_selected)
 
         z = torch.cat(z_list, dim=1)  # [B, total_latent_dim]
 
@@ -168,8 +176,9 @@ class VQLedLoss(BaseNOALoss):
         # Decode quantized latents back to feature space
         # This measures how well the trajectory is "expressible" in VQ vocabulary
         recon_features = self.alignment.vqvae.decode(z_q_list)
-        # Compare with cleaned features (both have same dimension now)
-        recon_loss = F.mse_loss(recon_features, features_cleaned)
+
+        # Compare reconstructed features with selected features (both 171D)
+        recon_loss = F.mse_loss(recon_features, features_selected)
 
         # L_commit: Commitment loss (embedding sharpness)
         # Forces pre-quantization latents close to quantized codes

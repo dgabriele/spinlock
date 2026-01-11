@@ -409,6 +409,7 @@ class Checkpointer:
         config: Optional[dict] = None,
         group_indices: Optional[dict] = None,
         normalization_stats: Optional[dict] = None,
+        per_family_normalization_stats: Optional[dict] = None,
         feature_names: Optional[list] = None,
         encoder_state_dicts: Optional[dict] = None,
         feature_mask: Optional[np.ndarray] = None,
@@ -422,7 +423,8 @@ class Checkpointer:
             verbose: Whether to print messages
             config: Full training config (includes families, etc.) for reproducibility
             group_indices: Category to feature index mapping
-            normalization_stats: Feature normalization statistics
+            normalization_stats: Feature normalization statistics (cluster-based, legacy)
+            per_family_normalization_stats: Per-family normalization stats for meta-operator training
             feature_names: List of feature names
             encoder_state_dicts: State dicts for frozen input encoders (MLPEncoder, etc.)
             feature_mask: Boolean array indicating which features survived cleaning
@@ -437,6 +439,7 @@ class Checkpointer:
         self.config = config
         self.group_indices = group_indices
         self.normalization_stats = normalization_stats
+        self.per_family_normalization_stats = per_family_normalization_stats
         self.feature_names = feature_names
         self.encoder_state_dicts = encoder_state_dicts
         self.feature_mask = feature_mask
@@ -505,6 +508,10 @@ class Checkpointer:
             checkpoint["pre_model_group_indices"] = self.group_indices
         if self.normalization_stats is not None:
             checkpoint["normalization_stats"] = self.normalization_stats
+        if self.per_family_normalization_stats is not None:
+            # Per-family normalization stats for meta-operator training compatibility
+            # This overwrites the legacy cluster-based normalization_stats key
+            checkpoint["normalization_stats"] = self.per_family_normalization_stats
         if self.feature_names is not None:
             checkpoint["feature_names"] = self.feature_names
         if self.encoder_state_dicts is not None:

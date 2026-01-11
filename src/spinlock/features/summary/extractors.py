@@ -836,7 +836,8 @@ class SummaryExtractor(FeatureExtractorBase):
         if method == "mean":
             return per_trajectory_features.mean(dim=1)  # [N, D_traj]
         elif method == "std":
-            return per_trajectory_features.std(dim=1)
+            # Use correction=0 (population std) to avoid warnings when batch size is 1
+            return per_trajectory_features.std(dim=1, correction=0)
         elif method == "min":
             return per_trajectory_features.amin(dim=1)
         elif method == "max":
@@ -844,7 +845,8 @@ class SummaryExtractor(FeatureExtractorBase):
         elif method == "cv":
             # Coefficient of variation: std / mean
             mean = per_trajectory_features.mean(dim=1)
-            std = per_trajectory_features.std(dim=1)
+            # Use correction=0 (population std) to avoid warnings when batch size is 1
+            std = per_trajectory_features.std(dim=1, correction=0)
             return std / (mean.abs() + 1e-8)
         else:
             raise ValueError(f"Unknown aggregation method: {method}")
