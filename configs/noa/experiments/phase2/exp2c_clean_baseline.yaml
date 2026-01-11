@@ -1,0 +1,42 @@
+# Experiment 2C: Clean Baseline (1K samples, no token conditioning)
+# Pure U-AFNO MNO without any conditioning
+# Establishes baseline performance before adding complexity
+
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 32  # Standard capacity
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+
+  # NO token conditioning
+  token_conditioning: false
+
+training:
+  n_samples: 1000
+  batch_size: 4
+  epochs: 30
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4   # From 1E (Phase 1 winner)
+  clip_grad: 0.5         # From 1E
+  timesteps: 32
+  early_stopping_patience: 10
+
+loss:
+  lambda_traj: 1.0
+
+data:
+  dataset_path: "datasets/100k_full_features.h5"
+  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/experiments/phase2/exp2c_clean_baseline"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42

@@ -19,6 +19,7 @@ from .visualize_vqvae import VisualizeVQVAECommand
 from .extract_features import ExtractFeaturesCommand
 from .train_vqvae import TrainVQVAECommand
 from .train_meta_operator import TrainMetaOperatorCommand
+from .compute_ground_truth_tokens import ComputeGroundTruthTokensCommand
 
 __all__ = [
     "CLICommand",
@@ -33,6 +34,7 @@ __all__ = [
     "ExtractFeaturesCommand",
     "TrainVQVAECommand",
     "TrainMetaOperatorCommand",
+    "ComputeGroundTruthTokensCommand",
     "main",
 ]
 
@@ -83,6 +85,7 @@ For more help on a specific command:
         ExtractFeaturesCommand(),
         TrainVQVAECommand(),
         TrainMetaOperatorCommand(),
+        ComputeGroundTruthTokensCommand(),
     ]
 
     for command in commands:

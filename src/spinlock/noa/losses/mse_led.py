@@ -23,6 +23,11 @@ Example:
     ... )
     >>> output = loss_fn.compute(pred_trajectory, target_trajectory, ic, noa)
     >>> output.total.backward()
+
+Documentation:
+    - Two-stage curriculum (Stage 1 uses MSE-led): docs/two-stage-curriculum-architecture.md
+    - Training guide: docs/noa-training-guide.md
+    - Base loss interface: src/spinlock/noa/base_loss.py
 """
 
 import torch

@@ -54,6 +54,9 @@ from .cno_replay import CNOReplayer
 from .vqvae_alignment import VQVAEAlignmentLoss, TrajectoryFeatureExtractor, AlignedFeatureExtractor
 from .latent_projector import LatentProjector
 
+# Truncated BPTT for long-horizon training
+from .truncated_bptt import TruncatedBPTT
+
 __all__ = [
     # Abstract base classes
     "BaseNOABackbone",
@@ -88,4 +91,6 @@ __all__ = [
     "TrajectoryFeatureExtractor",
     "AlignedFeatureExtractor",
     "LatentProjector",
+    # Truncated BPTT
+    "TruncatedBPTT",
 ]

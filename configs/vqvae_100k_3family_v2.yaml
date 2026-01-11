@@ -1,0 +1,114 @@
+# VQ-VAE Training Config for 100k 3-Family Model v2
+# Uses UnifiedFeaturePipeline for feature extraction
+# Creates proper per-family normalization stats for meta-operator training
+
+# Dataset
+dataset_path: datasets/100k_full_features.h5
+max_samples: null  # Use all samples
+
+# Feature Families (3-family architecture: INITIAL + SUMMARY + TEMPORAL)
+families:
+  initial:
+    encoder: identity  # No encoding for INITIAL (14D manual features)
+    encoder_params: {}
+
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      input_dim: 360
+      hidden_dim: 512
+      output_dim: 128
+      num_layers: 2
+      dropout: 0.1
+
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      input_dim: 63
+      hidden_channels: [64, 128]
+      kernel_size: 3
+      output_dim: 128
+      dropout: 0.1
+
+# Feature Cleaning
+feature_cleaning:
+  enabled: true
+  variance_threshold: 1.0e-10
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
+  outlier_method: mad
+  mad_threshold: 3.0
+
+# VQ-VAE Model Architecture
+model:
+  # Feature encoder parameters
+  group_embedding_dim: 64
+  group_hidden_dim: 128
+
+  # Hierarchical quantization (3 levels)
+  levels: 3
+  compression_ratios: [4, 4, 4]  # Total compression: 64×
+
+  # VQ-VAE hyperparameters
+  commitment_cost: 0.45
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+
+# Training Configuration
+training:
+  # Optimization
+  batch_size: 256
+  learning_rate: 0.0007
+  num_epochs: 300
+  optimizer: adamw
+  scheduler: cosine
+  warmup_epochs: 10
+
+  # Category discovery (auto-clustering)
+  category_assignment: auto
+  num_categories_auto: 10
+  min_features_per_category: 3
+  max_clusters: 25
+  orthogonality_target: 0.15
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.02
+  topo_samples: 64
+
+  # Checkpointing
+  checkpoint_dir: checkpoints/vqvae/100k_3family_v2
+  save_every: null  # Only save best
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+  dead_code_reset_interval: 100
+  dead_code_threshold: 10.0
+  dead_code_max_reset_fraction: 0.25
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: false  # Disable for stability
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# System
+random_seed: 42
+device: cuda
+output_dir: checkpoints/vqvae/100k_3family_v2

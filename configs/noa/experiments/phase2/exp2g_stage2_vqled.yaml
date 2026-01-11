@@ -34,8 +34,8 @@ training:
   n_samples: 1000
   batch_size: 1              # REDUCED for VQ-led (more memory than Stage 1)
   epochs: 15                 # Shorter fine-tuning (not cold start)
-  learning_rate: 2.0e-5      # REDUCED: 40% of exp2f (fine-tuning, not training)
-  warmup_steps: 1350         # 1.5 epochs × 900 batches (bs=1)
+  learning_rate: 1.0e-5      # Gentler fine-tuning (reduced from 2.0e-5 due to loss divergence)
+  warmup_steps: 450          # 0.5 epochs × 900 batches (bs=1) - short warmup for fine-tuning
   weight_decay: 1.0e-4
   clip_grad: 0.5
 
@@ -48,9 +48,9 @@ training:
 loss:
   # VQ-LED MODE: VQ reconstruction primary, physics auxiliary
   mode: "vq_led"
-  lambda_recon: 2.0          # VQ reconstruction (PRIMARY) - increased from 1.0 to make recon dominant
-  lambda_commit: 0.5         # VQ commitment (PRIMARY)
-  lambda_traj: 0.2           # Physics regularizer (AUXILIARY) - reduced from 0.3 to balance gradient
+  lambda_recon: 5.0          # VQ reconstruction (PRIMARY) - increased to truly dominate gradient
+  lambda_commit: 0.05        # VQ commitment (already optimal at 0.0005, minimal weight)
+  lambda_traj: 0.2           # Physics regularizer (AUXILIARY)
 
 data:
   dataset_path: "datasets/100k_full_features.h5"

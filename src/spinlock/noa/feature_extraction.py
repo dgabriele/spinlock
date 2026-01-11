@@ -14,6 +14,11 @@ No hardcoded feature counts - the system adapts to whatever the extractor produc
 NaN Handling:
     The extractor can optionally use a FeaturePreprocessor to clean NaN features.
     This ensures consistency with the ground-truth features from the dataset.
+
+Documentation:
+    - Feature extraction overview: docs/features/ (multiple files)
+    - VQ-VAE multi-family encoders: docs/vqvae/multi-family-encoders.md
+    - NOA architecture: docs/noa-architecture.md
 """
 
 import torch

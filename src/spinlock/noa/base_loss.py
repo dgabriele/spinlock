@@ -31,6 +31,11 @@ Example:
     ...     def leading_loss_name(self): return 'mse'
     ...     @property
     ...     def auxiliary_loss_names(self): return []
+
+Documentation:
+    - Loss implementations: src/spinlock/noa/losses/
+    - Two-stage training curriculum: docs/two-stage-curriculum-architecture.md
+    - Training guide: docs/noa-training-guide.md
 """
 
 from abc import ABC, abstractmethod

@@ -1,71 +1,59 @@
 # Spinlock Architecture
 
-**Stratified neural operator dataset generation and hierarchical VQ-VAE tokenization system for behavioral representation learning.**
+**End-to-end meta-neural operator training system with behavioral tokenization and two-stage curriculum learning.**
 
-This document describes the core infrastructure for generating diverse operator datasets and extracting multi-modal behavioral representations. The resulting tokenized representations serve as the foundation for Neural Operator Agent (NOA) research, including potential applications to meta-learning, compositional reasoning, and memory-based prediction.
+This document describes the complete pipeline for training meta-neural operators (NOA) that learn universal dynamics from diverse operator datasets. The system combines stratified dataset generation, multi-modal feature extraction, hierarchical VQ-VAE encoding, and a two-stage curriculum that progresses from token-conditioned physics learning to autonomous VQ-compatible rollout generation.
 
 ## System Overview
 
 ```mermaid
-flowchart TD
-    subgraph Row1[" "]
-        direction LR
-        subgraph Config["Configuration Layer"]
-            direction TB
-            YAML[YAML Config Files]
-            Schema[Parameter Schema]
-        end
+flowchart TB
+    Config[YAML Config] --> Sampling[Stratified Sampling]
+    Sampling --> CNOs[CNO Operators]
+    CNOs --> Rollouts[Rollout Execution]
+    Rollouts --> Extract[Feature Extraction]
+    Extract --> VQVAE[VQ-VAE Training]
 
-        subgraph Sampling["Stratified Sampling"]
-            direction TB
-            Sobol[Sobol Sequences]
-            Owen[Owen Scrambling]
-            Stratify[Stratification]
-        end
+    VQVAE --> GTTokens[Ground-Truth Tokens]
+    GTTokens --> Stage1[Stage 1: Token-Conditioned Training]
+    Stage1 --> Checkpoint[Stage 1 Checkpoint]
 
-        subgraph Generation["Operator Generation"]
-            direction TB
-            Builder[Operator Builder]
-            CNN[CNN Construction]
-            Params[Parameter Mapping]
-        end
-    end
+    Checkpoint --> Stage2[Stage 2: Autonomous Training]
+    VQVAE -.->|frozen| Stage2
+    Stage2 --> Final[Universal Meta-Operator]
 
-    subgraph Row2[" "]
-        direction LR
-        subgraph Execution["Rollout Execution"]
-            direction TB
-            INITIAL[Initial Conditions]
-            Engine[Rollout Engine]
-            Storage[HDF5 Storage]
-        end
+    classDef phase1 fill:#b0bec5,stroke:#455a64,stroke-width:2px,color:#000
+    classDef phase2stage1 fill:#c8e6c9,stroke:#4caf50,stroke-width:2px,color:#000
+    classDef phase2stage2 fill:#e1bee7,stroke:#7b1fa2,stroke-width:2px,color:#000
 
-        subgraph Features["Feature Extraction"]
-            direction TB
-            ICExt[INITIAL: 42D]
-            NOPExt[ARCHITECTURE: 21D]
-            SDFExt[SUMMARY: 420-520D]
-            TDExt[TEMPORAL: Variable]
-        end
-
-        subgraph Encoding["VQ-VAE Tokenization"]
-            direction TB
-            Clean[Feature Cleaning]
-            Cluster[Category Discovery]
-            Train[Hierarchical VQ-VAE]
-            Tokens[Behavioral Tokens]
-        end
-    end
-
-    Config --> Sampling
-    Sampling --> Generation
-    Generation --> Execution
-    Execution --> Features
-    Features --> Encoding
-
-    style Row1 fill:none,stroke:none
-    style Row2 fill:none,stroke:none
+    class Config,Sampling,CNOs,Rollouts,Extract,VQVAE phase1
+    class GTTokens,Stage1,Checkpoint phase2stage1
+    class Stage2,Final phase2stage2
 ```
+
+### Pipeline Stages
+
+**Dataset Generation**
+- Stratified parameter sampling (Sobol sequences with Owen scrambling)
+- CNO operator construction from sampled parameters
+- Stochastic rollout execution with multiple realizations
+
+**Feature Learning**
+- Multi-modal feature extraction (INITIAL, SUMMARY, TEMPORAL)
+- Automatic feature cleaning and category discovery
+- Hierarchical VQ-VAE training for behavioral tokenization
+
+**Stage 1: MSE-Led Training**
+- Generate ground-truth VQ tokens from CNO rollouts
+- Train NOA with token conditioning
+- Loss: Pure MSE against CNO ground truth trajectories
+- Output: Token-aware representations
+
+**Stage 2: VQ-Led Training**
+- Initialize from Stage 1 checkpoint
+- Remove token conditioning (autonomous operation)
+- Loss: VQ reconstruction + commitment (primary) + physics regularization
+- Output: Universal meta-operator generating VQ-compatible rollouts
 
 ## Core Components
 
@@ -139,12 +127,23 @@ The VQ-VAE codebook learns to compress behavior across all four perspectives sim
 3. **Enable validation** by reconstructing interpretable features
 
 Unlike end-to-end learned representations, this approach maintains a **transparent chain of reasoning**:
-```
-Raw dynamics → Interpretable features → Hierarchical clustering → Discrete tokens
-     ↓              ↓                         ↓                        ↓
-Observable    Statistical/    Data-driven      Discrete behavioral
-behavior      structural      categories       vocabulary
-              semantics       (inspectable)    (interpretable)
+
+```mermaid
+flowchart LR
+    A[Raw Dynamics] --> B[Interpretable Features]
+    B --> C[Hierarchical Clustering]
+    C --> D[Discrete Tokens]
+
+    A1[Observable<br/>behavior] -.-> A
+    B1[Statistical /<br/>structural<br/>semantics] -.-> B
+    C1[Data-driven<br/>categories<br/>inspectable] -.-> C
+    D1[Discrete behavioral<br/>vocabulary<br/>interpretable] -.-> D
+
+    classDef process fill:#b0bec5,stroke:#455a64,stroke-width:2px,color:#000
+    classDef annotation fill:#f5f5f5,stroke:#9e9e9e,stroke-width:1px,color:#000,stroke-dasharray: 3 3
+
+    class A,B,C,D process
+    class A1,B1,C1,D1 annotation
 ```
 
 ### 5. Data-Driven Behavioral Taxonomy
@@ -194,43 +193,53 @@ See [VQ-VAE Training Guide](vqvae/training-guide.md) for details.
 ### 8. Neural Operator Agent (NOA)
 **Location:** `src/spinlock/noa/`
 
-The NOA is a **hybrid neural operator (U-AFNO backbone) with discrete VQ-VAE perceptual loss**:
+The NOA is a **meta-neural operator with two-stage curriculum training**:
 
 **Architecture:**
-- **Backbone:** U-AFNO neural operator (144M parameters, U-Net encoder + AFNO spectral bottleneck + decoder)
-- **Input:** θ (operator parameters) + u₀ (initial grid)
+- **Backbone:** U-AFNO neural operator (144-226M parameters, U-Net encoder + AFNO spectral bottleneck + decoder)
+- **Input:** u₀ (initial grid) + optional VQ tokens (for token-conditioned training)
 - **Output:** Predicted rollout trajectory [B, T, C, H, W]
-- **Training Loss:** Three-loss structure with CNO replay supervision
+- **Training:** Two-stage curriculum (MSE-led → VQ-led)
 
 **Implementation Files:**
 | File | Description |
 |------|-------------|
-| `src/spinlock/noa/backbone.py` | NOABackbone class (U-AFNO, 144M params) |
-| `src/spinlock/noa/vqvae_alignment.py` | VQVAEAlignmentLoss, TrajectoryFeatureExtractor |
-| `src/spinlock/noa/cno_replay.py` | CNOReplayer for state-level supervision |
-| `scripts/dev/train_noa_state_supervised.py` | Training script with VQ-VAE alignment |
+| `src/spinlock/noa/backbone.py` | NOABackbone class (U-AFNO, configurable capacity) |
+| `src/spinlock/noa/token_embedding.py` | Token conditioning for Stage 1 training |
+| `src/spinlock/noa/losses/mse_led.py` | Stage 1 (MSE-led) loss implementation |
+| `src/spinlock/noa/losses/vq_led.py` | Stage 2 (VQ-led) loss implementation |
+| `src/spinlock/noa/feature_extraction.py` | Feature extraction from NOA rollouts |
+| `src/spinlock/noa/vqvae_alignment.py` | VQ-VAE integration for Stage 2 |
+| `src/spinlock/cli/train_meta_operator.py` | Training CLI command |
 
-**Three-Loss Training Structure:**
+**Two-Stage Curriculum Training:**
+
+**Stage 1 (MSE-led with Token Conditioning):**
 ```
-L = L_traj + λ₁ * L_latent + λ₂ * L_commit
+Prerequisites:
+1. spinlock train-vqvae          # Train VQ-VAE on trajectories
+2. spinlock compute-ground-truth-tokens  # Generate tokens for dataset
+3. spinlock train-meta-operator  # Train NOA with token scaffolding
 
-L_traj:   MSE on trajectories (physics fidelity)           weight: 1.0
-L_latent: Pre-quantized latent alignment (smooth gradients) weight: λ₁ = 0.1
-L_commit: VQ commitment loss (manifold adherence)           weight: λ₂ = 0.5
+Training Loss: L = L_traj (pure physics, token-guided)
+- Tokens provide behavioral scaffolding
+- Model learns physics with discrete behavioral hints
+- Creates token-aware internal representations
+```
+
+**Stage 2 (VQ-led Self-Regulation):**
+```
+Training Loss: L = L_recon + L_commit + λ * L_traj
+- L_recon, L_commit: VQ losses (primary)
+- L_traj: Physics regularizer (auxiliary, λ=0.3)
+- No tokens provided - model must self-regulate
+- Fine-tunes to internalize VQ structure autonomously
 ```
 
 **Training Flow:**
 ```
-IC (u₀) → NOA Backbone → Predicted Trajectory
-                              ↓
-                   TrajectoryFeatureExtractor
-                              ↓
-                   standard_normalize() + nan_to_num()
-                              ↓
-                   VQ-VAE Encoder (frozen) → z_pre
-                              ↓
-            L_latent = MSE(z_pred_norm, z_target_norm)
-            L_commit = MSE(z_pre, sg(z_quantized))
+Stage 1: (u₀, VQ_tokens) → NOA → trajectory → MSE vs CNO
+Stage 2: u₀ → NOA → trajectory → VQ losses + physics reg
 ```
 
 **Why U-AFNO?**
@@ -239,31 +248,7 @@ IC (u₀) → NOA Backbone → Predicted Trajectory
 - **Self-consistent:** Enables emergent self-modeling and law discovery in the same function space
 - **Efficient:** Global receptive field via FFT-based mixing
 
-See [NOA Roadmap](noa-roadmap.md) for development phases and [Phase 1 Baseline](baselines/phase1-uafno-vqvae.md) for architecture details.
-
-## Performance Characteristics
-
-### Dataset Generation (Baseline 10K)
-- **Operator count:** 10,000 neural operators
-- **Rollout size:** 500 timesteps × 3 realizations
-- **Grid resolution:** 128×128 (fixed for VQ-VAE compatibility)
-- **Generation time:** ~12 hours (GPU-accelerated)
-- **Dataset size:** ~50-100 GB (HDF5 compressed)
-
-### Feature Extraction
-- **Inline extraction:** Features computed during rollout generation
-- **GPU acceleration:** Batch processing for INITIAL, SUMMARY, TEMPORAL features
-- **Memory optimization:** Streaming computation for large datasets
-
-### VQ-VAE Training (Production Baseline: 100K Operators)
-- **Input features:** ~200D after cleaning (from 298D encoded: INITIAL 42D + SUMMARY 128D + TEMPORAL 128D)
-- **Categories:** 10 auto-discovered via correlation-based clustering
-- **Adaptive compression ratios:** Per-category latent dimensions computed from feature characteristics
-  - Example: High-variance categories get less compression (0.25:0.75:2.0) for detail preservation
-  - Example: High-redundancy categories get more compression (0.3:0.7:1.2) for efficiency
-- **Codebook sizes:** Uniform initialization (all levels start with L0's size, natural pruning via EMA)
-- **Performance:** 98.4% reconstruction quality, 43.9% codebook utilization, 0.997 topographic similarity
-- **Training time:** ~1 hour for 100K dataset (550 epochs, batch_size=1024, GPU with torch.compile)
+See [Two-Stage Curriculum Architecture](two-stage-curriculum-architecture.md) for training details and [NOA Architecture](noa-architecture.md) for implementation specifics.
 
 ## Design Principles
 
@@ -305,47 +290,6 @@ While the primary focus is scientific simulation and operator reasoning, the arc
 **Metacognitive Monitoring**: Uncertainty quantification over learned behavioral representations offers a framework for studying calibrated confidence and capability boundary detection.
 
 These applications are secondary to the core goal of understanding operator behavior, but the infrastructure naturally supports such investigations through its multi-modal, hierarchical design.
-
-## Data Flow
-
-```mermaid
-flowchart TD
-    Config[Config YAML]
-    Params[Parameter Vectors θ]
-    Operators[Neural Operators]
-
-    Rollouts[Stochastic Rollouts]
-    Features[Multi-Modal Features]
-
-    Cleaned[Cleaned Features]
-    VQVAE[VQ-VAE Model]
-
-    Tokens[Behavioral Tokens]
-
-    subgraph NOA[Neural Operator Agent]
-        UAFNO[U-AFNO Backbone]
-        Heads[Feature Heads]
-        VQLoss[VQ-VAE Loss]
-    end
-
-    Config --> Params --> Operators
-    Operators --> Rollouts --> Features
-    Features --> Cleaned --> VQVAE
-    VQVAE --> Tokens
-
-    Params --> UAFNO
-    UAFNO --> Heads
-    Heads --> VQLoss
-    VQVAE -.-> VQLoss
-
-    style Config fill:#e1f5e1,color:#000
-    style NOA fill:#e1e8f5,color:#000
-    style UAFNO fill:#e1e8f5,color:#000
-    style Heads fill:#e1e8f5,color:#000
-    style VQLoss fill:#e1e8f5,color:#000
-```
-
-**NOA Architecture:** The Neural Operator Agent uses a U-AFNO backbone that takes operator parameters (θ) + initial conditions (u₀) as input. The U-AFNO generates rollouts whose features are encoded by a frozen VQ-VAE, producing discrete behavioral tokens used for loss computation.
 
 ## References
 

@@ -16,9 +16,13 @@ Usage:
     pipeline.compute_normalization_stats([features])
     pipeline.save_to_checkpoint(checkpoint)
 
-    # During meta-operator training:
+    # During meta-operator training (Stage 2):
     pipeline = UnifiedFeaturePipeline.from_checkpoint(vqvae_checkpoint)
     features = pipeline(noa_trajectory, ic, normalize=True)
+
+Documentation:
+    - Stage 2 feature processing details: docs/two-stage-curriculum-architecture.md
+    - VQ-VAE checkpoint format: docs/vqvae/checkpoint-format.md
 """
 
 from abc import ABC, abstractmethod
