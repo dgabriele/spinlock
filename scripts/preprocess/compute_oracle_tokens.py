@@ -24,6 +24,73 @@ from pathlib import Path
 
 from spinlock.noa import CNOReplayer, AlignedFeatureExtractor
 from spinlock.encoding.categorical_vqvae import CategoricalHierarchicalVQVAE
+from spinlock.encoding import CategoricalVQVAEConfig
+
+
+def load_vqvae(checkpoint_path: str, device: torch.device):
+    """Load VQ-VAE from checkpoint.
+
+    Args:
+        checkpoint_path: Path to VQ-VAE checkpoint file
+        device: Device to load on
+
+    Returns:
+        Tuple of (vqvae_model, config)
+    """
+    from pathlib import Path
+
+    path = Path(checkpoint_path)
+    if path.is_dir():
+        ckpt_file = path / "best_model.pt"
+    else:
+        ckpt_file = path
+
+    if not ckpt_file.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt_file}")
+
+    # Load checkpoint
+    checkpoint = torch.load(ckpt_file, map_location=device, weights_only=False)
+    config = checkpoint["config"]
+    state_dict = checkpoint["model_state_dict"]
+
+    # Handle torch.compile prefix if present
+    has_orig_mod = any(k.startswith("_orig_mod.") for k in state_dict.keys())
+    if has_orig_mod:
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+
+    # Check if wrapped with VQVAEWithInitial
+    is_wrapped = any(k.startswith("initial_encoder.") for k in state_dict.keys())
+
+    # Create VQ-VAE config
+    # Handle both old format (config) and new format (model_config)
+    model_config = checkpoint.get("model_config", config)
+    vqvae_config = CategoricalVQVAEConfig(
+        input_dim=model_config["input_dim"],
+        group_indices=model_config["group_indices"],
+        group_embedding_dim=model_config.get("group_embedding_dim", config.get("group_embedding_dim")),
+        group_hidden_dim=model_config.get("group_hidden_dim", config.get("group_hidden_dim")),
+        levels=model_config.get("levels", config.get("levels")),
+    )
+
+    if is_wrapped:
+        # Extract inner VQ-VAE weights
+        vqvae_state_dict = {
+            k.replace("vqvae.", ""): v
+            for k, v in state_dict.items()
+            if k.startswith("vqvae.")
+        }
+        model = CategoricalHierarchicalVQVAE(vqvae_config)
+        model.load_state_dict(vqvae_state_dict)
+    else:
+        # Load raw CategoricalHierarchicalVQVAE
+        model = CategoricalHierarchicalVQVAE(vqvae_config)
+        model.load_state_dict(state_dict)
+
+    model = model.to(device)
+    model.eval()
+
+    # Return model_config for consistency with new checkpoint format
+    return model, model_config
 
 
 def load_cno_replayer(config_path: str, device: torch.device) -> CNOReplayer:
@@ -55,16 +122,17 @@ def main():
     dataset = h5py.File(args.dataset, 'r')
 
     # Determine dataset structure
-    if "initial_conditions" in dataset:
-        # NOA training dataset format
-        ic_key = "initial_conditions"
-        params_key = "parameters"
-    elif "inputs" in dataset and "fields" in dataset["inputs"]:
-        # Feature extraction dataset format
+    if "inputs" in dataset and "fields" in dataset["inputs"]:
+        # Production dataset format (used for VQ-VAE and NOA training)
         ic_key = "inputs/fields"
         params_key = "parameters/params"
+    elif "initial_conditions" in dataset:
+        # Alternative format (not commonly used but supported)
+        ic_key = "initial_conditions"
+        params_key = "parameters"
     else:
-        raise ValueError(f"Unknown dataset format. Expected 'initial_conditions' or 'inputs/fields'")
+        available_keys = list(dataset.keys())
+        raise ValueError(f"Unknown dataset format. Available keys: {available_keys}")
 
     n_samples_total = len(dataset[ic_key])
     n_samples = args.n_samples if args.n_samples is not None else n_samples_total
@@ -77,34 +145,42 @@ def main():
 
     # Load VQ-VAE and feature extractor
     print(f"Loading VQ-VAE: {args.vqvae_checkpoint}")
-    vqvae = CategoricalHierarchicalVQVAE.from_checkpoint(args.vqvae_checkpoint)
-    vqvae = vqvae.to(device)
-    vqvae.eval()
+    vqvae, vqvae_config = load_vqvae(args.vqvae_checkpoint, device)
+    print(f"  ✓ VQ-VAE loaded (input_dim={vqvae_config['input_dim']})")
 
     print(f"Loading feature extractor from VQ-VAE checkpoint")
-    feature_extractor = AlignedFeatureExtractor.from_checkpoint(args.vqvae_checkpoint)
-    feature_extractor = feature_extractor.to(device)
-    feature_extractor.eval()
+    feature_extractor = AlignedFeatureExtractor.from_checkpoint(
+        args.vqvae_checkpoint,
+        device=str(device)
+    )
+    print(f"  ✓ Feature extractor loaded")
 
-    # Determine token shape
+    # Determine token shape and timesteps
     print("Determining token shape...")
+    timesteps = 32  # Default from training config
     with torch.no_grad():
-        dummy_ic = torch.randn(1, 1, 64, 64, device=device)
-
-        # Load first parameter vector
-        if params_key == "parameters/params":
-            # Array format: [N, param_dim]
-            dummy_params = torch.tensor(dataset[params_key][0:1], device=device, dtype=torch.float32)
+        # Load first IC and parameter vector
+        ic_data = dataset[ic_key][0]
+        if ic_data.ndim == 3:
+            # Format: [M, H, W] - take first realization
+            dummy_ic = torch.tensor(ic_data[0, :, :], device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
         else:
-            # Dict format: {key: [N]}
-            dummy_params_dict = {}
-            for key in dataset[params_key].keys():
-                param_data = dataset[params_key][key]
-                dummy_params_dict[key] = torch.tensor([param_data[0]], device=device, dtype=torch.float32)
-            dummy_params = dummy_params_dict
+            # Format: [H, W]
+            dummy_ic = torch.tensor(ic_data, device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
 
-        dummy_traj = replayer.rollout(dummy_ic, dummy_params)
-        dummy_features = feature_extractor(dummy_traj, ic=dummy_ic)
+        # Load first parameter vector: [d,]
+        dummy_params_numpy = dataset[params_key][0]
+
+        # Generate test trajectory
+        dummy_traj = replayer.rollout(
+            params_vector=dummy_params_numpy,
+            ic=dummy_ic,
+            timesteps=timesteps,
+            num_realizations=1,
+            return_all_steps=True,
+        )
+        # AlignedFeatureExtractor returns (features, raw_ics) tuple
+        dummy_features, _ = feature_extractor(dummy_traj, ic=dummy_ic)
         dummy_tokens = vqvae.get_tokens(dummy_features)
         num_tokens = dummy_tokens.shape[1]
 
@@ -140,35 +216,32 @@ def main():
             else:
                 raise ValueError(f"Unexpected IC shape: {ic_data.shape}")
 
-            # Load batch of parameters
-            if params_key == "parameters/params":
-                # Array format: [N, param_dim]
-                params = torch.tensor(
-                    dataset[params_key][start_idx:end_idx],
-                    device=device,
-                    dtype=torch.float32,
-                )
-            else:
-                # Dict format: {key: [N]}
-                params = {}
-                for key in dataset[params_key].keys():
-                    param_data = dataset[params_key][key][start_idx:end_idx]
-                    params[key] = torch.tensor(param_data, device=device, dtype=torch.float32)
+            # Load batch of parameter vectors: [B, d] numpy array
+            params_numpy = dataset[params_key][start_idx:end_idx]
 
-            # Generate trajectories using CNO
+            # Generate trajectories using CNO (one at a time like in training)
             try:
-                trajectories = replayer.rollout(ics, params)  # [B, T, 1, 64, 64]
+                trajectories = []
+                for b in range(batch_size):
+                    traj = replayer.rollout(
+                        params_vector=params_numpy[b],
+                        ic=ics[b:b+1],
+                        timesteps=timesteps,
+                        num_realizations=1,
+                        return_all_steps=True,
+                    )  # [1, T, 1, 64, 64]
+                    trajectories.append(traj)
+                trajectories = torch.cat(trajectories, dim=0)  # [B, T, 1, 64, 64]
             except Exception as e:
                 print(f"\nError generating trajectory for batch {start_idx}-{end_idx}: {e}")
                 print(f"IC shape: {ics.shape}")
-                print(f"Params type: {type(params)}")
-                if isinstance(params, dict):
-                    print(f"Params keys: {list(params.keys())}")
+                print(f"Params shape: {params_numpy.shape}")
                 raise
 
             # Extract features
             try:
-                features = feature_extractor(trajectories, ic=ics)  # [B, feature_dim]
+                # AlignedFeatureExtractor returns (features, raw_ics) tuple
+                features, _ = feature_extractor(trajectories, ic=ics)  # [B, feature_dim]
             except Exception as e:
                 print(f"\nError extracting features for batch {start_idx}-{end_idx}: {e}")
                 print(f"Trajectory shape: {trajectories.shape}")

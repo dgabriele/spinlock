@@ -14,6 +14,13 @@ Memory optimization:
     Uses gradient checkpointing for long rollouts to trade compute for memory.
     Without checkpointing, 256-step rollouts can use ~5GB+ for gradients alone.
     With checkpointing, memory stays ~constant regardless of trajectory length.
+
+Documentation:
+    - Architecture overview: docs/noa-architecture.md
+    - Complete architecture spec: docs/MNO_ARCHITECTURE.md
+    - Training guide: docs/noa-training-guide.md
+    - Two-stage curriculum: docs/two-stage-curriculum-architecture.md
+    - Truncated BPTT integration: docs/truncated-bptt-integration.md
 """
 
 import torch
@@ -93,11 +100,13 @@ class NOABackbone(BaseNOABackbone):
                 embed_dim=32,  # Per-token embedding dimension
                 projection_dim=token_embed_dim,  # Final projected dimension
             )
+            self.token_embed_dim = token_embed_dim  # Store for use in rollout
 
             # Adjust operator input channels to account for token embeddings
             operator_input_channels = in_channels + token_embed_dim
         else:
             self.token_embedding = None
+            self.token_embed_dim = None
             operator_input_channels = in_channels
 
         # Build U-AFNO operator
@@ -184,18 +193,24 @@ class NOABackbone(BaseNOABackbone):
                 Trajectories [B, M, T+1, C, H, W] or final states [B, M, C, H, W]
         """
         # Validate token conditioning
-        if self.token_conditioning and tokens is None:
-            raise ValueError("tokens required when token_conditioning=True")
-
         # Prepare token embeddings if conditioning is enabled
         if self.token_conditioning:
-            # Embed tokens: [B, num_tokens] -> [B, token_embed_dim]
-            token_embed = self.token_embedding(tokens)
-
-            # Broadcast to spatial dimensions
             B, C, H, W = u0.shape
-            token_spatial = token_embed.view(B, -1, 1, 1).expand(-1, -1, H, W)
-            # token_spatial is now [B, token_embed_dim, H, W]
+
+            if tokens is None:
+                # Stage 2: No tokens provided, use zero embeddings (model must self-regulate)
+                # This allows loading token-conditioned checkpoints for VQ-led training
+                token_spatial = torch.zeros(
+                    B, self.token_embed_dim, H, W,
+                    device=u0.device, dtype=u0.dtype
+                )
+            else:
+                # Stage 1: Tokens provided, use them for conditioning
+                # Embed tokens: [B, num_tokens] -> [B, token_embed_dim]
+                token_embed = self.token_embedding(tokens)
+                # Broadcast to spatial dimensions
+                token_spatial = token_embed.view(B, -1, 1, 1).expand(-1, -1, H, W)
+                # token_spatial is now [B, token_embed_dim, H, W]
         else:
             token_spatial = None
 

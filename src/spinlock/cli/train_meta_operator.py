@@ -2,7 +2,14 @@
 Train Meta-Operator command for Spinlock CLI.
 
 Trains NOA as a precision physics meta-operator using pure trajectory matching.
-Stage 1 of two-stage training approach.
+Supports both MSE-led (Stage 1) and VQ-led (Stage 2) training paradigms.
+
+Documentation:
+    - Training guide: docs/noa-training-guide.md
+    - Two-stage curriculum: docs/two-stage-curriculum-architecture.md
+    - NOA architecture: docs/noa-architecture.md
+    - MNO architecture spec: docs/MNO_ARCHITECTURE.md
+    - Truncated BPTT: docs/truncated-bptt-integration.md
 """
 
 from argparse import ArgumentParser, Namespace
@@ -17,6 +24,10 @@ import time
 import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
+
+# Force unbuffered output for real-time logging
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 # Suppress torch._inductor warning about SMs
 warnings.filterwarnings("ignore", message=".*Not enough SMs to use max_autotune_gemm.*")
@@ -49,6 +60,15 @@ Train NOA as a precision physics meta-operator using pure trajectory matching.
 This is Stage 1 of the two-stage training approach:
 - Stage 1 (this command): Train NOA on pure physics (MSE vs CNO rollouts)
 - Stage 2 (train-vqvae): Train VQ-VAE on NOA's distribution
+
+Prerequisites:
+  For token-conditioned training (model.token_conditioning=true):
+    1. Train a VQ-VAE on trajectory features (spinlock train-vqvae)
+    2. Generate ground-truth tokens for dataset (spinlock compute-oracle-tokens)
+    3. Specify ground_truth_token_path in config: data.ground_truth_token_path
+
+  Without token conditioning:
+    No additional prerequisites beyond dataset generation.
 
 Training:
   Uses MSE-led loss with no VQ involvement (L_total = L_traj).
@@ -397,7 +417,7 @@ Output:
                 return self.error(f"VQ-VAE checkpoint not found: {vqvae_checkpoint}")
 
             print(f"  Loading VQ-VAE config from: {vqvae_checkpoint}")
-            vqvae_ckpt = torch.load(vqvae_checkpoint, map_location='cpu')
+            vqvae_ckpt = torch.load(vqvae_checkpoint, map_location='cpu', weights_only=False)
 
             # Extract codebook sizes from VQ-VAE checkpoint
             vqvae_config = vqvae_ckpt.get("config", {})
@@ -462,15 +482,85 @@ Output:
         noa = noa.to(device)
         print(f"  ✓ NOA created ({sum(p.numel() for p in noa.parameters()):,} parameters)")
 
-        # Create loss function (pure physics, no VQ)
+        # Wrap with truncated BPTT if configured
+        timesteps = config["training"]["timesteps"]
+        bptt_window = config["training"].get("bptt_window")
+
+        from spinlock.noa import TruncatedBPTT
+
+        if bptt_window is not None and bptt_window < timesteps:
+            print(f"  ✓ Using truncated BPTT: {timesteps} steps, backprop window={bptt_window}")
+            noa_rollout = TruncatedBPTT(noa, timesteps=timesteps, bptt_window=bptt_window)
+        else:
+            print(f"  ✓ Using full backprop: {timesteps} steps")
+            # Create pass-through wrapper for uniform interface
+            class FullBPTTWrapper:
+                def __init__(self, model, timesteps):
+                    self.model = model
+                    self.timesteps = timesteps
+
+                def rollout(self, ic, tokens=None):
+                    return self.model.rollout(ic, steps=self.timesteps, return_all_steps=True, tokens=tokens)
+
+                def align_for_loss(self, pred_traj, target_traj, skip_ic=True):
+                    if skip_ic:
+                        return pred_traj[:, 1:, :, :, :], target_traj[:, 1:, :, :, :]
+                    else:
+                        return pred_traj, target_traj
+
+            noa_rollout = FullBPTTWrapper(noa, timesteps)
+
+        # Create loss function
         print("Creating loss function...")
-        loss_fn = MSELedLoss(
-            lambda_traj=config["loss"].get("lambda_traj", 1.0),
-            lambda_commit=0.0,  # No VQ alignment
-            lambda_latent=0.0,  # No VQ alignment
-            vqvae_alignment=None,  # Critical: No VQ-VAE
-        )
-        print(f"  ✓ Pure physics loss (L_traj = {config['loss'].get('lambda_traj', 1.0)})")
+        loss_mode = config["loss"].get("mode", "mse_led")  # Default: MSE-led (Stage 1)
+
+        # Check if VQ-led mode (Stage 2)
+        if loss_mode == "vq_led":
+            # VQ-led requires VQ-VAE alignment
+            vqvae_config = config.get("vqvae")
+            if not vqvae_config:
+                return self.error(
+                    "VQ-led mode requires 'vqvae' section in config.\n"
+                    "Required: vqvae.checkpoint"
+                )
+
+            vqvae_checkpoint = vqvae_config.get("checkpoint")
+            if not vqvae_checkpoint:
+                return self.error("VQ-led mode requires vqvae.checkpoint path")
+
+            print(f"  Loading VQ-VAE alignment from: {vqvae_checkpoint}")
+            from spinlock.noa.vqvae_alignment import VQVAEAlignmentLoss
+
+            vqvae_alignment = VQVAEAlignmentLoss.from_checkpoint(
+                vqvae_path=vqvae_checkpoint,
+                device=device,
+                use_aligned_extractor=vqvae_config.get("use_aligned_extractor", True),
+                enable_latent_loss=False,  # Not used in Stage 2
+                normalization_stats_file=vqvae_config.get("normalization_stats_file"),
+            )
+            print(f"  ✓ VQ-VAE alignment loaded")
+
+            # Create VQ-led loss
+            from spinlock.noa.losses.vq_led import VQLedLoss
+
+            loss_fn = VQLedLoss(
+                lambda_recon=config["loss"].get("lambda_recon", 1.0),
+                lambda_commit=config["loss"].get("lambda_commit", 0.5),
+                lambda_traj=config["loss"].get("lambda_traj", 0.3),
+                vqvae_alignment=vqvae_alignment,
+            )
+            print(f"  ✓ VQ-led loss (L_recon={config['loss'].get('lambda_recon', 1.0)}, "
+                  f"L_commit={config['loss'].get('lambda_commit', 0.5)}, "
+                  f"L_traj={config['loss'].get('lambda_traj', 0.3)})")
+        else:
+            # MSE-led (pure physics, no VQ)
+            loss_fn = MSELedLoss(
+                lambda_traj=config["loss"].get("lambda_traj", 1.0),
+                lambda_commit=0.0,  # No VQ alignment
+                lambda_latent=0.0,  # No VQ alignment
+                vqvae_alignment=None,  # Critical: No VQ-VAE
+            )
+            print(f"  ✓ Pure physics loss (L_traj = {config['loss'].get('lambda_traj', 1.0)})")
 
         # Create CNO replayer
         print("Loading CNO replayer...")
@@ -506,37 +596,47 @@ Output:
             generator=torch.Generator().manual_seed(seed),
         )
 
-        # Load oracle tokens if token conditioning is enabled
-        oracle_tokens = None
+        # Load ground-truth tokens if token conditioning is enabled
+        ground_truth_tokens = None
         train_token_indices = None
         val_token_indices = None
 
         if token_conditioning:
-            oracle_token_path = config["data"].get("oracle_token_path")
-            if not oracle_token_path:
+            ground_truth_token_path = config["data"].get("ground_truth_token_path")
+            # Stage 2 (VQ-led): token_conditioning architecture needed for checkpoint loading,
+            # but tokens not used during training
+            if not ground_truth_token_path and loss_mode != "vq_led":
                 return self.error(
-                    "Token conditioning enabled but oracle_token_path not specified in data config"
+                    "Token conditioning enabled but ground_truth_token_path not specified in data config.\n"
+                    "For Stage 2 (VQ-led), this is expected - tokens won't be used."
                 )
 
-            if not Path(oracle_token_path).exists():
-                return self.error(f"Oracle token file not found: {oracle_token_path}")
+            if ground_truth_token_path and not Path(ground_truth_token_path).exists():
+                return self.error(f"Ground-truth token file not found: {ground_truth_token_path}")
 
-            print(f"Loading oracle tokens from: {oracle_token_path}")
-            import h5py
-            token_file = h5py.File(oracle_token_path, 'r')
-            oracle_tokens_full = torch.tensor(token_file["tokens"][:], dtype=torch.long)
-            token_file.close()
+            # Load ground-truth tokens if provided (Stage 1)
+            # In Stage 2 (VQ-led), ground_truth_token_path is None - model self-regulates
+            if ground_truth_token_path:
+                print(f"Loading ground-truth tokens from: {ground_truth_token_path}")
+                import h5py
+                token_file = h5py.File(ground_truth_token_path, 'r')
+                ground_truth_tokens_full = torch.tensor(token_file["tokens"][:], dtype=torch.long)
+                token_file.close()
 
-            # Get the indices used by train/val split
-            train_indices = train_dataset.indices
-            val_indices = val_dataset.indices
+                # Get the indices used by train/val split
+                train_indices = train_dataset.indices
+                val_indices = val_dataset.indices
 
-            # Create index mapping (dataset index -> oracle token)
-            oracle_tokens = oracle_tokens_full
-            train_token_indices = train_indices
-            val_token_indices = val_indices
+                # ground_truth_tokens_full is [N, num_tokens] for full dataset
+                # We need to select only the tokens for train/val splits
+                ground_truth_tokens = ground_truth_tokens_full  # Keep full array
+                train_token_indices = train_indices  # Indices to select from ground_truth_tokens
+                val_token_indices = val_indices
 
-            print(f"  ✓ Loaded {len(oracle_tokens)} oracle tokens ({oracle_tokens.shape[1]} tokens per sample)")
+                print(f"  ✓ Loaded {len(ground_truth_tokens)} ground-truth tokens ({ground_truth_tokens.shape[1]} tokens per sample)")
+                print(f"  Train indices: {len(train_indices)}, Val indices: {len(val_indices)}")
+            else:
+                print(f"  Stage 2 (VQ-led): No ground-truth tokens - model will self-regulate")
 
         train_loader = DataLoader(
             train_dataset,
@@ -627,6 +727,7 @@ Output:
             # Train
             train_metrics = self._train_epoch(
                 noa=noa,
+                noa_rollout=noa_rollout,
                 loss_fn=loss_fn,
                 replayer=replayer,
                 dataloader=train_loader,
@@ -636,20 +737,19 @@ Output:
                 clip_grad=config["training"].get("clip_grad", 1.0),
                 log_every=args.log_every,
                 accumulation_steps=config["training"].get("gradient_accumulation_steps", 1),
-                oracle_tokens=oracle_tokens,
-                token_indices=train_token_indices,
+                ground_truth_tokens=ground_truth_tokens,
             )
 
             # Validate
             val_metrics = self._validate_epoch(
                 noa=noa,
+                noa_rollout=noa_rollout,
                 loss_fn=loss_fn,
                 replayer=replayer,
                 dataloader=val_loader,
                 device=device,
                 timesteps=config["training"]["timesteps"],
-                oracle_tokens=oracle_tokens,
-                token_indices=val_token_indices,
+                ground_truth_tokens=ground_truth_tokens,
             )
 
             # Update scheduler
@@ -723,6 +823,7 @@ Output:
     def _train_epoch(
         self,
         noa,
+        noa_rollout,
         loss_fn,
         replayer,
         dataloader,
@@ -732,12 +833,13 @@ Output:
         clip_grad=1.0,
         log_every=10,
         accumulation_steps=1,
-        oracle_tokens=None,
+        ground_truth_tokens=None,
         token_indices=None,
     ) -> dict:
         """Train for one epoch with gradient accumulation."""
         noa.train()
         total_loss = 0.0
+        component_losses = {}  # Track individual loss components
         num_batches = 0
         start_time = time.time()
 
@@ -745,20 +847,21 @@ Output:
         optimizer.zero_grad()
 
         for batch_idx, batch in enumerate(dataloader):
+            batch_start_time = time.time()
             ic = batch["ic"].to(device)
             params = batch["params"]
             indices = batch.get("sample_idx")  # Dataset indices for this batch
             B = ic.shape[0]
 
-            # Get oracle tokens for this batch if token conditioning is enabled
+            # Get ground-truth tokens for this batch if token conditioning is enabled
             batch_tokens = None
-            if oracle_tokens is not None and token_indices is not None and indices is not None:
-                # Map batch indices to oracle token indices
-                batch_token_indices = [token_indices[idx] for idx in indices]
-                batch_tokens = oracle_tokens[batch_token_indices].to(device)
+            if ground_truth_tokens is not None and indices is not None:
+                # indices contains the original dataset indices (from sample_idx)
+                # ground_truth_tokens is indexed by original dataset index
+                batch_tokens = ground_truth_tokens[indices].to(device)
 
-            # Generate NOA rollout
-            pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True, tokens=batch_tokens)
+            # Generate NOA rollout (with truncated BPTT if configured)
+            pred_trajectory = noa_rollout.rollout(ic, tokens=batch_tokens)
 
             # Generate CNO targets
             # Only clear cache if memory usage > 90% (avoid unnecessary serialization)
@@ -791,9 +894,13 @@ Output:
 
             target_trajectory = torch.cat(target_trajectories, dim=0)
 
-            # Extract states (skip IC at t=0)
-            pred_states = pred_trajectory[:, 1:, :, :, :]
-            target_states = target_trajectory[:, 1:, :, :, :]
+            # Align predicted and target states for loss computation
+            # (handles truncated BPTT windowing automatically)
+            pred_states, target_states = noa_rollout.align_for_loss(
+                pred_trajectory,
+                target_trajectory,
+                skip_ic=True,
+            )
 
             # Compute loss
             try:
@@ -825,10 +932,24 @@ Output:
             total_loss += loss_output.total.item()
             num_batches += 1
 
-            # Log progress
+            # Accumulate component losses
+            for component_name, component_value in loss_output.components.items():
+                if component_name not in component_losses:
+                    component_losses[component_name] = 0.0
+                component_losses[component_name] += component_value.item()
+
+            # Log progress every N batches
             if (batch_idx + 1) % log_every == 0:
                 avg_loss = total_loss / num_batches
-                print(f"  Batch {batch_idx + 1}/{len(dataloader)}: loss={avg_loss:.6f}")
+                batch_total_time = time.time() - batch_start_time
+
+                # Format component losses
+                component_str = ", ".join([
+                    f"{name}={component_losses[name] / num_batches:.4f}"
+                    for name in sorted(component_losses.keys())
+                ])
+
+                print(f"  Batch {batch_idx + 1}/{len(dataloader)}: total={avg_loss:.6f}, {component_str}, time={batch_total_time:.2f}s")
 
         # Handle leftover gradients at end of epoch
         if (batch_idx + 1) % accumulation_steps != 0:
@@ -847,12 +968,13 @@ Output:
     def _validate_epoch(
         self,
         noa,
+        noa_rollout,
         loss_fn,
         replayer,
         dataloader,
         device,
         timesteps,
-        oracle_tokens=None,
+        ground_truth_tokens=None,
         token_indices=None,
     ) -> dict:
         """Validate for one epoch."""
@@ -867,15 +989,15 @@ Output:
                 indices = batch.get("sample_idx")  # Dataset indices for this batch
                 B = ic.shape[0]
 
-                # Get oracle tokens for this batch if token conditioning is enabled
+                # Get ground-truth tokens for this batch if token conditioning is enabled
                 batch_tokens = None
-                if oracle_tokens is not None and token_indices is not None and indices is not None:
-                    # Map batch indices to oracle token indices
-                    batch_token_indices = [token_indices[idx] for idx in indices]
-                    batch_tokens = oracle_tokens[batch_token_indices].to(device)
+                if ground_truth_tokens is not None and indices is not None:
+                    # indices contains the original dataset indices (from sample_idx)
+                    # ground_truth_tokens is indexed by original dataset index
+                    batch_tokens = ground_truth_tokens[indices].to(device)
 
-                # Generate NOA rollout
-                pred_trajectory = noa(ic, steps=timesteps, return_all_steps=True, tokens=batch_tokens)
+                # Generate NOA rollout (with truncated BPTT if configured)
+                pred_trajectory = noa_rollout.rollout(ic, tokens=batch_tokens)
 
                 # Generate CNO targets
                 target_trajectories = []
@@ -900,9 +1022,13 @@ Output:
 
                 target_trajectory = torch.cat(target_trajectories, dim=0)
 
-                # Extract states
-                pred_states = pred_trajectory[:, 1:, :, :, :]
-                target_states = target_trajectory[:, 1:, :, :, :]
+                # Align predicted and target states for loss computation
+                # (handles truncated BPTT windowing automatically)
+                pred_states, target_states = noa_rollout.align_for_loss(
+                    pred_trajectory,
+                    target_trajectory,
+                    skip_ic=True,
+                )
 
                 # Compute loss
                 try:

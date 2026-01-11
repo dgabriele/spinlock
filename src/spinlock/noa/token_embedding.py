@@ -1,4 +1,18 @@
-"""Token embedding for conditioning MNO on VQ-VAE discrete codes."""
+"""Token embedding for conditioning MNO on VQ-VAE discrete codes.
+
+This module enables token-conditioned NOA training where VQ-VAE tokens guide
+rollout generation. Used in Stage 1 of two-stage curriculum training.
+
+Prerequisites for token-conditioned training:
+    1. Train VQ-VAE on trajectory features: spinlock train-vqvae
+    2. Generate ground-truth tokens: spinlock compute-ground-truth-tokens
+    3. Specify ground_truth_token_path in training config
+
+Documentation:
+    - Two-stage curriculum: docs/two-stage-curriculum-architecture.md
+    - NOA architecture: docs/noa-architecture.md
+    - VQ-VAE checkpoint format: docs/vqvae/checkpoint-format.md
+"""
 
 import torch
 import torch.nn as nn

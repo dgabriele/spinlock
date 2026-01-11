@@ -13,6 +13,7 @@ Pre-training infrastructure for **Neural Operator Agents (NOA)**—foundation mo
 ## Table of Contents
 
 - [🎯 What is Spinlock?](#-what-is-spinlock)
+- [🔬 Design Philosophy: Bias-Minimizing Discovery](#-design-philosophy-bias-minimizing-discovery)
 - [🧠 Neural Operator Agents (NOA)](#-neural-operator-agents-noa)
 - [🏗️ Architecture](#️-architecture)
 - [📊 Feature Families](#-feature-families)
@@ -28,95 +29,50 @@ Pre-training infrastructure for **Neural Operator Agents (NOA)**—foundation mo
 
 ## 🎯 What is Spinlock?
 
-Spinlock enables systematic exploration of neural operator parameter spaces to build behavioral representations for operator reasoning. Rather than studying individual operators in isolation, Spinlock treats the entire operator space as a structured domain for learning and discovery.
+Spinlock provides infrastructure for training **Neural Operator Agents (NOA)**—foundation models that learn to predict, classify, and reason about dynamical system behaviors across diverse parameter regimes. Rather than studying individual operators in isolation, the system learns meta-operators by treating operator parameter space and initial conditions as structured domains for systematic exploration and discovery.
 
-### Primary Application: Foundation Models for Dynamical Systems
+### Foundation Models for Dynamical Systems
 
-Spinlock builds **foundation models for scientific simulation**. The goal is to pre-train Neural Operator Agents on diverse dynamical behaviors, then apply them to downstream tasks across physics, biology, climate modeling, and engineering—similar to how language models pre-train on text corpora before fine-tuning.
+The system enables pre-training on diverse dynamical behaviors for downstream application across physics, metaphysics, biochemistry, and engineering—analogous to language model pre-training on text corpora. The current implementation demonstrates this approach through a two-stage curriculum that trains meta-operators on 100K+ neural operator trajectories.
 
-**Initial Prototype:** The first system explores a specific prediction task as a feasibility demonstration: given a neural operator with parameters θ and initial condition u₀, predict behavioral properties without expensive rollouts.
+**Current Implementation:**
+- **Data:** 100K+ stratified operator trajectories with provably optimal parameter space coverage
+- **Features:** Multi-modal behavioral descriptors (INITIAL, SUMMARY, TEMPORAL)
+- **Tokenization:** Discovers 10 behavioral categories and applies hierarchical VQ-VAE with 3-level codebooks
+- **Meta-Operator:** U-AFNO backbone (144-226M params) trained via two-stage curriculum:
+  - Stage 1: Token-conditioned physics learning (MSE-led)
+  - Stage 2: Autonomous VQ-compatible rollout generation (VQ-led)
 
-The prototype implementation:
-- **Data:** 100K+ operator trajectories with stratified parameter sampling
-- **Features:** 500+ behavioral descriptors (spatial, spectral, temporal, causal)
-- **Tokenization:** VQ-VAE compresses behaviors into discrete tokens (~8-15 learned categories)
-- **Agent:** U-AFNO NOA generates rollouts; frozen VQ-VAE encodes features → discrete behavioral tokens for loss
+**Research Directions:**
 
-**Downstream Applications:**
+*Dynamical Systems:*
+- Surrogate modeling for accelerated simulation
+- Anomaly detection in real-time sensor data
+- Transfer learning to domain-specific PDEs
+- Discovery of universal patterns in computational physics
 
-*Scientific & Engineering:*
-- **Surrogate modeling:** Predict simulation outcomes 1000× faster than full rollout
-- **Anomaly detection:** Flag unusual dynamics in real-time sensor data
-- **Transfer learning:** Fine-tune on domain-specific PDEs (Navier-Stokes, reaction-diffusion, etc.)
-- **Scientific discovery:** Cluster operators by behavior to find universal patterns across physics and biology
+*Cognitive Capabilities:*
+- Meta-learning from dynamics: few-shot adaptation via abstract behavioral principles
+- Compositional reasoning: predict emergent behaviors from component interactions
+- Working memory: temporal state maintenance and transformation
+- Episodic encoding: consolidation and retrieval of dynamical event sequences
+- Cross-domain abstraction: domain-invariant behavioral patterns
 
-*General Intelligence & Cognition:*
-- **Meta-learning from dynamics:** Few-shot adaptation to novel systems by learning abstract behavioral principles rather than task-specific solutions
-- **Compositional reasoning:** Understand how operator components combine to produce emergent behaviors, enabling prediction of unseen configurations
-- **Working memory dynamics:** Model short-term information processing through temporal operator trajectories, capturing how systems maintain and transform state
-- **Episodic memory formation:** Learn to encode, consolidate, and retrieve sequences of dynamical events, enabling experience-based reasoning
-- **Cross-domain abstraction:** Extract domain-invariant behavioral patterns that generalize across disparate physical, biological, and cognitive systems
-- **Attention-based memory selection:** Discover which dynamical features are worth preserving vs. discarding for efficient future prediction
+---
 
-### Core Capabilities
+## 🔬 Design Philosophy: Bias-Minimizing Discovery
 
-- **Stratified Low-Discrepancy Sampling** - Custom-engineered Sobol sampler with Owen scrambling achieves provably optimal space-filling coverage (discrepancy <0.01) across high-dimensional parameter spaces (d>100), eliminating sampling blind spots that could bias discovery. This mathematical guarantee of exploration fairness is foundational to finding truly novel structures.
-- **Bias-Minimizing Multi-Modal Features** - Four orthogonal feature families (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL) extract comprehensive behavioral signatures without predetermined "interesting" features, enabling discovery of patterns humans might never imagine
-- **Data-Driven Behavioral Taxonomy** - Unsupervised hierarchical clustering discovers natural behavioral categories from empirical data, not human labels—creating discrete vocabularies that reflect the true geometry of operator space
-- **General Dynamical Reasoning** - Treats computation as a first-class object for study, learning the "physics of change" rather than optimizing for specific tasks—applicable across domains
+Spinlock operates on a foundational principle: **discovering novel computational structures requires minimizing human-imposed semantic bias**. Rather than pre-defining behavioral categories or task-specific objectives, the system treats neural operator space as alien territory to be explored without preconceptions.
 
-### Name Origin
+**Core Approach:**
+- **Stratified sampling:** Sobol sequences with Owen scrambling provide provably optimal space-filling coverage (discrepancy <0.01), eliminating blind spots in high-dimensional parameter spaces
+- **Data-driven features:** Multi-modal extraction (INITIAL, SUMMARY, TEMPORAL) captures comprehensive behavioral signatures without predetermined "interesting" features
+- **Unsupervised tokenization:** VQ-VAE discovers discrete behavioral vocabularies through compression, learning categories from empirical data rather than human labels
+- **Physics of change:** Study computational dynamics as a fundamental object, not task-specific optimization
 
-The name "Spinlock" draws inspiration from **quantum field spinlocking**—a phenomenon where coherence emerges from seemingly chaotic quantum fluctuations through the alignment of spin states. Like its quantum counterpart, this system seeks to discover **order arising from apparent chaos**: by systematically exploring stochastic neural operator behaviors, it uncovers stable, reproducible patterns and emergent structures within the high-dimensional parameter space. The metaphor reflects the core philosophy that meaningful behavioral representations can be extracted from the complex, noisy dynamics of neural operators.
+This approach enables discovery of universal patterns, phase transitions, and emergent taxonomies that reflect the true geometry of operator behavior space—structures potentially alien to human intuition but fundamental to understanding computation as a physical process.
 
-### Minimizing Semantic Bias: Discovering Alien Structure
-
-**Core Thesis**: The discovery of truly novel computational structures requires minimizing human-imposed semantic bias at every level of the pipeline.
-
-Spinlock is designed around a radical premise: **there are no predetermined targets**. Rather than pre-defining behavioral categories or imposing domain-specific taxonomies, the system treats neural operator space as fundamentally alien territory to be explored without preconceptions.
-
-#### Bias-Minimizing Design Principles
-
-1. **Stratified Low-Discrepancy Sampling**
-   - Uses Sobol sequences with Owen scrambling for provably optimal space-filling coverage
-   - Target discrepancy <0.01 ensures no "blind spots" in parameter space exploration
-   - Mathematical guarantee of fairness: every region of the hypercube is explored equitably
-   - Prevents sampling artifacts that could masquerade as discovered structure
-
-2. **Data-Driven Feature Extraction**
-   - A broad spectrum of features covering initial conditions, operator architecture, multiscale summary statistics and spatiotemporal dynamics that aim to capture rollout behavior from complementary perspectives
-   - No predetermined "interesting" features—extract comprehensive statistical signatures
-   - Hierarchical clustering discovers categories empirically from the data itself
-   - Categories emerge from actual behavioral variation, not human intuition
-
-3. **Bias-Free Tokenization**
-   - VQ-VAE learns discrete behavioral vocabularies through unsupervised compression
-   - No labeled data, no task-specific objectives
-   - Codebook structure reflects the natural geometry of operator behavior space
-   - Enables discovering categories that humans might never imagine
-
-#### Why This Matters: Learning the "Physics of Change"
-
-Traditional ML systems optimize for specific tasks (classification, regression, generation). Spinlock instead treats **dynamical computation itself** as the object of study:
-
-- **Not**: "Train an operator to solve task X"
-- **But**: "What are the fundamental behavioral regimes across all possible operators?"
-
-This shift enables:
-- **Discovery of universal patterns** in computational dynamics
-- **Identification of phase transitions** and bifurcations in parameter space
-- **Emergent taxonomies** that reflect the true structure of the computational physics
-- **General dynamical reasoning** applicable beyond any single domain
-
-By minimizing bias, the system maximizes the potential for **genuine discovery**: finding structure and semantics that are truly alien, emergent, and potentially fundamental to understanding computation as a physical process.
-
-### Design Philosophy
-
-Spinlock is built on the principle that **discovering unknown structure requires minimizing imposed structure**. By systematically exploring operator space through bias-free sampling, extracting comprehensive multi-modal features, and allowing categories to emerge through unsupervised learning, the system learns the "physics of change" from the data itself.
-
-This is not about building better task-specific models—it's about **treating computational dynamics as a fundamental object of scientific study**. The long-term vision is to develop agents capable of self-directed discovery: systems that autonomously identify high-variance behavioral regimes (prediction error/surprise), adaptively refine their own world models, and develop functional understanding of computational physics through transparent, inspectable mechanisms.
-
-The goal is not anthropomorphic "intelligence," but **systematic discovery of alien semantics** in the space of all possible dynamical behaviors—structures and patterns that emerge from rigorous, unbiased exploration of the computational physics landscape.
+**Name Origin:** The name draws from quantum field spinlocking—coherence emerging from chaotic fluctuations through spin alignment. Similarly, this system discovers order arising from apparent chaos by systematically exploring stochastic neural operator behaviors to uncover stable, reproducible patterns in high-dimensional parameter space.
 
 ---
 
@@ -128,30 +84,29 @@ The NOA uses a **U-AFNO backbone** that operates directly in continuous function
 
 **Key Innovations**:
 - **Physics-native backbone:** U-AFNO neural operator (not transformer on tokens) operating in continuous function space
-- **Discrete perceptual loss:** VQ-VAE encodes NOA outputs → behavioral tokens for loss computation
+- **Discrete perceptual loss:** VQ-VAE encodes NOA rollouts → behavioral tokens for loss computation
 - **Topological encoding:** Parameter-space distance (not chronological time) enables reasoning about functional similarity
 
 ### The NOA Vision: From Data to Systematic Discovery
 
-**Phase 0: Foundation** (✅ Current)
+**Phase 0: Foundation** 
 - Stratified neural operator datasets with diverse parameter coverage
 - Multi-modal feature extraction (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL)
 - Data-driven behavioral taxonomy via hierarchical clustering
 
-**Phase 1: U-AFNO Neural Operator Backbone** (🔄 In Development - Core Training Working)
-- U-AFNO backbone (144M parameters) generates rollouts from (θ, u₀) inputs
-- CNO replay provides state-level supervision (ground-truth trajectories)
-- **Two Training Paradigms** (togglable via `--loss-mode`):
+**Phase 1: Meta-Operator Training** (🔄 In Progress - Two-Stage Curriculum)
+- U-AFNO backbone (144-226M parameters) with token conditioning support
+- **Two-Stage Curriculum Training**:
 
-  | Mode | Philosophy | Primary Loss | Use Case |
-  |------|------------|--------------|----------|
-  | **MSE-led** | Physics fidelity first | L_traj (trajectory MSE) | Exact trajectory matching |
-  | **VQ-led** | Symbolic coherence first | L_recon (VQ reconstruction) | Creative interpretation |
+  | Stage | Input | Loss | Goal |
+  |-------|-------|------|------|
+  | **1: MSE-Led** | (u₀, θ) + ground-truth tokens | L_traj (pure MSE vs CNO) | Learn physics with token scaffolding |
+  | **2: VQ-Led** | (u₀, θ) only | L_recon + L_commit + 0.3·L_traj | Autonomous VQ-compatible rollouts |
 
-  - **MSE-led:** `L = λ_traj·L_traj + λ_commit·L_commit + λ_latent·L_latent`
-  - **VQ-led:** `L = λ_recon·L_recon + λ_commit·L_commit + λ_traj·L_traj`
-
-- Physics-native architecture operating in continuous function space
+- **Stage 1**: Token conditioning provides behavioral hints; model learns physics with discrete scaffolding
+- **Stage 2**: Remove tokens; fine-tune for autonomous operation with VQ alignment as primary objective
+- **Truncated BPTT**: Long-horizon training (256-step rollouts, 32-step backprop window)
+- **Training flow**: VQ-VAE → ground-truth tokens → Stage 1 → Stage 2
 
 **Phase 2: Multi-Observation Context** (📋 Planned)
 - Lightweight transformer/recurrent heads on VQ token sequences
@@ -176,118 +131,97 @@ The NOA uses a **U-AFNO backbone** that operates directly in continuous function
 - Symbolic regression: Distill discovered patterns into interpretable mathematical relationships
 - Falsifiability: Every discovered "law" must be testable and potentially refutable
 
-**Current Status:** Phase 0 complete, Phase 1 core training infrastructure working
+**Current Status:** Phase 0 complete, Phase 1 Stage 1 training in progress
 
-**Quick Start (Phase 1 Training):**
+**Complete Training Workflow:**
 ```bash
-# MSE-led: Physics fidelity first (primary: trajectory matching)
-poetry run python scripts/dev/train_noa_unified.py \
-    --loss-mode mse_led \
-    --dataset datasets/100k_full_features.h5 \
-    --vqvae-path checkpoints/production/100k_3family_v1 \
-    --n-samples 5000 --epochs 10 --batch-size 4 \
-    --lambda-traj 1.0 --lambda-commit 0.5 --enable-latent-loss --lambda-latent 0.1
+# Step 1: Train VQ-VAE on trajectory features
+spinlock train-vqvae --config configs/vqvae/production_100k_3family.yaml
 
-# VQ-led: Symbolic coherence first (primary: VQ reconstruction)
-poetry run python scripts/dev/train_noa_unified.py \
-    --loss-mode vq_led \
+# Step 2: Generate ground-truth tokens for training dataset
+spinlock compute-ground-truth-tokens \
     --dataset datasets/100k_full_features.h5 \
-    --vqvae-path checkpoints/production/100k_3family_v1 \
-    --n-samples 5000 --epochs 10 --batch-size 4 \
-    --lambda-recon 1.0 --lambda-commit 0.5 --lambda-traj 0.3
+    --cno-config configs/experiments/local_100k_optimized.yaml \
+    --vqvae-checkpoint checkpoints/production/100k_3family_v1/best_model.pt \
+    --output datasets/100k_ground_truth_tokens.h5
+
+# Step 3: Stage 1 training (MSE-led with token conditioning)
+spinlock train-meta-operator \
+    --config configs/noa/experiments/phase2/exp2f_256step_tbptt.yaml
+
+# Step 4: Stage 2 training (VQ-led autonomous)
+spinlock train-meta-operator \
+    --config configs/noa/experiments/phase2/exp2g_stage2_vqled.yaml
 ```
 
-**Resume from checkpoint:**
-```bash
-poetry run python scripts/dev/train_noa_unified.py \
-    --resume checkpoints/noa/step_200.pt \
-    --loss-mode mse_led \
-    --dataset datasets/100k_full_features.h5 \
-    --vqvae-path checkpoints/production/100k_3family_v1
-```
+**Configuration:** Edit YAML configs to adjust:
+- Model capacity (`base_channels: 32-48` for 144M-226M params)
+- Training scale (`n_samples`, `batch_size`, `epochs`)
+- Loss weights (`lambda_recon`, `lambda_commit`, `lambda_traj`)
+- BPTT parameters (`timesteps`, `bptt_window`)
 
-**Evaluate alignment quality:**
-```bash
-# Run comprehensive diagnostics after training
-poetry run python scripts/dev/diagnose_latent_alignment.py \
-    --noa-checkpoint checkpoints/noa/best_model.pt \
-    --vqvae-path checkpoints/production/100k_3family_v1 \
-    --dataset datasets/100k_full_features.h5 \
-    --n-samples 100
-```
-
-See [docs/noa-training-guide.md](docs/noa-training-guide.md) for complete training documentation including hyperparameter tuning, checkpointing, and troubleshooting. See [docs/noa-roadmap.md](docs/noa-roadmap.md) for detailed architecture and implementation plan.
+See [docs/architecture.md](docs/architecture.md) for system overview and [docs/two-stage-curriculum-architecture.md](docs/two-stage-curriculum-architecture.md) for training details.
 
 ---
 
 ## 🏗️ Architecture
 
-### System Overview
+Spinlock implements an end-to-end pipeline from dataset generation through meta-operator training:
 
 ```mermaid
-flowchart TD
-    NO[Stratified Neural Operators]
-    FE[Multi-Modal Feature Extraction<br/>INITIAL + SUMMARY + TEMPORAL]
-    VQVAE[Hierarchical VQ-VAE Tokenization]
-    Tokens[Behavioral Token Vocabulary]
-    NOA[Neural Operator Agent<br/>U-AFNO Backbone]
-    VQLoss[VQ-VAE Perceptual Loss]
+flowchart TB
+    Config[YAML Config] --> Sampling[Stratified Sampling]
+    Sampling --> CNOs[CNO Operators]
+    CNOs --> Rollouts[Rollout Execution]
+    Rollouts --> Extract[Feature Extraction]
+    Extract --> VQVAE[VQ-VAE Training]
 
-    NO --> FE
-    FE --> VQVAE
-    VQVAE --> Tokens
-    VQVAE -.-> VQLoss
-    NOA --> VQLoss
+    VQVAE --> GTTokens[Ground-Truth Tokens]
+    GTTokens --> Stage1[Stage 1: Token-Conditioned Training]
+    Stage1 --> Checkpoint[Stage 1 Checkpoint]
 
-    style NO fill:#e1f5e1,color:#000
-    style VQVAE fill:#fff4e1,color:#000
-    style NOA fill:#e1e8f5,color:#000
-    style VQLoss fill:#e1e8f5,color:#000
+    Checkpoint --> Stage2[Stage 2: Autonomous Training]
+    VQVAE -.->|frozen| Stage2
+    Stage2 --> Final[Universal Meta-Operator]
+
+    classDef phase1 fill:#b0bec5,stroke:#455a64,stroke-width:2px,color:#000
+    classDef phase2stage1 fill:#c8e6c9,stroke:#4caf50,stroke-width:2px,color:#000
+    classDef phase2stage2 fill:#e1bee7,stroke:#7b1fa2,stroke-width:2px,color:#000
+
+    class Config,Sampling,CNOs,Rollouts,Extract,VQVAE phase1
+    class GTTokens,Stage1,Checkpoint phase2stage1
+    class Stage2,Final phase2stage2
 ```
 
-### Pipeline Stages
+### Pipeline Overview
 
-#### 1. Neural Operator Generation
-- **Sobol-stratified parameter sampling** - Low-discrepancy sequences ensure uniform parameter space coverage
-- **Configurable operator architectures** - Choose between CNN and U-AFNO:
-  - **CNN (default)**: Simple sequential convolutions for local feature extraction
-  - **U-AFNO**: U-Net encoder/decoder with AFNO spectral bottleneck for global receptive field
-    - FFT-based spectral mixing captures long-range spatial dependencies
-    - Multi-scale U-Net hierarchy preserves local detail with skip connections
-    - Ideal for operators with non-local dynamics (wave propagation, diffusion)
-- **Stochastic rollout generation** - 256 timesteps × 5 realizations capturing behavioral variability
-  - Default 64×64 grids optimal for VQ-VAE compression and fast NOA evaluation
-  - Power-of-2 timesteps for GPU efficiency
+**Dataset Generation & Feature Learning** (blue-grey)
+1. Stratified parameter sampling via Sobol sequences
+2. CNO operator construction and stochastic rollout execution
+3. Multi-modal feature extraction (INITIAL, SUMMARY, TEMPORAL)
+4. Hierarchical VQ-VAE training for behavioral tokenization
 
-#### 2. Feature Extraction (4 Complementary Families)
-- **INITIAL** (Initial Condition): Hybrid features combining manual and learned spatial patterns
-  - Manual features: spatial, spectral, information-theoretic, morphological
-  - CNN embeddings: ResNet-3 encoder for learned spatial patterns
-- **ARCHITECTURE** (Neural Operator Parameters): Architectural/stochastic/evolution features
-  - Direct parameter space features (architecture, stochastic, operator, evolution, stratification)
-- **SUMMARY** (Summary Descriptor Features): Aggregated per-rollout behavioral statistics
-  - **Fast defaults (v1.0-v2.0)**: Spatial, spectral, temporal, cross-channel, causality, invariant drift, operator sensitivity, multiscale
-  - **Optional v2.1 categories** (disabled by default): Distributional, structural, physics, morphological
-  - Default optimized for fast NOA evaluation (~1s feature extraction vs ~6s with all v2.1)
-  - Aggregated across all timesteps and realizations per operator
-- **TEMPORAL** (Temporal Dynamics): Full temporal resolution trajectories
-  - Preserves time-series structure for sequential modeling
+**Stage 1: MSE-Led Training** (green)
+- Generate ground-truth VQ tokens from CNO rollouts
+- Train NOA with token conditioning for physics accuracy
+- Loss: Pure MSE against CNO trajectories
+- Output: Token-aware internal representations
 
-#### 3. VQ-VAE Tokenization
-- **Joint training across all feature families** (INITIAL+ARCHITECTURE+SUMMARY+TEMPORAL)
-- **Automatic category discovery** via hierarchical clustering (~8-15 categories)
-- **Multi-level discrete latent space** (coarse → medium → fine)
-- **Hierarchical codebook sizing** - Coarse levels use larger codebooks (compression ratio 0.5) to capture broad behavioral categories; fine levels use smaller codebooks (ratio 1.5) since fine-grained distinctions are inherently sparse
-- **Dead code reset** - Runtime pruning of unused codes prevents collapse and right-sizes codebooks to data
-- **Feature cleaning** - NaN removal, variance filtering, deduplication, outlier capping
+**Stage 2: VQ-Led Training** (purple)
+- Initialize from Stage 1 checkpoint
+- Remove token conditioning (autonomous operation)
+- Loss: VQ reconstruction + commitment (primary) + physics regularization
+- Output: Universal meta-operator generating VQ-compatible rollouts
 
-#### 4. Behavioral Vocabulary
-- **Discrete tokens** representing operator behavioral patterns
-- **Category-specific embeddings** preserving multi-modal structure
-- **Foundation for U-AFNO agent training** (Phase 1) and **transformer heads** (Phase 2+)
-- **Visualization dashboards** - Engineering (metrics), Topological (t-SNE codebook space), Semantic (feature mappings)
+### Key Components
 
-See [docs/architecture.md](docs/architecture.md) for detailed system design.
+- **Stratified Sampling**: Sobol sequences with Owen scrambling for uniform parameter space coverage
+- **Multi-Modal Features**: INITIAL (42D), ARCHITECTURE (21D), SUMMARY (420-520D), TEMPORAL (variable)
+- **VQ-VAE Tokenization**: Automatic category discovery, hierarchical 3-level encoding, adaptive compression
+- **Meta-Operator Training**: Two-stage curriculum (token-conditioned → autonomous)
+- **CLI Commands**: `spinlock generate`, `spinlock train-vqvae`, `spinlock compute-ground-truth-tokens`, `spinlock train-meta-operator`
+
+See [docs/architecture.md](docs/architecture.md) for comprehensive system design and implementation details.
 
 ---
 
@@ -490,6 +424,8 @@ For detailed installation instructions, platform-specific guides, and troublesho
 
 - [**NOA Roadmap**](docs/noa-roadmap.md) - 5-phase development plan for Neural Operator Agents
 - [**Architecture**](docs/architecture.md) - Detailed system design and implementation
+- [**Two-Stage Curriculum Training**](docs/two-stage-curriculum-architecture.md) - Complete guide for Stage 1 (MSE-led) and Stage 2 (VQ-led) training, including loss scales, VQ-VAE data processing, and hyperparameter tuning
+- [**NOA Training Guide**](docs/noa-training-guide.md) - Training configuration, loss functions, checkpointing, and troubleshooting
 - [**Feature Families**](docs/features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL feature definitions and extraction
 - [**HDF5 Layout**](docs/features/hdf5-layout.md) - Dataset schema reference for VQ-VAE pipeline
 - [**Baselines**](docs/baselines/README.md) - Production datasets and VQ-VAE tokenizers

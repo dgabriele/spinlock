@@ -10,6 +10,13 @@ Architecture:
 4. Shared decoder: concat(N×L quantized vectors) → reconstructed input
 
 Ported from unisim.system.models.categorical_vqvae (100% generic, simplified).
+
+Checkpoint Format Documentation:
+    See docs/vqvae/checkpoint-format.md for complete specification of:
+    - Checkpoint file structure (.pt, .npz, .yaml, .json)
+    - Loading and saving procedures
+    - Normalization stats format and usage
+    - Backward compatibility handling
 """
 
 import logging

@@ -17,9 +17,9 @@ Usage:
     losses = alignment.compute_losses(pred_trajectory, target_trajectory, ic)
     total_loss = state_loss + lambda_commit * losses['commit']
 
-Checkpoint Loading:
-    For details on VQ-VAE checkpoint structure, normalization stats, and
-    loading procedures, see: docs/vqvae/checkpoint-format.md
+Documentation:
+    - Stage 2 VQ-led training: docs/two-stage-curriculum-architecture.md
+    - VQ-VAE checkpoint format: docs/vqvae/checkpoint-format.md
 """
 
 import torch

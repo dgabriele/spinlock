@@ -2,6 +2,8 @@
 
 Complete guide for training Neural Operator Agents (NOA) with VQ-VAE alignment, including L_latent loss, checkpointing, and resume functionality.
 
+**Note:** This guide covers general NOA training principles. For the **two-stage curriculum approach** (Stage 1: MSE-led token conditioning + Stage 2: VQ-led autonomous operation) with detailed loss scale analysis and VQ-VAE data processing, see [Two-Stage Curriculum Architecture](two-stage-curriculum-architecture.md).
+
 ---
 
 ## Table of Contents

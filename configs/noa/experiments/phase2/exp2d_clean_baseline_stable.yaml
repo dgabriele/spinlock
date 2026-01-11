@@ -1,0 +1,43 @@
+# Experiment 2D: Clean Baseline with Stable Training (1K samples, no tokens)
+# Lower LR (5e-5) with warmup to prevent mid-training instability
+# Pure U-AFNO MNO without any conditioning
+
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 32  # Standard capacity
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+
+  # NO token conditioning
+  token_conditioning: false
+
+training:
+  n_samples: 1000
+  batch_size: 4
+  epochs: 30
+  learning_rate: 5.0e-5      # REDUCED from 1e-4
+  warmup_steps: 1125         # NEW: 5 epochs × 225 batches = 1125 steps
+  weight_decay: 1.0e-4       # From 1E (Phase 1 winner)
+  clip_grad: 0.5             # From 1E
+  timesteps: 32
+  early_stopping_patience: 10
+
+loss:
+  lambda_traj: 1.0
+
+data:
+  dataset_path: "datasets/100k_full_features.h5"
+  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/experiments/phase2/exp2d_clean_baseline_stable"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42
