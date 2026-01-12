@@ -37,12 +37,12 @@ The system enables pre-training on diverse dynamical behaviors for downstream ap
 
 **Current Implementation:**
 - **Data:** 100K+ stratified operator trajectories with provably optimal parameter space coverage
-- **Features:** Multi-modal behavioral descriptors (INITIAL, SUMMARY, TEMPORAL)
-- **Meta-Operator:** U-AFNO backbone (226M params) trained via **independent optimization**:
-  - Stage 1: Pure MSE physics training (no VQ constraints)
-  - Stage 2: Generate large-scale MNO rollout features (100K+ samples)
-  - Stage 3: Train VQ-VAE on MNO's distribution (alignment by construction)
-- **Tokenization:** VQ-VAE trained on MNO rollouts discovers 10 behavioral categories with hierarchical 3-level codebooks
+- **Features:** Multi-modal behavioral descriptors (INITIAL, SUMMARY, TEMPORAL) - see [Feature Catalog](docs/features/feature-catalog.md)
+- **Meta-Operator:** U-AFNO backbone (226M params) trained with pure MSE physics loss (no VQ constraints)
+- **Tokenization:** VQ-VAE trained on MNO's rollout distribution via **independent optimization**:
+  - Stage 1: Generate large-scale MNO rollout features (100K+ samples from trained MNO)
+  - Stage 2: Train VQ-VAE on MNO's distribution (alignment by construction)
+  - Result: Discovers 10 behavioral categories with hierarchical 3-level codebooks
 
 **Research Directions:**
 
