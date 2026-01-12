@@ -1,15 +1,33 @@
 """
-Generate command for NOA feature datasets.
+Generate command for MNO feature datasets with training distribution alignment.
 
-This command generates a feature dataset from a trained NOA model by:
-1. Loading a trained NOA checkpoint
-2. Sampling the parameter space (same as CNO generation)
-3. Generating rollouts using NOA (instead of CNO)
-4. Extracting features inline during generation
-5. Storing features to HDF5 (feature-only mode, no trajectories)
+Stage 2 of Independent Optimization Architecture: Generate large-scale feature
+datasets from trained MNO that align with its training distribution.
 
-This is used for the "train tokenizer on simulator's distribution" architecture
-where VQ-VAE is trained on NOA's outputs rather than CNO's outputs.
+**Training Distribution Alignment:**
+MNO is trained on a stratified 2K subsample (stride=50) from the 100K dataset.
+Feature generation uses denser stratification (stride=10) within the same training
+span [0, 99950], producing 10K samples with:
+- 2K exact training points (indices MNO saw during training)
+- 8K interpolated points (tests MNO's local generalization)
+
+This ensures VQ-VAE learns MNO's actual distribution, not out-of-distribution
+parameters the MNO never encountered.
+
+**Process:**
+1. Load trained MNO checkpoint and extract training configuration
+2. Calculate training span from checkpoint (e.g., [0, 99950] for 2K training)
+3. Generate denser indices within span (e.g., stride=10 for 10K samples)
+4. Load parameter vectors from original dataset at these indices
+5. Generate diverse ICs for each parameter
+6. MNO rollout prediction (256 steps)
+7. Inline feature extraction (GPU-optimized)
+8. Storage to HDF5 (features + parameters, no trajectories)
+
+**Documentation:**
+- Architecture: docs/noa-vqvae-independent.md (Stage 2)
+- Training guide: docs/noa-training-guide.md
+- Pipeline code: src/spinlock/noa/generation_pipeline.py
 """
 
 from argparse import ArgumentParser, Namespace
@@ -24,14 +42,22 @@ from .base import ConfigurableCommand
 
 class GenerateNOAFeaturesCommand(ConfigurableCommand):
     """
-    Command to generate feature datasets from trained NOA.
+    Command to generate feature datasets from trained MNO with distribution alignment.
 
-    Loads a trained NOA model and generates a large-scale feature dataset
-    by sampling the parameter space and generating rollouts. Features are
-    extracted inline (GPU-optimized) and written directly to HDF5.
+    Stage 2 of Independent Optimization: Generates large-scale feature datasets
+    from trained MNO using denser stratification within the training span.
 
-    This enables training VQ-VAE on NOA's distribution rather than CNO's
-    distribution, achieving better alignment by construction.
+    **Key Design Choice:**
+    Instead of sampling fresh parameters or repeating training parameters, this
+    command uses denser Sobol stratification within MNO's training span:
+    - Training: 2K samples at stride=50 → indices [0, 50, 100, ..., 99950]
+    - Generation: 10K samples at stride=10 → indices [0, 10, 20, ..., 99990]
+    - Result: 2K exact training points + 8K interpolations
+
+    This ensures VQ-VAE learns MNO's actual distribution while testing local
+    generalization between training points.
+
+    See: docs/noa-vqvae-independent.md (Stage 2 section)
     """
 
     @property
