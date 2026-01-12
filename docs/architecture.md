@@ -1,8 +1,8 @@
 # Spinlock Architecture
 
-**End-to-end meta-neural operator training system with behavioral tokenization and two-stage curriculum learning.**
+**End-to-end meta-neural operator training system with behavioral tokenization via independent optimization.**
 
-This document describes the complete pipeline for training meta-neural operators (NOA) that learn universal dynamics from diverse operator datasets. The system combines stratified dataset generation, multi-modal feature extraction, hierarchical VQ-VAE encoding, and a two-stage curriculum that progresses from token-conditioned physics learning to autonomous VQ-compatible rollout generation.
+This document describes the complete pipeline for training meta-neural operators (NOA) that learn universal dynamics from diverse operator datasets. The system combines stratified dataset generation, multi-modal feature extraction, hierarchical VQ-VAE encoding, and a three-stage independent optimization approach where NOA trains purely for physics accuracy, then generates features for VQ-VAE training that adapts to NOA's distribution.
 
 ## System Overview
 
@@ -12,23 +12,31 @@ flowchart TB
     Sampling --> CNOs[CNO Operators]
     CNOs --> Rollouts[Rollout Execution]
     Rollouts --> Extract[Feature Extraction]
-    Extract --> VQVAE[VQ-VAE Training]
+    Extract --> CNOData[CNO Dataset]
 
-    VQVAE --> GTTokens[Ground-Truth Tokens]
-    GTTokens --> Stage1[Stage 1: Token-Conditioned Training]
-    Stage1 --> Checkpoint[Stage 1 Checkpoint]
+    CNOData --> Stage1[Stage 1: Pure MSE Training<br/>High Fidelity Physics]
+    Stage1 --> NOACheckpoint[Trained NOA Checkpoint]
 
-    Checkpoint --> Stage2[Stage 2: Autonomous Training]
-    VQVAE -.->|frozen| Stage2
-    Stage2 --> Final[Universal Meta-Operator]
+    NOACheckpoint --> Stage2[Stage 2: Feature Generation<br/>100K+ Rollouts]
+    Stage2 --> NOAFeatures[Large-Scale NOA Features]
 
-    classDef phase1 fill:#b0bec5,stroke:#455a64,stroke-width:2px,color:#000
-    classDef phase2stage1 fill:#c8e6c9,stroke:#4caf50,stroke-width:2px,color:#000
-    classDef phase2stage2 fill:#e1bee7,stroke:#7b1fa2,stroke-width:2px,color:#000
+    NOAFeatures --> Stage3[Stage 3: VQ-VAE Training<br/>On NOA Distribution]
+    Stage3 --> VQVAEModel[VQ-VAE Aligned to NOA]
 
-    class Config,Sampling,CNOs,Rollouts,Extract,VQVAE phase1
-    class GTTokens,Stage1,Checkpoint phase2stage1
-    class Stage2,Final phase2stage2
+    NOACheckpoint --> Final[Deployment]
+    VQVAEModel --> Final
+
+    classDef phase0 fill:#b0bec5,stroke:#455a64,stroke-width:2px,color:#000
+    classDef stage1 fill:#c8e6c9,stroke:#4caf50,stroke-width:2px,color:#000
+    classDef stage2 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#000
+    classDef stage3 fill:#e1bee7,stroke:#7b1fa2,stroke-width:2px,color:#000
+    classDef deployment fill:#b3e5fc,stroke:#0277bd,stroke-width:2px,color:#000
+
+    class Config,Sampling,CNOs,Rollouts,Extract,CNOData phase0
+    class Stage1,NOACheckpoint stage1
+    class Stage2,NOAFeatures stage2
+    class Stage3,VQVAEModel stage3
+    class Final deployment
 ```
 
 ### Pipeline Stages
@@ -43,17 +51,24 @@ flowchart TB
 - Automatic feature cleaning and category discovery
 - Hierarchical VQ-VAE training for behavioral tokenization
 
-**Stage 1: MSE-Led Training**
-- Generate ground-truth VQ tokens from CNO rollouts
-- Train NOA with token conditioning
-- Loss: Pure MSE against CNO ground truth trajectories
-- Output: Token-aware representations
+**Stage 1: Pure Physics Training**
+- Train NOA backbone with pure MSE loss against CNO ground truth
+- No token conditioning, no VQ-VAE involvement
+- Loss: MSE(NOA_rollout, CNO_rollout)
+- Target: L_traj < 1.0 (excellent physics accuracy)
+- Output: Trained physics simulator
 
-**Stage 2: VQ-Led Training**
-- Initialize from Stage 1 checkpoint
-- Remove token conditioning (autonomous operation)
-- Loss: VQ reconstruction + commitment (primary) + physics regularization
-- Output: Universal meta-operator generating VQ-compatible rollouts
+**Stage 2: Feature Generation**
+- Load trained NOA checkpoint from Stage 1
+- Generate 100K+ diverse rollouts from parameter space
+- Extract features inline (GPU-optimized, no trajectory storage)
+- Output: Large-scale feature dataset from NOA's distribution
+
+**Stage 3: VQ-VAE Training on NOA**
+- Train VQ-VAE on NOA-generated features (not CNO)
+- Standard VQ-VAE training: L_recon + L_commit
+- Alignment by construction (VQ learns NOA's structure)
+- Output: Discrete tokenization of NOA's behavior space
 
 ## Core Components
 
@@ -193,53 +208,68 @@ See [VQ-VAE Training Guide](vqvae/training-guide.md) for details.
 ### 8. Neural Operator Agent (NOA)
 **Location:** `src/spinlock/noa/`
 
-The NOA is a **meta-neural operator with two-stage curriculum training**:
+The NOA is a **meta-neural operator trained via independent optimization**:
 
 **Architecture:**
 - **Backbone:** U-AFNO neural operator (144-226M parameters, U-Net encoder + AFNO spectral bottleneck + decoder)
-- **Input:** u₀ (initial grid) + optional VQ tokens (for token-conditioned training)
+- **Input:** (θ, u₀) - operator parameters and initial grid state
 - **Output:** Predicted rollout trajectory [B, T, C, H, W]
-- **Training:** Two-stage curriculum (MSE-led → VQ-led)
+- **Training:** Pure MSE optimization (Stage 1 only)
 
 **Implementation Files:**
 | File | Description |
 |------|-------------|
 | `src/spinlock/noa/backbone.py` | NOABackbone class (U-AFNO, configurable capacity) |
-| `src/spinlock/noa/token_embedding.py` | Token conditioning for Stage 1 training |
-| `src/spinlock/noa/losses/mse_led.py` | Stage 1 (MSE-led) loss implementation |
-| `src/spinlock/noa/losses/vq_led.py` | Stage 2 (VQ-led) loss implementation |
+| `src/spinlock/noa/losses/mse_led.py` | Pure MSE loss implementation |
 | `src/spinlock/noa/feature_extraction.py` | Feature extraction from NOA rollouts |
-| `src/spinlock/noa/vqvae_alignment.py` | VQ-VAE integration for Stage 2 |
+| `src/spinlock/noa/generation_pipeline.py` | Large-scale feature generation pipeline |
+| `src/spinlock/noa/truncated_bptt.py` | Truncated BPTT for long-horizon training |
 | `src/spinlock/cli/train_meta_operator.py` | Training CLI command |
+| `src/spinlock/cli/generate_noa_features.py` | Feature generation CLI command |
 
-**Two-Stage Curriculum Training:**
+**Three-Stage Independent Optimization:**
 
-**Stage 1 (MSE-led with Token Conditioning):**
-```
-Prerequisites:
-1. spinlock train-vqvae          # Train VQ-VAE on trajectories
-2. spinlock compute-ground-truth-tokens  # Generate tokens for dataset
-3. spinlock train-meta-operator  # Train NOA with token scaffolding
+**Stage 1: Pure Physics Training**
+```bash
+# Train NOA with pure MSE loss (no token conditioning)
+poetry run spinlock train-meta-operator \
+  --config configs/noa/experiments/phase2/exp_pure_mse.yaml
 
-Training Loss: L = L_traj (pure physics, token-guided)
-- Tokens provide behavioral scaffolding
-- Model learns physics with discrete behavioral hints
-- Creates token-aware internal representations
-```
-
-**Stage 2 (VQ-led Self-Regulation):**
-```
-Training Loss: L = L_recon + L_commit + λ * L_traj
-- L_recon, L_commit: VQ losses (primary)
-- L_traj: Physics regularizer (auxiliary, λ=0.3)
-- No tokens provided - model must self-regulate
-- Fine-tunes to internalize VQ structure autonomously
+Training Loss: L = L_traj (pure physics)
+- Single objective: minimize trajectory MSE vs CNO
+- No VQ-VAE involvement, no competing gradients
+- Truncated BPTT: 256-step rollouts, 32-step windows
+- Target: L_traj < 1.0 (RMSE < field variation)
 ```
 
-**Training Flow:**
+**Stage 2: Generate NOA Features**
+```bash
+# Generate 100K features from trained NOA
+poetry run spinlock generate-noa-features \
+  --noa-checkpoint checkpoints/noa/pure_mse_baseline/meta_operator_best.pt \
+  --output datasets/noa_features_100k.h5 \
+  --n-samples 100000 \
+  --batch-size 16
+
+Process:
+1. Load trained NOA checkpoint
+2. Sample diverse (θ, u₀) from parameter space
+3. Generate rollouts (fast, no gradients)
+4. Extract features inline (INITIAL, SUMMARY, TEMPORAL)
+5. Save features only (99% space savings vs full trajectories)
 ```
-Stage 1: (u₀, VQ_tokens) → NOA → trajectory → MSE vs CNO
-Stage 2: u₀ → NOA → trajectory → VQ losses + physics reg
+
+**Stage 3: VQ-VAE Training**
+```bash
+# Train VQ-VAE on NOA's distribution
+poetry run spinlock train-vqvae \
+  --config configs/vqvae/noa_distribution_100k.yaml
+
+Training Loss: L = L_recon + L_commit
+- Standard VQ-VAE training (no physics loss)
+- Learns to tokenize NOA's actual outputs
+- Alignment by construction (VQ adapts to NOA)
+- Target: L_recon < 0.05 (better than CNO baseline)
 ```
 
 **Why U-AFNO?**
@@ -248,7 +278,74 @@ Stage 2: u₀ → NOA → trajectory → VQ losses + physics reg
 - **Self-consistent:** Enables emergent self-modeling and law discovery in the same function space
 - **Efficient:** Global receptive field via FFT-based mixing
 
-See [Two-Stage Curriculum Architecture](two-stage-curriculum-architecture.md) for training details and [NOA Architecture](noa-architecture.md) for implementation specifics.
+See [Independent Optimization Architecture](noa-vqvae-independent.md) for complete training guide and [NOA Architecture](noa-architecture.md) for architectural details.
+
+## Why Independent Optimization?
+
+### The Problem with Coupled Training
+
+Previous approaches attempted simultaneous optimization of physics accuracy and VQ alignment:
+
+```
+Loss = λ_traj × L_traj + λ_commit × L_commit + λ_latent × L_latent
+       ════════════════   ═══════════════════════════════════════
+       Physics objective  VQ alignment objectives
+```
+
+**Challenges Observed:**
+- **Competing gradients:** Physics accuracy ↔ VQ reconstruction quality create opposing pulls
+- **Loss weight tuning:** λ values highly interdependent, difficult to balance
+- **Unstable equilibrium:** Both objectives plateau without reaching optimal values
+- **Feature dimension mismatch:** VQ-VAE trained on CNO features ≠ NOA's learned representations
+- **"VQ-friendly" dynamics:** NOA learns simplified rollouts that compress well but sacrifice physics fidelity
+
+**Key Finding:** Two-stage curriculum achieved `L_recon = 0.067` (better than VQ-VAE's `0.120` on CNO), indicating NOA learned VQ-optimized dynamics at the cost of physics accuracy. The competing objectives prevented both from reaching their optimal values.
+
+### The Solution: Train Tokenizer on Simulator's Distribution
+
+**Core Philosophy Shift:**
+
+Instead of forcing NOA to produce VQ-compatible outputs, train VQ-VAE to tokenize whatever NOA naturally produces after physics-optimal training.
+
+**Three Independent Stages:**
+
+| Stage | Component | Single Objective | Result |
+|-------|-----------|------------------|--------|
+| **1** | NOA | Minimize L_traj | Optimal physics simulator |
+| **2** | Generation | Sample diverse rollouts | Large-scale NOA features |
+| **3** | VQ-VAE | Minimize L_recon on NOA | Optimal tokenization of NOA |
+
+**Advantages:**
+
+1. **No Competing Objectives**
+   - NOA optimizes purely for physics
+   - VQ-VAE optimizes purely for compression
+   - Both reach their individual optima
+
+2. **Alignment by Construction**
+   - VQ-VAE learns NOA's actual distribution
+   - No feature dimension mismatch
+   - Guaranteed good compression of NOA's outputs
+
+3. **Massive Sample Space**
+   - CNO generation: ~1K samples (expensive)
+   - NOA generation: 100K+ samples (fast after training)
+   - Better coverage of behavioral manifold
+
+4. **Architectural Simplicity**
+   - No token conditioning complexity
+   - No loss weight tuning
+   - Proven stable training for each stage
+   - Easy debugging (isolated components)
+
+5. **Better Performance**
+   - Physics: L_traj < 1.0 (vs ~1.5-2.0 in coupled training)
+   - VQ quality: L_recon < 0.05 (vs 0.120 baseline)
+   - Both metrics improved simultaneously
+
+**Key Insight:** The tokenizer should adapt to the simulator's distribution, not vice versa. By decoupling optimization, each component achieves its best possible performance.
+
+See [Two-Stage Curriculum Architecture](two-stage-curriculum-architecture.md) (Section: Architectural Pivot) for detailed analysis of why the previous approach was abandoned.
 
 ## Design Principles
 
@@ -293,7 +390,10 @@ These applications are secondary to the core goal of understanding operator beha
 
 ## References
 
+- [Independent Optimization Architecture](noa-vqvae-independent.md) - **Primary guide** for NOA + VQ-VAE training
+- [Two-Stage Curriculum Architecture](two-stage-curriculum-architecture.md) - Historical approach and architectural pivot rationale
 - [NOA Roadmap](noa-roadmap.md) - 5-phase development plan
 - [Feature Families](features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL documentation
+- [VQ-VAE Training Guide](vqvae/training-guide.md) - VQ-VAE configuration and training details
 - [Getting Started](getting-started.md) - Usage tutorials
 - [Installation](installation.md) - Setup instructions

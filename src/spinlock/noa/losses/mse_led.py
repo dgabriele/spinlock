@@ -51,6 +51,7 @@ class MSELedLoss(BaseNOALoss):
 
     Attributes:
         lambda_traj: Weight for trajectory MSE loss (primary)
+        lambda_ic: Weight for IC reconstruction loss (auxiliary)
         lambda_commit: Weight for VQ commitment loss (auxiliary)
         lambda_latent: Weight for latent alignment loss (auxiliary)
         alignment: VQVAEAlignmentLoss for commitment/latent computation
@@ -61,6 +62,7 @@ class MSELedLoss(BaseNOALoss):
         lambda_traj: float = 1.0,
         lambda_commit: float = 0.5,
         lambda_latent: float = 0.1,
+        lambda_ic: float = 0.0,
         vqvae_alignment: Optional["VQVAEAlignmentLoss"] = None,
     ):
         """Initialize MSE-led loss function.
@@ -69,6 +71,7 @@ class MSELedLoss(BaseNOALoss):
             lambda_traj: Weight for trajectory MSE loss (default: 1.0)
             lambda_commit: Weight for VQ commitment loss (default: 0.5)
             lambda_latent: Weight for latent alignment loss (default: 0.1)
+            lambda_ic: Weight for IC reconstruction loss (default: 0.0)
             vqvae_alignment: Optional VQVAEAlignmentLoss for commitment/latent
                            losses. If None, only trajectory loss is computed.
         """
@@ -76,6 +79,7 @@ class MSELedLoss(BaseNOALoss):
         self.lambda_traj = lambda_traj
         self.lambda_commit = lambda_commit
         self.lambda_latent = lambda_latent
+        self.lambda_ic = lambda_ic
         self.alignment = vqvae_alignment
 
     def compute(
@@ -95,14 +99,21 @@ class MSELedLoss(BaseNOALoss):
 
         Returns:
             LossOutput with:
-            - total: λ_traj * L_traj + λ_commit * L_commit + λ_latent * L_latent
-            - components: {'traj': L_traj, 'commit': L_commit, 'latent': L_latent}
+            - total: λ_traj * L_traj + λ_ic * L_ic + λ_commit * L_commit + λ_latent * L_latent
+            - components: {'traj': L_traj, 'ic': L_ic, 'commit': L_commit, 'latent': L_latent}
             - metrics: Detached float values for logging
         """
         device = pred_trajectory.device
 
         # L_traj: Primary physics loss (trajectory matching)
         traj_loss = F.mse_loss(pred_trajectory, target_trajectory)
+
+        # L_ic: Initial condition reconstruction loss
+        # Penalize mismatch between first prediction and IC
+        ic_loss = torch.tensor(0.0, device=device)
+        if self.lambda_ic > 0.0 and ic is not None:
+            # Compare first timestep of prediction to IC
+            ic_loss = F.mse_loss(pred_trajectory[:, 0], ic)
 
         # Initialize auxiliary losses to zero
         commit_loss = torch.tensor(0.0, device=device)
@@ -121,6 +132,7 @@ class MSELedLoss(BaseNOALoss):
         # Weighted sum with L_traj as primary
         total = (
             self.lambda_traj * traj_loss
+            + self.lambda_ic * ic_loss
             + self.lambda_commit * commit_loss
             + self.lambda_latent * latent_loss
         )
@@ -129,11 +141,13 @@ class MSELedLoss(BaseNOALoss):
             total=total,
             components={
                 'traj': traj_loss,
+                'ic': ic_loss,
                 'commit': commit_loss,
                 'latent': latent_loss,
             },
             metrics={
                 'traj': traj_loss.item(),
+                'ic': ic_loss.item() if isinstance(ic_loss, torch.Tensor) else ic_loss,
                 'commit': commit_loss.item() if isinstance(commit_loss, torch.Tensor) else commit_loss,
                 'latent': latent_loss.item() if isinstance(latent_loss, torch.Tensor) else latent_loss,
                 'total': total.item(),
@@ -154,6 +168,7 @@ class MSELedLoss(BaseNOALoss):
         return (
             f"MSELedLoss("
             f"λ_traj={self.lambda_traj}, "
+            f"λ_ic={self.lambda_ic}, "
             f"λ_commit={self.lambda_commit}, "
             f"λ_latent={self.lambda_latent})"
         )

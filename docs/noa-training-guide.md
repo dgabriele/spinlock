@@ -1,8 +1,26 @@
 # NOA Training Guide
 
-Complete guide for training Neural Operator Agents (NOA) with VQ-VAE alignment, including L_latent loss, checkpointing, and resume functionality.
+Complete guide for training Neural Operator Agents (NOA) with various training approaches.
 
-**Note:** This guide covers general NOA training principles. For the **two-stage curriculum approach** (Stage 1: MSE-led token conditioning + Stage 2: VQ-led autonomous operation) with detailed loss scale analysis and VQ-VAE data processing, see [Two-Stage Curriculum Architecture](two-stage-curriculum-architecture.md).
+## 🎯 Recommended Approach (2026-01-11)
+
+**For new projects, use the [Independent Optimization Architecture](noa-vqvae-independent.md):**
+- ✅ Simpler: Pure MSE training (no VQ constraints during NOA training)
+- ✅ Better physics: L_traj < 1.0 achievable
+- ✅ Better tokenization: VQ-VAE trained on NOA's actual distribution
+- ✅ More scalable: Generate 100K+ samples from trained NOA
+- ✅ Easier to debug: Components trained independently
+
+**Summary:**
+1. Train NOA with pure MSE → optimal physics
+2. Generate features from NOA → large-scale dataset
+3. Train VQ-VAE on NOA features → optimal tokenization
+
+## Alternative Approaches
+
+This guide documents alternative training approaches:
+- **Two-stage curriculum** (deprecated): Stage 1 with token conditioning + Stage 2 VQ-led fine-tuning. See [Two-Stage Curriculum Architecture](two-stage-curriculum-architecture.md) for details and lessons learned.
+- **Simultaneous training** (below): VQ-VAE alignment during NOA training. More complex, lower quality.
 
 ---
 

@@ -1,0 +1,65 @@
+# Pure MSE Training v3: IC Reconstruction Fix
+#
+# Based on diagnostic analysis of v2 (val_loss=0.511):
+# - Reverse error pattern: high initial error (t=1: 0.709) that DECREASES over time
+# - Strong dynamics learning but poor IC encoding
+# - Recommended intervention: IC reconstruction loss
+#
+# Changes from v2 (exp_pure_mse_v2_capacity.yaml):
+# - Added lambda_ic=0.3 (penalize IC encoding mismatch)
+# - Kept same model capacity (226M params - to avoid OOM)
+# - Kept 2x data and 3x LR from v2 (proven effective)
+#
+# v1: val_loss=0.813
+# v2: val_loss=0.511 (37% better, but IC encoding issue)
+# v3: Target val_loss < 0.4 with better IC accuracy
+
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 40              # Keep same as v1 (226M params)
+  encoder_levels: 3
+  modes: 16                      # Keep same as v1
+  afno_blocks: 4                 # Keep same as v1
+  token_conditioning: false      # DISABLED - pure MSE training
+
+training:
+  n_samples: 2000                # Increased from 1000 (more training data)
+  batch_size: 2                  # Same as v1
+  epochs: 30
+  learning_rate: 1.5e-4          # 3x from 5.0e-5 (higher LR for faster convergence)
+  warmup_steps: 5000             # 5 epochs warmup (1000 batches/epoch × 5 = 5000)
+  weight_decay: 1.0e-4
+  clip_grad: 0.5
+
+  # Truncated BPTT (proven effective)
+  timesteps: 256                 # Full rollout
+  bptt_window: 32                # Backprop window
+
+  early_stopping_patience: 5
+
+loss:
+  # Pure MSE with IC reconstruction
+  mode: "mse_led"
+  lambda_traj: 1.0               # Primary: trajectory matching
+  lambda_ic: 0.3                 # NEW: IC reconstruction (fixes high t=1 error)
+
+data:
+  dataset_path: "datasets/100k_full_features.h5"
+  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/noa/pure_mse_v3_ic_fix"
+  save_every: 3
+  keep_best: true
+
+device: "cuda"
+seed: 42
+
+# Target: MSE ≤ 0.4 with better IC encoding
+# v1 achieved val_loss=0.813
+# v2 achieved val_loss=0.511 (but high IC error at t=1: 0.709)
+# v3 should improve both overall loss AND IC accuracy

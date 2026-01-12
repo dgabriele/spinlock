@@ -1,0 +1,120 @@
+# VQ-VAE Training Config for NOA Distribution (100K Production)
+#
+# Trains categorical hierarchical VQ-VAE on features extracted from NOA rollouts
+# using automatic clustering-based category discovery.
+#
+# This is the production config for the "train tokenizer on simulator's distribution"
+# architecture where VQ-VAE learns to compress NOA's outputs for optimal alignment.
+#
+# Scaling from 10K validation:
+# - 10× more samples (100K vs 10K)
+# - Better coverage of NOA's behavioral manifold
+# - More robust category discovery
+# - Higher codebook utilization
+#
+# Usage:
+#   1. Validate with 10K first (configs/vqvae/noa_distribution_10k.yaml)
+#   2. Generate 100K NOA features:
+#      spinlock generate-noa-features \
+#        --noa-checkpoint checkpoints/noa/pure_mse_baseline/best_model.pt \
+#        --output datasets/noa_features_100k.h5 \
+#        --n-samples 100000 \
+#        --config configs/experiments/local_100k_optimized.yaml
+#   3. Train production VQ-VAE:
+#      spinlock train-vqvae --config configs/vqvae/noa_distribution_100k.yaml
+
+# Dataset (generated from NOA)
+dataset_path: "datasets/noa_features_100k.h5"
+
+# Feature Families (SUMMARY features from NOA rollouts)
+families:
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [256, 128]  # Proven from CNO-based training
+      output_dim: 64
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
+
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 64
+  group_hidden_dim: 128
+
+  # Hierarchical levels (uniform across categories)
+  # Based on unisim's proven 3-level hierarchy
+  # With 100K samples, can support larger codebooks
+  levels:
+    - {latent_dim: 32, num_tokens: 256}   # Level 0: Coarse (2× from 10K)
+    - {latent_dim: 16, num_tokens: 512}   # Level 1: Medium (2× from 10K)
+    - {latent_dim: 8, num_tokens: 1024}   # Level 2: Fine (2× from 10K)
+
+  # VQ-VAE hyperparameters
+  commitment_cost: 0.45
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+
+# Training
+training:
+  batch_size: 1024  # Same as 10K (works well with 8GB VRAM)
+  learning_rate: 0.0007
+  num_epochs: 500  # More epochs for 100K dataset
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 0
+
+  # Category assignment - AUTOMATIC via clustering
+  # Let VQ-VAE discover NOA's natural behavioral categories
+  category_assignment: "auto"
+  num_categories_auto: null  # Auto-determine via silhouette score (expect 10-15)
+  orthogonality_target: 0.15  # Target max correlation between categories
+  min_features_per_category: 3
+  max_clusters: 30  # Allow more clusters for 100K samples
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.02
+  topo_samples: 64
+
+  # Checkpointing
+  save_every: 50  # Save every 50 epochs for 100K
+  checkpoint_dir: "checkpoints/vqvae/noa_distribution_100k"
+
+  # Callbacks
+  early_stopping_patience: 120  # More patience for larger dataset
+  early_stopping_min_delta: 0.005  # Tighter convergence criterion
+  dead_code_reset_interval: 100
+  dead_code_threshold: 10.0
+  dead_code_max_reset_fraction: 0.25
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: false
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Expected Performance (100K samples):
+# - Reconstruction loss: < 0.04 (excellent due to alignment + scale)
+# - Codebook utilization: > 95% per level (better than 10K)
+# - Category separation: orthogonality < 0.12 (tighter clusters)
+# - Training time: ~8-10 hours on RTX 3060 Ti
+# - Total vocabulary: ~30 categories × 3 levels ≈ 90 tokens
