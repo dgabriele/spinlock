@@ -103,13 +103,13 @@ flowchart TB
 **Location:** `src/spinlock/features/`
 
 Four complementary feature families:
-- **INITIAL (Initial Condition):** 42D hybrid features (14D manual + 28D learned)
-- **ARCHITECTURE (Neural Operator Parameters):** 21D+ parameter features
-- **SUMMARY (Summary Descriptor Features):** 360-520D aggregated statistics across trajectory
-- **TEMPORAL (Temporal Dynamics):** 63D per-timestep sequences (full temporal resolution)
+- **INITIAL (Initial Condition):** Hybrid features (manual + learned CNN embeddings)
+- **ARCHITECTURE (Neural Operator Parameters):** Operator parameter features
+- **SUMMARY (Summary Descriptor Features):** Aggregated statistics across trajectory
+- **TEMPORAL (Temporal Dynamics):** Per-timestep sequences (full temporal resolution)
 
 **Documentation**:
-- [Feature Catalog](features/feature-catalog.md) - Complete enumeration of all computed features
+- [Feature Catalog](features/feature-catalog.md) - Enumeration of features in current configuration
 - [Feature Families](features/README.md) - Overview and philosophy
 - [Feature Reference](features/feature-reference.md) - Detailed formulas and interpretations
 

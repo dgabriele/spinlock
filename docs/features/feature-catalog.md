@@ -1,25 +1,25 @@
-# Feature Catalog: Complete Enumeration
+# Feature Catalog: Current Configuration
 
 **Date**: 2026-01-12
-**Purpose**: Comprehensive listing of all features computed across INITIAL, SUMMARY, and TEMPORAL families
+**Purpose**: Enumerate features computed in the current system configuration
 
-This document provides a complete enumeration of the multi-modal features extracted from operator rollouts. Features are organized by family and analysis category for quick reference.
+This document lists the multi-modal features extracted from operator rollouts, organized by family and analysis category. Feature dimensions reflect the current configuration and are adjustable based on enabled categories and embedding sizes.
 
 ---
 
 ## Overview
 
-| Family | Dimensions | Temporal Resolution | Purpose |
+| Family | Dimensions (Current Config) | Temporal Resolution | Purpose |
 |--------|-----------|---------------------|---------|
-| **INITIAL** | 42D | Single snapshot (IC) | Encode initial condition characteristics |
-| **SUMMARY** | ~360-520D | Trajectory-level aggregation | Compress behavioral signatures across full rollout |
-| **TEMPORAL** | 63D per timestep | Per-timestep sequence | Capture temporal evolution for sequential reasoning |
+| **INITIAL** | Manual (14) + CNN (configurable) | Single snapshot (IC) | Encode initial condition characteristics |
+| **SUMMARY** | Varies by enabled categories | Trajectory-level aggregation | Compress behavioral signatures across full rollout |
+| **TEMPORAL** | Varies by enabled categories | Per-timestep sequence | Capture temporal evolution for sequential reasoning |
 
-**Total Feature Count**: 42 (INITIAL) + ~400 (SUMMARY) + 63×T (TEMPORAL)
+**Configuration-Dependent**: Exact dimensions vary based on which feature categories are enabled and CNN embedding size.
 
 ---
 
-## INITIAL Features (42D)
+## INITIAL Features
 
 **Purpose**: Characterize the initial condition's spatial structure, spectral content, information content, and morphological properties.
 
@@ -55,22 +55,22 @@ Hand-crafted features providing interpretable, domain-driven characterization.
 13. **`morph_radial_gradient`**: Average radial gradient magnitude (edge content)
 14. **`morph_symmetry`**: Rotational symmetry measure (anisotropy)
 
-### CNN Learned Features (28D)
+### CNN Learned Features (configurable)
 
-15-42. **`cnn_embed_0` through `cnn_embed_27`**: Learned embeddings from convolutional encoder
+**`cnn_embed_0` through `cnn_embed_N-1`**: Learned embeddings from convolutional encoder (N = embedding_dim config parameter)
    - Captures high-level latent structure not readily expressed in manual features
    - Optional VAE mode enables generative bidirectionality (embed ↔ IC reconstruction)
    - Frozen or trainable depending on configuration
 
 ---
 
-## SUMMARY Features (~360-520D)
+## SUMMARY Features
 
 **Purpose**: Aggregate behavioral signatures across full trajectory, providing compressed episodic representation.
 
 **Resolution**: Trajectory-level (single vector per rollout)
 
-### 1. Spatial Statistics (34 features)
+### 1. Spatial Statistics
 
 **Distributional Moments**:
 - `spatial_mean`, `spatial_variance`, `spatial_std`
@@ -112,7 +112,7 @@ Hand-crafted features providing interpretable, domain-driven characterization.
 - Event statistics: `above_threshold_count`, `time_above_threshold`
 - Rolling windows: `rolling_mean_std`, `rolling_max_range`
 
-### 2. Spectral Features (31 features)
+### 2. Spectral Features
 
 **Power Spectrum**:
 - `spectral_total_power`
@@ -145,7 +145,7 @@ Hand-crafted features providing interpretable, domain-driven characterization.
 - `wavelet_energy_scale1` through `wavelet_energy_scale4`
 - `wavelet_entropy`
 
-### 3. Temporal Dynamics (44 features)
+### 3. Temporal Dynamics
 
 **Trend Analysis**:
 - `temporal_mean_trend` (linear trend slope)
@@ -201,7 +201,7 @@ Hand-crafted features providing interpretable, domain-driven characterization.
 - Event analysis: `peak_intervals_mean`, `peak_intervals_std`
 - Rolling statistics: `rolling_autocorr_mean`, `rolling_entropy_std`
 
-### 4. Operator Sensitivity (12 features)
+### 4. Operator Sensitivity
 
 **Parameter Gradient Analysis**:
 - `param_gradient_l2` (sensitivity to parameter perturbations)
@@ -224,7 +224,7 @@ Hand-crafted features providing interpretable, domain-driven characterization.
 - `regime_transition_sensitivity` (ease of changing regimes)
 - `bifurcation_proximity` (distance to instability)
 
-### 5. Cross-Channel Interactions (12 features)
+### 5. Cross-Channel Interactions
 
 **Per-Timestep Statistics** (averaged across trajectory):
 - `channel_correlation_mean`, `channel_correlation_std`
@@ -246,7 +246,7 @@ Hand-crafted features providing interpretable, domain-driven characterization.
 - `channel_coherence` (frequency-domain coupling)
 - `channel_bispectrum` (phase coupling, three-wave interactions)
 
-### 6. Causality & Directionality (15 features)
+### 6. Causality & Directionality
 
 **Granger Causality**:
 - `granger_causality_forward` (X → Y predictability)
@@ -273,7 +273,7 @@ Hand-crafted features providing interpretable, domain-driven characterization.
 - `convergent_cross_mapping` (state-space causality)
 - `symbolic_transfer_entropy`
 
-### 7. Invariant Drift (64 features)
+### 7. Invariant Drift
 
 **Conservation Laws** (per conserved quantity: energy, mass, momentum, angular momentum):
 - `{quantity}_initial`, `{quantity}_final`
@@ -294,7 +294,7 @@ Hand-crafted features providing interpretable, domain-driven characterization.
 - `energy_final_initial_ratio_{scale}` (growth/decay)
 - `entropy_final_initial_ratio_{scale}` (information change)
 
-### 8. Nonlinear Dynamics (8 features)
+### 8. Nonlinear Dynamics
 
 **Attractor Properties**:
 - `attractor_dimension` (correlation dimension)
@@ -314,7 +314,7 @@ Hand-crafted features providing interpretable, domain-driven characterization.
 
 ---
 
-## TEMPORAL Features (63D per timestep)
+## TEMPORAL Features (per timestep)
 
 **Purpose**: Per-timestep time series for sequential reasoning, working memory constraints, and attention mechanisms.
 
