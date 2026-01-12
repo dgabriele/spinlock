@@ -173,6 +173,17 @@ Examples:
         if config is None:
             return 1
 
+        # Validate parameter space configuration
+        if not hasattr(config, 'parameter_space'):
+            print("Error: Config missing 'parameter_space' section", file=sys.stderr)
+            print("  NOA feature generation requires operator parameter sampling", file=sys.stderr)
+            return 1
+
+        if config.parameter_space.total_dimensions == 0:
+            print("Error: Parameter space has 0 dimensions", file=sys.stderr)
+            print("  NOA feature generation requires at least 1 parameter dimension", file=sys.stderr)
+            return 1
+
         # Override configuration for NOA generation
         config.sampling.total_samples = args.n_samples
         config.sampling.batch_size = args.batch_size
