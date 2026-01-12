@@ -96,6 +96,11 @@ The NOA uses a **U-AFNO backbone** that operates directly in continuous function
 - Data-driven behavioral taxonomy via hierarchical clustering
 
 **Phase 1: MNO Training (Meta-Neural Operator)** (🔄 In Progress - Independent Optimization)
+
+The **Meta-Neural Operator (MNO)** is a neural network that learns to predict dynamics across an entire family of operators. Unlike a standard neural operator that learns a single PDE or system, the MNO learns a *meta-mapping* from operator parameters θ (architecture, coefficients) to their forward dynamics. Given any (θ, u₀) pair, it predicts the full rollout trajectory—essentially learning "what any operator in this family will do."
+
+Why "meta"? It operates one level above individual operators, learning the relationship between operator structure and behavior across thousands of distinct systems.
+
 - U-AFNO backbone (226M parameters) with pure MSE training
 - Trains the **MNO**: pure physics simulator (no agency, no reasoning)
 - Later phases build **NOA** (Neural Operator Agent) on top of MNO + tokens
