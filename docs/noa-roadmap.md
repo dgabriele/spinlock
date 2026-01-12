@@ -145,14 +145,18 @@ Establish the data infrastructure and tokenization system that enables behaviora
 
 ---
 
-## Phase 1: U-AFNO Neural Operator Backbone
+## Phase 1: MNO Training (Meta-Neural Operator)
 
 **Status:** 🔄 **IN DEVELOPMENT** (Core training infrastructure complete)
 
 ### Objective
-Train a U-AFNO neural operator as the NOA backbone, producing rollouts whose behavioral features are well-reconstructed by a frozen VQ-VAE tokenizer.
+Train a U-AFNO neural operator as the **MNO** (Meta-Neural Operator) - a pure physics simulator that produces accurate rollout predictions. The MNO serves as the physics engine for the eventual **NOA** (Neural Operator Agent) which will add agency, working memory, and curiosity-driven exploration in later phases.
 
-### Why U-AFNO as NOA Backbone?
+**MNO vs NOA:**
+- **MNO**: Pure physics simulator (Phase 1 output). No agency, no reasoning—just accurate trajectory prediction.
+- **NOA**: Higher-level agent architecture (Phase 2+). Uses MNO as physics engine + operates over VQ tokens with working memory and planning.
+
+### Why U-AFNO as MNO Backbone?
 
 - **Physics-native**: Operates directly in continuous function space matching the studied dynamics
 - **Resolution-independent**: Spectral mixing captures global patterns regardless of grid size
@@ -162,23 +166,12 @@ Train a U-AFNO neural operator as the NOA backbone, producing rollouts whose beh
 
 ### Architecture
 
-**Backbone: U-AFNO Neural Operator**
-- **Input**: θ (operator parameters) + u₀ (initial grid) + optional context tokens
-- **Output**: Predicted next grid state + auxiliary feature heads
+**MNO Backbone: U-AFNO Neural Operator**
+- **Input**: θ (operator parameters) + u₀ (initial grid)
+- **Output**: Predicted rollout trajectory [B, T, C, H, W]
 - **Latent extraction**: Bottleneck spectral modes + multi-scale encoder skips via `get_intermediate_features()`
-- **Implementation**: `src/spinlock/noa/backbone.py` (NOABackbone class, 144M parameters)
-
-**VQ-VAE Integration (Training Loss)**
-- Pre-trained VQ-VAE (from Phase 0) encodes NOA outputs → discrete behavioral codes
-- Training flow: NOA predictions → VQ encoder → codes → VQ decoder → reconstruction loss
-- VQ-VAE frozen during training (no gradient flow through tokenizer)
-- Discrete codes serve as targets for future phases (next-token prediction, curiosity)
-
-**Feature Heads**
-The NOA produces auxiliary outputs aligned with Phase 0 feature families:
-- **INITIAL-like**: Snapshot characteristics of predicted state
-- **SUMMARY-like**: Aggregated behavioral statistics from rollout
-- **TEMPORAL-like**: Trajectory segment embeddings
+- **Implementation**: `src/spinlock/noa/backbone.py` (NOABackbone class used for MNO, 144-226M parameters)
+- **Training**: Pure MSE optimization against CNO ground truth (Stage 1 only)
 
 ### Current Training Approach: Independent Optimization (**Recommended**)
 
@@ -191,24 +184,24 @@ The NOA produces auxiliary outputs aligned with Phase 0 feature families:
 - **Loss:** `L = L_traj` (pure MSE against CNO ground truth)
 - **Config:** `configs/noa/experiments/phase2/exp_pure_mse.yaml`
 - **Target:** L_traj < 1.0 (RMSE < field variation)
-- **Output:** Physics-optimal NOA checkpoint
+- **Output:** Trained MNO checkpoint (physics-optimal simulator)
 
-**Stage 2: NOA Feature Generation** (100K+ samples)
+**Stage 2: MNO Feature Generation** (100K+ samples)
 - **Implementation:** `src/spinlock/cli/generate_noa_features.py`
-- **Process:** Load trained NOA → sample diverse (θ, u₀) → generate rollouts → extract features inline
-- **Output:** Large-scale feature dataset from NOA's distribution (~1 GB for 100K samples)
+- **Process:** Load trained MNO → sample diverse (θ, u₀) → generate rollouts → extract features inline
+- **Output:** Large-scale feature dataset from MNO's distribution (~1 GB for 100K samples)
 
-**Stage 3: VQ-VAE Training on NOA Distribution**
+**Stage 3: VQ-VAE Training on MNO Distribution**
 - **Implementation:** `src/spinlock/cli/train_vqvae.py`
 - **Loss:** `L = L_recon + L_commit` (standard VQ-VAE, no physics loss)
-- **Config:** `configs/vqvae/noa_distribution_100k.yaml`
+- **Config:** `configs/vqvae/mno_distribution_100k.yaml`
 - **Target:** L_recon < 0.05 (better than CNO baseline of 0.067)
-- **Output:** VQ-VAE optimized for NOA's behavioral manifold
+- **Output:** VQ-VAE optimized for MNO's behavioral manifold (ready for NOA agent in Phase 2+)
 
 **Why Independent Optimization?**
 - **No competing gradients**: Physics and VQ objectives decouple, both reach optimal values
-- **Alignment by construction**: VQ-VAE learns NOA's actual distribution
-- **Massive scale**: 100K+ NOA samples vs 1K CNO samples
+- **Alignment by construction**: VQ-VAE learns MNO's actual distribution
+- **Massive scale**: 100K+ MNO samples vs 1K CNO samples
 - **Simplicity**: No loss balancing, proven stable training for each stage
 
 **Training Infrastructure:**
@@ -216,11 +209,11 @@ The NOA produces auxiliary outputs aligned with Phase 0 feature families:
 - **MSELedLoss** (`src/spinlock/noa/losses/mse_led.py`): Pure physics loss implementation
 - **Truncated BPTT** (`src/spinlock/noa/truncated_bptt.py`): Long-horizon training (256-step rollouts)
 
-**Current Results (NOA v2, Stage 1):**
+**Current Results (MNO v2, Stage 1):**
 ```
 Validation loss: 0.511 (37% better than v1's 0.813)
 Target: L_traj < 1.0 reached at epoch 2-3
-NOA v3 (with IC reconstruction loss) currently training
+MNO v3 (with IC reconstruction loss) currently training
 ```
 
 **Alternative Approach: Simultaneous Training** (explored but not recommended)
@@ -229,9 +222,9 @@ NOA v3 (with IC reconstruction loss) currently training
 - See [NOA Training Guide](noa-training-guide.md) for details
 - Deprecated in favor of independent optimization
 
-### First Training Task: NOA Rollout Feature Encoding
+### First Training Task: MNO Physics Training
 
-**Objective:** Train U-AFNO NOA to generate rollouts whose features are well-reconstructed by VQ-VAE, yielding high-quality discrete behavioral symbols.
+**Objective:** Train U-AFNO MNO to generate accurate physics rollouts (Stage 1: Pure MSE). Later stages generate features for VQ-VAE training that adapts to MNO's distribution.
 
 **Training Dataset:**
 - Sample θ + u₀ pairs from existing stratified dataset (100K operators)
@@ -263,21 +256,23 @@ NOA v3 (with IC reconstruction loss) currently training
 - **Failure case analysis**: When does the mapping break down and why?
 
 **Success Criteria** (Phase 1 → Phase 2):
-- **Stage 1 (Physics):** L_traj < 1.0 (NOA matches CNO ground truth)
-- **Stage 3 (Tokenization):** L_recon < 0.05 (VQ-VAE compresses NOA features well)
-- Discrete token distribution matches NOA's behavioral manifold (entropy, usage)
+- **Stage 1 (Physics):** L_traj < 1.0 (MNO matches CNO ground truth)
+- **Stage 3 (Tokenization):** L_recon < 0.05 (VQ-VAE compresses MNO features well)
+- Discrete token distribution matches MNO's behavioral manifold (entropy, usage)
 - Codebook utilization > 60% (diverse behavioral coverage)
 - Manual inspection confirms behavioral categories are interpretable
 
 ### Deliverables
-- [x] U-AFNO NOA architecture implementation (`src/spinlock/noa/backbone.py`)
-- [x] VQ-VAE perceptual loss integration (`src/spinlock/noa/vqvae_alignment.py`)
-- [x] Three-loss function (trajectory + latent + commitment)
-- [x] CNO replay for state-level supervision (`src/spinlock/noa/cno_replay.py`)
-- [x] Training script with VQ-VAE alignment options (`scripts/dev/train_noa_state_supervised.py`)
-- [ ] Full-scale training run (1000+ samples, 50+ epochs)
+- [x] U-AFNO MNO architecture implementation (`src/spinlock/noa/backbone.py` - NOABackbone class used for MNO training)
+- [x] Pure MSE loss implementation (`src/spinlock/noa/losses/mse_led.py`)
+- [x] CNO replay for ground truth generation (`src/spinlock/noa/cno_replay.py`)
+- [x] MNO training script (`src/spinlock/cli/train_meta_operator.py`)
+- [x] MNO feature generation script (`src/spinlock/cli/generate_noa_features.py`)
+- [ ] Full-scale Stage 1 training run (2000+ samples, 30+ epochs) - **In Progress (v3)**
+- [ ] Stage 2: Generate 100K MNO features for VQ-VAE
+- [ ] Stage 3: Train VQ-VAE on MNO distribution
 - [ ] Evaluation metrics and benchmarks
-- [ ] Baseline documentation (`docs/baselines/phase1-uafno-vqvae.md`)
+- [ ] Phase 1 completion documentation
 
 ---
 

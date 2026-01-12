@@ -2,7 +2,7 @@
 
 **End-to-end meta-neural operator training system with behavioral tokenization via independent optimization.**
 
-This document describes the complete pipeline for training meta-neural operators (NOA) that learn universal dynamics from diverse operator datasets. The system combines stratified dataset generation, multi-modal feature extraction, hierarchical VQ-VAE encoding, and a three-stage independent optimization approach where NOA trains purely for physics accuracy, then generates features for VQ-VAE training that adapts to NOA's distribution.
+This document describes the complete pipeline for training meta-neural operators (MNO) that learn universal dynamics from diverse operator datasets. The system combines stratified dataset generation, multi-modal feature extraction, hierarchical VQ-VAE encoding, and a three-stage independent optimization approach where MNO trains purely for physics accuracy, then generates features for VQ-VAE training that adapts to MNO's distribution.
 
 ## System Overview
 
@@ -15,15 +15,15 @@ flowchart TB
     Extract --> CNOData[CNO Dataset]
 
     CNOData --> Stage1[Stage 1:<br/>Pure MSE<br/>Training]
-    Stage1 --> NOACheckpoint[Trained NOA<br/>Checkpoint]
+    Stage1 --> MNOCheckpoint[Trained MNO<br/>Checkpoint]
 
-    NOACheckpoint --> Stage2[Stage 2:<br/>Feature<br/>Generation]
-    Stage2 --> NOAFeatures[Large-Scale<br/>NOA Features]
+    MNOCheckpoint --> Stage2[Stage 2:<br/>Feature<br/>Generation]
+    Stage2 --> MNOFeatures[Large-Scale<br/>MNO Features]
 
-    NOAFeatures --> Stage3[Stage 3:<br/>VQ-VAE<br/>Training]
-    Stage3 --> VQVAEModel[VQ-VAE<br/>Aligned to NOA]
+    MNOFeatures --> Stage3[Stage 3:<br/>VQ-VAE<br/>Training]
+    Stage3 --> VQVAEModel[VQ-VAE<br/>Aligned to MNO]
 
-    NOACheckpoint --> Final[Deployment]
+    MNOCheckpoint --> Final[Deployment]
     VQVAEModel --> Final
 
     classDef phase0 fill:#b0bec5,stroke:#455a64,stroke-width:2px,color:#000
@@ -33,8 +33,8 @@ flowchart TB
     classDef deployment fill:#b3e5fc,stroke:#0277bd,stroke-width:2px,color:#000
 
     class Config,Sampling,CNOs,Rollouts,Extract,CNOData phase0
-    class Stage1,NOACheckpoint stage1
-    class Stage2,NOAFeatures stage2
+    class Stage1,MNOCheckpoint stage1
+    class Stage2,MNOFeatures stage2
     class Stage3,VQVAEModel stage3
     class Final deployment
 ```
@@ -52,23 +52,23 @@ flowchart TB
 - Hierarchical VQ-VAE training for behavioral tokenization
 
 **Stage 1: Pure Physics Training**
-- Train NOA backbone with pure MSE loss against CNO ground truth
+- Train MNO backbone with pure MSE loss against CNO ground truth
 - No token conditioning, no VQ-VAE involvement
-- Loss: MSE(NOA_rollout, CNO_rollout)
+- Loss: MSE(MNO_rollout, CNO_rollout)
 - Target: L_traj < 1.0 (excellent physics accuracy)
 - Output: Trained physics simulator
 
 **Stage 2: Feature Generation**
-- Load trained NOA checkpoint from Stage 1
+- Load trained MNO checkpoint from Stage 1
 - Generate 100K+ diverse rollouts from parameter space
 - Extract features inline (GPU-optimized, no trajectory storage)
-- Output: Large-scale feature dataset from NOA's distribution
+- Output: Large-scale feature dataset from MNO's distribution
 
-**Stage 3: VQ-VAE Training on NOA**
-- Train VQ-VAE on NOA-generated features (not CNO)
+**Stage 3: VQ-VAE Training on MNO**
+- Train VQ-VAE on MNO-generated features (not CNO)
 - Standard VQ-VAE training: L_recon + L_commit
-- Alignment by construction (VQ learns NOA's structure)
-- Output: Discrete tokenization of NOA's behavior space
+- Alignment by construction (VQ learns MNO's structure)
+- Output: Discrete tokenization of MNO's behavior space
 
 ## Core Components
 
@@ -168,7 +168,7 @@ flowchart LR
 - **Category discovery:** Correlation-based hierarchical clustering with orphan reassignment (100% feature assignment)
 - **Adaptive compression ratios:** Per-category latent dimensions computed from feature characteristics (variance, dimensionality, information content, correlation)
 - **Hierarchical VQ:** 3-level discrete latent space per category (coarse → medium → fine)
-- **Joint training:** Unified representations across INITIAL+SUMMARY+TEMPORAL (ARCHITECTURE excluded; NOA already knows operator parameters θ)
+- **Joint training:** Unified representations across INITIAL+SUMMARY+TEMPORAL (ARCHITECTURE excluded; MNO already knows operator parameters θ)
 
 #### Interpretability Properties
 
@@ -205,10 +205,14 @@ See [VQ-VAE Training Guide](vqvae/training-guide.md) for details.
 - **Aggregate statistics:** Mean, variance, FFT visualization
 - **Video export:** MP4 and GIF generation
 
-### 8. Neural Operator Agent (NOA)
+### 8. Meta-Neural Operator (MNO)
 **Location:** `src/spinlock/noa/`
 
-The NOA is a **meta-neural operator trained via independent optimization**:
+The MNO is a **pure physics simulator trained via independent optimization**. It serves as the physics engine for the eventual NOA (Neural Operator Agent) which will add agency, working memory, and curiosity-driven exploration in later phases.
+
+**MNO vs NOA:**
+- **MNO**: Pure physics simulator (Phase 1). No agency, no reasoning—just accurate trajectory prediction.
+- **NOA**: Higher-level agent (Phase 2+). Uses MNO + operates over VQ tokens with working memory and planning.
 
 **Architecture:**
 - **Backbone:** U-AFNO neural operator (144-226M parameters, U-Net encoder + AFNO spectral bottleneck + decoder)
@@ -219,19 +223,19 @@ The NOA is a **meta-neural operator trained via independent optimization**:
 **Implementation Files:**
 | File | Description |
 |------|-------------|
-| `src/spinlock/noa/backbone.py` | NOABackbone class (U-AFNO, configurable capacity) |
+| `src/spinlock/noa/backbone.py` | MNO/NOABackbone class (U-AFNO, configurable capacity) |
 | `src/spinlock/noa/losses/mse_led.py` | Pure MSE loss implementation |
-| `src/spinlock/noa/feature_extraction.py` | Feature extraction from NOA rollouts |
+| `src/spinlock/noa/feature_extraction.py` | Feature extraction from MNO rollouts |
 | `src/spinlock/noa/generation_pipeline.py` | Large-scale feature generation pipeline |
 | `src/spinlock/noa/truncated_bptt.py` | Truncated BPTT for long-horizon training |
-| `src/spinlock/cli/train_meta_operator.py` | Training CLI command |
-| `src/spinlock/cli/generate_noa_features.py` | Feature generation CLI command |
+| `src/spinlock/cli/train_meta_operator.py` | MNO training CLI command |
+| `src/spinlock/cli/generate_noa_features.py` | MNO feature generation CLI command |
 
 **Three-Stage Independent Optimization:**
 
 **Stage 1: Pure Physics Training**
 ```bash
-# Train NOA with pure MSE loss (no token conditioning)
+# Train MNO with pure MSE loss (no token conditioning)
 poetry run spinlock train-meta-operator \
   --config configs/noa/experiments/phase2/exp_pure_mse.yaml
 
@@ -240,19 +244,20 @@ Training Loss: L = L_traj (pure physics)
 - No VQ-VAE involvement, no competing gradients
 - Truncated BPTT: 256-step rollouts, 32-step windows
 - Target: L_traj < 1.0 (RMSE < field variation)
+- Output: Trained MNO checkpoint
 ```
 
-**Stage 2: Generate NOA Features**
+**Stage 2: Generate MNO Features**
 ```bash
-# Generate 100K features from trained NOA
+# Generate 100K features from trained MNO
 poetry run spinlock generate-noa-features \
   --noa-checkpoint checkpoints/noa/pure_mse_baseline/meta_operator_best.pt \
-  --output datasets/noa_features_100k.h5 \
+  --output datasets/mno_features_100k.h5 \
   --n-samples 100000 \
   --batch-size 16
 
 Process:
-1. Load trained NOA checkpoint
+1. Load trained MNO checkpoint
 2. Sample diverse (θ, u₀) from parameter space
 3. Generate rollouts (fast, no gradients)
 4. Extract features inline (INITIAL, SUMMARY, TEMPORAL)
@@ -261,15 +266,16 @@ Process:
 
 **Stage 3: VQ-VAE Training**
 ```bash
-# Train VQ-VAE on NOA's distribution
+# Train VQ-VAE on MNO's distribution
 poetry run spinlock train-vqvae \
-  --config configs/vqvae/noa_distribution_100k.yaml
+  --config configs/vqvae/mno_distribution_100k.yaml
 
 Training Loss: L = L_recon + L_commit
 - Standard VQ-VAE training (no physics loss)
-- Learns to tokenize NOA's actual outputs
-- Alignment by construction (VQ adapts to NOA)
+- Learns to tokenize MNO's actual outputs
+- Alignment by construction (VQ adapts to MNO)
 - Target: L_recon < 0.05 (better than CNO baseline)
+- Output: VQ-VAE ready for NOA agent (Phase 2+)
 ```
 
 **Why U-AFNO?**
@@ -296,40 +302,40 @@ Loss = λ_traj × L_traj + λ_commit × L_commit + λ_latent × L_latent
 - **Competing gradients:** Physics accuracy ↔ VQ reconstruction quality create opposing pulls
 - **Loss weight tuning:** λ values highly interdependent, difficult to balance
 - **Unstable equilibrium:** Both objectives plateau without reaching optimal values
-- **Feature dimension mismatch:** VQ-VAE trained on CNO features ≠ NOA's learned representations
-- **"VQ-friendly" dynamics:** NOA learns simplified rollouts that compress well but sacrifice physics fidelity
+- **Feature dimension mismatch:** VQ-VAE trained on CNO features ≠ MNO's learned representations
+- **"VQ-friendly" dynamics:** MNO learns simplified rollouts that compress well but sacrifice physics fidelity
 
-**Key Finding:** Two-stage curriculum achieved `L_recon = 0.067` (better than VQ-VAE's `0.120` on CNO), indicating NOA learned VQ-optimized dynamics at the cost of physics accuracy. The competing objectives prevented both from reaching their optimal values.
+**Key Finding:** Two-stage curriculum achieved `L_recon = 0.067` (better than VQ-VAE's `0.120` on CNO), indicating the operator learned VQ-optimized dynamics at the cost of physics accuracy. The competing objectives prevented both from reaching their optimal values.
 
 ### The Solution: Train Tokenizer on Simulator's Distribution
 
 **Core Philosophy Shift:**
 
-Instead of forcing NOA to produce VQ-compatible outputs, train VQ-VAE to tokenize whatever NOA naturally produces after physics-optimal training.
+Instead of forcing MNO to produce VQ-compatible outputs, train VQ-VAE to tokenize whatever MNO naturally produces after physics-optimal training.
 
 **Three Independent Stages:**
 
 | Stage | Component | Single Objective | Result |
 |-------|-----------|------------------|--------|
-| **1** | NOA | Minimize L_traj | Optimal physics simulator |
-| **2** | Generation | Sample diverse rollouts | Large-scale NOA features |
-| **3** | VQ-VAE | Minimize L_recon on NOA | Optimal tokenization of NOA |
+| **1** | MNO | Minimize L_traj | Optimal physics simulator |
+| **2** | Generation | Sample diverse rollouts | Large-scale MNO features |
+| **3** | VQ-VAE | Minimize L_recon on MNO | Optimal tokenization of MNO |
 
 **Advantages:**
 
 1. **No Competing Objectives**
-   - NOA optimizes purely for physics
+   - MNO optimizes purely for physics
    - VQ-VAE optimizes purely for compression
    - Both reach their individual optima
 
 2. **Alignment by Construction**
-   - VQ-VAE learns NOA's actual distribution
+   - VQ-VAE learns MNO's actual distribution
    - No feature dimension mismatch
-   - Guaranteed good compression of NOA's outputs
+   - Guaranteed good compression of MNO's outputs
 
 3. **Massive Sample Space**
    - CNO generation: ~1K samples (expensive)
-   - NOA generation: 100K+ samples (fast after training)
+   - MNO generation: 100K+ samples (fast after training)
    - Better coverage of behavioral manifold
 
 4. **Architectural Simplicity**
@@ -390,7 +396,7 @@ These applications are secondary to the core goal of understanding operator beha
 
 ## References
 
-- [Independent Optimization Architecture](noa-vqvae-independent.md) - **Primary guide** for NOA + VQ-VAE training
+- [Independent Optimization Architecture](noa-vqvae-independent.md) - **Primary guide** for MNO + VQ-VAE training
 - [Two-Stage Curriculum Architecture](two-stage-curriculum-architecture.md) - Historical approach and architectural pivot rationale
 - [NOA Roadmap](noa-roadmap.md) - 5-phase development plan
 - [Feature Families](features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL documentation
