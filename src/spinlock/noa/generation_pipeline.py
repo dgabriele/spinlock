@@ -118,13 +118,49 @@ class NOAFeatureGenerationPipeline:
             device=self.device,
         )
 
-        # Initialize parameter sampler for operator diversity
-        from ..sampling.sobol import StratifiedSobolSampler
-        self.parameter_sampler = StratifiedSobolSampler.from_config(
-            parameter_space=config.parameter_space,
-            config=config.sampling,
-        )
-        print(f"  ✓ Parameter sampler initialized (D={config.parameter_space.total_dimensions})")
+        # Load training parameters for distribution alignment
+        # MNO was trained on a stratified 2K subsample - we'll use denser stratification
+        # within that training span for feature generation
+        print("Calculating parameter sampling strategy...")
+
+        training_n_samples = checkpoint['config']['training']['n_samples']  # 2000
+        training_dataset_path = checkpoint['config']['data']['dataset_path']
+
+        # Calculate training span (matching NOAStateDataset stratified sampling)
+        with h5py.File(training_dataset_path, 'r') as f:
+            total_samples = f['parameters/params'].shape[0]  # 100K
+
+            # Training used stratified sampling: stride = 100K / 2K = 50
+            training_stride = total_samples // training_n_samples
+            training_min_idx = 0
+            training_max_idx = (training_n_samples - 1) * training_stride  # 99950
+
+            print(f"  Training span: indices [{training_min_idx}, {training_max_idx}] (stride={training_stride})")
+
+            # For generation: denser stratification within training span
+            # Use 10K samples with stride=10 to get indices [0, 10, 20, ..., 99990]
+            # This includes all 2K training points (0, 50, 100, ...) + 8K interpolations
+            n_generation_samples = config.sampling.total_samples  # 10K
+            generation_stride = (training_max_idx + training_stride) // n_generation_samples  # ~10
+
+            self.generation_indices = np.arange(0, training_max_idx + training_stride, generation_stride)[:n_generation_samples]
+
+            # Load parameter vectors at generation indices
+            self.generation_params = torch.from_numpy(
+                f['parameters/params'][self.generation_indices]
+            ).float()  # [10K, 12]
+
+            # Count how many are exact training points
+            training_indices_set = set(np.arange(0, total_samples, training_stride)[:training_n_samples])
+            n_exact_training = sum(1 for idx in self.generation_indices if idx in training_indices_set)
+            n_interpolated = len(self.generation_indices) - n_exact_training
+
+        print(f"  ✓ Generation strategy: Denser stratification within training span")
+        print(f"  ✓ Generation indices: [{self.generation_indices[0]}, ..., {self.generation_indices[-1]}] (stride={generation_stride})")
+        print(f"  ✓ Total samples: {len(self.generation_indices)}")
+        print(f"  ✓ Exact training points: {n_exact_training}")
+        print(f"  ✓ Interpolated points: {n_interpolated}")
+        print(f"  ✓ Parameter space: {self.generation_params.shape[1]}D")
 
         # Initialize feature extractors
         print("Initializing feature extractors...")
@@ -241,9 +277,9 @@ class NOAFeatureGenerationPipeline:
                     batch_end = min(batch_start + batch_size, n_samples)
                     current_batch_size = batch_end - batch_start
 
-                    # Step 1: Sample operator parameters via Sobol
+                    # Step 1: Get operator parameters from pre-loaded training distribution
                     gen_start = time.time()
-                    unit_params = self.parameter_sampler.sample(current_batch_size)  # [B, D] in [0,1]
+                    batch_params = self.generation_params[batch_start:batch_end].to(self.device)  # [B, D] in [0,1]
 
                     # Step 2: Generate initial conditions with diverse IC types
                     # Sample IC types for this batch
@@ -338,10 +374,10 @@ class NOAFeatureGenerationPipeline:
                         aggregated=aggregated,  # Already numpy: [B, D*3]
                     )
 
-                    # Write operator parameters (Sobol vectors)
+                    # Write operator parameters (from training dataset)
                     feature_writer.write_parameters(
                         batch_idx=batch_start,
-                        parameters=unit_params,  # [B, D] in [0,1]
+                        parameters=batch_params.cpu().numpy(),  # [B, D] in [0,1]
                     )
 
                     self.stats["storage_time"] += time.time() - storage_start
