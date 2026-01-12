@@ -105,8 +105,15 @@ class NOAFeatureGenerationPipeline:
         print(f"  ✓ Device: {self.device}")
 
         # Initialize input generator for diverse ICs
+        # Extract grid_size from config (or use default)
+        grid_size = 64  # Default
+        if hasattr(config.parameter_space, 'operator'):
+            if hasattr(config.parameter_space.operator, 'grid_size'):
+                if hasattr(config.parameter_space.operator.grid_size, 'choices'):
+                    grid_size = config.parameter_space.operator.grid_size.choices[0]
+
         self.input_generator = InputFieldGenerator(
-            grid_size=64,  # TODO: Extract from config or NOA checkpoint
+            grid_size=grid_size,
             num_channels=1,  # NOA uses single-channel
             device=self.device,
         )
@@ -238,8 +245,40 @@ class NOAFeatureGenerationPipeline:
                     gen_start = time.time()
                     unit_params = self.parameter_sampler.sample(current_batch_size)  # [B, D] in [0,1]
 
-                    # Step 2: Generate initial conditions for sampled parameters
-                    ics = self.input_generator.generate_batch(current_batch_size)  # [B, C, H, W]
+                    # Step 2: Generate initial conditions with diverse IC types
+                    # Sample IC types for this batch
+                    ic_types = [self._sample_ic_type() for _ in range(current_batch_size)]
+
+                    # Group by IC type for efficient batch generation
+                    from collections import defaultdict
+                    ic_type_to_indices = defaultdict(list)
+                    for i, ic_type in enumerate(ic_types):
+                        ic_type_to_indices[ic_type].append(i)
+
+                    # Generate ICs per type
+                    all_ics = []
+                    for ic_type, indices in ic_type_to_indices.items():
+                        ic_params = self._get_ic_params(ic_type)
+                        base_ic_type = self._get_base_ic_type(ic_type)
+
+                        # Generate batch for this IC type
+                        batch_ics = self.input_generator.generate_batch(
+                            batch_size=len(indices),
+                            field_type=base_ic_type,
+                            **ic_params,
+                        )
+                        all_ics.append((indices, batch_ics))
+
+                    # Assemble ICs in correct order
+                    ics = torch.zeros(
+                        (current_batch_size, 1, self.input_generator.grid_size, self.input_generator.grid_size),
+                        dtype=torch.float32,
+                        device=self.device,
+                    )
+                    for indices, batch_ics in all_ics:
+                        for i, idx in enumerate(indices):
+                            ics[idx] = batch_ics[i]
+
                     self.stats["generation_time"] += time.time() - gen_start
 
                     # Step 3: Generate MNO predictions
@@ -323,6 +362,73 @@ class NOAFeatureGenerationPipeline:
 
         self.stats["total_time"] = time.time() - start_time
         self._print_final_statistics()
+
+    def _sample_ic_type(self) -> str:
+        """
+        Sample IC type based on configured weights.
+
+        Returns:
+            IC type name
+        """
+        weights = self.config.simulation.input_generation.ic_type_weights
+        if not weights:
+            return "gaussian_random_field"
+
+        # Normalize weights
+        total_weight = sum(weights.values())
+        ic_types = list(weights.keys())
+        probs = [weights[ic] / total_weight for ic in ic_types]
+
+        # Sample
+        import random
+        return random.choices(ic_types, weights=probs, k=1)[0]
+
+    def _get_base_ic_type(self, ic_type: str) -> str:
+        """
+        Get base IC type from alias (e.g., gaussian_random_field_v0 → gaussian_random_field).
+
+        Args:
+            ic_type: IC type name (possibly with alias suffix)
+
+        Returns:
+            Base IC type name
+        """
+        import re
+        # Strip common alias patterns: _v[0-9], _low, _mid, _high
+        base_type = re.sub(r'_(v\d+|low|mid|high)$', '', ic_type)
+        return base_type
+
+    def _get_ic_params(self, ic_type: str) -> Dict[str, Any]:
+        """
+        Get parameters for a specific IC type from config.
+
+        Args:
+            ic_type: IC type name (possibly with alias suffix)
+
+        Returns:
+            Dict of parameters for this IC type
+        """
+        config_gen = self.config.simulation.input_generation
+
+        # Try to get parameters directly from the alias name
+        if hasattr(config_gen, ic_type):
+            params = getattr(config_gen, ic_type)
+            if isinstance(params, dict):
+                return params
+            elif hasattr(params, '__dict__'):
+                return vars(params)
+
+        # Fall back to base IC type
+        base_type = self._get_base_ic_type(ic_type)
+        if hasattr(config_gen, base_type):
+            params = getattr(config_gen, base_type)
+            if isinstance(params, dict):
+                return params
+            elif hasattr(params, '__dict__'):
+                return vars(params)
+
+        # Default empty params
+        return {}
 
     def _print_final_statistics(self) -> None:
         """Print final generation statistics."""
