@@ -277,6 +277,103 @@ def analyze_growth_rate(per_timestep_mse: np.ndarray):
     }
 
 
+def compute_frequency_spectrum(
+    model: NOABackbone,
+    cno_replayer: CNOReplayer,
+    dataset_path: str,
+    n_samples: int = 100,
+    timesteps: int = 256,
+    device: torch.device = torch.device('cuda'),
+    uses_tokens: bool = False,
+    oracle_tokens: torch.Tensor = None,
+):
+    """Compute frequency-domain residual spectrum.
+
+    Returns:
+        magnitude_spectrum: [H//2+1, W] array (2D FFT magnitude)
+    """
+    dataset = h5py.File(dataset_path, 'r')
+
+    # Use same validation split logic as compute_per_timestep_error
+    if uses_tokens and oracle_tokens is not None:
+        n_available = len(oracle_tokens)
+        val_start = int(0.9 * n_available)
+        val_indices = np.arange(val_start, min(val_start + n_samples, n_available))
+    else:
+        n_total = len(dataset['inputs/fields'])
+        val_start = int(0.9 * n_total)
+        val_indices = np.arange(val_start, min(val_start + n_samples, n_total))
+
+    spectrum_accumulator = None
+
+    with torch.no_grad():
+        for idx in val_indices:
+            # Load IC and parameters
+            ic = torch.tensor(
+                dataset['inputs/fields'][idx],
+                device=device,
+                dtype=torch.float32,
+            )
+            ic = ic[0:1].unsqueeze(0)  # [1, 1, H, W]
+
+            params_vector = np.array(dataset['parameters/params'][idx], dtype=np.float64)
+
+            # Generate trajectories
+            if uses_tokens:
+                if oracle_tokens is None:
+                    raise ValueError("Model uses token conditioning but no oracle_tokens provided")
+                tokens = oracle_tokens[idx:idx+1].to(device)
+                pred_traj = model.rollout(ic, steps=timesteps, return_all_steps=True, tokens=tokens)
+            else:
+                pred_traj = model.rollout(ic, steps=timesteps, return_all_steps=True)
+
+            target_traj = cno_replayer.rollout(
+                params_vector=params_vector,
+                ic=ic,
+                timesteps=timesteps,
+                num_realizations=1,
+                return_all_steps=True,
+            )
+
+            # Compute residuals (skip IC at t=0)
+            residuals = pred_traj[:, 1:] - target_traj[:, 1:]  # [1, T, C, H, W]
+
+            # 2D FFT over spatial dimensions
+            fft_residuals = torch.fft.rfft2(residuals, dim=(-2, -1))
+            magnitude = torch.abs(fft_residuals).mean(dim=(0, 1, 2))  # [H//2+1, W]
+
+            if spectrum_accumulator is None:
+                spectrum_accumulator = magnitude.cpu().numpy()
+            else:
+                spectrum_accumulator += magnitude.cpu().numpy()
+
+    dataset.close()
+    return spectrum_accumulator / len(val_indices)
+
+
+def plot_frequency_spectrum(
+    spectrum: np.ndarray,
+    output_path: str,
+    title: str = "Frequency-Domain Residual Spectrum",
+):
+    """Plot frequency spectrum as log-scale heatmap."""
+    plt.figure(figsize=(10, 8))
+    plt.imshow(
+        np.log10(spectrum + 1e-10),
+        aspect='auto',
+        cmap='hot',
+        origin='lower',
+    )
+    plt.colorbar(label='log10(Magnitude)')
+    plt.xlabel('Frequency (width)')
+    plt.ylabel('Frequency (height)')
+    plt.title(title)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"  Saved frequency spectrum: {output_path}")
+    plt.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint', type=str, required=True, help='Path to model checkpoint')
@@ -287,6 +384,8 @@ def main():
     parser.add_argument('--n-samples', type=int, default=100, help='Number of validation samples')
     parser.add_argument('--timesteps', type=int, default=32, help='Number of rollout timesteps')
     parser.add_argument('--output', type=str, default='/tmp/rollout_error_analysis.png', help='Output plot path')
+    parser.add_argument('--frequency-analysis', action='store_true', help='Compute frequency-domain residual spectrum')
+    parser.add_argument('--output-frequency', type=str, default='/tmp/frequency_spectrum.png', help='Frequency spectrum plot path')
     parser.add_argument('--device', type=str, default='cuda', help='Device')
     args = parser.parse_args()
 
@@ -365,6 +464,39 @@ def main():
         output_path=args.output,
         title=model_name + title_suffix,
     )
+
+    # Frequency spectrum analysis (if requested)
+    if args.frequency_analysis:
+        print(f"\nComputing frequency-domain residual spectrum on {args.n_samples} samples...")
+        frequency_spectrum = compute_frequency_spectrum(
+            model=model,
+            cno_replayer=replayer,
+            dataset_path=args.dataset,
+            n_samples=args.n_samples,
+            timesteps=args.timesteps,
+            device=device,
+            uses_tokens=uses_tokens,
+            oracle_tokens=oracle_tokens,
+        )
+
+        # Save raw spectrum data
+        spectrum_data_path = args.output_frequency.replace('.png', '.npy')
+        np.save(spectrum_data_path, frequency_spectrum)
+        print(f"  Saved raw spectrum data: {spectrum_data_path}")
+
+        # Plot frequency spectrum
+        plot_frequency_spectrum(
+            spectrum=frequency_spectrum,
+            output_path=args.output_frequency,
+            title=f"Frequency Spectrum - {model_name}{title_suffix}",
+        )
+
+        # Print spectrum statistics
+        print(f"\nFrequency Spectrum Statistics:")
+        print(f"  Mean magnitude: {frequency_spectrum.mean():.4e}")
+        print(f"  Max magnitude:  {frequency_spectrum.max():.4e}")
+        print(f"  Min magnitude:  {frequency_spectrum.min():.4e}")
+        print(f"  Std magnitude:  {frequency_spectrum.std():.4e}")
 
     print(f"\n✓ Analysis complete")
 

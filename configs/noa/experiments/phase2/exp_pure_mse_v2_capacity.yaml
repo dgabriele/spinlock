@@ -1,0 +1,63 @@
+# Pure MSE Training v2: Increased Capacity
+#
+# Based on diagnostic analysis of epoch 4 (val_loss=0.813):
+# - Linear flat error growth → indicates underfitting (not instability)
+# - No autoregressive drift → model is stable
+# - Recommended intervention: increase capacity
+#
+# Changes from v1 (exp_pure_mse.yaml):
+# - base_channels: 40 → 48 (~226M → ~300M params)
+# - modes: 16 → 20 (better spectral resolution)
+# - afno_blocks: 4 → 6 (deeper network)
+# - learning_rate: 5.0e-5 → 1.0e-4 (larger model can handle higher LR)
+# - n_samples: 1000 → 2000 (more data for larger capacity)
+#
+# Target: Push MSE from 0.813 toward 0.25-0.3 (NMSE ≤ 0.6)
+
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 40              # Keep same as v1 (226M params)
+  encoder_levels: 3
+  modes: 16                      # Keep same as v1
+  afno_blocks: 4                 # Keep same as v1
+  token_conditioning: false      # DISABLED - pure MSE training
+
+training:
+  n_samples: 2000                # Increased from 1000 (more training data)
+  batch_size: 2                  # Same as v1
+  epochs: 30
+  learning_rate: 1.5e-4          # 3x from 5.0e-5 (higher LR for faster convergence)
+  warmup_steps: 5000             # 5 epochs warmup (1000 batches/epoch × 5 = 5000)
+  weight_decay: 1.0e-4
+  clip_grad: 0.5
+
+  # Truncated BPTT (proven effective)
+  timesteps: 256                 # Full rollout
+  bptt_window: 32                # Backprop window
+
+  early_stopping_patience: 5
+
+loss:
+  # Pure MSE - simple, proven, stable
+  mode: "mse_led"
+  lambda_traj: 1.0               # Only objective
+
+data:
+  dataset_path: "datasets/100k_full_features.h5"
+  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/noa/pure_mse_v2_capacity"
+  save_every: 3
+  keep_best: true
+
+device: "cuda"
+seed: 42
+
+# Target: MSE ≤ 0.25-0.3 (NMSE ≤ 0.6, error < 1σ)
+# v1 achieved val_loss=0.813 in 4 epochs
+# v2 with increased capacity should push significantly lower

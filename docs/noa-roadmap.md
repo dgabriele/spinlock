@@ -180,36 +180,54 @@ The NOA produces auxiliary outputs aligned with Phase 0 feature families:
 - **SUMMARY-like**: Aggregated behavioral statistics from rollout
 - **TEMPORAL-like**: Trajectory segment embeddings
 
-### Current Training Approach: Three-Loss Structure
+### Current Training Approach: Independent Optimization (**Recommended**)
 
-**Implemented in:** `src/spinlock/noa/vqvae_alignment.py`, `scripts/dev/train_noa_state_supervised.py`
+**Primary Guide:** See [Independent Optimization Architecture](noa-vqvae-independent.md) for complete implementation details.
 
-**Loss Structure:**
-```
-L = L_traj + λ₁ * L_latent + λ₂ * L_commit
-```
+**Three Independent Stages:**
 
-| Loss | Description | Weight |
-|------|-------------|--------|
-| `L_traj` | MSE on trajectory states (physics fidelity) | 1.0 |
-| `L_latent` | Pre-quantized latent alignment | λ₁ = 0.1 |
-| `L_commit` | VQ commitment loss (manifold adherence) | λ₂ = 0.5 |
+**Stage 1: Pure MSE Physics Training** (no token conditioning)
+- **Implementation:** `src/spinlock/cli/train_meta_operator.py`
+- **Loss:** `L = L_traj` (pure MSE against CNO ground truth)
+- **Config:** `configs/noa/experiments/phase2/exp_pure_mse.yaml`
+- **Target:** L_traj < 1.0 (RMSE < field variation)
+- **Output:** Physics-optimal NOA checkpoint
 
-**Why This Three-Loss Structure?**
-1. **L_traj**: Anchors physics correctness—NOA must match CNO trajectories
-2. **L_latent**: Uses pre-quantization embeddings for smooth gradients (avoids quantization artifacts)
-3. **L_commit**: Forces NOA outputs to be expressible in VQ vocabulary (manifold adherence)
+**Stage 2: NOA Feature Generation** (100K+ samples)
+- **Implementation:** `src/spinlock/cli/generate_noa_features.py`
+- **Process:** Load trained NOA → sample diverse (θ, u₀) → generate rollouts → extract features inline
+- **Output:** Large-scale feature dataset from NOA's distribution (~1 GB for 100K samples)
+
+**Stage 3: VQ-VAE Training on NOA Distribution**
+- **Implementation:** `src/spinlock/cli/train_vqvae.py`
+- **Loss:** `L = L_recon + L_commit` (standard VQ-VAE, no physics loss)
+- **Config:** `configs/vqvae/noa_distribution_100k.yaml`
+- **Target:** L_recon < 0.05 (better than CNO baseline of 0.067)
+- **Output:** VQ-VAE optimized for NOA's behavioral manifold
+
+**Why Independent Optimization?**
+- **No competing gradients**: Physics and VQ objectives decouple, both reach optimal values
+- **Alignment by construction**: VQ-VAE learns NOA's actual distribution
+- **Massive scale**: 100K+ NOA samples vs 1K CNO samples
+- **Simplicity**: No loss balancing, proven stable training for each stage
 
 **Training Infrastructure:**
-- **CNOReplayer** (`src/spinlock/noa/cno_replay.py`): Reconstructs CNO operators from parameter vectors for state-level supervision
-- **VQVAEAlignmentLoss**: Handles checkpoint loading, feature normalization, and loss computation
-- **TrajectoryFeatureExtractor**: Extracts SUMMARY/TEMPORAL features from trajectory states
+- **CNOReplayer** (`src/spinlock/noa/cno_replay.py`): Generates CNO ground truth for Stage 1
+- **MSELedLoss** (`src/spinlock/noa/losses/mse_led.py`): Pure physics loss implementation
+- **Truncated BPTT** (`src/spinlock/noa/truncated_bptt.py`): Long-horizon training (256-step rollouts)
 
-**Current Results (200 samples, 15 epochs):**
+**Current Results (NOA v2, Stage 1):**
 ```
-Best validation loss: 0.29 (down from 1.78)
-Commit loss: 0.005 (decreasing → manifold adherence improving)
+Validation loss: 0.511 (37% better than v1's 0.813)
+Target: L_traj < 1.0 reached at epoch 2-3
+NOA v3 (with IC reconstruction loss) currently training
 ```
+
+**Alternative Approach: Simultaneous Training** (explored but not recommended)
+- Three-loss structure: `L = L_traj + λ₁·L_latent + λ₂·L_commit`
+- Suffers from competing gradients between physics and VQ objectives
+- See [NOA Training Guide](noa-training-guide.md) for details
+- Deprecated in favor of independent optimization
 
 ### First Training Task: NOA Rollout Feature Encoding
 
@@ -245,9 +263,10 @@ Commit loss: 0.005 (decreasing → manifold adherence improving)
 - **Failure case analysis**: When does the mapping break down and why?
 
 **Success Criteria** (Phase 1 → Phase 2):
-- VQ reconstruction error < 0.15 on validation set
-- Discrete token distribution matches dataset distribution (entropy, usage)
-- Rollout fidelity (MSE) comparable to ground-truth operators
+- **Stage 1 (Physics):** L_traj < 1.0 (NOA matches CNO ground truth)
+- **Stage 3 (Tokenization):** L_recon < 0.05 (VQ-VAE compresses NOA features well)
+- Discrete token distribution matches NOA's behavioral manifold (entropy, usage)
+- Codebook utilization > 60% (diverse behavioral coverage)
 - Manual inspection confirms behavioral categories are interpretable
 
 ### Deliverables

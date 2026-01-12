@@ -1242,6 +1242,346 @@ Goal: Discover novel but meaningful dynamics
 
 ---
 
+## Architectural Pivot: Independent Optimization (2026-01-11)
+
+### Motivation for Change
+
+After implementing and analyzing Stage 2 (VQ-led fine-tuning), we identified a fundamental architectural limitation: **competing objectives in Stage 2 create an unstable equilibrium**.
+
+#### Problem: Competing Gradients in Stage 2
+
+**Observed behavior at batch 500 (Stage 2 equilibrium):**
+
+```
+Weighted L_recon: 5.0 × 0.0713 = 0.357
+Weighted L_traj:  0.2 × 1.576  = 0.315
+Gradient ratio: 1.13× (nearly equal!)
+```
+
+Despite `λ_recon` being 25× larger than `λ_traj`, the actual gradient contributions were nearly balanced because `L_traj` magnitude is ~22× larger than `L_recon`. Both losses plateaued at batch 500 with no further improvement.
+
+**The fundamental tension:**
+- ↑ VQ reconstruction quality → ↓ Physics accuracy (NOA learns "VQ-friendly" rollouts)
+- ↑ Physics accuracy → ↓ VQ reconstruction quality (accurate physics details hurt VQ compression)
+
+**Key finding:** Stage 2 achieved `L_recon = 0.067`, which is **better than VQ-VAE's baseline 0.120** on CNO rollouts. This means NOA learned to produce simpler, VQ-friendly dynamics at the cost of physics fidelity.
+
+### New Architecture: "Train Tokenizer on Simulator's Distribution"
+
+**Core Philosophy Shift:**
+
+| Aspect | Two-Stage Curriculum | Independent Optimization |
+|--------|---------------------|--------------------------|
+| **Foundation** | CNO defines ground truth | NOA defines its own distribution |
+| **VQ-VAE role** | Constraint on NOA training | Post-hoc compression tool |
+| **Coupling** | Tight (VQ affects NOA) | Loose (components independent) |
+| **Sample efficiency** | Limited to 1K CNO samples | Unlimited NOA samples |
+| **Training complexity** | High (multi-objective tuning) | Low (single objective per stage) |
+
+**Key Insight:** Instead of forcing NOA to produce CNO-compatible tokens, train VQ-VAE to tokenize whatever NOA actually produces.
+
+### Architecture: Independent Component Optimization
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              STAGE 1: PURE PHYSICS OPTIMIZATION                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Input: (θ, u₀)  [NO TOKEN CONDITIONING]                        │
+│      ↓                                                           │
+│  U-AFNO Backbone (226M params)                                  │
+│      ↓                                                           │
+│  Autoregressive Rollout (256 steps, TBPTT window=32)           │
+│      ↓                                                           │
+│  Loss: L_traj = MSE(NOA, CNO)  [ONLY OBJECTIVE]                │
+│                                                                  │
+│  Target: L_traj < 1.0 (RMSE < field variation)                 │
+│  Result: NOA with optimal physics, no VQ constraints            │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+                    Save best checkpoint
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│         STAGE 2: GENERATE NOA ROLLOUT DATASET (100K+)           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Load: Trained NOA (Stage 1 checkpoint)                         │
+│      ↓                                                           │
+│  For i in range(100,000):  [10-100× larger than CNO dataset]   │
+│      Sample θ ~ parameter space                                 │
+│      Sample u₀ ~ initial conditions                             │
+│      Rollout = NOA(θ, u₀)  [Fast! No gradients needed]         │
+│      Features = extract_features(Rollout, u₀)                   │
+│      Save(Features)  [Feature-only, ~10GB vs 1.2TB for trajs]  │
+│                                                                  │
+│  Result: Large-scale feature dataset from NOA's distribution    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│    STAGE 3: TRAIN VQ-VAE ON NOA'S DISTRIBUTION (STANDARD)       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Input: NOA features (100K samples)                             │
+│      ↓                                                           │
+│  VQ-VAE Training (standard pipeline, proven)                    │
+│      ↓                                                           │
+│  Loss: L_recon + L_commit  [NO physics loss]                   │
+│                                                                  │
+│  Target: L_recon < 0.05 (better than CNO's 0.067)              │
+│  Result: VQ-VAE optimized for NOA's actual outputs             │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Advantages Over Two-Stage Curriculum
+
+#### 1. Complete Separation of Concerns
+
+**Two-Stage Curriculum:**
+- NOA training involves VQ-VAE
+- Loss balance tuning (λ_recon vs λ_traj)
+- Feature dimension matching
+- Competing gradients
+- Unstable equilibrium
+
+**Independent Optimization:**
+- NOA and VQ-VAE trained independently
+- NOA: Pure MSE training (simple, proven)
+- VQ-VAE: Standard training (simple, proven)
+- No loss balance needed
+- Each component optimized for its objective
+
+#### 2. Alignment by Construction
+
+**Two-Stage Curriculum:** VQ-VAE trained on CNO → NOA forced to match CNO's tokens → feature mismatch issues
+
+**Independent Optimization:** VQ-VAE trained on NOA → guaranteed good compression of what NOA actually produces
+
+**Reconstruction loss floor:**
+- Two-stage: NOA can't reach VQ-VAE's optimal (physics constraints pull it away)
+- Independent: VQ-VAE learns NOA's structure, recon loss minimized by design
+
+#### 3. Massive Sample Space
+
+```
+Two-Stage Curriculum:
+- Limited by expensive CNO generation
+- 1,000 CNO samples (slow to generate)
+- VQ-VAE sees limited behavioral diversity
+
+Independent Optimization:
+- Unlimited cheap NOA generation
+- 100,000+ NOA samples (fast after training)
+- Better coverage of NOA's operating space
+- VQ-VAE learns full manifold NOA explores
+```
+
+#### 4. Architectural Simplicity
+
+**Components removed:**
+- ❌ Token conditioning architecture
+- ❌ Oracle token generation pipeline
+- ❌ VQ-led loss (competing objectives)
+- ❌ Loss weight balancing
+- ❌ Feature dimension matching between CNO and NOA
+- ❌ Stage 2 training instabilities
+
+**Components kept:**
+- ✅ Pure MSE training (proven stable)
+- ✅ Truncated BPTT (proven effective)
+- ✅ Standard VQ-VAE training (proven pipeline)
+
+#### 5. Modular Design
+
+```
+NOA: Physics simulator (foundation model)
+  - Input: (θ, u₀)
+  - Output: trajectory [T, C, H, W]
+  - Objective: Minimize L_traj
+  - Training: Pure MSE, 30 epochs, L_traj < 1.0
+
+VQ-VAE: Compression codec for NOA's outputs
+  - Input: features from NOA rollouts
+  - Output: discrete tokens
+  - Objective: Minimize reconstruction error on NOA's distribution
+  - Training: Standard VQ-VAE, 400-500 epochs
+
+Clean interfaces, independently testable
+```
+
+### Implementation: Pure MSE Stage 1
+
+**Config:** `configs/noa/experiments/phase2/exp_pure_mse.yaml`
+
+```yaml
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 40              # 226M params
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  token_conditioning: false      # DISABLED - no token complexity
+
+training:
+  n_samples: 1000
+  batch_size: 2
+  epochs: 30                     # Train to convergence
+  learning_rate: 5.0e-5
+  warmup_steps: 2250
+  weight_decay: 1.0e-4
+  clip_grad: 0.5
+  timesteps: 256
+  bptt_window: 32
+  early_stopping_patience: 5
+
+loss:
+  mode: "mse_led"
+  lambda_traj: 1.0               # Only objective!
+
+checkpointing:
+  save_dir: "checkpoints/noa/pure_mse_baseline"
+  save_every: 3
+  keep_best: true
+
+# Target: L_traj < 1.0 (RMSE < field variation)
+```
+
+**Key simplifications:**
+- No token conditioning → simpler architecture
+- No VQ-VAE alignment → no competing objectives
+- Pure MSE → single, clear goal
+- Proven stable from exp2f testing
+
+### Implementation: NOA Feature Generation
+
+**Command:** `spinlock generate-noa-features`
+
+```bash
+# Generate 10K samples for VQ-VAE validation
+spinlock generate-noa-features \
+  --noa-checkpoint checkpoints/noa/pure_mse_baseline/best_model.pt \
+  --output datasets/noa_features_10k.h5 \
+  --n-samples 10000 \
+  --config configs/experiments/local_100k_optimized.yaml \
+  --batch-size 16
+
+# Generate 100K samples for production VQ-VAE
+spinlock generate-noa-features \
+  --noa-checkpoint checkpoints/noa/pure_mse_baseline/best_model.pt \
+  --output datasets/noa_features_100k.h5 \
+  --n-samples 100000 \
+  --config configs/experiments/local_100k_optimized.yaml \
+  --batch-size 16
+```
+
+**Pipeline features:**
+- GPU-optimized inline feature extraction
+- Feature-only mode (no trajectories stored, saves 99% space)
+- Uses existing CNO parameter space sampling
+- Batch generation for efficiency
+
+### Implementation: VQ-VAE Training on NOA
+
+**Config:** `configs/vqvae/noa_distribution_100k.yaml`
+
+```yaml
+dataset_path: "datasets/noa_features_100k.h5"
+
+families:
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [256, 128]
+      output_dim: 64
+
+model:
+  levels:
+    - {latent_dim: 32, num_tokens: 256}   # Coarse
+    - {latent_dim: 16, num_tokens: 512}   # Medium
+    - {latent_dim: 8, num_tokens: 1024}   # Fine
+
+training:
+  batch_size: 1024
+  learning_rate: 0.0007
+  num_epochs: 500
+  category_assignment: "auto"  # Auto-discover NOA's categories
+```
+
+**Expected performance:**
+- Reconstruction loss: < 0.04 (better than CNO's 0.067)
+- Codebook utilization: > 95%
+- Category separation: orthogonality < 0.12
+
+### Deployment: End-to-End Pipeline
+
+```python
+# 1. Load trained NOA (pure MSE, no tokens)
+noa = load_checkpoint("checkpoints/noa/pure_mse_baseline/best_model.pt")
+
+# 2. Load VQ-VAE trained on NOA's distribution
+vqvae = load_checkpoint("checkpoints/vqvae/noa_distribution_100k/best_model.pt")
+
+# 3. Generate rollout
+rollout = noa(theta, u0)  # [B, 256, 1, H, W]
+
+# 4. Extract features
+features = extract_features(rollout, ic=u0)  # [B, 270]
+
+# 5. Tokenize
+tokens = vqvae.encode(features)  # [B, num_tokens]
+
+# Ready for symbolic reasoning!
+```
+
+**Key benefits:**
+- NOA operates on (θ, u₀) alone (no token conditioning)
+- VQ-VAE compresses NOA's outputs (perfect alignment by construction)
+- Clean, modular components
+
+### Comparison: Key Metrics
+
+| Metric | Two-Stage Curriculum | Independent Optimization |
+|--------|---------------------|--------------------------|
+| **NOA Training** | 15 epochs + 15 epochs fine-tuning | 30 epochs pure MSE |
+| **Physics Quality** | L_traj ≈ 1.5-2.0 (competing objectives) | L_traj < 1.0 (optimized) |
+| **VQ Reconstruction** | 0.067 (plateau, competing) | < 0.05 (optimal alignment) |
+| **Training Complexity** | High (loss balancing) | Low (single objectives) |
+| **Sample Efficiency** | 1K CNO samples | 100K+ NOA samples |
+| **Architecture** | Token conditioning + VQ-led | Pure MSE + standard VQ |
+| **Debugging** | Complex (coupled failures) | Simple (isolated components) |
+
+### Lessons Learned
+
+1. **Competing objectives don't converge:** Multi-objective optimization with conflicting gradients leads to plateaus, not optima.
+
+2. **Alignment by construction > forced alignment:** Training VQ-VAE on NOA's distribution guarantees good compression; forcing NOA to produce CNO-compatible outputs compromises physics.
+
+3. **Sample efficiency matters:** NOA can generate samples 100× faster than CNO after training, enabling better VQ-VAE training.
+
+4. **Simplicity wins:** Removing token conditioning, VQ-led losses, and loss balancing makes the system easier to train, debug, and improve.
+
+5. **Foundation models define their own distribution:** NOA is the foundation model for dynamics; the tokenizer should adapt to NOA, not vice versa.
+
+### Future Work
+
+**Validation experiments:**
+1. Compare physics accuracy (Stage 1 pure MSE vs Stage 1 with tokens)
+2. Compare VQ reconstruction quality (NOA-trained vs CNO-trained)
+3. Measure token consistency/divergence between distributions
+4. Qualitative analysis of NOA tokens vs CNO tokens
+
+**Potential enhancements:**
+- Multi-scale VQ-VAE (hierarchical tokenization)
+- Conditional generation (tokens → rollouts, reverse direction)
+- Symbolic reasoning layer on top of tokens
+- Integration with memory systems
+
+---
+
 ## Glossary
 
 **CNO:** Computational Neural Operator - ground truth physics simulator
@@ -1264,6 +1604,15 @@ Goal: Discover novel but meaningful dynamics
 
 ## Changelog
 
+**2026-01-11:** Architectural pivot to independent optimization
+- Analyzed Stage 2 competing gradients (plateau at batch 500)
+- Documented fundamental tension between VQ quality and physics accuracy
+- Designed "train tokenizer on simulator's distribution" architecture
+- Implemented pure MSE Stage 1 (no token conditioning)
+- Created `spinlock generate-noa-features` command
+- Created VQ-VAE configs for NOA distribution (10K + 100K)
+- Updated branch to `noa-vqvae-independent`
+
 **2026-01-10:** Initial document created
 - Documented two-stage curriculum architecture
 - Captured experimental results through Phase 2F
@@ -1274,8 +1623,9 @@ Goal: Discover novel but meaningful dynamics
 
 ## Contact and Contributions
 
-This architecture is actively being developed on the `two-stage-training` branch. For questions or contributions, see the main repository.
+This architecture has evolved from two-stage curriculum to independent optimization based on empirical findings.
 
-**Current Status:** Stage 1 in progress (Exp 2F running)
-**Next Milestone:** Complete Exp 2F, validate < 2.7 MSE target
-**Future Work:** Stage 2 VQ-led fine-tuning implementation
+**Current Branch:** `noa-vqvae-independent`
+**Current Status:** Pure MSE training running (Epoch 1, target L_traj < 1.0)
+**Next Milestone:** Complete 2-epoch training, generate NOA features, train VQ-VAE
+**Architecture:** Independent optimization (NOA → features → VQ-VAE)

@@ -20,6 +20,7 @@ from .extract_features import ExtractFeaturesCommand
 from .train_vqvae import TrainVQVAECommand
 from .train_meta_operator import TrainMetaOperatorCommand
 from .compute_ground_truth_tokens import ComputeGroundTruthTokensCommand
+from .generate_noa_features import GenerateNOAFeaturesCommand
 
 __all__ = [
     "CLICommand",
@@ -35,6 +36,7 @@ __all__ = [
     "TrainVQVAECommand",
     "TrainMetaOperatorCommand",
     "ComputeGroundTruthTokensCommand",
+    "GenerateNOAFeaturesCommand",
     "main",
 ]
 
@@ -76,6 +78,7 @@ For more help on a specific command:
     # Register commands
     commands = [
         GenerateCommand(),
+        GenerateNOAFeaturesCommand(),
         CloudGenerateCommand(),
         InfoCommand(),
         ValidateCommand(),

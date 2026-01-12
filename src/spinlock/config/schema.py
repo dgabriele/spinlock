@@ -418,6 +418,7 @@ class StorageConfig(BaseModel):
     compression: Literal["gzip", "lzf", "none"] = "gzip"
     compression_level: int = Field(default=4, ge=0, le=9)
     chunk_size: int = Field(default=1000, ge=1)
+    store_trajectories: bool = False  # Optional field, defaults to False
 
 
 class DatasetConfig(BaseModel):

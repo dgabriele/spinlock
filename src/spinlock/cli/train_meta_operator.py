@@ -556,11 +556,16 @@ Output:
             # MSE-led (pure physics, no VQ)
             loss_fn = MSELedLoss(
                 lambda_traj=config["loss"].get("lambda_traj", 1.0),
+                lambda_ic=config["loss"].get("lambda_ic", 0.0),
                 lambda_commit=0.0,  # No VQ alignment
                 lambda_latent=0.0,  # No VQ alignment
                 vqvae_alignment=None,  # Critical: No VQ-VAE
             )
-            print(f"  ✓ Pure physics loss (L_traj = {config['loss'].get('lambda_traj', 1.0)})")
+            lambda_ic = config['loss'].get('lambda_ic', 0.0)
+            if lambda_ic > 0:
+                print(f"  ✓ Pure physics loss (L_traj={config['loss'].get('lambda_traj', 1.0)}, L_ic={lambda_ic})")
+            else:
+                print(f"  ✓ Pure physics loss (L_traj = {config['loss'].get('lambda_traj', 1.0)})")
 
         # Create CNO replayer
         print("Loading CNO replayer...")

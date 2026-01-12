@@ -1,0 +1,60 @@
+# Pure MSE Training: Stage 1 of Independent Optimization Architecture
+#
+# This config represents the new "train tokenizer on simulator's distribution" approach
+# where NOA is trained purely for physics accuracy without any VQ-VAE involvement.
+# After convergence, NOA generates rollouts for VQ-VAE training.
+#
+# Key simplifications from two-stage curriculum:
+# - NO token conditioning (removed complexity)
+# - NO VQ-VAE alignment during training
+# - Pure MSE objective (single, clear goal)
+# - Simpler architecture, proven stable training
+
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 40              # 226M params (same as exp2f)
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  token_conditioning: false      # DISABLED - no token complexity
+
+training:
+  n_samples: 1000
+  batch_size: 2
+  epochs: 30                     # Train to convergence (vs 15 in exp2f)
+  learning_rate: 5.0e-5          # Proven stable from exp2f
+  warmup_steps: 2250             # 5 epochs warmup (proven from exp2f: 900 batches × 5 / 2 = 2250)
+  weight_decay: 1.0e-4
+  clip_grad: 0.5
+
+  # Truncated BPTT (proven effective)
+  timesteps: 256                 # Full rollout
+  bptt_window: 32                # Backprop window
+
+  early_stopping_patience: 5
+
+loss:
+  # Pure MSE - simple, proven, stable
+  # Using mse_led mode with no VQ-VAE alignment = pure trajectory loss
+  mode: "mse_led"
+  lambda_traj: 1.0               # Only objective!
+  # Note: lambda_commit and lambda_latent are ignored when token_conditioning=false
+
+data:
+  dataset_path: "datasets/100k_full_features.h5"
+  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/noa/pure_mse_baseline"
+  save_every: 3
+  keep_best: true
+
+device: "cuda"
+seed: 42
+
+# Target: L_traj < 2.5 (excellent physics)
+# exp2f achieved L_traj = 1.3 in 1 epoch, so 30 epochs should reach < 1.0
