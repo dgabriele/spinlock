@@ -14,14 +14,14 @@ flowchart TB
     Rollouts --> Extract[Feature Extraction]
     Extract --> CNOData[CNO Dataset]
 
-    CNOData --> Stage1[Stage 1: Pure MSE Training<br/>High Fidelity Physics]
-    Stage1 --> NOACheckpoint[Trained NOA Checkpoint]
+    CNOData --> Stage1[Stage 1:<br/>Pure MSE<br/>Training]
+    Stage1 --> NOACheckpoint[Trained NOA<br/>Checkpoint]
 
-    NOACheckpoint --> Stage2[Stage 2: Feature Generation<br/>100K+ Rollouts]
-    Stage2 --> NOAFeatures[Large-Scale NOA Features]
+    NOACheckpoint --> Stage2[Stage 2:<br/>Feature<br/>Generation]
+    Stage2 --> NOAFeatures[Large-Scale<br/>NOA Features]
 
-    NOAFeatures --> Stage3[Stage 3: VQ-VAE Training<br/>On NOA Distribution]
-    Stage3 --> VQVAEModel[VQ-VAE Aligned to NOA]
+    NOAFeatures --> Stage3[Stage 3:<br/>VQ-VAE<br/>Training]
+    Stage3 --> VQVAEModel[VQ-VAE<br/>Aligned to NOA]
 
     NOACheckpoint --> Final[Deployment]
     VQVAEModel --> Final

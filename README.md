@@ -185,14 +185,14 @@ flowchart TB
     Rollouts --> Extract[Feature Extraction]
     Extract --> CNOData[CNO Dataset]
 
-    CNOData --> Stage1[Stage 1: High Fidelity Physics<br/>Pure MSE - No VQ Constraints]
-    Stage1 --> NOAModel[Physics-Optimal NOA<br/>L_traj < 1.0]
+    CNOData --> Stage1[Stage 1:<br/>High Fidelity<br/>Physics Baseline]
+    Stage1 --> NOAModel[Physics-Optimal<br/>NOA Model<br/>L_traj < 1.0]
 
-    NOAModel --> Stage2[Stage 2: Generate NOA Features<br/>100K+ Independent Samples]
-    Stage2 --> NOAFeatures[NOA Distribution Dataset]
+    NOAModel --> Stage2[Stage 2:<br/>Generate Features<br/>100K+ Samples]
+    Stage2 --> NOAFeatures[NOA Distribution<br/>Dataset]
 
-    NOAFeatures --> Stage3[Stage 3: Independent VQ Training<br/>Adapts to NOA's Distribution]
-    Stage3 --> VQVAEModel[VQ-VAE aligned by construction]
+    NOAFeatures --> Stage3[Stage 3:<br/>Independent VQ<br/>Training]
+    Stage3 --> VQVAEModel[VQ-VAE<br/>Aligned by<br/>Construction]
 
     NOAModel -.-> Deployment[Deployment]
     VQVAEModel -.-> Deployment
