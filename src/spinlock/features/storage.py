@@ -135,6 +135,7 @@ class HDF5FeatureWriter:
         chunk_size: int = 100,
         temporal_enabled: bool = True,
         learned_dim: int = 0,
+        param_dim: int = 0,
     ) -> None:
         """
         Create TEMPORAL and SUMMARY feature group structures.
@@ -142,6 +143,7 @@ class HDF5FeatureWriter:
         Creates:
         - /features/temporal/ - per-timestep features (if temporal_enabled)
         - /features/summary/ - per-trajectory, aggregated, and learned features
+        - /features/parameters/ - operator parameter vectors (if param_dim > 0)
 
         Args:
             num_samples: Number of samples (N)
@@ -154,6 +156,7 @@ class HDF5FeatureWriter:
             chunk_size: Chunk size for HDF5
             temporal_enabled: Whether TEMPORAL (per-timestep) features are enabled
             learned_dim: Dimension of learned features (0 = disabled)
+            param_dim: Dimension of operator parameter space (0 = disabled)
 
         Raises:
             RuntimeError: If file not opened
@@ -261,6 +264,29 @@ class HDF5FeatureWriter:
             )
             self._feature_groups_created.add('learned')
 
+        # Operator parameters [N, D_param] - Sobol parameter vectors
+        if param_dim > 0:
+            # Create /features/parameters dataset (at root of features group, not under summary)
+            if 'parameters' in features_group:
+                if not self.overwrite:
+                    raise ValueError(
+                        "Parameter dataset already exists. Set overwrite=True to replace."
+                    )
+                del features_group['parameters']
+
+            params_dataset = features_group.create_dataset(
+                'parameters',
+                shape=(num_samples, param_dim),
+                dtype=np.float32,
+                chunks=(min(chunk_size, num_samples), param_dim),
+                **compression_kwargs
+            )
+            params_dataset.attrs['version'] = "1.0.0"
+            params_dataset.attrs['description'] = "Sobol parameter vectors in [0,1]^D unit hypercube"
+            params_dataset.attrs['units'] = "unit_hypercube"
+            params_dataset.attrs['param_dim'] = param_dim
+            self._feature_groups_created.add('parameters')
+
         # Update family versions
         family_versions_str = str(features_group.attrs['family_versions'])
         family_versions = json.loads(family_versions_str)
@@ -353,6 +379,48 @@ class HDF5FeatureWriter:
                 learned = learned[:, :expected_dim]
 
             dataset[batch_idx:end_idx] = learned
+
+    def write_parameters(
+        self,
+        batch_idx: int,
+        parameters: np.ndarray,
+    ) -> None:
+        """
+        Write operator parameter vectors to HDF5.
+
+        Stores Sobol parameter vectors in [0,1]^D unit hypercube for reproducibility.
+        These can be used to reconstruct operator configurations or analyze parameter
+        space coverage.
+
+        Args:
+            batch_idx: Starting index for this batch
+            parameters: Parameter vectors [B, D] in [0,1] range
+
+        Raises:
+            RuntimeError: If file not opened or parameters dataset not created
+            ValueError: If parameter dimension mismatch
+        """
+        if self.file is None:
+            raise RuntimeError("HDF5 file not opened")
+
+        if 'parameters' not in self._feature_groups_created:
+            raise RuntimeError("Parameters dataset not created. Call create_summary_group() with param_dim > 0")
+
+        features_group = cast(h5py.Group, self.file['features'])
+        params_dataset = cast(h5py.Dataset, features_group['parameters'])
+
+        batch_size = parameters.shape[0]
+        end_idx = batch_idx + batch_size
+
+        # Validate dimension
+        expected_dim = params_dataset.shape[1]
+        actual_dim = parameters.shape[1]
+        if actual_dim != expected_dim:
+            raise ValueError(
+                f"Parameter dimension mismatch: expected {expected_dim}, got {actual_dim}"
+            )
+
+        params_dataset[batch_idx:end_idx] = parameters
 
     def write_operator_sensitivity_features(
         self,

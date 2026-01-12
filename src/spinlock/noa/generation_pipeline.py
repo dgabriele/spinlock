@@ -111,6 +111,14 @@ class NOAFeatureGenerationPipeline:
             device=self.device,
         )
 
+        # Initialize parameter sampler for operator diversity
+        from ..sampling.sobol import StratifiedSobolSampler
+        self.parameter_sampler = StratifiedSobolSampler.from_config(
+            parameter_space=config.parameter_space,
+            config=config.sampling,
+        )
+        print(f"  ✓ Parameter sampler initialized (D={config.parameter_space.total_dimensions})")
+
         # Initialize feature extractors
         print("Initializing feature extractors...")
 
@@ -201,6 +209,7 @@ class NOAFeatureGenerationPipeline:
                 print(f"  Aggregated: {per_trajectory_dim * 3}\n")
 
                 # Initialize HDF5 structure using create_summary_group
+                param_dim = self.config.parameter_space.total_dimensions
                 feature_writer.create_summary_group(
                     num_samples=n_samples,
                     num_timesteps=timesteps,
@@ -212,6 +221,7 @@ class NOAFeatureGenerationPipeline:
                     chunk_size=min(100, n_samples),
                     temporal_enabled=self.temporal_enabled,
                     learned_dim=0,  # No learned features for NOA
+                    param_dim=param_dim,  # Operator parameter space dimension
                 )
 
                 print(f"Feature datasets created\n")
@@ -224,12 +234,15 @@ class NOAFeatureGenerationPipeline:
                     batch_end = min(batch_start + batch_size, n_samples)
                     current_batch_size = batch_end - batch_start
 
-                    # Generate initial conditions for this batch
+                    # Step 1: Sample operator parameters via Sobol
                     gen_start = time.time()
-                    ics = self.input_generator.generate_batch(current_batch_size)
+                    unit_params = self.parameter_sampler.sample(current_batch_size)  # [B, D] in [0,1]
+
+                    # Step 2: Generate initial conditions for sampled parameters
+                    ics = self.input_generator.generate_batch(current_batch_size)  # [B, C, H, W]
                     self.stats["generation_time"] += time.time() - gen_start
 
-                    # Generate NOA rollouts
+                    # Step 3: Generate MNO predictions
                     rollout_start = time.time()
                     with torch.no_grad():
                         trajectories = self.noa(
@@ -285,6 +298,13 @@ class NOAFeatureGenerationPipeline:
                         per_trajectory=per_trajectory.cpu().numpy(),  # [B, M, D]
                         aggregated=aggregated,  # Already numpy: [B, D*3]
                     )
+
+                    # Write operator parameters (Sobol vectors)
+                    feature_writer.write_parameters(
+                        batch_idx=batch_start,
+                        parameters=unit_params,  # [B, D] in [0,1]
+                    )
+
                     self.stats["storage_time"] += time.time() - storage_start
 
                     self.stats["samples_generated"] = batch_end
