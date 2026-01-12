@@ -95,30 +95,40 @@ The NOA uses a **U-AFNO backbone** that operates directly in continuous function
 - Multi-modal feature extraction (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL)
 - Data-driven behavioral taxonomy via hierarchical clustering
 
-**Phase 1: Meta-Operator Training** (🔄 In Progress - Independent Optimization)
+**Phase 1: MNO Training (Meta-Neural Operator)** (🔄 In Progress - Independent Optimization)
 - U-AFNO backbone (226M parameters) with pure MSE training
+- Trains the **MNO**: pure physics simulator (no agency, no reasoning)
+- Later phases build **NOA** (Neural Operator Agent) on top of MNO + tokens
 - **Three-Stage Independent Optimization**:
 
   | Stage | Component | Objective | Output |
   |-------|-----------|-----------|--------|
-  | **1: High Fidelity Physics Baseline** | NOA backbone | L_traj only (pure MSE) | Physics-optimal model (L_traj < 1.0) |
-  | **2: Feature Generation** | Trained NOA | Generate 100K+ rollouts | Large-scale NOA features |
-  | **3: Tokenization** | VQ-VAE | L_recon + L_commit | VQ-VAE aligned to NOA |
+  | **1: High Fidelity Physics Baseline** | MNO backbone | L_traj only (pure MSE) | Trained MNO (L_traj < 1.0) |
+  | **2: Feature Generation** | Trained MNO | Generate 100K+ rollouts | Large-scale MNO features |
+  | **3: Tokenization** | VQ-VAE | L_recon + L_commit | VQ-VAE aligned to MNO |
 
-- **Philosophy**: Train tokenizer on simulator's distribution (VQ-VAE adapts to NOA, not vice versa). This avoids competing gradients that plague joint optimization.
-- **Stage 1 (High Fidelity Physics)**: Pure MSE training achieves optimal physics accuracy (L_traj < 1.0) without VQ interference. No token conditioning, no VQ constraints—single objective optimization.
-- **Stage 2**: Generate massive NOA rollout dataset with inline feature extraction (100K+ samples)
-- **Stage 3**: Train VQ-VAE on NOA's distribution - guaranteed alignment by construction
+- **Philosophy**: Train tokenizer on simulator's distribution (VQ-VAE adapts to MNO, not vice versa). This avoids competing gradients that plague joint optimization.
+- **Stage 1 (High Fidelity Physics)**: Pure MSE training achieves optimal physics accuracy (L_traj < 1.0) without VQ interference. No token conditioning, no VQ constraints—single objective optimization. Output: trained MNO.
+- **Stage 2**: Generate massive MNO rollout dataset with inline feature extraction (100K+ samples)
+- **Stage 3**: Train VQ-VAE on MNO's distribution - guaranteed alignment by construction
 - **Truncated BPTT**: Long-horizon training (256-step rollouts, 32-step backprop window)
-- **Training flow**: Stage 1 (NOA) → Stage 2 (features) → Stage 3 (VQ-VAE)
+- **Training flow**: Stage 1 (MNO) → Stage 2 (features) → Stage 3 (VQ-VAE) → Foundation for NOA agent
 
 **Three-Stage Rationale**: This architecture eliminates the fundamental tension between physics accuracy and VQ quality. In two-stage curriculum approaches, joint optimization creates competing gradients where improving one objective degrades the other, resulting in equilibrium plateaus (neither optimal). Independent optimization achieves:
-1. **Optimal physics**: Stage 1 pure MSE reaches L_traj < 1.0 without VQ interference
-2. **Optimal tokenization**: Stage 3 VQ-VAE adapts to NOA's distribution, achieving L_recon < 0.05
-3. **Massive scale**: 100K+ NOA samples vs 1K CNO samples improves VQ-VAE training quality
+1. **Optimal physics**: Stage 1 pure MSE trains optimal MNO (L_traj < 1.0) without VQ interference
+2. **Optimal tokenization**: Stage 3 VQ-VAE adapts to MNO's distribution, achieving L_recon < 0.05
+3. **Massive scale**: 100K+ MNO samples vs 1K CNO samples improves VQ-VAE training quality
 4. **Architectural simplicity**: No token conditioning, no loss balancing, no coupled debugging
 
 See [Independent Optimization Guide](docs/noa-vqvae-independent.md) for complete implementation details and [Two-Stage Curriculum (Deprecated)](docs/two-stage-curriculum-architecture.md) for empirical analysis of competing gradient issues.
+
+---
+
+**MNO vs NOA Distinction:**
+- **MNO (Meta-Neural Operator)**: Pure physics simulator (Phase 1). No agency, no reasoning—just accurate trajectory prediction.
+- **NOA (Neural Operator Agent)**: Higher-level agent architecture (Phase 2+). Uses MNO as physics engine + operates over VQ tokens. Has working memory, curiosity, planning capabilities.
+
+---
 
 **Phase 2: Multi-Observation Context** (📋 Planned)
 - Lightweight transformer/recurrent heads on VQ token sequences
@@ -186,15 +196,15 @@ flowchart TB
     Extract --> CNOData[CNO Dataset]
 
     CNOData --> Stage1[Stage 1:<br/>High Fidelity<br/>Physics Baseline]
-    Stage1 --> NOAModel[Physics-Optimal<br/>NOA Model<br/>L_traj < 1.0]
+    Stage1 --> MNOModel[Trained<br/>MNO Model<br/>L_traj < 1.0]
 
-    NOAModel --> Stage2[Stage 2:<br/>Generate Features<br/>100K+ Samples]
-    Stage2 --> NOAFeatures[NOA Distribution<br/>Dataset]
+    MNOModel --> Stage2[Stage 2:<br/>Generate Features<br/>100K+ Samples]
+    Stage2 --> MNOFeatures[MNO Distribution<br/>Dataset]
 
-    NOAFeatures --> Stage3[Stage 3:<br/>Independent VQ<br/>Training]
-    Stage3 --> VQVAEModel[VQ-VAE<br/>Aligned by<br/>Construction]
+    MNOFeatures --> Stage3[Stage 3:<br/>Independent VQ<br/>Training]
+    Stage3 --> VQVAEModel[VQ-VAE<br/>Aligned to MNO]
 
-    NOAModel -.-> Deployment[Deployment]
+    MNOModel -.-> Deployment[Deployment]
     VQVAEModel -.-> Deployment
 
     classDef phase0 fill:#b0bec5,stroke:#455a64,stroke-width:2px,color:#000
@@ -204,8 +214,8 @@ flowchart TB
     classDef deployment fill:#b3e5fc,stroke:#0277bd,stroke-width:2px,color:#000
 
     class Config,Sampling,CNOs,Rollouts,Extract,CNOData phase0
-    class Stage1,NOAModel stage1
-    class Stage2,NOAFeatures stage2
+    class Stage1,MNOModel stage1
+    class Stage2,MNOFeatures stage2
     class Stage3,VQVAEModel stage3
     class Deployment deployment
 ```
@@ -219,31 +229,31 @@ flowchart TB
 4. CNO dataset establishing ground truth physics (1K samples for Stage 1 training)
 
 **Stage 1: High Fidelity Physics Baseline** (green)
-- Train NOA with **pure MSE loss** - no VQ constraints, no token conditioning, single objective
+- Train **MNO** (Meta-Neural Operator) with **pure MSE loss** - no VQ constraints, no token conditioning, single objective
 - Architecture: U-AFNO backbone (226M params) with Truncated BPTT (256-step rollouts, 32-step window)
 - Input: (θ, u₀) from CNO dataset
 - Loss: L_traj only (MSE vs CNO trajectories)
 - Target: L_traj < 1.0 (RMSE < field variation, research-grade physics accuracy)
-- Output: Physics-optimal NOA model ready for feature generation
+- Output: Trained MNO ready for feature generation
 
-**Stage 2: NOA Feature Generation** (yellow)
-- **Independent sampling**: Generate 100K+ rollouts from trained NOA (10-100× larger than CNO dataset)
+**Stage 2: MNO Feature Generation** (yellow)
+- **Independent sampling**: Generate 100K+ rollouts from trained MNO (10-100× larger than CNO dataset)
 - Sample diverse (θ, u₀) from same parameter space as Stage 0
 - Extract features inline with GPU-optimized pipeline (99.99% storage savings vs full trajectories)
-- **Key**: Features represent NOA's actual distribution, not CNO's
-- Output: Large-scale NOA feature dataset (~1 GB for 100K samples)
+- **Key**: Features represent MNO's actual distribution, not CNO's
+- Output: Large-scale MNO feature dataset (~1 GB for 100K samples)
 
 **Stage 3: Independent VQ Tokenization** (purple)
-- Train VQ-VAE on NOA's distribution using standard VQ-VAE training pipeline (proven, simple)
+- Train VQ-VAE on MNO's distribution using standard VQ-VAE training pipeline (proven, simple)
 - Loss: L_recon + L_commit (no physics loss, no competing objectives)
-- **Alignment by construction**: VQ-VAE learns to compress what NOA actually produces
+- **Alignment by construction**: VQ-VAE learns to compress what MNO actually produces
 - Target: L_recon < 0.05 (better than CNO baseline of 0.067 due to distribution match)
-- Output: VQ-VAE optimized for NOA's behavioral manifold, ready for symbolic reasoning
+- Output: VQ-VAE optimized for MNO's behavioral manifold, ready for NOA agent (Phase 2+)
 
 **Three-Stage Rationale**: This architecture eliminates the fundamental tension between physics accuracy and VQ quality. In two-stage curriculum approaches, joint optimization creates competing gradients where improving one objective degrades the other, resulting in equilibrium plateaus (neither optimal). Independent optimization achieves:
-1. **Optimal physics**: Stage 1 pure MSE reaches L_traj < 1.0 without VQ interference
-2. **Optimal tokenization**: Stage 3 VQ-VAE adapts to NOA's distribution, achieving L_recon < 0.05
-3. **Massive scale**: 100K+ NOA samples vs 1K CNO samples improves VQ-VAE training quality
+1. **Optimal physics**: Stage 1 pure MSE trains optimal MNO (L_traj < 1.0) without VQ interference
+2. **Optimal tokenization**: Stage 3 VQ-VAE adapts to MNO's distribution, achieving L_recon < 0.05
+3. **Massive scale**: 100K+ MNO samples vs 1K CNO samples improves VQ-VAE training quality
 4. **Architectural simplicity**: No token conditioning, no loss balancing, no coupled debugging
 
 See [Independent Optimization Guide](docs/noa-vqvae-independent.md) for complete implementation details and [Two-Stage Curriculum (Deprecated)](docs/two-stage-curriculum-architecture.md) for empirical analysis of competing gradient issues.

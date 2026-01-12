@@ -1,4 +1,4 @@
-# Independent Optimization Architecture: NOA + VQ-VAE
+# Independent Optimization Architecture: MNO + VQ-VAE
 
 **Date:** 2026-01-11
 **Branch:** `noa-vqvae-independent`
@@ -8,10 +8,14 @@
 
 ## Executive Summary
 
-This document describes the **independent optimization architecture** for training Meta-Neural Operators (NOA) with VQ-VAE tokenization. Unlike coupled training approaches, this architecture optimizes each component independently:
+This document describes the **independent optimization architecture** for training the Meta-Neural Operator (MNO) with VQ-VAE tokenization. The MNO is a pure physics simulator that serves as the foundation for the eventual NOA (Neural Operator Agent). Unlike coupled training approaches, this architecture optimizes each component independently:
 
-1. **NOA** trained purely for physics accuracy (no VQ constraints)
-2. **VQ-VAE** trained on NOA's outputs (alignment by construction)
+1. **MNO** trained purely for physics accuracy (no VQ constraints)
+2. **VQ-VAE** trained on MNO's outputs (alignment by construction)
+
+**MNO vs NOA:**
+- **MNO**: Pure physics simulator (Phase 1 output). No agency, no reasoning—just accurate trajectory prediction.
+- **NOA**: Higher-level agent architecture (Phase 2+). Uses MNO as physics engine + operates over VQ tokens with working memory and planning.
 
 **Key Insight:** The tokenizer should adapt to the simulator's distribution, not vice versa.
 
@@ -21,10 +25,10 @@ This document describes the **independent optimization architecture** for traini
 
 ## Quick Start
 
-### 1. Train NOA (Pure Physics)
+### 1. Train MNO (Pure Physics)
 
 ```bash
-# Train NOA with pure MSE loss (no token conditioning)
+# Train MNO with pure MSE loss (no token conditioning)
 poetry run spinlock train-meta-operator \
   --config configs/noa/experiments/phase2/exp_pure_mse.yaml
 
@@ -33,13 +37,13 @@ poetry run spinlock train-meta-operator \
 # Result: checkpoints/noa/pure_mse_baseline/meta_operator_best.pt
 ```
 
-### 2. Generate NOA Features
+### 2. Generate MNO Features
 
 ```bash
 # Generate 10K features for validation
 poetry run spinlock generate-noa-features \
   --noa-checkpoint checkpoints/noa/pure_mse_baseline/meta_operator_best.pt \
-  --output datasets/noa_features_10k.h5 \
+  --output datasets/mno_features_10k.h5 \
   --n-samples 10000 \
   --config configs/experiments/local_100k_optimized.yaml \
   --batch-size 16
@@ -47,7 +51,7 @@ poetry run spinlock generate-noa-features \
 # Generate 100K features for production
 poetry run spinlock generate-noa-features \
   --noa-checkpoint checkpoints/noa/pure_mse_baseline/meta_operator_best.pt \
-  --output datasets/noa_features_100k.h5 \
+  --output datasets/mno_features_100k.h5 \
   --n-samples 100000 \
   --config configs/experiments/local_100k_optimized.yaml \
   --batch-size 16
@@ -56,20 +60,20 @@ poetry run spinlock generate-noa-features \
 # Space: ~100 MB (10K) or ~1 GB (100K) - feature-only, no trajectories
 ```
 
-### 3. Train VQ-VAE on NOA Distribution
+### 3. Train VQ-VAE on MNO Distribution
 
 ```bash
 # Train on 10K (validation)
 poetry run spinlock train-vqvae \
-  --config configs/vqvae/noa_distribution_10k.yaml
+  --config configs/vqvae/mno_distribution_10k.yaml
 
 # Train on 100K (production)
 poetry run spinlock train-vqvae \
-  --config configs/vqvae/noa_distribution_100k.yaml
+  --config configs/vqvae/mno_distribution_100k.yaml
 
 # Target: L_recon < 0.05 (better than CNO's 0.067)
 # Time: ~3 hours (10K) or ~10 hours (100K)
-# Result: checkpoints/vqvae/noa_distribution_100k/best_model.pt
+# Result: checkpoints/vqvae/mno_distribution_100k/best_model.pt
 ```
 
 ### 4. Deploy End-to-End
@@ -79,17 +83,17 @@ from spinlock.noa.backbone import NOABackbone
 from spinlock.encoding.unified_feature_pipeline import UnifiedFeaturePipeline
 import torch
 
-# Load trained components
-noa = NOABackbone.load_checkpoint("checkpoints/noa/pure_mse_baseline/meta_operator_best.pt")
-vqvae = load_vqvae("checkpoints/vqvae/noa_distribution_100k/best_model.pt")
+# Load trained MNO and VQ-VAE
+mno = NOABackbone.load_checkpoint("checkpoints/noa/pure_mse_baseline/meta_operator_best.pt")
+vqvae = load_vqvae("checkpoints/vqvae/mno_distribution_100k/best_model.pt")
 
-# Generate and tokenize
+# Generate rollout and tokenize
 theta, u0 = sample_operator_and_ic()
-rollout = noa(u0, steps=256)  # [1, 256, 1, H, W]
+rollout = mno(u0, steps=256)  # [1, 256, 1, H, W]
 features = extract_features(rollout, u0)  # [1, 270]
 tokens = vqvae.encode(features)  # [1, num_tokens]
 
-# Ready for symbolic reasoning!
+# Ready for NOA agent (Phase 2+) to use MNO + tokens for symbolic reasoning!
 ```
 
 ---
@@ -98,7 +102,7 @@ tokens = vqvae.encode(features)  # [1, num_tokens]
 
 ### Problem with Coupled Training
 
-Traditional approaches train NOA with VQ constraints:
+Traditional approaches train MNO with VQ constraints simultaneously:
 
 ```
 Loss = λ_traj × L_traj + λ_commit × L_commit + λ_latent × L_latent
@@ -109,33 +113,33 @@ Loss = λ_traj × L_traj + λ_commit × L_commit + λ_latent × L_latent
 **Challenges:**
 - Competing gradients (physics vs VQ quality)
 - Loss weight tuning (λ values interdependent)
-- Feature dimension matching (VQ and NOA must align)
+- Feature dimension matching (VQ and MNO must align)
 - Plateau at equilibrium (neither objective optimized)
 
-**Observed:** NOA achieves L_recon = 0.067 (better than VQ-VAE's 0.120 on CNO) by learning "VQ-friendly" dynamics at the cost of physics accuracy.
+**Observed:** MNO achieves L_recon = 0.067 (better than VQ-VAE's 0.120 on CNO) by learning "VQ-friendly" dynamics at the cost of physics accuracy.
 
 ### Solution: Independent Optimization
 
 Train components separately with single objectives:
 
 ```
-Stage 1: NOA (Pure MSE)
+Stage 1: MNO (Pure MSE)
   Loss = L_traj
   Goal: Optimal physics accuracy
 
 Stage 2: Generate Features
-  NOA(θ, u₀) → Rollout → Features
-  Sample 100K diverse rollouts from NOA
+  MNO(θ, u₀) → Rollout → Features
+  Sample 100K diverse rollouts from MNO
 
 Stage 3: VQ-VAE (Standard)
   Loss = L_recon + L_commit
-  Goal: Optimal tokenization of NOA's outputs
+  Goal: Optimal tokenization of MNO's outputs
 ```
 
 **Advantages:**
 - ✅ No competing objectives
 - ✅ No loss weight tuning
-- ✅ Alignment by construction (VQ learns NOA's structure)
+- ✅ Alignment by construction (VQ learns MNO's structure)
 - ✅ 100× more training samples for VQ-VAE
 - ✅ Simpler architecture (no token conditioning)
 
@@ -145,7 +149,7 @@ Stage 3: VQ-VAE (Standard)
 
 ### Stage 1: Pure Physics Training
 
-**Goal:** Train NOA to minimize trajectory MSE against CNO ground truth.
+**Goal:** Train MNO to minimize trajectory MSE against CNO ground truth.
 
 **Architecture:**
 ```
@@ -160,7 +164,7 @@ Autoregressive Rollout
    - Total steps: 256
    - Truncated BPTT: window=32
    ↓
-Loss: MSE(NOA_rollout, CNO_rollout)
+Loss: MSE(MNO_rollout, CNO_rollout)
 ```
 
 **Training hyperparameters:**
@@ -186,12 +190,12 @@ clip_grad: 0.5
 
 ### Stage 2: Feature Generation
 
-**Goal:** Generate large-scale feature dataset from trained NOA.
+**Goal:** Generate large-scale feature dataset from trained MNO.
 
 **Process:**
-1. Load trained NOA checkpoint
+1. Load trained MNO checkpoint
 2. Sample diverse (θ, u₀) from parameter space
-3. Generate NOA rollouts (fast, no gradients)
+3. Generate MNO rollouts (fast, no gradients)
 4. Extract features inline (GPU-optimized)
 5. Save features to HDF5 (no trajectories)
 
@@ -228,11 +232,11 @@ Savings: 99.99%
 
 ### Stage 3: VQ-VAE Training
 
-**Goal:** Learn discrete tokenization of NOA's feature distribution.
+**Goal:** Learn discrete tokenization of MNO's feature distribution.
 
 **Architecture:**
 ```
-Input: NOA features [B, 270]
+Input: MNO features [B, 270]
    ↓
 Family Encoders (per-family compression)
    - INITIAL: 14D → 14D (identity)
@@ -269,13 +273,13 @@ decay: 0.99
 - **Good**: L_recon < 0.05
 - **Acceptable**: L_recon < 0.08
 
-**Why it's better:** VQ-VAE learns NOA's actual structure, not forced to compress dynamics it doesn't understand.
+**Why it's better:** VQ-VAE learns MNO's actual structure, not forced to compress dynamics it doesn't understand.
 
 ---
 
 ## Implementation Guide
 
-### Stage 1: Training NOA
+### Stage 1: Training MNO
 
 **Config:** `configs/noa/experiments/phase2/exp_pure_mse.yaml`
 
@@ -328,7 +332,7 @@ tail -1 checkpoints/noa/pure_mse_baseline/training_log.txt
 **Command structure:**
 ```bash
 spinlock generate-noa-features \
-  --noa-checkpoint <path>       # Trained NOA checkpoint
+  --noa-checkpoint <path>       # Trained MNO checkpoint
   --output <path>                # Output HDF5 file
   --n-samples <N>                # Number of rollouts
   --config <path>                # Base config (for param space)
@@ -502,13 +506,13 @@ print(f"Batch tokens: {tokens.shape}")  # [16, num_categories × 3]
 
 | Aspect | Two-Stage Curriculum | Independent Optimization |
 |--------|---------------------|--------------------------|
-| **NOA Training** | Stage 1: MSE + tokens<br>Stage 2: VQ-led fine-tuning | Pure MSE only |
-| **VQ Training** | Pre-trained on CNO | Trained on NOA |
+| **MNO Training** | Stage 1: MSE + tokens<br>Stage 2: VQ-led fine-tuning | Pure MSE only |
+| **VQ Training** | Pre-trained on CNO | Trained on MNO |
 | **Physics Quality** | L_traj ≈ 1.5-2.0 | L_traj < 1.0 |
 | **VQ Quality** | L_recon ≈ 0.067 | L_recon < 0.05 |
 | **Architecture** | Complex (tokens + VQ-led) | Simple (pure MSE) |
 | **Debugging** | Hard (coupled failures) | Easy (isolated) |
-| **Sample Count** | 1K (CNO limited) | 100K+ (NOA unlimited) |
+| **Sample Count** | 1K (CNO limited) | 100K+ (MNO unlimited) |
 
 ### vs. Simultaneous Training
 
@@ -524,7 +528,7 @@ print(f"Batch tokens: {tokens.shape}")  # [16, num_categories × 3]
 
 ## Troubleshooting
 
-### NOA Training Issues
+### MNO Training Issues
 
 **Problem: Loss not decreasing**
 ```
@@ -566,7 +570,7 @@ Solution:
 **Problem: NaN features**
 ```
 Solution:
-1. Check NOA checkpoint quality (L_traj < 2.0?)
+1. Check MNO checkpoint quality (L_traj < 2.0?)
 2. Verify feature extractors are initialized correctly
 3. Check for numerical instability in rollouts
 ```
@@ -597,7 +601,7 @@ Solution:
 
 ### Training Times (RTX 3060 Ti, 8GB)
 
-**NOA Training:**
+**MNO Training:**
 - 1 epoch (1000 samples): ~55 min
 - 2 epochs (target L_traj < 1.0): ~2 hours
 - 5 epochs (target L_traj < 0.5): ~4.5 hours
@@ -614,7 +618,7 @@ Solution:
 
 ### Storage Requirements
 
-**NOA Checkpoints:**
+**MNO Checkpoints:**
 - Per checkpoint: ~2 GB (226M params)
 - Total (30 epochs, save_every=3): ~20 GB
 
@@ -629,7 +633,7 @@ Solution:
 
 ### Inference Throughput
 
-**NOA Rollouts:**
+**MNO Rollouts:**
 - Single sample: ~0.05 sec (20 samples/sec)
 - Batch of 16: ~0.4 sec (40 samples/sec)
 - 256-step rollout, TBPTT not needed for inference
@@ -647,7 +651,7 @@ Solution:
 **End-to-End:**
 - Single sample: ~0.06 sec (17 samples/sec)
 - Batch of 16: ~0.5 sec (32 samples/sec)
-- Dominated by NOA rollout time
+- Dominated by MNO rollout time
 
 ---
 
@@ -655,20 +659,21 @@ Solution:
 
 ### Documentation
 - [Two-Stage Curriculum Architecture](two-stage-curriculum-architecture.md) - Original approach and pivot rationale
-- [NOA Training Guide](noa-training-guide.md) - General NOA training principles
+- [NOA Training Guide](noa-training-guide.md) - General training principles (applies to MNO)
 - [VQ-VAE Training Guide](../configs/vqvae/README.md) - VQ-VAE configuration details
+- [NOA Roadmap](noa-roadmap.md) - Phase 1 describes MNO training
 
 ### Code
-- `src/spinlock/noa/backbone.py` - NOA architecture
-- `src/spinlock/cli/train_meta_operator.py` - NOA training script
-- `src/spinlock/cli/generate_noa_features.py` - Feature generation command
+- `src/spinlock/noa/backbone.py` - MNO/NOABackbone architecture (used for MNO training)
+- `src/spinlock/cli/train_meta_operator.py` - MNO training CLI script
+- `src/spinlock/cli/generate_noa_features.py` - MNO feature generation command
 - `src/spinlock/noa/generation_pipeline.py` - Feature generation pipeline
 - `src/spinlock/cli/train_vqvae.py` - VQ-VAE training script
 
 ### Configs
-- `configs/noa/experiments/phase2/exp_pure_mse.yaml` - NOA training
-- `configs/vqvae/noa_distribution_10k.yaml` - VQ-VAE validation
-- `configs/vqvae/noa_distribution_100k.yaml` - VQ-VAE production
+- `configs/noa/experiments/phase2/exp_pure_mse.yaml` - MNO training (Stage 1)
+- `configs/vqvae/mno_distribution_10k.yaml` - VQ-VAE validation (Stage 3)
+- `configs/vqvae/mno_distribution_100k.yaml` - VQ-VAE production (Stage 3)
 
 ---
 
@@ -682,6 +687,6 @@ Solution:
 
 ---
 
-**Last Updated:** 2026-01-11
+**Last Updated:** 2026-01-12
 **Branch:** `noa-vqvae-independent`
-**Status:** NOA training in progress (Epoch 1/30)
+**Status:** MNO training in progress (v3 with IC reconstruction loss, Epoch 1/30)
