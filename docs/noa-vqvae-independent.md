@@ -190,14 +190,35 @@ clip_grad: 0.5
 
 ### Stage 2: Feature Generation
 
-**Goal:** Generate large-scale feature dataset from trained MNO.
+**Goal:** Generate large-scale feature dataset from trained MNO that aligns with its training distribution.
+
+**Critical Design Choice: Training Distribution Alignment**
+
+MNO is trained on a **stratified 2K subsample** from the 100K CNO dataset (stride=50). To ensure VQ-VAE learns MNO's actual distribution, feature generation uses **denser stratification within the training span**:
+
+| Configuration | Training (Stage 1) | Generation (Stage 2) |
+|---------------|-------------------|---------------------|
+| **Dataset** | 100K CNO operators | Same 100K dataset |
+| **Sampling** | Stratified: stride=50 | Denser: stride=10 |
+| **Indices** | [0, 50, 100, ..., 99950] | [0, 10, 20, ..., 99990] |
+| **Samples** | 2K unique parameters | 10K unique parameters |
+| **Coverage** | Training points only | 2K exact + 8K interpolated |
+
+**Rationale:**
+- ✅ **In-distribution**: All parameters within MNO's training span [0, 99950]
+- ✅ **More diversity**: 10K unique parameters vs 2K training (5× more)
+- ✅ **Tests smoothness**: 8K interpolated points test MNO's local generalization
+- ✅ **Maintains structure**: Denser Sobol sampling preserves low-discrepancy properties
 
 **Process:**
-1. Load trained MNO checkpoint
-2. Sample diverse (θ, u₀) from parameter space
-3. Generate MNO rollouts (fast, no gradients)
-4. Extract features inline (GPU-optimized)
-5. Save features to HDF5 (no trajectories)
+1. Load trained MNO checkpoint and extract training configuration
+2. Calculate training span from checkpoint (stride=50, indices [0, 99950])
+3. Generate 10K indices with denser stride=10 within training span
+4. Load parameter vectors from dataset at these indices
+5. Sample diverse initial conditions (ICs) for each parameter
+6. Generate MNO rollouts (fast, no gradients)
+7. Extract features inline (GPU-optimized)
+8. Save features + parameters to HDF5 (no trajectories)
 
 **Feature extraction:**
 ```python
@@ -222,13 +243,14 @@ clip_grad: 0.5
 ```
 Trajectories: [100K, 256, 1, 64, 64] × 4 bytes = 1.6 TB
 Features:     [100K, 270] × 4 bytes = 108 MB
+Parameters:   [100K, 12] × 4 bytes = 4.8 MB
 Savings: 99.99%
 ```
 
 **Generation throughput:**
-- RTX 3060 Ti: ~20 samples/sec
-- 10K samples: ~8 minutes
-- 100K samples: ~80 minutes
+- RTX 3060 Ti: ~1.2 samples/sec (with M=3 realizations)
+- 10K samples: ~2.3 hours
+- 100K samples: ~23 hours
 
 ### Stage 3: VQ-VAE Training
 
@@ -331,14 +353,50 @@ tail -1 checkpoints/noa/pure_mse_baseline/training_log.txt
 
 **Command structure:**
 ```bash
-spinlock generate-noa-features \
+spinlock generate-noa-dataset \
   --noa-checkpoint <path>       # Trained MNO checkpoint
   --output <path>                # Output HDF5 file
-  --n-samples <N>                # Number of rollouts
-  --config <path>                # Base config (for param space)
+  --n-samples <N>                # Number of samples to generate
+  --config <path>                # Base config (for param space + IC settings)
   --batch-size <N>               # Generation batch size (default: 16)
-  --device cuda                  # Device (default: cuda)
+  --num-realizations <M>         # Realizations per parameter (default: 3)
+  --device <device>              # cuda or cpu (default: cuda)
   --seed <N>                     # Random seed (default: 42)
+  --verbose                      # Print detailed progress
+```
+
+**Example: 10K validation set**
+```bash
+poetry run spinlock generate-noa-dataset \
+  --noa-checkpoint checkpoints/noa/pure_mse_v3_ic_fix/meta_operator_best.pt \
+  --output datasets/noa_features/mno_v3_10k.h5 \
+  --n-samples 10000 \
+  --config configs/experiments/local_100k_optimized.yaml \
+  --device cuda \
+  --batch-size 16 \
+  --num-realizations 3 \
+  --verbose
+```
+
+**What happens during generation:**
+1. **Loads checkpoint config**: Extracts training dataset path and n_samples (2K)
+2. **Calculates training span**: Indices [0, 99950] with stride=50
+3. **Generates dense indices**: Stride=10 within training span → [0, 10, 20, ..., 99990]
+4. **Loads parameters**: 10K parameter vectors from original dataset at dense indices
+5. **Generates ICs**: Diverse IC types (25% gaussian, 25% band-limited, 25% structured, 25% localized)
+6. **MNO rollouts**: Predicts 256-step trajectories for each (θ, IC) pair
+7. **Feature extraction**: Inline GPU-optimized extraction (SUMMARY + INITIAL)
+8. **Storage**: Writes features + parameters to HDF5 (no trajectories)
+
+**Output:**
+```
+Training span: indices [0, 99950] (stride=50)
+✓ Generation strategy: Denser stratification within training span
+✓ Generation indices: [0, ..., 99990] (stride=10)
+✓ Total samples: 10000
+✓ Exact training points: 2000
+✓ Interpolated points: 8000
+✓ Parameter space: 12D
 ```
 
 **Recommended batch sizes:**
@@ -348,11 +406,12 @@ spinlock generate-noa-features \
 
 **Output structure:**
 ```
-datasets/noa_features_100k.h5:
-  /features/initial      [100K, 14]
-  /features/summary      [100K, 360]
-  /features/temporal     [100K, 256, 63]  # If temporal enabled
-  /operators/*           [100K]  # Parameter metadata
+datasets/noa_features/mno_v3_10k.h5:
+  /features/parameters          [10K, 12]      # Operator parameters from dataset
+  /features/summary/            # Per-trajectory features
+    per_trajectory/features     [10K, 3, 110]  # Per-realization [B, M, D]
+    aggregated/features         [10K, 330]     # Aggregated (mean, std, cv)
+  /metadata/                                    # Feature names, extraction time
 ```
 
 **Validation:**

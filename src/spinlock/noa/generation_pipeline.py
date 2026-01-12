@@ -1,15 +1,45 @@
 """
-NOA Feature Generation Pipeline.
+MNO Feature Generation Pipeline with Training Distribution Alignment.
 
-Generates large-scale feature datasets from a trained NOA model for VQ-VAE training.
-This pipeline is used in the "train tokenizer on simulator's distribution" architecture
-where VQ-VAE is trained on NOA's outputs rather than CNO's outputs for optimal alignment.
+Stage 2 of Independent Optimization Architecture: Generates large-scale feature
+datasets from trained MNO that align with its training distribution.
 
-Key differences from CNO generation:
-- Uses single trained NOA instead of building diverse CNO operators
-- Diversity comes from diverse initial conditions, not diverse operators
-- Simpler pipeline: IC generation → NOA rollout → feature extraction → storage
-- Feature-only mode (no trajectories stored to save 99% space)
+**Training Distribution Alignment (Critical Design Choice):**
+
+MNO is trained on a stratified 2K subsample (stride=50) from the 100K CNO dataset.
+To ensure VQ-VAE learns MNO's actual distribution, feature generation uses **denser
+stratification within the training span**:
+
+    Training (Stage 1):  2K samples at stride=50 → [0, 50, 100, ..., 99950]
+    Generation (Stage 2): 10K samples at stride=10 → [0, 10, 20, ..., 99990]
+    Result: 2K exact training points + 8K interpolated points
+
+This ensures:
+- ✅ In-distribution: All parameters within MNO's training span [0, 99950]
+- ✅ More diversity: 10K unique parameters vs 2K training (5× more)
+- ✅ Tests smoothness: 8K interpolations test MNO's local generalization
+- ✅ Maintains structure: Denser Sobol sampling preserves low-discrepancy
+
+**Process:**
+1. Load MNO checkpoint and extract training configuration (dataset path, n_samples)
+2. Calculate training span from checkpoint (e.g., stride=50 → [0, 99950])
+3. Generate denser indices within span (e.g., stride=10 → [0, 99990])
+4. Load parameter vectors from original dataset at these dense indices
+5. Generate diverse ICs for each parameter (25% per IC family)
+6. MNO rollout prediction (256 steps, no gradients)
+7. Inline feature extraction (GPU-optimized, SUMMARY + INITIAL)
+8. Storage to HDF5 (features + parameters, no trajectories → 99.99% savings)
+
+**Key differences from CNO generation:**
+- Uses single trained MNO instead of building diverse CNO operators
+- Parameters loaded from dataset (not freshly sampled)
+- Training distribution alignment (denser stratification within span)
+- Feature-only mode (no trajectories stored)
+
+**Documentation:**
+- Architecture guide: docs/noa-vqvae-independent.md (Stage 2 section)
+- CLI command: src/spinlock/cli/generate_noa_features.py
+- Training guide: docs/noa-training-guide.md
 """
 
 import torch
@@ -30,27 +60,54 @@ from ..features.storage import HDF5FeatureWriter
 
 class NOAFeatureGenerationPipeline:
     """
-    Generate feature dataset from trained NOA model.
+    Generate feature dataset from trained MNO with training distribution alignment.
 
-    This pipeline generates a large-scale feature dataset by:
-    1. Loading a trained NOA checkpoint
-    2. Generating diverse initial conditions
-    3. Running NOA rollouts for each IC
-    4. Extracting features inline (GPU-optimized)
-    5. Writing features to HDF5 (no trajectories stored)
+    Stage 2 of Independent Optimization: Generates large-scale feature datasets
+    from trained MNO using denser stratification within the training span.
 
-    Example:
-        ```python
-        from spinlock.noa.generation_pipeline import NOAFeatureGenerationPipeline
-        from spinlock.config import load_config
+    **Training Distribution Alignment:**
+    Automatically extracts training configuration from MNO checkpoint to determine
+    the training span (e.g., 2K samples at stride=50 → [0, 99950]). Then generates
+    features with denser stratification (e.g., 10K samples at stride=10) to produce:
+    - 2K exact training points (MNO saw these parameters during training)
+    - 8K interpolated points (tests MNO's smoothness between training points)
 
-        config = load_config("config.yaml")
-        pipeline = NOAFeatureGenerationPipeline(
-            noa_checkpoint=Path("checkpoints/noa/best_model.pt"),
-            config=config,
-        )
-        pipeline.generate()
-        ```
+    This ensures VQ-VAE learns MNO's actual distribution, not out-of-distribution
+    parameters.
+
+    **Process:**
+    1. Load MNO checkpoint and extract training configuration
+    2. Calculate dense indices within training span from original dataset
+    3. Generate diverse ICs for each parameter (25% per IC family)
+    4. Run MNO rollouts (256 steps, fast inference, no gradients)
+    5. Extract features inline (GPU-optimized)
+    6. Write features + parameters to HDF5 (no trajectories)
+
+    **Usage:**
+    ```python
+    from spinlock.noa.generation_pipeline import NOAFeatureGenerationPipeline
+    from spinlock.config import load_config
+
+    config = load_config("configs/experiments/local_100k_optimized.yaml")
+    pipeline = NOAFeatureGenerationPipeline(
+        noa_checkpoint=Path("checkpoints/noa/pure_mse_v3_ic_fix/meta_operator_best.pt"),
+        config=config,
+    )
+    pipeline.generate()
+    ```
+
+    **CLI:**
+    ```bash
+    spinlock generate-noa-dataset \\
+        --noa-checkpoint checkpoints/noa/pure_mse_v3_ic_fix/meta_operator_best.pt \\
+        --output datasets/noa_features/mno_v3_10k.h5 \\
+        --n-samples 10000 \\
+        --config configs/experiments/local_100k_optimized.yaml \\
+        --device cuda --batch-size 16 --num-realizations 3
+    ```
+
+    **Documentation:**
+    See docs/noa-vqvae-independent.md (Stage 2 section) for complete details.
     """
 
     def __init__(
