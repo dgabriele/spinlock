@@ -764,6 +764,15 @@ Output:
             # Print epoch summary
             print(f"  Train Loss: {train_metrics['loss']:.6f}")
             print(f"  Val Loss:   {val_metrics['loss']:.6f}")
+
+            # Print validation loss components if available
+            if 'components' in val_metrics and val_metrics['components']:
+                components_str = ", ".join([
+                    f"{name}={value:.4f}"
+                    for name, value in sorted(val_metrics['components'].items())
+                ])
+                print(f"  Val Components: {components_str}")
+
             print(f"  LR:         {current_lr:.2e}")
             print(f"  Time:       {train_metrics['time']:.2f}s")
 
@@ -985,6 +994,7 @@ Output:
         """Validate for one epoch."""
         noa.eval()
         total_loss = 0.0
+        component_losses = {}  # Track individual loss components
         num_batches = 0
 
         with torch.no_grad():
@@ -1052,10 +1062,23 @@ Output:
                 total_loss += loss_output.total.item()
                 num_batches += 1
 
+                # Accumulate component losses
+                for component_name, component_value in loss_output.components.items():
+                    if component_name not in component_losses:
+                        component_losses[component_name] = 0.0
+                    component_losses[component_name] += component_value.item()
+
         avg_loss = total_loss / num_batches if num_batches > 0 else float('inf')
+
+        # Compute average component losses
+        avg_components = {
+            name: value / num_batches if num_batches > 0 else float('inf')
+            for name, value in component_losses.items()
+        }
 
         return {
             "loss": avg_loss,
+            "components": avg_components,
         }
 
     def _save_checkpoint(
