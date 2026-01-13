@@ -563,7 +563,12 @@ Output:
         # Returns (features, feature_names, raw_ics, initial_info, encoder_state_dicts)
         # raw_ics and initial_info are non-None when using hybrid INITIAL encoding
         # encoder_state_dicts contains frozen encoder weights for reproducibility
-        features, feature_names, raw_ics, initial_info, encoder_state_dicts = self._load_features(config)
+        # reference_features and is_interpolated are for reference feature regularization (optional)
+        features, feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated = self._load_features(config)
+
+        # Store reference features and interpolation mask as instance variables for data loaders
+        self._reference_features = reference_features
+        self._is_interpolated = is_interpolated
 
         if verbose:
             print(f"Loaded {features.shape[0]} samples with {features.shape[1]} features")
@@ -1279,7 +1284,24 @@ Output:
         else:
             features = all_features[0]
 
-        return features, all_feature_names, raw_ics, initial_info, encoder_state_dicts
+        # Load reference features and interpolation mask for regularization (optional)
+        reference_features = None
+        is_interpolated = None
+        with h5py.File(dataset_path, "r") as f:
+            if 'features/reference_features' in f:
+                reference_features = f['features/reference_features'][:]
+                if max_samples is not None:
+                    reference_features = reference_features[:max_samples]
+                print(f"  Loaded reference features for regularization: {reference_features.shape}")
+
+            if 'metadata/is_interpolated' in f:
+                is_interpolated = f['metadata/is_interpolated'][:]
+                if max_samples is not None:
+                    is_interpolated = is_interpolated[:max_samples]
+                interpolated_count = is_interpolated.sum() if is_interpolated is not None else 0
+                print(f"  Loaded interpolation mask: {interpolated_count} interpolated / {len(is_interpolated)} total")
+
+        return features, all_feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated
 
     def _load_category_mapping(self, mapping_file: Path) -> Dict[str, list]:
         """Load category mapping from JSON file."""
@@ -1526,11 +1548,17 @@ Output:
 
         # Dataset that optionally includes raw ICs
         class FeatureDataset(Dataset):
-            def __init__(self, features, raw_ics=None):
+            def __init__(self, features, raw_ics=None, reference_features=None, is_interpolated=None):
                 self.features = torch.from_numpy(features).float()
                 self.raw_ics = None
                 if raw_ics is not None:
                     self.raw_ics = torch.from_numpy(raw_ics).float()
+                self.reference_features = None
+                if reference_features is not None:
+                    self.reference_features = torch.from_numpy(reference_features).float()
+                self.is_interpolated = None
+                if is_interpolated is not None:
+                    self.is_interpolated = torch.from_numpy(is_interpolated).bool()
 
             def __len__(self):
                 return len(self.features)
@@ -1539,6 +1567,10 @@ Output:
                 item = {"features": self.features[idx]}
                 if self.raw_ics is not None:
                     item["raw_ics"] = self.raw_ics[idx]
+                if self.reference_features is not None:
+                    item["reference_features"] = self.reference_features[idx]
+                if self.is_interpolated is not None:
+                    item["is_interpolated"] = self.is_interpolated[idx]
                 return item
 
         # Split into train/val (90/10)
@@ -1555,8 +1587,31 @@ Output:
         train_raw_ics = raw_ics[train_indices] if raw_ics is not None else None
         val_raw_ics = raw_ics[val_indices] if raw_ics is not None else None
 
-        train_dataset = FeatureDataset(features[train_indices], train_raw_ics)
-        val_dataset = FeatureDataset(features[val_indices], val_raw_ics)
+        # Load reference features and interpolation mask for regularization (if available)
+        reference_features = None
+        is_interpolated = None
+        if hasattr(self, '_reference_features') and self._reference_features is not None:
+            reference_features = self._reference_features
+        if hasattr(self, '_is_interpolated') and self._is_interpolated is not None:
+            is_interpolated = self._is_interpolated
+
+        train_ref_features = reference_features[train_indices] if reference_features is not None else None
+        val_ref_features = reference_features[val_indices] if reference_features is not None else None
+        train_is_interpolated = is_interpolated[train_indices] if is_interpolated is not None else None
+        val_is_interpolated = is_interpolated[val_indices] if is_interpolated is not None else None
+
+        train_dataset = FeatureDataset(
+            features[train_indices],
+            train_raw_ics,
+            train_ref_features,
+            train_is_interpolated,
+        )
+        val_dataset = FeatureDataset(
+            features[val_indices],
+            val_raw_ics,
+            val_ref_features,
+            val_is_interpolated,
+        )
 
         batch_size = config.get("batch_size", 512)
         val_batch_size = config.get("val_batch_size", batch_size)
@@ -1592,6 +1647,11 @@ Output:
         if checkpoint_dir is None and config.get("output_dir"):
             checkpoint_dir = Path(config["output_dir"]) / "checkpoints"
 
+        # Extract reference regularization config
+        ref_reg_config = config.get("reference_regularization", {})
+        ref_reg_enabled = ref_reg_config.get("enabled", False)
+        ref_reg_weight = ref_reg_config.get("weight", 0.0) if ref_reg_enabled else 0.0
+
         trainer = VQVAETrainer(
             model=model,
             train_loader=train_loader,
@@ -1602,6 +1662,7 @@ Output:
             informativeness_weight=config.get("informativeness_weight", 0.1),
             topo_weight=config.get("topo_weight", 0.02),
             topo_samples=config.get("topo_samples", 64),
+            reference_reg_weight=ref_reg_weight,
             early_stopping_patience=config.get("early_stopping_patience", 100),
             early_stopping_min_delta=config.get("early_stopping_min_delta", 0.01),
             dead_code_reset_interval=config.get("dead_code_reset_interval", 100),
