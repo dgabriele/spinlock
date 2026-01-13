@@ -317,6 +317,8 @@ class NOAFeatureGenerationPipeline:
 
                 # Initialize HDF5 structure using create_summary_group
                 param_dim = self.config.parameter_space.total_dimensions
+                grid_size = self.input_generator.grid_size
+
                 feature_writer.create_summary_group(
                     num_samples=n_samples,
                     num_timesteps=timesteps,
@@ -329,6 +331,23 @@ class NOAFeatureGenerationPipeline:
                     temporal_enabled=self.temporal_enabled,
                     learned_dim=0,  # No learned features for NOA
                     param_dim=param_dim,  # Operator parameter space dimension
+                )
+
+                # Create inputs group for raw ICs (compatible with base operator datasets)
+                feature_writer.create_inputs_group(
+                    num_samples=n_samples,
+                    num_realizations=num_realizations,
+                    grid_size=grid_size,
+                    compression="gzip",
+                    compression_opts=4,
+                    chunk_size=min(100, n_samples),
+                )
+
+                # Create metadata group for NOA-specific metadata
+                feature_writer.create_noa_metadata_group(
+                    num_samples=n_samples,
+                    compression="gzip",
+                    compression_opts=4,
                 )
 
                 # Store metadata for reference feature alignment
@@ -383,29 +402,53 @@ class NOAFeatureGenerationPipeline:
                     for i, ic_type in enumerate(ic_types):
                         ic_type_to_indices[ic_type].append(i)
 
-                    # Generate ICs per type
-                    all_ics = []
+                    # Generate ICs per type - create M realizations per sample for dataset compatibility
+                    # (MNO uses only the first realization for rollout)
+                    all_ics_single = []  # For MNO rollout: [B, 1, H, W]
+                    all_ics_multi = []  # For storage: [B, M, H, W]
+
                     for ic_type, indices in ic_type_to_indices.items():
                         ic_params = self._get_ic_params(ic_type)
                         base_ic_type = self._get_base_ic_type(ic_type)
 
-                        # Generate batch for this IC type
-                        batch_ics = self.input_generator.generate_batch(
-                            batch_size=len(indices),
+                        # Generate M realizations per sample
+                        # Total: len(indices) samples × M realizations
+                        batch_ics_all = self.input_generator.generate_batch(
+                            batch_size=len(indices) * num_realizations,
                             field_type=base_ic_type,
                             **ic_params,
-                        )
-                        all_ics.append((indices, batch_ics))
+                        )  # [B*M, 1, H, W]
 
-                    # Assemble ICs in correct order
+                        # Reshape to [B, M, H, W]
+                        batch_ics_multi = batch_ics_all.view(len(indices), num_realizations,
+                                                              self.input_generator.grid_size,
+                                                              self.input_generator.grid_size)
+
+                        # Extract first realization for MNO rollout
+                        batch_ics_single = batch_ics_multi[:, 0:1]  # [B, 1, H, W]
+
+                        all_ics_single.append((indices, batch_ics_single))
+                        all_ics_multi.append((indices, batch_ics_multi))
+
+                    # Assemble ICs for MNO rollout (single realization)
                     ics = torch.zeros(
                         (current_batch_size, 1, self.input_generator.grid_size, self.input_generator.grid_size),
                         dtype=torch.float32,
                         device=self.device,
                     )
-                    for indices, batch_ics in all_ics:
+                    for indices, batch_ics in all_ics_single:
                         for i, idx in enumerate(indices):
                             ics[idx] = batch_ics[i]
+
+                    # Assemble ICs for storage (multiple realizations)
+                    ics_for_storage = torch.zeros(
+                        (current_batch_size, num_realizations, self.input_generator.grid_size, self.input_generator.grid_size),
+                        dtype=torch.float32,
+                        device=self.device,
+                    )
+                    for indices, batch_ics in all_ics_multi:
+                        for i, idx in enumerate(indices):
+                            ics_for_storage[idx] = batch_ics[i]
 
                     self.stats["generation_time"] += time.time() - gen_start
 
@@ -470,6 +513,26 @@ class NOAFeatureGenerationPipeline:
                     feature_writer.write_parameters(
                         batch_idx=batch_start,
                         parameters=batch_params.cpu().numpy(),  # [B, D] in [0,1]
+                    )
+
+                    # Write initial conditions (multiple realizations for dataset compatibility)
+                    feature_writer.write_inputs_batch(
+                        batch_idx=batch_start,
+                        fields=ics_for_storage.cpu().numpy(),  # [B, M, H, W]
+                    )
+
+                    # Write metadata (ic_types, noise_regimes, evolution_policies, grid_sizes)
+                    # Extract metadata from config and generated data
+                    noise_regimes = self._classify_noise_regimes(ic_types)
+                    evolution_policies = [self._get_evolution_policy() for _ in range(current_batch_size)]
+                    grid_sizes = np.full(current_batch_size, grid_size, dtype=np.int32)
+
+                    feature_writer.write_noa_metadata_batch(
+                        batch_idx=batch_start,
+                        ic_types=ic_types,
+                        noise_regimes=noise_regimes,
+                        evolution_policies=evolution_policies,
+                        grid_sizes=grid_sizes,
                     )
 
                     self.stats["storage_time"] += time.time() - storage_start
@@ -557,6 +620,49 @@ class NOAFeatureGenerationPipeline:
 
         # Default empty params
         return {}
+
+    def _classify_noise_regimes(self, ic_types: list) -> list:
+        """
+        Classify noise regimes based on IC types.
+
+        Args:
+            ic_types: List of IC type names
+
+        Returns:
+            List of noise regime classifications
+        """
+        noise_regimes = []
+        for ic_type in ic_types:
+            # Classify based on IC type
+            if 'gaussian' in ic_type or 'multiscale_grf' in ic_type:
+                noise_regimes.append('stochastic')
+            elif 'structured' in ic_type:
+                noise_regimes.append('deterministic')
+            elif 'localized' in ic_type:
+                noise_regimes.append('localized')
+            else:
+                noise_regimes.append('unknown')
+        return noise_regimes
+
+    def _get_evolution_policy(self) -> str:
+        """
+        Get evolution policy from config.
+
+        Returns:
+            Evolution policy name
+        """
+        # Check if update_policy is in config
+        if hasattr(self.config.parameter_space, 'update_policy'):
+            policy_config = self.config.parameter_space.update_policy
+            # If it's a choice parameter, get the default or first choice
+            if hasattr(policy_config, 'choices'):
+                return policy_config.choices[0]
+            elif hasattr(policy_config, 'default'):
+                return policy_config.default
+            else:
+                return 'residual'  # Default fallback
+        else:
+            return 'residual'  # Default fallback
 
     def _print_final_statistics(self) -> None:
         """Print final generation statistics."""

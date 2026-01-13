@@ -203,7 +203,7 @@ dataset:
 # - SUMMARY: Aggregated scalar features [N, D] - compressed behavioral descriptors
 features:
   temporal:
-    enabled: false  # Disable TEMPORAL family (per-timestep time series)
+    enabled: true   # Enable TEMPORAL family (per-timestep time series)
   summary:
     enabled: true   # Enable SUMMARY family (aggregated scalars)
 
