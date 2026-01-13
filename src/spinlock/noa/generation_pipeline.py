@@ -212,6 +212,13 @@ class NOAFeatureGenerationPipeline:
             n_exact_training = sum(1 for idx in self.generation_indices if idx in training_indices_set)
             n_interpolated = len(self.generation_indices) - n_exact_training
 
+            # Create interpolation mask for reference feature regularization
+            # True = interpolated point (MNO generalizing), False = exact training point (MNO learned)
+            self.is_interpolated_mask = np.ones(len(self.generation_indices), dtype=bool)
+            for i, idx in enumerate(self.generation_indices):
+                if idx in training_indices_set:
+                    self.is_interpolated_mask[i] = False
+
         print(f"  ✓ Generation strategy: Denser stratification within training span")
         print(f"  ✓ Generation indices: [{self.generation_indices[0]}, ..., {self.generation_indices[-1]}] (stride={generation_stride})")
         print(f"  ✓ Total samples: {len(self.generation_indices)}")
@@ -322,6 +329,34 @@ class NOAFeatureGenerationPipeline:
                     temporal_enabled=self.temporal_enabled,
                     learned_dim=0,  # No learned features for NOA
                     param_dim=param_dim,  # Operator parameter space dimension
+                )
+
+                # Store metadata for reference feature alignment
+                # generation_indices: maps to reference dataset indices for feature extraction
+                # is_interpolated: identifies interpolated vs exact training points
+                if 'metadata' not in feature_writer.file:
+                    feature_writer.file.create_group('metadata')
+
+                feature_writer.file['metadata'].create_dataset(
+                    'generation_indices',
+                    data=self.generation_indices,
+                    compression='gzip',
+                    compression_opts=4,
+                )
+                feature_writer.file['metadata/generation_indices'].attrs['description'] = (
+                    'Indices into reference dataset (100K) for parameter alignment. '
+                    'Used to extract reference features at same parameter points as MNO.'
+                )
+
+                feature_writer.file['metadata'].create_dataset(
+                    'is_interpolated',
+                    data=self.is_interpolated_mask,
+                    compression='gzip',
+                    compression_opts=4,
+                )
+                feature_writer.file['metadata/is_interpolated'].attrs['description'] = (
+                    'Boolean mask: True for interpolated points (MNO generalizing), '
+                    'False for exact training points (MNO learned during training).'
                 )
 
                 print(f"Feature datasets created\n")

@@ -1,0 +1,148 @@
+# VQ-VAE Training Config for MNO Distribution with Reference Feature Regularization
+#
+# Trains categorical hierarchical VQ-VAE on features extracted from MNO rollouts
+# with reference feature regularization to guide toward physics consistency.
+#
+# This config enables balanced regularization against reference solver (CNO) features,
+# particularly for interpolated parameter points where MNO may deviate from ground truth.
+#
+# Architecture Philosophy:
+# - MNO defines the primary distribution (trained for physics accuracy)
+# - VQ-VAE learns to tokenize what MNO produces (primary objective)
+# - Reference regularization provides gentle physics guidance (secondary objective)
+# - Alignment by construction with physics correction
+#
+# Usage:
+#   1. Train MNO with IC reconstruction (Stage 1)
+#   2. Generate 10K MNO features with metadata:
+#      spinlock generate-noa-dataset \
+#        --noa-checkpoint checkpoints/noa/pure_mse_v3_ic_fix/meta_operator_best.pt \
+#        --output datasets/noa_features/mno_v3_10k.h5 \
+#        --n-samples 10000 \
+#        --config configs/experiments/local_100k_optimized.yaml \
+#        --batch-size 8
+#   3. Extract reference features from 100K CNO dataset:
+#      python scripts/extract_reference_features.py \
+#        --mno-dataset datasets/noa_features/mno_v3_10k.h5 \
+#        --reference-dataset datasets/100k_full_features.h5
+#   4. Train VQ-VAE with reference regularization:
+#      spinlock train-vqvae --config configs/vqvae/noa_distribution_10k_with_reference_reg.yaml
+
+# Dataset (generated from MNO with reference features)
+dataset_path: "datasets/noa_features/mno_v3_10k.h5"
+
+# Feature Families (SUMMARY features from MNO rollouts)
+families:
+  summary:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [256, 128]
+      output_dim: 64
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
+
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 64
+  group_hidden_dim: 128
+
+  # Hierarchical levels (uniform across categories)
+  levels:
+    - {latent_dim: 32, num_tokens: 128}  # Level 0: Coarse behavioral modes
+    - {latent_dim: 16, num_tokens: 256}  # Level 1: Medium-grain patterns
+    - {latent_dim: 8, num_tokens: 512}   # Level 2: Fine-grain details
+
+  # VQ-VAE hyperparameters
+  commitment_cost: 0.45
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+
+# Training
+training:
+  batch_size: 1024
+  learning_rate: 0.0007
+  num_epochs: 550  # Extended for regularization warmup
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 0
+
+  # Category assignment - AUTOMATIC via clustering
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+  max_clusters: 25
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.02
+  topo_samples: 64
+
+  # Checkpointing
+  save_every: null
+  checkpoint_dir: "checkpoints/vqvae/mno_10k_with_reference_reg"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+  dead_code_reset_interval: 100
+  dead_code_threshold: 10.0
+  dead_code_max_reset_fraction: 0.25
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: false
+
+# Reference Feature Regularization (NEW)
+# Regularizes VQ-VAE reconstruction against reference solver features
+reference_regularization:
+  # Enable reference feature regularization
+  enabled: true
+
+  # Regularization weight (relative to reconstruction loss weight=1.0)
+  # 0.05 = 5% influence - balances MNO alignment with physics consistency
+  weight: 0.05
+
+  # Apply only to interpolated points (recommended)
+  # MNO trained on 2K exact points, generates 10K with 8K interpolated
+  # Regularization focuses on points where MNO generalizes beyond training
+  interpolated_only: true
+
+  # Warmup schedule (optional)
+  # Gradually increase regularization weight from 0 to target over warmup_epochs
+  # Allows VQ-VAE to learn MNO distribution first, then refine toward physics
+  warmup_epochs: 50
+
+  # Reference dataset path (optional)
+  # If null, loads from 'features/reference_features' in training dataset HDF5
+  # This should be set during feature extraction via extract_reference_features.py
+  reference_dataset_path: null
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Expected Performance:
+# - Reconstruction loss: < 0.05 (similar to baseline due to low regularization weight)
+# - Codebook utilization: > 90% per level (maintained vs baseline)
+# - Category separation: orthogonality < 0.15
+# - Reference regularization loss: Should decrease over training
+# - Physics consistency: Lower MSE to reference features on interpolated validation samples
+# - Training time: ~3-4 hours on RTX 3060 Ti (<1% overhead from regularization)

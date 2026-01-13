@@ -41,6 +41,7 @@ class VQVAETrainer:
         informativeness_weight: float = 0.1,
         topo_weight: float = 0.02,
         topo_samples: int = 64,
+        reference_reg_weight: float = 0.0,
         # Callbacks
         early_stopping_patience: int = 100,
         early_stopping_min_delta: float = 0.01,
@@ -76,6 +77,7 @@ class VQVAETrainer:
             informativeness_weight: Weight for informativeness loss
             topo_weight: Weight for topographic loss
             topo_samples: Number of samples for topographic loss
+            reference_reg_weight: Weight for reference feature regularization (0.0 = disabled)
             early_stopping_patience: Patience for early stopping
             early_stopping_min_delta: Min delta for early stopping
             dead_code_reset_interval: Interval for dead code reset (0 to disable, only for legacy mode)
@@ -139,6 +141,7 @@ class VQVAETrainer:
         self.informativeness_weight = informativeness_weight
         self.topo_weight = topo_weight
         self.topo_samples = topo_samples
+        self.reference_reg_weight = reference_reg_weight
 
         # Callbacks
         self.early_stopping = EarlyStopping(
@@ -234,6 +237,9 @@ class VQVAETrainer:
                 informativeness_weight=self.informativeness_weight,
                 topo_weight=self.topo_weight,
                 topo_samples=self.topo_samples,
+                reference_reg_weight=self.reference_reg_weight,
+                reference_features=batch.get("reference_features"),
+                is_interpolated=batch.get("is_interpolated"),
             )
 
             loss = losses["total"]
@@ -295,6 +301,9 @@ class VQVAETrainer:
                     informativeness_weight=self.informativeness_weight,
                     topo_weight=self.topo_weight,
                     topo_samples=self.topo_samples,
+                    reference_reg_weight=self.reference_reg_weight,
+                    reference_features=batch.get("reference_features"),
+                    is_interpolated=batch.get("is_interpolated"),
                 )
 
                 loss = losses["total"]

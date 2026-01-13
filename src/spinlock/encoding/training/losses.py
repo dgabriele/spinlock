@@ -220,6 +220,62 @@ def topographic_similarity_loss(
     }
 
 
+def reference_regularization_loss(
+    outputs: Dict[str, Any],
+    targets: Dict[str, torch.Tensor],
+    reference_features: Optional[torch.Tensor] = None,
+    is_interpolated: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Regularize VQ-VAE reconstruction against reference solver features.
+
+    This loss guides VQ-VAE to reconstruct features that are consistent with
+    reference solver (CNO, UAFNO, etc.) physics, particularly for interpolated
+    parameter points where MNO may deviate from ground truth.
+
+    The loss is applied selectively:
+    - Interpolated points: MNO generalizing between training points (regularized)
+    - Exact training points: MNO learned these during training (not regularized)
+
+    Args:
+        outputs: Model outputs with 'reconstruction' dict containing 'features'
+        targets: Target dict (not used, kept for signature consistency)
+        reference_features: Reference solver features [B, D] from high-fidelity solver
+                           If None, returns zero loss (regularization disabled)
+        is_interpolated: Boolean mask [B] indicating which samples are interpolated
+                        True = interpolated (apply regularization)
+                        False = exact training point (skip regularization)
+                        If None, applies to all samples
+
+    Returns:
+        Scalar loss: MSE between VQ-VAE reconstruction and reference features
+                    (averaged over interpolated samples only)
+    """
+    # No regularization if reference features not provided
+    if reference_features is None:
+        return torch.tensor(0.0, device=targets["features"].device)
+
+    # Extract VQ-VAE reconstruction
+    reconstruction = outputs["reconstruction"]["features"]  # [B, D]
+
+    # Apply only to interpolated samples if mask provided
+    if is_interpolated is not None:
+        if not is_interpolated.any():
+            # No interpolated samples in this batch
+            return torch.tensor(0.0, device=targets["features"].device)
+
+        # Select interpolated samples
+        reconstruction = reconstruction[is_interpolated]
+        ref_targets = reference_features[is_interpolated]
+    else:
+        # Apply to all samples (fallback if no mask)
+        ref_targets = reference_features
+
+    # Feature-space MSE: guides VQ-VAE toward physics-consistent reconstructions
+    loss = F.mse_loss(reconstruction, ref_targets)
+
+    return loss
+
+
 def compute_total_loss(
     outputs: Dict[str, Any],
     targets: Dict[str, torch.Tensor],
@@ -228,6 +284,9 @@ def compute_total_loss(
     informativeness_weight: float = 0.1,
     topo_weight: float = 0.02,
     topo_samples: int = 64,
+    reference_reg_weight: float = 0.0,
+    reference_features: Optional[torch.Tensor] = None,
+    is_interpolated: Optional[torch.Tensor] = None,
 ) -> Dict[str, torch.Tensor]:
     """Compute total loss with all components.
 
@@ -239,11 +298,18 @@ def compute_total_loss(
         informativeness_weight: Weight for informativeness loss
         topo_weight: Weight for topographic loss
         topo_samples: Number of samples for topographic loss
+        reference_reg_weight: Weight for reference feature regularization loss
+                             0.0 = disabled (default)
+        reference_features: Reference solver features [B, D] from high-fidelity solver
+                           If None, regularization disabled
+        is_interpolated: Boolean mask [B] for interpolated samples
+                        If None, regularization applied to all samples
 
     Returns:
         Dict with 'total' and individual loss components including:
             - topo_pre: Pre-quantization topographic similarity (correlation)
             - topo_post: Post-quantization topographic similarity (correlation)
+            - reference_regularization: Reference feature regularization loss
     """
     # 1. Reconstruction loss
     recon_loss = reconstruction_loss(outputs, targets)
@@ -260,6 +326,11 @@ def compute_total_loss(
     # 5. Topographic similarity loss (PRE + POST quantization)
     topo_loss, topo_metrics = topographic_similarity_loss(outputs, targets, topo_samples)
 
+    # 6. Reference feature regularization loss (optional)
+    ref_reg_loss = reference_regularization_loss(
+        outputs, targets, reference_features, is_interpolated
+    )
+
     # Total loss
     total = (
         recon_loss
@@ -267,6 +338,7 @@ def compute_total_loss(
         + orthogonality_weight * ortho_loss
         + informativeness_weight * info_loss
         + topo_weight * topo_loss
+        + reference_reg_weight * ref_reg_loss
     )
 
     return {
@@ -278,4 +350,5 @@ def compute_total_loss(
         "topographic": topo_loss,
         "topo_pre": topo_metrics["topo_pre"],  # Pre-quantization correlation
         "topo_post": topo_metrics["topo_post"],  # Post-quantization correlation
+        "reference_regularization": ref_reg_loss,  # Reference feature regularization
     }
