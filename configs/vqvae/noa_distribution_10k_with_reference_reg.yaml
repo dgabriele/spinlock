@@ -21,10 +21,12 @@
 #        --n-samples 10000 \
 #        --config configs/experiments/local_100k_optimized.yaml \
 #        --batch-size 8
-#   3. Extract reference features from 100K CNO dataset:
+#   3. Extract reference features with IC/param matching:
 #      python scripts/extract_reference_features.py \
 #        --mno-dataset datasets/noa_features/mno_v3_10k.h5 \
-#        --reference-dataset datasets/100k_full_features.h5
+#        --reference-dataset datasets/local_100k_optimized.h5 \
+#        --config configs/experiments/local_100k_optimized.yaml \
+#        --device cuda
 #   4. Train VQ-VAE with reference regularization:
 #      spinlock train-vqvae --config configs/vqvae/noa_distribution_10k_with_reference_reg.yaml
 
