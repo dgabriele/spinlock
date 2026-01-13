@@ -476,6 +476,217 @@ class HDF5FeatureWriter:
             dataset = cast(h5py.Dataset, ops_group[feature_name])
             dataset[sample_idx] = value
 
+    def create_inputs_group(
+        self,
+        num_samples: int,
+        num_realizations: int,
+        grid_size: int,
+        compression: str = "gzip",
+        compression_opts: int = 4,
+        chunk_size: int = 100,
+    ) -> None:
+        """
+        Create inputs group for storing raw initial conditions.
+
+        Creates:
+        - /inputs/fields - raw initial condition fields [N, M, H, W]
+
+        Args:
+            num_samples: Number of samples (N)
+            num_realizations: Number of realizations (M)
+            grid_size: Spatial grid size (H=W)
+            compression: Compression algorithm
+            compression_opts: Compression level
+            chunk_size: Chunk size for HDF5
+
+        Raises:
+            RuntimeError: If file not opened
+        """
+        if self.file is None:
+            raise RuntimeError("HDF5 file not opened")
+
+        # Compression settings
+        compression_kwargs = {}
+        if compression != "none":
+            compression_kwargs = {
+                'compression': compression,
+                'compression_opts': compression_opts if compression == "gzip" else None
+            }
+
+        # Create inputs group
+        if 'inputs' not in self.file:
+            inputs_group = self.file.create_group('inputs')
+        else:
+            inputs_group = cast(h5py.Group, self.file['inputs'])
+
+        # Create fields dataset [N, M, H, W]
+        if 'fields' in inputs_group:
+            if self.overwrite:
+                del inputs_group['fields']
+            else:
+                raise ValueError("inputs/fields already exists. Set overwrite=True to replace.")
+
+        inputs_group.create_dataset(
+            'fields',
+            shape=(num_samples, num_realizations, grid_size, grid_size),
+            dtype=np.float32,
+            chunks=(min(chunk_size, num_samples), num_realizations, grid_size, grid_size),
+            **compression_kwargs
+        )
+
+    def write_inputs_batch(
+        self,
+        batch_idx: int,
+        fields: np.ndarray,
+    ) -> None:
+        """
+        Write batch of initial condition fields.
+
+        Args:
+            batch_idx: Starting index for this batch
+            fields: Initial condition fields [B, M, H, W]
+
+        Raises:
+            RuntimeError: If file not opened or inputs group not created
+        """
+        if self.file is None:
+            raise RuntimeError("HDF5 file not opened")
+
+        if 'inputs' not in self.file or 'fields' not in self.file['inputs']:
+            raise RuntimeError("inputs/fields not created. Call create_inputs_group() first")
+
+        fields_dataset = cast(h5py.Dataset, self.file['inputs/fields'])
+        batch_size = fields.shape[0]
+        end_idx = batch_idx + batch_size
+
+        if end_idx > fields_dataset.shape[0]:
+            raise ValueError(
+                f"Batch extends beyond dataset size: "
+                f"end_idx={end_idx}, dataset_size={fields_dataset.shape[0]}"
+            )
+
+        fields_dataset[batch_idx:end_idx] = fields
+
+    def create_noa_metadata_group(
+        self,
+        num_samples: int,
+        compression: str = "gzip",
+        compression_opts: int = 4,
+    ) -> None:
+        """
+        Create metadata group for NOA-specific metadata.
+
+        Creates:
+        - /metadata/ic_types - Initial condition type strings
+        - /metadata/noise_regimes - Noise regime classification
+        - /metadata/grid_sizes - Grid size per sample
+        - /metadata/evolution_policies - Evolution policy per sample
+
+        Args:
+            num_samples: Number of samples (N)
+            compression: Compression algorithm
+            compression_opts: Compression level
+
+        Raises:
+            RuntimeError: If file not opened
+        """
+        if self.file is None:
+            raise RuntimeError("HDF5 file not opened")
+
+        # Create metadata group if doesn't exist
+        if 'metadata' not in self.file:
+            metadata_group = self.file.create_group('metadata')
+        else:
+            metadata_group = cast(h5py.Group, self.file['metadata'])
+
+        # String dtype for variable-length strings
+        str_dtype = h5py.string_dtype(encoding='utf-8')
+
+        # Compression settings
+        compression_kwargs = {}
+        if compression != "none":
+            compression_kwargs = {
+                'compression': compression,
+                'compression_opts': compression_opts if compression == "gzip" else None
+            }
+
+        # Create datasets
+        for key in ['ic_types', 'noise_regimes', 'evolution_policies']:
+            if key in metadata_group:
+                if self.overwrite:
+                    del metadata_group[key]
+                else:
+                    raise ValueError(f"metadata/{key} already exists. Set overwrite=True to replace.")
+
+            metadata_group.create_dataset(
+                key,
+                shape=(num_samples,),
+                dtype=str_dtype,
+                **compression_kwargs
+            )
+
+        # Grid sizes (int32)
+        if 'grid_sizes' in metadata_group:
+            if self.overwrite:
+                del metadata_group['grid_sizes']
+            else:
+                raise ValueError("metadata/grid_sizes already exists. Set overwrite=True to replace.")
+
+        metadata_group.create_dataset(
+            'grid_sizes',
+            shape=(num_samples,),
+            dtype=np.int32,
+            **compression_kwargs
+        )
+
+    def write_noa_metadata_batch(
+        self,
+        batch_idx: int,
+        ic_types: list,
+        noise_regimes: list,
+        evolution_policies: list,
+        grid_sizes: np.ndarray,
+    ) -> None:
+        """
+        Write batch of NOA metadata.
+
+        Args:
+            batch_idx: Starting index for this batch
+            ic_types: List of IC type strings
+            noise_regimes: List of noise regime strings
+            evolution_policies: List of evolution policy strings
+            grid_sizes: Array of grid sizes [B]
+
+        Raises:
+            RuntimeError: If file not opened or metadata group not created
+        """
+        if self.file is None:
+            raise RuntimeError("HDF5 file not opened")
+
+        if 'metadata' not in self.file:
+            raise RuntimeError("metadata group not created. Call create_noa_metadata_group() first")
+
+        metadata_group = cast(h5py.Group, self.file['metadata'])
+        batch_size = len(ic_types)
+        end_idx = batch_idx + batch_size
+
+        # Write string arrays
+        for key, values in [
+            ('ic_types', ic_types),
+            ('noise_regimes', noise_regimes),
+            ('evolution_policies', evolution_policies),
+        ]:
+            if key not in metadata_group:
+                raise RuntimeError(f"metadata/{key} not created. Call create_noa_metadata_group() first")
+            dataset = cast(h5py.Dataset, metadata_group[key])
+            dataset[batch_idx:end_idx] = values
+
+        # Write grid sizes
+        if 'grid_sizes' not in metadata_group:
+            raise RuntimeError("metadata/grid_sizes not created. Call create_noa_metadata_group() first")
+        dataset = cast(h5py.Dataset, metadata_group['grid_sizes'])
+        dataset[batch_idx:end_idx] = grid_sizes
+
     def _estimate_per_timestep_dim(self, registry: FeatureRegistry, config: Any) -> int:
         """
         Estimate dimension of per-timestep features.
