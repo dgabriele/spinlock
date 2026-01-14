@@ -1,0 +1,81 @@
+# Pure MSE Training v4: 10K Contiguous Samples
+#
+# Goal: Full parameter space coverage for dimension 1 (base_channels)
+#
+# Problem identified:
+# - v3 used stride-50 sampling: indices [0, 50, 100, ..., 99950] (2K samples)
+# - Dimension 1 coverage: 48.4% (missing upper half of channel range)
+#
+# Solution:
+# - Use contiguous sampling: indices [0, 1, 2, ..., 9999] (10K samples)
+# - Dimension 1 coverage: 100% (full Sobol space)
+#
+# Reasoning:
+# - Sobol sequences fill parameter space progressively
+# - First N samples provide better coverage than stride-N samples
+# - 10K contiguous samples span entire parameter space
+#
+# Expected outcome:
+# - Better MNO generalization across all operator architectures
+# - Improved interpolation quality for high-channel operators
+#
+# Previous results:
+# - v1: val_loss=0.813 (1K samples)
+# - v2: val_loss=0.511 (2K stride-50, capacity increase)
+# - v3: val_loss=0.612 after 2 epochs (2K stride-50, IC fix)
+# - v4: Target val_loss < 0.5 with full parameter coverage
+
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 40              # Same as v3 (226M params)
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  token_conditioning: false      # Pure MSE training (no tokens)
+
+training:
+  n_samples: 10000               # 10K contiguous samples (5x increase from v3)
+  sampling_strategy: "sequential"  # CRITICAL: Use indices [0-9999] not stride
+  batch_size: 2                  # Same as v3 (memory constraint)
+  epochs: 10                     # Fewer epochs (more data, faster convergence)
+  learning_rate: 1.5e-4          # Same as v3
+  warmup_steps: 10000            # Scale with data: 5000 batches × 2 = 10000 steps
+  weight_decay: 1.0e-4
+  clip_grad: 0.5
+
+  # Truncated BPTT
+  timesteps: 256                 # Full rollout
+  bptt_window: 32                # Backprop window
+
+  early_stopping_patience: 3     # Reduced (faster convergence expected)
+
+loss:
+  # Pure MSE with IC reconstruction (proven effective in v3)
+  mode: "mse_led"
+  lambda_traj: 1.0               # Primary: trajectory matching
+  lambda_ic: 0.3                 # IC reconstruction
+
+data:
+  dataset_path: "datasets/local_100k_optimized.h5"
+  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  val_split: 0.1                 # 9K train, 1K val
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/noa/pure_mse_v4_10k_contiguous"
+  save_every: 1                  # Save every N epochs
+  # save_every_batches: 500        # Also save every 500 batches with validation
+  keep_best: true
+
+device: "cuda"
+seed: 42
+
+# Performance estimates:
+# - 10K samples = 5x more data than v3
+# - Expected time: ~5x longer per epoch (~11 hours/epoch at current speed)
+# - But fewer epochs needed (10 vs 30)
+# - Total time: ~110 hours (4.6 days)
+#
+# Expected validation loss: < 0.5 (better than v3 due to full coverage)

@@ -25,7 +25,7 @@ def setup_process_group(
         config: Distributed configuration
     """
     # Set environment variables for distributed training
-    os.environ["MASTER_ADDR"] = config.master_addr
+    os.environ["MASTER_ADDR"] = config.get_master_addr()
     os.environ["MASTER_PORT"] = str(config.master_port)
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["RANK"] = str(rank)

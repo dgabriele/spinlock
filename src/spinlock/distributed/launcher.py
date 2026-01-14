@@ -56,7 +56,7 @@ class DistributedLauncher:
         print(f"Launching Distributed Training")
         print(f"{'='*70}")
         print(f"World size: {self.config.world_size}")
-        print(f"Master: {self.config.master_addr}:{self.config.master_port}")
+        print(f"Master: {self.config.get_master_addr()}:{self.config.master_port}")
         print(f"Backend: {self.config.backend}")
         print(f"Nodes: {len(self.config.nodes)}")
         print(f"{'='*70}\n")
@@ -90,13 +90,13 @@ class DistributedLauncher:
             "RANK": str(rank),
             "LOCAL_RANK": "0",  # Single GPU per process
             "WORLD_SIZE": str(self.config.world_size),
-            "MASTER_ADDR": self.config.master_addr,
+            "MASTER_ADDR": self.config.get_master_addr(),
             "MASTER_PORT": str(self.config.master_port),
         })
 
-        # Build command
-        python_cmd = node.python_path or sys.executable
-        cmd = [python_cmd, "-m", self.script_path] + self.script_args + [
+        # Build command - use spinlock CLI
+        # script_path is like "train-meta-operator"
+        cmd = ["poetry", "run", "spinlock", self.script_path] + self.script_args + [
             "--distributed-rank", str(rank),
             "--distributed-world-size", str(self.config.world_size),
         ]
@@ -115,8 +115,15 @@ class DistributedLauncher:
         # Determine working directory
         working_dir = node.working_dir or os.getcwd()
 
-        # Determine Python command
-        python_cmd = node.python_path or "poetry run python"
+        # Use direct python path if specified, otherwise use poetry
+        if node.python_path and not node.python_path.startswith("poetry"):
+            # Direct virtualenv python path - use spinlock entry point script
+            # Assume spinlock script is in same bin/ directory as python
+            python_dir = os.path.dirname(node.python_path)
+            spinlock_cmd = f"{python_dir}/spinlock"
+        else:
+            # Poetry-based execution
+            spinlock_cmd = "poetry run spinlock"
 
         # Build remote command
         remote_env = " ".join([
@@ -124,14 +131,14 @@ class DistributedLauncher:
             f"RANK={rank}",
             f"LOCAL_RANK=0",
             f"WORLD_SIZE={self.config.world_size}",
-            f"MASTER_ADDR={self.config.master_addr}",
+            f"MASTER_ADDR={self.config.get_master_addr()}",
             f"MASTER_PORT={self.config.master_port}",
         ])
 
         script_args_str = " ".join(self.script_args)
         remote_cmd = (
             f"cd {working_dir} && "
-            f"{remote_env} {python_cmd} -m {self.script_path} {script_args_str} "
+            f"{remote_env} {spinlock_cmd} {self.script_path} {script_args_str} "
             f"--distributed-rank {rank} --distributed-world-size {self.config.world_size}"
         )
 

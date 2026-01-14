@@ -55,6 +55,9 @@ class DistributedConfig:
     nodes: List[NodeConfig] = field(default_factory=list)
     """List of compute nodes"""
 
+    master_addr: Optional[str] = None
+    """Address of the master node (auto-detected from first node if not specified)"""
+
     master_port: int = 29500
     """Port for distributed coordination"""
 
@@ -69,9 +72,10 @@ class DistributedConfig:
         """Total number of processes (GPUs) across all nodes."""
         return sum(node.num_gpus for node in self.nodes)
 
-    @property
-    def master_addr(self) -> str:
-        """Address of the master node."""
+    def get_master_addr(self) -> str:
+        """Get the master address (from config or first node)."""
+        if self.master_addr:
+            return self.master_addr
         if not self.nodes:
             return "localhost"
         # First node is master
@@ -108,6 +112,7 @@ class DistributedConfig:
             enabled=True,
             backend=config_dict.get("backend", "nccl"),
             nodes=nodes,
+            master_addr=config_dict.get("master_addr"),  # Optional override
             master_port=config_dict.get("master_port", 29500),
             init_method=config_dict.get("init_method", "env://"),
             timeout_seconds=config_dict.get("timeout_seconds", 1800),

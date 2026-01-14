@@ -564,11 +564,12 @@ Output:
         # raw_ics and initial_info are non-None when using hybrid INITIAL encoding
         # encoder_state_dicts contains frozen encoder weights for reproducibility
         # reference_features and is_interpolated are for reference feature regularization (optional)
-        features, feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated = self._load_features(config)
+        features, feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated, raw_summary = self._load_features(config)
 
-        # Store reference features and interpolation mask as instance variables for data loaders
+        # Store reference features, interpolation mask, and raw SUMMARY as instance variables for data loaders
         self._reference_features = reference_features
         self._is_interpolated = is_interpolated
+        self._raw_summary = raw_summary
 
         if verbose:
             print(f"Loaded {features.shape[0]} samples with {features.shape[1]} features")
@@ -1088,10 +1089,13 @@ Output:
         and defers CNN encoding to training loop for end-to-end learning.
 
         HDF5 paths:
-        - SUMMARY: /features/summary/aggregated/features [N, D]
+        - SUMMARY: /features/summary/per_trajectory/features [N, M, D] -> reshaped to [N, M*D]
         - TEMPORAL: /features/temporal/features [N, T, D]
         - INITIAL: /features/initial/aggregated/features [N, D]
         - Raw ICs: /inputs/fields [N, M, H, W] or [N, M, C, H, W]
+
+        Note: SUMMARY uses per_trajectory instead of aggregated to bypass corrupted
+        aggregated features (std/cv blocks are near-zero due to low variance across realizations).
 
         Returns:
             Tuple of (features, feature_names, raw_ics, initial_info, encoder_state_dicts)
@@ -1196,9 +1200,14 @@ Output:
                 # Standard feature loading (non-hybrid)
                 # Determine correct HDF5 path based on family type
                 # TEMPORAL uses /features/temporal directly (no aggregated sublevel)
-                # SUMMARY uses /features/summary/aggregated
+                # SUMMARY uses /features/summary/per_trajectory (FIX: bypasses corrupted aggregated features)
                 if feature_family == "temporal":
                     features_path = f"/features/{feature_family}"
+                elif feature_family == "summary":
+                    # Use per_trajectory features instead of aggregated
+                    # Rationale: aggregated features have near-zero std/cv blocks due to low variance
+                    # across realizations. per_trajectory [N, M, D] contains all information.
+                    features_path = f"/features/{feature_family}/per_trajectory"
                 else:
                     features_path = f"/features/{feature_family}/{feature_type}"
 
@@ -1215,6 +1224,12 @@ Output:
                     family_features = np.array(group["features"][:max_samples])
                 else:
                     family_features = np.array(group["features"])
+
+                # Reshape per_trajectory features from [N, M, D] to [N, M*D]
+                if feature_family == "summary" and len(family_features.shape) == 3:
+                    N, M, D = family_features.shape
+                    family_features = family_features.reshape(N, M * D)
+                    print(f"  {feature_family}: Reshaped per_trajectory from [{N}, {M}, {D}] to [{N}, {M*D}]")
 
                 # Replace NaN with 0 before encoding (encoders can't handle NaN)
                 nan_count = np.isnan(family_features).sum()
@@ -1287,11 +1302,17 @@ Output:
         # Load reference features and interpolation mask for regularization (optional)
         reference_features = None
         is_interpolated = None
+        raw_summary = None
         with h5py.File(dataset_path, "r") as f:
             if 'features/reference_features' in f:
                 reference_features = f['features/reference_features'][:]
                 if max_samples is not None:
                     reference_features = reference_features[:max_samples]
+                # Replace NaN values with 0 (consistent with feature loading)
+                nan_count = np.isnan(reference_features).sum()
+                if nan_count > 0:
+                    reference_features = np.nan_to_num(reference_features, nan=0.0)
+                    print(f"  summary: Replaced {nan_count} NaN values with 0 in reference features")
                 print(f"  Loaded reference features for regularization: {reference_features.shape}")
 
             if 'metadata/is_interpolated' in f:
@@ -1301,7 +1322,71 @@ Output:
                 interpolated_count = is_interpolated.sum() if is_interpolated is not None else 0
                 print(f"  Loaded interpolation mask: {interpolated_count} interpolated / {len(is_interpolated)} total")
 
-        return features, all_feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated
+            # Load raw features for ALL families (MNO) for comparison with reference features (CNO)
+            # This should match ALL feature families used in training
+            raw_features_list = []
+
+            # INITIAL features (if used)
+            if any('initial' in fam for fam in feature_families):
+                if 'features/initial/aggregated/features' in f:
+                    raw_initial = f['features/initial/aggregated/features'][:]
+                    if max_samples is not None:
+                        raw_initial = raw_initial[:max_samples]
+                    nan_count = np.isnan(raw_initial).sum()
+                    if nan_count > 0:
+                        raw_initial = np.nan_to_num(raw_initial, nan=0.0)
+                        print(f"  initial: Replaced {nan_count} NaN values with 0 in raw INITIAL")
+                    print(f"  Loaded raw INITIAL features: {raw_initial.shape}")
+                    raw_features_list.append(raw_initial)
+
+            # SUMMARY features (if used) - use per_trajectory
+            if any('summary' in fam for fam in feature_families):
+                if 'features/summary/per_trajectory/features' in f:
+                    raw_summary = f['features/summary/per_trajectory/features'][:]
+                    if max_samples is not None:
+                        raw_summary = raw_summary[:max_samples]
+
+                    # Reshape from [N, M, D] to [N, M*D]
+                    if len(raw_summary.shape) == 3:
+                        N, M, D = raw_summary.shape
+                        raw_summary = raw_summary.reshape(N, M * D)
+                        print(f"  Reshaped raw SUMMARY per_trajectory from [{N}, {M}, {D}] to [{N}, {M*D}]")
+
+                    nan_count = np.isnan(raw_summary).sum()
+                    if nan_count > 0:
+                        raw_summary = np.nan_to_num(raw_summary, nan=0.0)
+                        print(f"  summary: Replaced {nan_count} NaN values with 0 in raw SUMMARY")
+                    print(f"  Loaded raw SUMMARY features: {raw_summary.shape}")
+                    raw_features_list.append(raw_summary)
+
+            # TEMPORAL features (if used)
+            if any('temporal' in fam for fam in feature_families):
+                if 'features/temporal/features' in f:
+                    raw_temporal = f['features/temporal/features'][:]
+                    if max_samples is not None:
+                        raw_temporal = raw_temporal[:max_samples]
+
+                    # Reshape from [N, T, D] to [N, T*D]
+                    if len(raw_temporal.shape) == 3:
+                        N, T, D = raw_temporal.shape
+                        raw_temporal = raw_temporal.reshape(N, T * D)
+                        print(f"  Reshaped raw TEMPORAL from [{N}, {T}, {D}] to [{N}, {T*D}]")
+
+                    nan_count = np.isnan(raw_temporal).sum()
+                    if nan_count > 0:
+                        raw_temporal = np.nan_to_num(raw_temporal, nan=0.0)
+                        print(f"  temporal: Replaced {nan_count} NaN values with 0 in raw TEMPORAL")
+                    print(f"  Loaded raw TEMPORAL features: {raw_temporal.shape}")
+                    raw_features_list.append(raw_temporal)
+
+            # Concatenate all raw features
+            if raw_features_list:
+                raw_summary = np.concatenate(raw_features_list, axis=1)
+                print(f"  Combined raw features (all families): {raw_summary.shape}")
+            else:
+                raw_summary = None
+
+        return features, all_feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated, raw_summary
 
     def _load_category_mapping(self, mapping_file: Path) -> Dict[str, list]:
         """Load category mapping from JSON file."""
@@ -1548,7 +1633,7 @@ Output:
 
         # Dataset that optionally includes raw ICs
         class FeatureDataset(Dataset):
-            def __init__(self, features, raw_ics=None, reference_features=None, is_interpolated=None):
+            def __init__(self, features, raw_ics=None, reference_features=None, is_interpolated=None, raw_summary=None):
                 self.features = torch.from_numpy(features).float()
                 self.raw_ics = None
                 if raw_ics is not None:
@@ -1559,6 +1644,9 @@ Output:
                 self.is_interpolated = None
                 if is_interpolated is not None:
                     self.is_interpolated = torch.from_numpy(is_interpolated).bool()
+                self.raw_summary = None
+                if raw_summary is not None:
+                    self.raw_summary = torch.from_numpy(raw_summary).float()
 
             def __len__(self):
                 return len(self.features)
@@ -1571,6 +1659,8 @@ Output:
                     item["reference_features"] = self.reference_features[idx]
                 if self.is_interpolated is not None:
                     item["is_interpolated"] = self.is_interpolated[idx]
+                if self.raw_summary is not None:
+                    item["raw_summary"] = self.raw_summary[idx]
                 return item
 
         # Split into train/val (90/10)
@@ -1590,27 +1680,42 @@ Output:
         # Load reference features and interpolation mask for regularization (if available)
         reference_features = None
         is_interpolated = None
+        raw_summary = None
         if hasattr(self, '_reference_features') and self._reference_features is not None:
             reference_features = self._reference_features
         if hasattr(self, '_is_interpolated') and self._is_interpolated is not None:
             is_interpolated = self._is_interpolated
+        if hasattr(self, '_raw_summary') and self._raw_summary is not None:
+            raw_summary = self._raw_summary
 
         train_ref_features = reference_features[train_indices] if reference_features is not None else None
         val_ref_features = reference_features[val_indices] if reference_features is not None else None
         train_is_interpolated = is_interpolated[train_indices] if is_interpolated is not None else None
         val_is_interpolated = is_interpolated[val_indices] if is_interpolated is not None else None
+        train_raw_summary = raw_summary[train_indices] if raw_summary is not None else None
+        val_raw_summary = raw_summary[val_indices] if raw_summary is not None else None
+
+        # Debug: check what's being passed
+        if config.get("verbose", False):
+            print(f"  Creating datasets with:")
+            print(f"    train_ref_features: {train_ref_features.shape if train_ref_features is not None else None}")
+            print(f"    val_ref_features: {val_ref_features.shape if val_ref_features is not None else None}")
+            print(f"    train_raw_summary: {train_raw_summary.shape if train_raw_summary is not None else None}")
+            print(f"    val_raw_summary: {val_raw_summary.shape if val_raw_summary is not None else None}")
 
         train_dataset = FeatureDataset(
             features[train_indices],
             train_raw_ics,
             train_ref_features,
             train_is_interpolated,
+            train_raw_summary,
         )
         val_dataset = FeatureDataset(
             features[val_indices],
             val_raw_ics,
             val_ref_features,
             val_is_interpolated,
+            val_raw_summary,
         )
 
         batch_size = config.get("batch_size", 512)

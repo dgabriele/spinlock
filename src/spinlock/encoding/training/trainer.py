@@ -197,13 +197,23 @@ class VQVAETrainer:
         """Train for one epoch.
 
         Returns:
-            Tuple of (average training loss, last batch features, last batch raw_ics)
+            Tuple of (average training loss, loss components dict, last batch features, last batch raw_ics)
         """
         self.model.train()
         total_loss = 0.0
         n_batches = 0
         last_batch = None
         last_raw_ics = None
+
+        # Track loss components
+        loss_components = {
+            "reconstruction": 0.0,
+            "vq": 0.0,
+            "orthogonality": 0.0,
+            "informativeness": 0.0,
+            "topographic": 0.0,
+            "reference_regularization": 0.0,
+        }
 
         for batch in self.train_loader:
             features = batch["features"].to(self.device)
@@ -229,6 +239,11 @@ class VQVAETrainer:
                 targets = {"features": outputs["input_features"]}
             else:
                 targets = {"features": features}
+
+            # Add raw_summary to targets for physics consistency measurement
+            if "raw_summary" in batch:
+                targets["raw_summary"] = batch["raw_summary"].to(self.device)
+
             losses = compute_total_loss(
                 outputs,
                 targets,
@@ -238,11 +253,16 @@ class VQVAETrainer:
                 topo_weight=self.topo_weight,
                 topo_samples=self.topo_samples,
                 reference_reg_weight=self.reference_reg_weight,
-                reference_features=batch.get("reference_features"),
-                is_interpolated=batch.get("is_interpolated"),
+                reference_features=batch.get("reference_features").to(self.device) if batch.get("reference_features") is not None else None,
+                is_interpolated=batch.get("is_interpolated").to(self.device) if batch.get("is_interpolated") is not None else None,
             )
 
             loss = losses["total"]
+
+            # Track individual loss components
+            for key in loss_components.keys():
+                if key in losses:
+                    loss_components[key] += losses[key].item()
 
             # Backward pass
             self.optimizer.zero_grad(set_to_none=True)  # Faster than zero_grad()
@@ -257,7 +277,11 @@ class VQVAETrainer:
             last_raw_ics = raw_ics
 
         avg_loss = total_loss / n_batches
-        return avg_loss, last_batch, last_raw_ics
+
+        # Average loss components
+        avg_loss_components = {k: v / n_batches for k, v in loss_components.items()}
+
+        return avg_loss, avg_loss_components, last_batch, last_raw_ics
 
     def validate(self):
         """Validate on validation set.
@@ -401,6 +425,9 @@ class VQVAETrainer:
             avg_topo_pre = 0.0
             avg_topo_post = 0.0
 
+        # Compute physics consistency metrics (MNO vs CNO SUMMARY features)
+        physics_metrics = self.compute_physics_consistency()
+
         # Return both aggregate and detailed metrics
         result = {
             "utilization": avg_utilization,
@@ -410,6 +437,66 @@ class VQVAETrainer:
             "topo_post": avg_topo_post,  # Post-quantization topographic similarity
         }
         result.update(detailed_metrics)  # Include all detailed metrics
+        result.update(physics_metrics)  # Include physics consistency metrics
+
+        return result
+
+    def compute_physics_consistency(self) -> Dict[str, float]:
+        """Compute physics consistency: MSE between MNO and CNO SUMMARY features.
+
+        Returns:
+            Dict with physics_mse_all, physics_mse_interpolated, physics_mse_exact
+        """
+        import torch.nn.functional as F
+
+        mse_all = []
+        mse_interpolated = []
+        mse_exact = []
+
+        n_batches_checked = 0
+        n_batches_skipped = 0
+
+        with torch.no_grad():
+            for batch in self.val_loader:
+                raw_summary = batch.get("raw_summary")
+                reference_features = batch.get("reference_features")
+                is_interpolated = batch.get("is_interpolated")
+
+                if raw_summary is None or reference_features is None:
+                    # No reference features available, skip physics consistency
+                    continue
+
+                raw_summary = raw_summary.to(self.device)
+                reference_features = reference_features.to(self.device)
+
+                # Compute MSE for all samples
+                batch_mse = F.mse_loss(raw_summary, reference_features, reduction='none').mean(dim=1)
+                mse_all.extend(batch_mse.cpu().tolist())
+
+                n_batches_checked += 1
+
+                # Break down by interpolated vs exact if mask available
+                if is_interpolated is not None:
+                    is_interpolated = is_interpolated.to(self.device)
+                    mse_interpolated.extend(batch_mse[is_interpolated].cpu().tolist())
+                    mse_exact.extend(batch_mse[~is_interpolated].cpu().tolist())
+
+        # Average MSE values
+        result = {}
+        if mse_all:
+            result["physics_mse_all"] = sum(mse_all) / len(mse_all) if mse_all else 0.0
+        else:
+            result["physics_mse_all"] = 0.0
+
+        if mse_interpolated:
+            result["physics_mse_interpolated"] = sum(mse_interpolated) / len(mse_interpolated) if mse_interpolated else 0.0
+        else:
+            result["physics_mse_interpolated"] = 0.0
+
+        if mse_exact:
+            result["physics_mse_exact"] = sum(mse_exact) / len(mse_exact) if mse_exact else 0.0
+        else:
+            result["physics_mse_exact"] = 0.0
 
         return result
 
@@ -439,8 +526,13 @@ class VQVAETrainer:
             epoch_start = time.time()
 
             # Train
-            train_loss, last_batch, last_raw_ics = self.train_epoch()
+            train_loss, loss_components, last_batch, last_raw_ics = self.train_epoch()
             self.history["train_loss"].append(train_loss)
+
+            # Store loss components in history
+            if "loss_components" not in self.history:
+                self.history["loss_components"] = []
+            self.history["loss_components"].append(loss_components)
 
             # Validate (only every N epochs or last epoch)
             should_validate = (epoch % self.val_every_n_epochs == 0) or (epoch == epochs)
@@ -483,7 +575,23 @@ class VQVAETrainer:
                 topo_post = metrics.get("topo_post", 0.0)
                 msg += f", topo_pre={topo_pre:.3f}, topo_post={topo_post:.3f}"
 
+                # Add reference regularization loss if active
+                ref_reg = loss_components.get("reference_regularization", 0.0)
+                if ref_reg > 0:
+                    msg += f", ref_reg={ref_reg:.6f}"
+
                 logger.info(msg)
+
+                # Add physics consistency metrics if available (separate line for readability)
+                if "physics_mse_interpolated" in metrics or "physics_mse_exact" in metrics:
+                    physics_msg = "  Physics consistency: "
+                    if "physics_mse_all" in metrics:
+                        physics_msg += f"all={metrics['physics_mse_all']:.6f}"
+                    if "physics_mse_interpolated" in metrics:
+                        physics_msg += f", interp={metrics['physics_mse_interpolated']:.6f}"
+                    if "physics_mse_exact" in metrics:
+                        physics_msg += f", exact={metrics['physics_mse_exact']:.6f}"
+                    logger.info(physics_msg)
 
             # Callbacks
             # 1. Dead code reset

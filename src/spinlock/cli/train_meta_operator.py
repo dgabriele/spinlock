@@ -300,7 +300,7 @@ Output:
         # Print distributed setup
         print(f"\nBackend: {dist_config.backend}")
         print(f"World size: {dist_config.world_size}")
-        print(f"Master: {dist_config.master_addr}:{dist_config.master_port}")
+        print(f"Master: {dist_config.get_master_addr()}:{dist_config.master_port}")
         print(f"\nNodes:")
         for i, node in enumerate(dist_config.nodes):
             print(f"  [{i}] {node.host}: {len(node.gpus)} GPU(s) {node.gpus}")
@@ -308,7 +308,7 @@ Output:
         print("\n" + "="*70 + "\n")
 
         # Build script arguments
-        script_path = "spinlock.cli.train_meta_operator"  # Module path (no -m flag)
+        script_path = "train-meta-operator"  # CLI command name
         script_args = ["--config", str(args.config)]
 
         # Add CLI overrides
