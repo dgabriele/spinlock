@@ -20,6 +20,8 @@ import sys
 import warnings
 import yaml
 import time
+import itertools
+import re
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -204,6 +206,25 @@ Output:
             help="Log metrics every N batches (default: 10)",
         )
 
+        # Distributed training options (internal use by launcher)
+        dist_group = parser.add_argument_group("distributed training (internal)")
+
+        dist_group.add_argument(
+            "--distributed-rank",
+            type=int,
+            default=None,
+            metavar="RANK",
+            help="Global rank for distributed training (set by launcher)",
+        )
+
+        dist_group.add_argument(
+            "--distributed-world-size",
+            type=int,
+            default=None,
+            metavar="SIZE",
+            help="World size for distributed training (set by launcher)",
+        )
+
     def execute(self, args: Namespace) -> int:
         """Execute meta-operator training."""
         # Validate config exists
@@ -239,15 +260,87 @@ Output:
             print("\n✓ Configuration valid (dry-run mode, no training performed)")
             return 0
 
-        # Execute training
+        # Check for distributed training
+        distributed_config = config.get("distributed", {})
+        is_distributed = distributed_config.get("enabled", False)
+        is_worker_process = args.distributed_rank is not None
+
+        if is_distributed and not is_worker_process:
+            # This is the launcher process - launch distributed training
+            return self._launch_distributed_training(config, args)
+        else:
+            # Execute training (either single-GPU or as distributed worker)
+            try:
+                return self._run_training(config, args)
+            except KeyboardInterrupt:
+                print("\n\nTraining interrupted by user", file=sys.stderr)
+                return 130
+            except Exception as e:
+                import traceback
+                print(f"\nError during training: {e}", file=sys.stderr)
+                if args.verbose:
+                    traceback.print_exc()
+                return 1
+
+    def _launch_distributed_training(self, config: Dict[str, Any], args: Namespace) -> int:
+        """Launch distributed training across multiple nodes."""
+        from spinlock.distributed import DistributedConfig, launch_distributed_training
+
+        print("\n" + "="*70)
+        print("Distributed Training Configuration")
+        print("="*70)
+
+        # Parse distributed config
         try:
-            return self._run_training(config, args)
+            dist_config = DistributedConfig.from_dict(config["distributed"])
+            dist_config.validate()
+        except Exception as e:
+            return self.error(f"Invalid distributed configuration: {e}")
+
+        # Print distributed setup
+        print(f"\nBackend: {dist_config.backend}")
+        print(f"World size: {dist_config.world_size}")
+        print(f"Master: {dist_config.master_addr}:{dist_config.master_port}")
+        print(f"\nNodes:")
+        for i, node in enumerate(dist_config.nodes):
+            print(f"  [{i}] {node.host}: {len(node.gpus)} GPU(s) {node.gpus}")
+
+        print("\n" + "="*70 + "\n")
+
+        # Build script arguments
+        script_path = "spinlock.cli.train_meta_operator"  # Module path (no -m flag)
+        script_args = ["--config", str(args.config)]
+
+        # Add CLI overrides
+        if args.n_samples:
+            script_args.extend(["--n-samples", str(args.n_samples)])
+        if args.epochs:
+            script_args.extend(["--epochs", str(args.epochs)])
+        if args.batch_size:
+            script_args.extend(["--batch-size", str(args.batch_size)])
+        if args.learning_rate:
+            script_args.extend(["--learning-rate", str(args.learning_rate)])
+        if args.timesteps:
+            script_args.extend(["--timesteps", str(args.timesteps)])
+        if args.val_split:
+            script_args.extend(["--val-split", str(args.val_split)])
+        if args.resume_from:
+            script_args.extend(["--resume-from", str(args.resume_from)])
+        if args.verbose:
+            script_args.append("--verbose")
+        if args.log_every != 10:
+            script_args.extend(["--log-every", str(args.log_every)])
+
+        # Launch distributed training
+        try:
+            launch_distributed_training(dist_config, script_path, script_args)
+            return 0
         except KeyboardInterrupt:
             print("\n\nTraining interrupted by user", file=sys.stderr)
             return 130
         except Exception as e:
             import traceback
-            print(f"\nError during training: {e}", file=sys.stderr)
+            print(f"\nError launching distributed training: {e}", file=sys.stderr)
             if args.verbose:
                 traceback.print_exc()
             return 1
@@ -476,11 +569,48 @@ Output:
 
             print(f"  ✓ Token conditioning setup: {num_tokens} tokens, embed_dim={config['model']['token_embed_dim']}")
 
+        # Setup distributed training if needed
+        is_distributed = args.distributed_rank is not None
+        if is_distributed:
+            from spinlock.distributed import setup_process_group, get_rank, is_main_process
+
+            rank = args.distributed_rank
+            world_size = args.distributed_world_size
+
+            # Parse distributed config
+            from spinlock.distributed import DistributedConfig
+            dist_config = DistributedConfig.from_dict(config.get("distributed", {}))
+
+            # Initialize process group
+            setup_process_group(rank, world_size, dist_config)
+
+            # Update device to local GPU
+            local_rank = rank % torch.cuda.device_count()
+            device = f"cuda:{local_rank}"
+
+            if is_main_process():
+                print(f"\n  ✓ Distributed training initialized: rank {rank}/{world_size}")
+        else:
+            rank = 0
+            world_size = 1
+
         # Create model
-        print("Creating NOA backbone...")
+        print("Creating NOA backbone..." if rank == 0 else "")
         noa = NOABackbone(**config["model"])
         noa = noa.to(device)
-        print(f"  ✓ NOA created ({sum(p.numel() for p in noa.parameters()):,} parameters)")
+        if rank == 0:
+            print(f"  ✓ NOA created ({sum(p.numel() for p in noa.parameters()):,} parameters)")
+
+        # Wrap model in DDP if distributed
+        if is_distributed:
+            from torch.nn.parallel import DistributedDataParallel as DDP
+            noa = DDP(noa, device_ids=[local_rank], output_device=local_rank)
+            if rank == 0:
+                print(f"  ✓ Model wrapped in DistributedDataParallel")
+            # Get underlying model for rollout (DDP adds .module attribute)
+            noa_base = noa.module
+        else:
+            noa_base = noa
 
         # Wrap with truncated BPTT if configured
         timesteps = config["training"]["timesteps"]
@@ -489,10 +619,12 @@ Output:
         from spinlock.noa import TruncatedBPTT
 
         if bptt_window is not None and bptt_window < timesteps:
-            print(f"  ✓ Using truncated BPTT: {timesteps} steps, backprop window={bptt_window}")
-            noa_rollout = TruncatedBPTT(noa, timesteps=timesteps, bptt_window=bptt_window)
+            if rank == 0:
+                print(f"  ✓ Using truncated BPTT: {timesteps} steps, backprop window={bptt_window}")
+            noa_rollout = TruncatedBPTT(noa_base, timesteps=timesteps, bptt_window=bptt_window)
         else:
-            print(f"  ✓ Using full backprop: {timesteps} steps")
+            if rank == 0:
+                print(f"  ✓ Using full backprop: {timesteps} steps")
             # Create pass-through wrapper for uniform interface
             class FullBPTTWrapper:
                 def __init__(self, model, timesteps):
@@ -508,7 +640,7 @@ Output:
                     else:
                         return pred_traj, target_traj
 
-            noa_rollout = FullBPTTWrapper(noa, timesteps)
+            noa_rollout = FullBPTTWrapper(noa_base, timesteps)
 
         # Create loss function
         print("Creating loss function...")
@@ -589,6 +721,7 @@ Output:
         dataset = NOAStateDataset(
             dataset_path=config["data"]["dataset_path"],
             max_samples=config["training"]["n_samples"],
+            sampling_strategy=config["training"].get("sampling_strategy", "stratified"),
         )
 
         val_split = config["data"].get("val_split", 0.1)
@@ -643,10 +776,34 @@ Output:
             else:
                 print(f"  Stage 2 (VQ-led): No ground-truth tokens - model will self-regulate")
 
+        # Determine if we should shuffle based on sampling strategy
+        # Sequential (Sobol): NO shuffle - preserves low-discrepancy property + enables resumption
+        # Other strategies: shuffle for better training, but resumption less precise
+        sampling_strategy = config["training"].get("sampling_strategy", "stratified")
+        use_shuffle = sampling_strategy != "sequential" and not is_distributed
+
+        if not use_shuffle and rank == 0:
+            print(f"  ✓ No shuffle (preserves {sampling_strategy} order + enables exact resumption)")
+
+        # Use DistributedSampler for multi-GPU training
+        train_sampler = None
+        if is_distributed:
+            from torch.utils.data.distributed import DistributedSampler
+            train_sampler = DistributedSampler(
+                train_dataset,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=use_shuffle,
+                seed=seed,
+            )
+            if rank == 0:
+                print(f"  ✓ Using DistributedSampler (world_size={world_size})")
+
         train_loader = DataLoader(
             train_dataset,
             batch_size=config["training"]["batch_size"],
-            shuffle=True,
+            shuffle=use_shuffle if train_sampler is None else False,
+            sampler=train_sampler,
             num_workers=config["data"].get("num_workers", 4),
         )
 
@@ -692,6 +849,7 @@ Output:
         # Resume from checkpoint if specified
         start_epoch = 0
         best_val_loss = float('inf')
+        resume_batch_counter = 0
 
         if "resume_from" in config:
             print(f"Resuming from checkpoint: {config['resume_from']}")
@@ -700,9 +858,32 @@ Output:
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             if "scheduler_state_dict" in checkpoint and checkpoint["scheduler_state_dict"] is not None:
                 scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-            start_epoch = checkpoint["epoch"] + 1
+
+            # Check if this is a mid-epoch checkpoint
+            saved_batch_counter = checkpoint.get("global_batch_counter", None)
+            saved_epoch = checkpoint["epoch"]
+
+            # Backward compatibility: parse batch number from filename if not in checkpoint
+            if saved_batch_counter is None:
+                checkpoint_filename = Path(config["resume_from"]).name
+                batch_match = re.search(r'_batch(\d+)\.pt$', checkpoint_filename)
+                if batch_match:
+                    saved_batch_counter = int(batch_match.group(1))
+                    print(f"  ℹ Old checkpoint format detected, inferred batch {saved_batch_counter} from filename")
+
+            if saved_batch_counter is not None:
+                # Mid-epoch checkpoint: continue same epoch from saved batch
+                start_epoch = saved_epoch
+                resume_batch_counter = saved_batch_counter
+                print(f"  ✓ Resuming epoch {saved_epoch + 1} from batch {saved_batch_counter}")
+            else:
+                # End-of-epoch checkpoint: start next epoch
+                start_epoch = saved_epoch + 1
+                resume_batch_counter = 0
+                print(f"  ✓ Resuming from end of epoch {saved_epoch + 1}, starting epoch {start_epoch + 1}")
+
             best_val_loss = checkpoint.get("val_loss", float('inf'))
-            print(f"  ✓ Resumed from epoch {checkpoint['epoch']}, best val loss: {best_val_loss:.6f}")
+            print(f"  ✓ Best val loss: {best_val_loss:.6f}")
 
         # Create checkpoint directory
         save_dir = Path(config["checkpointing"]["save_dir"])
@@ -725,12 +906,16 @@ Output:
         early_stopping_patience = config["training"].get("early_stopping_patience", 0)
         epochs_without_improvement = 0
 
+        # Mid-epoch checkpoint setup
+        save_every_batches = config["checkpointing"].get("save_every_batches", None)
+        global_batch_counter = resume_batch_counter  # Start from resumed position
+
         # Training loop
         for epoch in range(start_epoch, config["training"]["epochs"]):
             print(f"Epoch {epoch + 1}/{config['training']['epochs']}")
 
-            # Train
-            train_metrics = self._train_epoch(
+            # Train (with mid-epoch validation/checkpointing if configured)
+            train_metrics, global_batch_counter, best_val_loss = self._train_epoch(
                 noa=noa,
                 noa_rollout=noa_rollout,
                 loss_fn=loss_fn,
@@ -743,9 +928,23 @@ Output:
                 log_every=args.log_every,
                 accumulation_steps=config["training"].get("gradient_accumulation_steps", 1),
                 ground_truth_tokens=ground_truth_tokens,
+                # Mid-epoch validation/checkpointing
+                val_loader=val_loader if save_every_batches else None,
+                save_every_batches=save_every_batches,
+                global_batch_counter=global_batch_counter,
+                best_val_loss=best_val_loss,
+                epoch=epoch,
+                config=config,
+                save_dir=save_dir,
+                scheduler=scheduler,
+                # Distributed training
+                rank=rank,
+                noa_base=noa_base,
             )
 
             # Validate
+            # Optional: Limit validation batches for faster epochs
+            max_val_batches = config["training"].get("max_val_batches", None)
             val_metrics = self._validate_epoch(
                 noa=noa,
                 noa_rollout=noa_rollout,
@@ -755,6 +954,7 @@ Output:
                 device=device,
                 timesteps=config["training"]["timesteps"],
                 ground_truth_tokens=ground_truth_tokens,
+                max_batches=max_val_batches,
             )
 
             # Update scheduler
@@ -780,38 +980,42 @@ Output:
             log_fp.write(f"{epoch+1},{train_metrics['loss']:.6f},{val_metrics['loss']:.6f},{current_lr:.2e},{train_metrics['time']:.2f}\n")
             log_fp.flush()
 
-            # Save checkpoint
-            save_every = config["checkpointing"].get("save_every", 5)
-            if (epoch + 1) % save_every == 0 or (epoch + 1) == config["training"]["epochs"]:
-                checkpoint_path = save_dir / f"meta_operator_epoch{epoch+1}.pt"
-                self._save_checkpoint(
-                    path=checkpoint_path,
-                    noa=noa,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    epoch=epoch,
-                    train_loss=train_metrics['loss'],
-                    val_loss=val_metrics['loss'],
-                    config=config,
-                )
-                print(f"  Saved checkpoint: {checkpoint_path}")
+            # Save checkpoint (only on rank 0)
+            if rank == 0:
+                save_every = config["checkpointing"].get("save_every", 5)
+                if (epoch + 1) % save_every == 0 or (epoch + 1) == config["training"]["epochs"]:
+                    checkpoint_path = save_dir / f"meta_operator_epoch{epoch+1}.pt"
+                    self._save_checkpoint(
+                        path=checkpoint_path,
+                        noa=noa_base,  # Save unwrapped model
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        epoch=epoch,
+                        train_loss=train_metrics['loss'],
+                        val_loss=val_metrics['loss'],
+                        config=config,
+                        global_batch_counter=None,  # End-of-epoch checkpoint
+                    )
+                    print(f"  Saved checkpoint: {checkpoint_path}")
 
             # Save best checkpoint and check early stopping
             if val_metrics['loss'] < best_val_loss:
                 best_val_loss = val_metrics['loss']
                 epochs_without_improvement = 0  # Reset counter
-                best_checkpoint_path = save_dir / "meta_operator_best.pt"
-                self._save_checkpoint(
-                    path=best_checkpoint_path,
-                    noa=noa,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    epoch=epoch,
-                    train_loss=train_metrics['loss'],
-                    val_loss=val_metrics['loss'],
-                    config=config,
-                )
-                print(f"  New best checkpoint: {best_checkpoint_path} (val_loss={best_val_loss:.6f})")
+                if rank == 0:
+                    best_checkpoint_path = save_dir / "meta_operator_best.pt"
+                    self._save_checkpoint(
+                        path=best_checkpoint_path,
+                        noa=noa_base,  # Save unwrapped model
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        epoch=epoch,
+                        train_loss=train_metrics['loss'],
+                        val_loss=val_metrics['loss'],
+                        config=config,
+                        global_batch_counter=global_batch_counter,  # Include batch position
+                    )
+                    print(f"  New best checkpoint: {best_checkpoint_path} (val_loss={best_val_loss:.6f})")
             else:
                 epochs_without_improvement += 1
 
@@ -824,13 +1028,19 @@ Output:
 
         log_fp.close()
 
-        print(f"{'='*70}")
-        print("Training Complete")
-        print(f"{'='*70}")
-        print(f"Best validation loss: {best_val_loss:.6f}")
-        print(f"Checkpoints saved to: {save_dir}")
-        print(f"Training log: {log_file}")
-        print()
+        if rank == 0:
+            print(f"{'='*70}")
+            print("Training Complete")
+            print(f"{'='*70}")
+            print(f"Best validation loss: {best_val_loss:.6f}")
+            print(f"Checkpoints saved to: {save_dir}")
+            print(f"Training log: {log_file}")
+            print()
+
+        # Cleanup distributed training
+        if is_distributed:
+            from spinlock.distributed import cleanup_process_group
+            cleanup_process_group()
 
         return 0
 
@@ -849,7 +1059,19 @@ Output:
         accumulation_steps=1,
         ground_truth_tokens=None,
         token_indices=None,
-    ) -> dict:
+        # Mid-epoch validation/checkpointing
+        val_loader=None,
+        save_every_batches=None,
+        global_batch_counter=0,
+        best_val_loss=float('inf'),
+        epoch=0,
+        config=None,
+        save_dir=None,
+        scheduler=None,
+        # Distributed training
+        rank=0,
+        noa_base=None,  # Unwrapped model for checkpointing
+    ) -> tuple:
         """Train for one epoch with gradient accumulation."""
         noa.train()
         total_loss = 0.0
@@ -857,10 +1079,23 @@ Output:
         num_batches = 0
         start_time = time.time()
 
+        # Calculate how many batches to skip if resuming mid-epoch
+        batches_per_epoch = len(dataloader)
+        batches_processed_in_epoch = global_batch_counter % batches_per_epoch if batches_per_epoch > 0 else 0
+
         # Initialize gradients outside loop for accumulation
         optimizer.zero_grad()
 
-        for batch_idx, batch in enumerate(dataloader):
+        # Create iterator and fast-forward if resuming mid-epoch
+        dataloader_iter = iter(dataloader)
+        if batches_processed_in_epoch > 0:
+            print(f"  ⏩ Resuming mid-epoch: fast-forwarding past {batches_processed_in_epoch} batches...")
+            # Consume (skip) the first N batches without loading their data
+            for _ in itertools.islice(dataloader_iter, batches_processed_in_epoch):
+                pass
+            print(f"  ✓ Skipped {batches_processed_in_epoch} batches, resuming from batch {batches_processed_in_epoch + 1}")
+
+        for batch_idx, batch in enumerate(dataloader_iter, start=batches_processed_in_epoch):
             batch_start_time = time.time()
             ic = batch["ic"].to(device)
             params = batch["params"]
@@ -965,6 +1200,63 @@ Output:
 
                 print(f"  Batch {batch_idx + 1}/{len(dataloader)}: total={avg_loss:.6f}, {component_str}, time={batch_total_time:.2f}s")
 
+            # Mid-epoch validation and checkpointing
+            global_batch_counter += 1
+            if save_every_batches and (global_batch_counter % save_every_batches == 0):
+                print(f"\n  >>> Mid-epoch checkpoint at batch {global_batch_counter} (epoch {epoch+1}, batch {batch_idx+1})")
+
+                # Run validation
+                noa.eval()
+                val_metrics = self._validate_epoch(
+                    noa=noa,
+                    noa_rollout=noa_rollout,
+                    loss_fn=loss_fn,
+                    replayer=replayer,
+                    dataloader=val_loader,
+                    device=device,
+                    timesteps=timesteps,
+                    ground_truth_tokens=ground_truth_tokens,
+                )
+                noa.train()  # Back to training mode
+
+                print(f"  Val Loss: {val_metrics['loss']:.6f}")
+
+                # Save checkpoint if this is the best model so far (only on rank 0)
+                if val_metrics['loss'] < best_val_loss:
+                    best_val_loss = val_metrics['loss']
+                    if rank == 0:
+                        model_to_save = noa_base if noa_base is not None else noa
+                        best_checkpoint_path = save_dir / "meta_operator_best.pt"
+                        self._save_checkpoint(
+                            path=best_checkpoint_path,
+                            noa=model_to_save,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            epoch=epoch,
+                            train_loss=total_loss / num_batches,
+                            val_loss=val_metrics['loss'],
+                            config=config,
+                            global_batch_counter=global_batch_counter,  # Mid-epoch position
+                        )
+                        print(f"  New best checkpoint: {best_checkpoint_path} (val_loss={best_val_loss:.6f})")
+
+                # Always save periodic checkpoint (only on rank 0)
+                if rank == 0:
+                    model_to_save = noa_base if noa_base is not None else noa
+                    checkpoint_path = save_dir / f"meta_operator_epoch{epoch+1}_batch{global_batch_counter}.pt"
+                    self._save_checkpoint(
+                        path=checkpoint_path,
+                        noa=model_to_save,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        epoch=epoch,
+                        train_loss=total_loss / num_batches,
+                        val_loss=val_metrics['loss'],
+                        config=config,
+                        global_batch_counter=global_batch_counter,  # Mid-epoch position
+                    )
+                    print(f"  Saved periodic checkpoint: {checkpoint_path}\n")
+
         # Handle leftover gradients at end of epoch
         if (batch_idx + 1) % accumulation_steps != 0:
             torch.nn.utils.clip_grad_norm_(noa.parameters(), clip_grad)
@@ -974,10 +1266,12 @@ Output:
         elapsed = time.time() - start_time
         avg_loss = total_loss / num_batches if num_batches > 0 else float('inf')
 
-        return {
+        train_metrics = {
             "loss": avg_loss,
             "time": elapsed,
         }
+
+        return train_metrics, global_batch_counter, best_val_loss
 
     def _validate_epoch(
         self,
@@ -990,6 +1284,7 @@ Output:
         timesteps,
         ground_truth_tokens=None,
         token_indices=None,
+        max_batches=None,
     ) -> dict:
         """Validate for one epoch."""
         noa.eval()
@@ -999,6 +1294,9 @@ Output:
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(dataloader):
+                # Optional early stopping for faster validation
+                if max_batches is not None and batch_idx >= max_batches:
+                    break
                 ic = batch["ic"].to(device)
                 params = batch["params"]
                 indices = batch.get("sample_idx")  # Dataset indices for this batch
@@ -1091,6 +1389,7 @@ Output:
         train_loss,
         val_loss,
         config,
+        global_batch_counter=None,
     ) -> None:
         """Save checkpoint in Stage 2 compatible format."""
         checkpoint = {
@@ -1102,6 +1401,7 @@ Output:
             'train_loss': train_loss,
             'config': config,  # Full config for reproducibility
             'timestamp': datetime.now().isoformat(),
+            'global_batch_counter': global_batch_counter,  # Save batch position
         }
 
         torch.save(checkpoint, path)

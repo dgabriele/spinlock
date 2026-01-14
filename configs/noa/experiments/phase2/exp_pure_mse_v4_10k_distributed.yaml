@@ -1,0 +1,83 @@
+# Stage 1 Pure MSE Training (Distributed across 2 GPUs)
+# Phase 2: MNO Training - High Fidelity Physics Baseline
+#
+# This configuration trains the MNO with pure trajectory matching (L_traj only)
+# without any VQ-VAE involvement, distributed across local and remote GPUs.
+#
+# See README.md for complete three-stage workflow.
+
+# Distributed training configuration
+distributed:
+  enabled: true
+  backend: nccl  # Use nccl for GPU-GPU communication
+  master_port: 29500
+
+  nodes:
+    # Local GPU (master node)
+    - host: localhost
+      gpus: [0]  # Use GPU 0 on local machine
+
+    # Remote GPU
+    - host: 100.111.3.32
+      gpus: [0]  # Use GPU 0 on remote machine
+      ssh_user: gelotto  # Remote username
+      ssh_port: 22  # Optional: defaults to 22
+      python_path: "poetry run python"  # Optional: defaults to "poetry run python"
+      working_dir: "/home/gelotto/projects/spinlock"  # Remote working directory
+
+# Model architecture (U-AFNO backbone)
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 32  # 226M parameters
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  token_conditioning: false  # Pure physics, no token conditioning
+
+# Training configuration
+training:
+  n_samples: 10000  # Sequential Sobol sampling (first 10K of 100K dataset)
+  batch_size: 2  # Effective batch size = 2 * 2 GPUs = 4
+  epochs: 10
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-6
+  timesteps: 256
+  bptt_window: 32  # Truncated BPTT
+  clip_grad: 1.0
+  gradient_accumulation_steps: 1
+  sampling_strategy: "sequential"  # Preserves Sobol low-discrepancy + enables resumption
+  warmup_steps: 10000  # LR warmup
+  early_stopping_patience: 0  # Disabled
+
+# Data configuration
+data:
+  dataset_path: "datasets/100k_full_features.h5"
+  val_split: 0.1
+  num_workers: 4
+  cno_config: "configs/operators/continuous_neural_operator.yaml"
+
+# Loss configuration
+loss:
+  mode: "mse_led"  # Pure MSE-led loss (Stage 1)
+  lambda_traj: 1.0  # Trajectory matching
+  lambda_ic: 0.3  # IC reconstruction
+
+# Checkpointing
+checkpointing:
+  save_dir: "checkpoints/noa/pure_mse_v4_10k_distributed"
+  save_every: 1  # Save every epoch
+  # save_every_batches: 500  # Mid-epoch checkpoints (disabled - causes 9x validation overhead)
+  keep_best: true
+
+# System
+device: "cuda"
+seed: 42
+
+# Notes:
+# - Effective batch size: 2 (per GPU) × 2 (GPUs) = 4
+# - Total samples per epoch: 9000 (train) ÷ 4 (effective batch) = 2250 batches
+# - Gradient synchronization happens automatically via DDP
+# - Only rank 0 saves checkpoints and logs
+# - Sequential sampling ensures no data duplication across GPUs
