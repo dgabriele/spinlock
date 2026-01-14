@@ -492,7 +492,9 @@ Output:
         torch.manual_seed(seed)
         np.random.seed(seed)
 
-        print("Initializing training...")
+        rank_id = args.distributed_rank if hasattr(args, 'distributed_rank') and args.distributed_rank is not None else "master"
+        print(f"[{rank_id}] Initializing training...")
+        sys.stdout.flush()
 
         # Handle token conditioning setup
         token_conditioning = config["model"].get("token_conditioning", False)
@@ -570,6 +572,9 @@ Output:
             print(f"  ✓ Token conditioning setup: {num_tokens} tokens, embed_dim={config['model']['token_embed_dim']}")
 
         # Setup distributed training if needed
+        print(f"[{rank_id}] Checking distributed training setup (rank={args.distributed_rank})...")
+        sys.stdout.flush()
+
         is_distributed = args.distributed_rank is not None
         if is_distributed:
             from spinlock.distributed import setup_process_group, get_rank, is_main_process
@@ -577,12 +582,24 @@ Output:
             rank = args.distributed_rank
             world_size = args.distributed_world_size
 
+            print(f"[Rank {rank}] Starting distributed initialization...")
+            sys.stdout.flush()
+
             # Parse distributed config
             from spinlock.distributed import DistributedConfig
             dist_config = DistributedConfig.from_dict(config.get("distributed", {}))
 
+            print(f"[Rank {rank}] Master: {dist_config.get_master_addr()}:{dist_config.master_port}")
+            sys.stdout.flush()
+
             # Initialize process group
+            print(f"[Rank {rank}] Initializing process group with {dist_config.backend} backend...")
+            sys.stdout.flush()
+
             setup_process_group(rank, world_size, dist_config)
+
+            print(f"[Rank {rank}] Process group initialized successfully")
+            sys.stdout.flush()
 
             # Update device to local GPU
             local_rank = rank % torch.cuda.device_count()

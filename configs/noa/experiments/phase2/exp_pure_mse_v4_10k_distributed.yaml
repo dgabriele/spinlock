@@ -9,7 +9,7 @@
 # Distributed training configuration
 distributed:
   enabled: true
-  backend: nccl  # Use nccl for GPU-GPU communication
+  backend: gloo  # Use gloo for network-based communication (more reliable than nccl over network)
   master_addr: 100.65.136.23  # Local machine IP (must be reachable by remote)
   master_port: 29500
 

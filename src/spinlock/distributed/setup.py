@@ -24,28 +24,51 @@ def setup_process_group(
         world_size: Total number of processes
         config: Distributed configuration
     """
+    import sys
+
     # Set environment variables for distributed training
-    os.environ["MASTER_ADDR"] = config.get_master_addr()
-    os.environ["MASTER_PORT"] = str(config.master_port)
+    master_addr = config.get_master_addr()
+    master_port = str(config.master_port)
+
+    os.environ["MASTER_ADDR"] = master_addr
+    os.environ["MASTER_PORT"] = master_port
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["RANK"] = str(rank)
 
-    # Initialize process group
-    timeout = timedelta(seconds=config.timeout_seconds)
-    dist.init_process_group(
-        backend=config.backend,
-        init_method=config.init_method,
-        world_size=world_size,
-        rank=rank,
-        timeout=timeout,
-    )
+    print(f"[Rank {rank}] Environment configured: MASTER_ADDR={master_addr}, MASTER_PORT={master_port}")
+    sys.stdout.flush()
+
+    # Initialize process group with shorter timeout for faster failure
+    timeout = timedelta(seconds=min(config.timeout_seconds, 120))  # Cap at 2 minutes
+
+    print(f"[Rank {rank}] Calling dist.init_process_group (backend={config.backend}, timeout={timeout.seconds}s)...")
+    sys.stdout.flush()
+
+    try:
+        dist.init_process_group(
+            backend=config.backend,
+            init_method=config.init_method,
+            world_size=world_size,
+            rank=rank,
+            timeout=timeout,
+        )
+        print(f"[Rank {rank}] dist.init_process_group completed")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"[Rank {rank}] ERROR in dist.init_process_group: {e}")
+        sys.stdout.flush()
+        raise
 
     # Set device for this process
-    local_rank = rank % torch.cuda.device_count()
-    torch.cuda.set_device(local_rank)
+    if config.backend == "nccl" or torch.cuda.is_available():
+        local_rank = rank % torch.cuda.device_count()
+        torch.cuda.set_device(local_rank)
+        print(f"[Rank {rank}/{world_size}] Process group initialized on {config.backend} backend")
+        print(f"[Rank {rank}/{world_size}] Using GPU: cuda:{local_rank}")
+    else:
+        print(f"[Rank {rank}/{world_size}] Process group initialized on {config.backend} backend (CPU)")
 
-    print(f"[Rank {rank}/{world_size}] Process group initialized on {config.backend} backend")
-    print(f"[Rank {rank}/{world_size}] Using GPU: cuda:{local_rank}")
+    sys.stdout.flush()
 
 
 def cleanup_process_group() -> None:
