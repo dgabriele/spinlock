@@ -12,7 +12,7 @@ Ported from unisim.system.training.losses (simplified, removed multimodal suppor
 
 import torch
 import torch.nn.functional as F
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 
 def reconstruction_loss(outputs: Dict[str, Any], targets: Dict[str, torch.Tensor]):
@@ -226,52 +226,50 @@ def reference_regularization_loss(
     reference_features: Optional[torch.Tensor] = None,
     is_interpolated: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Regularize VQ-VAE reconstruction against reference solver features.
+    """Regularize MNO SUMMARY features against reference solver SUMMARY features.
 
-    This loss guides VQ-VAE to reconstruct features that are consistent with
-    reference solver (CNO, UAFNO, etc.) physics, particularly for interpolated
-    parameter points where MNO may deviate from ground truth.
+    Compares MNO's raw SUMMARY features (330D) against reference solver (CNO) SUMMARY
+    features (330D) to guide VQ-VAE toward learning physics-consistent representations.
+
+    This is NOT a reconstruction loss - it measures how close MNO's features are to
+    the reference solver's features in the raw SUMMARY space (before VQ-VAE encoding).
 
     The loss is applied selectively:
     - Interpolated points: MNO generalizing between training points (regularized)
     - Exact training points: MNO learned these during training (not regularized)
 
     Args:
-        outputs: Model outputs with 'reconstruction' dict containing 'features'
-        targets: Target dict (not used, kept for signature consistency)
-        reference_features: Reference solver features [B, D] from high-fidelity solver
-                           If None, returns zero loss (regularization disabled)
-        is_interpolated: Boolean mask [B] indicating which samples are interpolated
-                        True = interpolated (apply regularization)
-                        False = exact training point (skip regularization)
-                        If None, applies to all samples
+        outputs: Model outputs (not used)
+        targets: Target dict containing 'raw_summary' [B, 330] (MNO SUMMARY features)
+        reference_features: Reference solver SUMMARY features [B, 330] from CNO
+        is_interpolated: Boolean mask [B] for interpolated samples
 
     Returns:
-        Scalar loss: MSE between VQ-VAE reconstruction and reference features
-                    (averaged over interpolated samples only)
+        Scalar loss: MSE between MNO SUMMARY and reference SUMMARY (330D vs 330D)
     """
     # No regularization if reference features not provided
     if reference_features is None:
         return torch.tensor(0.0, device=targets["features"].device)
 
-    # Extract VQ-VAE reconstruction
-    reconstruction = outputs["reconstruction"]["features"]  # [B, D]
+    # Extract MNO raw SUMMARY features
+    if "raw_summary" not in targets:
+        # No raw_summary available, skip regularization
+        return torch.tensor(0.0, device=targets["features"].device)
+
+    mno_summary = targets["raw_summary"]  # [B, 330]
 
     # Apply only to interpolated samples if mask provided
     if is_interpolated is not None:
         if not is_interpolated.any():
-            # No interpolated samples in this batch
             return torch.tensor(0.0, device=targets["features"].device)
 
-        # Select interpolated samples
-        reconstruction = reconstruction[is_interpolated]
-        ref_targets = reference_features[is_interpolated]
+        mno_summary = mno_summary[is_interpolated]
+        reference_summary = reference_features[is_interpolated]
     else:
-        # Apply to all samples (fallback if no mask)
-        ref_targets = reference_features
+        reference_summary = reference_features
 
-    # Feature-space MSE: guides VQ-VAE toward physics-consistent reconstructions
-    loss = F.mse_loss(reconstruction, ref_targets)
+    # MSE between MNO SUMMARY and reference (CNO) SUMMARY in raw space
+    loss = F.mse_loss(mno_summary, reference_summary)
 
     return loss
 
@@ -327,9 +325,13 @@ def compute_total_loss(
     topo_loss, topo_metrics = topographic_similarity_loss(outputs, targets, topo_samples)
 
     # 6. Reference feature regularization loss (optional)
-    ref_reg_loss = reference_regularization_loss(
-        outputs, targets, reference_features, is_interpolated
-    )
+    if reference_reg_weight > 0 and reference_features is not None:
+        ref_reg_loss = reference_regularization_loss(
+            outputs, targets, reference_features, is_interpolated
+        )
+    else:
+        # Skip computation if disabled (weight = 0) or no reference features
+        ref_reg_loss = torch.tensor(0.0, device=targets["features"].device)
 
     # Total loss
     total = (

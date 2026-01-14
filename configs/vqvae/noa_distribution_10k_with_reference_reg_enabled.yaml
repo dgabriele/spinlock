@@ -140,11 +140,12 @@ training:
 reference_regularization:
   # Enable reference feature regularization
   # Compares MNO SUMMARY (330D) vs CNO reference SUMMARY (330D) in raw space
-  enabled: false  # Start with baseline
+  enabled: true  # Now testing with reference regularization
 
-  # Regularization weight (relative to reconstruction loss weight=1.0)
-  # 0.05 = 5% influence - balances MNO alignment with physics consistency
-  weight: 0.05
+  # Regularization weight (adjusted for raw SUMMARY feature scale ~760K MSE)
+  # Target: ref_reg contribution ~0.01-0.05 (comparable to other auxiliary losses)
+  # 760K MSE × 1e-7 = 0.076 contribution
+  weight: 0.0000001  # 1e-7
 
   # Apply only to interpolated points (recommended)
   # MNO trained on 2K exact points, generates 10K with 8K interpolated

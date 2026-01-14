@@ -174,21 +174,57 @@ def extract_reference_features(
         else:
             reference_params = f['features/parameters'][:]  # [N, D]
 
-        reference_features = f[ref_features_path]  # [N, D_feat]
+        reference_features_raw = f[ref_features_path][:]  # [N, D_feat]
 
         ref_n_samples = len(reference_ics)
-        ref_feature_dim = reference_features.shape[1]
+        ref_feature_dim_raw = reference_features_raw.shape[1]
 
         print(f"  Reference samples: {ref_n_samples}")
-        print(f"  Feature dimension: {ref_feature_dim}")
+        print(f"  Raw feature dimension: {ref_feature_dim_raw}")
         print(f"  IC shape: {reference_ics.shape}")
 
-        # Validate feature dimensions
-        if ref_feature_dim != mno_feature_shape[1]:
-            print(f"\nWARNING: Feature dimension mismatch!", file=sys.stderr)
-            print(f"  MNO: {mno_feature_shape[1]}, Reference: {ref_feature_dim}", file=sys.stderr)
-            print(f"  This may indicate different feature extraction configs.", file=sys.stderr)
-            print(f"  Reference features may not be suitable for regularization.\n", file=sys.stderr)
+        # Check if we need to exclude operator_sensitivity features
+        # Reference has 360 aggregated features = 120 per-traj × 3 stats
+        # MNO has 330 aggregated features = 110 per-traj × 3 stats
+        # Difference: 10 operator_sensitivity features (indices 87-96 per-traj)
+
+        # Compute per-trajectory feature count
+        ref_per_traj = ref_feature_dim_raw // 3  # Assumes 3 aggregations (mean, std, cv)
+        mno_per_traj = mno_feature_shape[1] // 3
+
+        if ref_per_traj != mno_per_traj:
+            print(f"\n  Feature dimension mismatch detected:")
+            print(f"    Reference: {ref_per_traj} per-traj features → {ref_feature_dim_raw} aggregated")
+            print(f"    MNO: {mno_per_traj} per-traj features → {mno_feature_shape[1]} aggregated")
+            print(f"    Difference: {ref_per_traj - mno_per_traj} features")
+
+            if ref_per_traj == 120 and mno_per_traj == 110:
+                print(f"\n  Excluding operator_sensitivity features (indices 87-96)...")
+                print(f"    These require operator access and cannot be computed from MNO rollouts.")
+
+                # Create mask to exclude operator_sensitivity features (indices 87-96)
+                # For aggregated features with 3 stats, this means excluding:
+                # - Mean: 87*3+0, 87*3+1, ..., 96*3+2
+                # - Std: same offset pattern
+                # - CV: same offset pattern
+
+                # Build list of indices to KEEP (0-86, 97-119 per-traj → expanded for 3 stats)
+                keep_indices = []
+                for i in range(120):
+                    if i < 87 or i > 96:  # Exclude operator_sensitivity (87-96)
+                        # Add all 3 aggregation variants for this feature
+                        keep_indices.extend([i*3, i*3+1, i*3+2])
+
+                # Filter features
+                reference_features = reference_features_raw[:, keep_indices]
+                print(f"    Filtered: {reference_features_raw.shape[1]} → {reference_features.shape[1]} features")
+            else:
+                print(f"\n  WARNING: Unexpected feature mismatch pattern!", file=sys.stderr)
+                print(f"    Expected (120→110), got ({ref_per_traj}→{mno_per_traj})", file=sys.stderr)
+                reference_features = reference_features_raw
+        else:
+            reference_features = reference_features_raw
+            print(f"  Feature dimensions match: {ref_per_traj} per-trajectory features")
 
     # Match MNO samples to reference dataset
     print(f"\nMatching MNO samples to reference dataset...")
@@ -230,10 +266,9 @@ def extract_reference_features(
     output_features = np.zeros((n_samples, mno_feature_shape[1]), dtype=np.float32)
 
     print(f"\nExtracting features for {len(matched_indices)} matched samples...")
-    with h5py.File(reference_dataset_path, 'r') as f:
-        ref_features = f[ref_features_path]
-        for mno_idx, ref_idx in tqdm(matched_indices, desc="Extracting features"):
-            output_features[mno_idx] = ref_features[ref_idx]
+    # Note: reference_features already loaded and filtered above
+    for mno_idx, ref_idx in tqdm(matched_indices, desc="Extracting features"):
+        output_features[mno_idx] = reference_features[ref_idx]
 
     # For unmatched samples, set to NaN as placeholder
     if len(unmatched_indices) > 0:

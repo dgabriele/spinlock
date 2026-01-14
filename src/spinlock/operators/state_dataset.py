@@ -83,10 +83,13 @@ class NOAStateDataset(Dataset):
                 indices = np.arange(n)
             elif sampling_strategy == "stratified":
                 # Stratified: uniformly spaced across the full Sobol sequence
-                # Preserves space-filling properties of the Sobol sequence
+                # WARNING: Breaks Sobol space-filling due to stride sampling
+                # (Sobol sequences are prefix-optimal, stride breaks this property)
                 stride = total // n
                 indices = np.arange(0, total, stride)[:n]
                 print(f"  Using stratified sampling: {n} samples with stride {stride} from {total} total")
+                print(f"  ⚠️  WARNING: Stride sampling breaks Sobol prefix-optimality!")
+                print(f"  ⚠️  Consider using sampling_strategy='sequential' for better coverage.")
             elif sampling_strategy == "random":
                 # Random: reproducible random subset
                 # Loses Sobol structure but avoids prefix clustering
@@ -95,12 +98,12 @@ class NOAStateDataset(Dataset):
                 indices = np.sort(indices)  # Sort for HDF5 cache efficiency
                 print(f"  Using random sampling: {n} samples from {total} total (seed={random_seed})")
             elif sampling_strategy == "sequential":
-                # Sequential: first n samples (legacy behavior)
-                # WARNING: Breaks Sobol space-filling properties for subsamples
+                # Sequential: first n samples (prefix-optimal for Sobol sequences)
+                # CORRECT: Preserves Sobol space-filling properties
+                # (Sobol sequences fill space progressively - first N samples have optimal coverage)
                 indices = np.arange(n)
                 print(f"  Using sequential sampling: first {n} samples from {total} total")
-                print(f"  ⚠️  WARNING: Sequential sampling breaks Sobol properties for subsamples!")
-                print(f"  ⚠️  Consider using sampling_strategy='stratified' instead.")
+                print(f"  ✓ Sequential sampling preserves Sobol prefix-optimality (recommended)")
             else:
                 raise ValueError(
                     f"Unknown sampling_strategy: '{sampling_strategy}'. "
