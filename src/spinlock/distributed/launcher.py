@@ -92,6 +92,8 @@ class DistributedLauncher:
             "WORLD_SIZE": str(self.config.world_size),
             "MASTER_ADDR": self.config.get_master_addr(),
             "MASTER_PORT": str(self.config.master_port),
+            "NCCL_DEBUG": "INFO",  # Enable NCCL debug logging
+            "NCCL_DEBUG_SUBSYS": "ALL",  # Debug all subsystems
         })
 
         # Build command - use spinlock CLI
@@ -133,6 +135,8 @@ class DistributedLauncher:
             f"WORLD_SIZE={self.config.world_size}",
             f"MASTER_ADDR={self.config.get_master_addr()}",
             f"MASTER_PORT={self.config.master_port}",
+            "NCCL_DEBUG=INFO",  # Enable NCCL debug logging
+            "NCCL_DEBUG_SUBSYS=ALL",  # Debug all subsystems
         ])
 
         script_args_str = " ".join(self.script_args)
