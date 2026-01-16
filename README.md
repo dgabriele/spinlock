@@ -582,10 +582,10 @@ For bugs and feature requests, please open an issue on GitHub.
 If you use Spinlock in your research, please cite:
 
 ```bibtex
-@software{spinlock2024,
+@software{spinlock2026,
   title = {Spinlock: Foundation for Neural Operator Agent Research},
   author = {Your Name},
-  year = {2024},
+  year = {2026},
   url = {https://github.com/yourusername/spinlock}
 }
 ```
