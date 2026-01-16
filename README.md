@@ -148,37 +148,29 @@ Why "meta"? It operates one level above individual operators, learning the relat
 See [Independent Optimization Guide](docs/noa-vqvae-independent.md) for complete implementation details and [Two-Stage Curriculum (Deprecated)](docs/two-stage-curriculum-architecture.md) for empirical analysis of competing gradient issues.
 
 ---
-
-**MNO vs NOA Distinction:**
-- **MNO (Meta-Neural Operator)**: Pure physics simulator (Phase 1). No agency, no reasoning—just accurate trajectory prediction.
-- **NOA (Neural Operator Agent)**: Higher-level agent architecture (Phase 2+). Uses MNO as physics engine + operates over VQ tokens. Has working memory, curiosity, planning capabilities.
-
----
-
-**Phase 2: Multi-Observation Context** (📋 Planned)
+### Future Extensions
+**Multi-Observation Context**
 - Lightweight transformer/recurrent heads on VQ token sequences
 - Capture higher-order dependencies and temporal correlations
 - In-context learning of operator physics through attention mechanisms
 
-**Phase 3: Curiosity-Driven Exploration** (📋 Planned)
+**Curiosity-Driven Exploration**
 - Adaptive refinement: Agent identifies high-variance regimes (prediction error/surprise) and autonomously re-parameterizes sampling
 - World model uncertainty: Track which regions of operator space are poorly understood
 - Directed discovery: Use prediction error as curiosity signal to guide exploration toward behavioral frontiers
 - Validation: Does curiosity-driven sampling discover fundamentally new behavioral categories?
 
-**Phase 4: Transparent Self-Modeling** (📋 Planned)
+**Transparent Self-Modeling**
 - Self-model learning: Agent develops interpretable internal model of its own behavioral prediction process
 - Calibration validation: Measure alignment between what the agent predicts about itself vs. actual performance
 - Distributional shift detection: Self-model enables identifying when the agent encounters truly novel operator regimes
 - Transparency requirement: Self-models must be inspectable—understand what the system "believes" about its own capabilities
 
-**Phase 5: Systematic Discovery of Computational Laws** (📋 Planned)
-- Hypothesis generation: Identify potential universal patterns in operator behavior (e.g., "operators with high spatial gradients exhibit turbulent temporal dynamics")
+**Systematic Discovery of Computational Laws**
+- Hypothesis generation: Identify potential universal patterns in operator behavior 
 - Rigorous testing: Validate hypotheses through directed sampling and statistical analysis
 - Symbolic regression: Distill discovered patterns into interpretable mathematical relationships
 - Falsifiability: Every discovered "law" must be testable and potentially refutable
-
-**Current Status:** Phase 0 complete, Phase 1 Stage 1 training in progress
 
 **Complete Training Workflow:**
 ```bash
