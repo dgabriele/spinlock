@@ -108,6 +108,22 @@ class MSELedLoss(BaseNOALoss):
         # L_traj: Primary physics loss (trajectory matching)
         traj_loss = F.mse_loss(pred_trajectory, target_trajectory)
 
+        # Compute normalized/relative metrics for benchmarking
+        with torch.no_grad():
+            target_var = target_trajectory.var()
+            target_norm = target_trajectory.norm()
+            target_energy = (target_trajectory ** 2).mean()
+
+            # NRMSE: Normalized Root Mean Squared Error
+            nrmse = (traj_loss / target_var).item() if target_var > 1e-8 else float('inf')
+
+            # Relative L2: L2 error relative to target magnitude
+            pred_target_diff = pred_trajectory - target_trajectory
+            relative_l2 = (pred_target_diff.norm() / target_norm).item() if target_norm > 1e-8 else float('inf')
+
+            # Energy-normalized MSE: MSE relative to field energy
+            energy_norm_mse = (traj_loss / target_energy).item() if target_energy > 1e-8 else float('inf')
+
         # L_ic: Initial condition reconstruction loss
         # Penalize mismatch between first prediction and IC
         ic_loss = torch.tensor(0.0, device=device)
@@ -151,6 +167,10 @@ class MSELedLoss(BaseNOALoss):
                 'commit': commit_loss.item() if isinstance(commit_loss, torch.Tensor) else commit_loss,
                 'latent': latent_loss.item() if isinstance(latent_loss, torch.Tensor) else latent_loss,
                 'total': total.item(),
+                # Normalized/relative metrics for benchmarking
+                'nrmse': nrmse,
+                'relative_l2': relative_l2,
+                'energy_norm_mse': energy_norm_mse,
             },
         )
 

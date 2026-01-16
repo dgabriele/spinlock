@@ -990,6 +990,14 @@ Output:
                 ])
                 print(f"  Val Components: {components_str}")
 
+            # Print normalized metrics if available
+            if 'normalized' in val_metrics and val_metrics['normalized']:
+                normalized_str = ", ".join([
+                    f"{name}={value:.4f}"
+                    for name, value in sorted(val_metrics['normalized'].items())
+                ])
+                print(f"  Val Normalized: {normalized_str}")
+
             print(f"  LR:         {current_lr:.2e}")
             print(f"  Time:       {train_metrics['time']:.2f}s")
 
@@ -1093,6 +1101,7 @@ Output:
         noa.train()
         total_loss = 0.0
         component_losses = {}  # Track individual loss components
+        normalized_metrics = {}  # Track normalized/relative metrics
         num_batches = 0
         start_time = time.time()
 
@@ -1204,6 +1213,13 @@ Output:
                     component_losses[component_name] = 0.0
                 component_losses[component_name] += component_value.item()
 
+            # Accumulate normalized metrics
+            for metric_name in ['nrmse', 'relative_l2', 'energy_norm_mse']:
+                if metric_name in loss_output.metrics:
+                    if metric_name not in normalized_metrics:
+                        normalized_metrics[metric_name] = 0.0
+                    normalized_metrics[metric_name] += loss_output.metrics[metric_name]
+
             # Log progress every N batches
             if (batch_idx + 1) % log_every == 0:
                 avg_loss = total_loss / num_batches
@@ -1215,7 +1231,15 @@ Output:
                     for name in sorted(component_losses.keys())
                 ])
 
-                print(f"  Batch {batch_idx + 1}/{len(dataloader)}: total={avg_loss:.6f}, {component_str}, time={batch_total_time:.2f}s")
+                # Format normalized metrics
+                if normalized_metrics:
+                    metrics_str = ", ".join([
+                        f"{name}={normalized_metrics[name] / num_batches:.4f}"
+                        for name in sorted(normalized_metrics.keys())
+                    ])
+                    print(f"  Batch {batch_idx + 1}/{len(dataloader)}: total={avg_loss:.6f}, {component_str}, {metrics_str}, time={batch_total_time:.2f}s")
+                else:
+                    print(f"  Batch {batch_idx + 1}/{len(dataloader)}: total={avg_loss:.6f}, {component_str}, time={batch_total_time:.2f}s")
 
             # Mid-epoch validation and checkpointing
             global_batch_counter += 1
@@ -1237,6 +1261,14 @@ Output:
                 noa.train()  # Back to training mode
 
                 print(f"  Val Loss: {val_metrics['loss']:.6f}")
+
+                # Print normalized metrics if available
+                if 'normalized' in val_metrics and val_metrics['normalized']:
+                    normalized_str = ", ".join([
+                        f"{name}={value:.4f}"
+                        for name, value in sorted(val_metrics['normalized'].items())
+                    ])
+                    print(f"  Val Normalized: {normalized_str}")
 
                 # Save checkpoint if this is the best model so far (only on rank 0)
                 if val_metrics['loss'] < best_val_loss:
@@ -1307,6 +1339,7 @@ Output:
         noa.eval()
         total_loss = 0.0
         component_losses = {}  # Track individual loss components
+        normalized_metrics = {}  # Track normalized/relative metrics
         num_batches = 0
 
         with torch.no_grad():
@@ -1383,6 +1416,13 @@ Output:
                         component_losses[component_name] = 0.0
                     component_losses[component_name] += component_value.item()
 
+                # Accumulate normalized metrics
+                for metric_name in ['nrmse', 'relative_l2', 'energy_norm_mse']:
+                    if metric_name in loss_output.metrics:
+                        if metric_name not in normalized_metrics:
+                            normalized_metrics[metric_name] = 0.0
+                        normalized_metrics[metric_name] += loss_output.metrics[metric_name]
+
         avg_loss = total_loss / num_batches if num_batches > 0 else float('inf')
 
         # Compute average component losses
@@ -1391,9 +1431,16 @@ Output:
             for name, value in component_losses.items()
         }
 
+        # Compute average normalized metrics
+        avg_normalized = {
+            name: value / num_batches if num_batches > 0 else float('inf')
+            for name, value in normalized_metrics.items()
+        }
+
         return {
             "loss": avg_loss,
             "components": avg_components,
+            "normalized": avg_normalized,
         }
 
     def _save_checkpoint(
