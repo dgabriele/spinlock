@@ -12,7 +12,7 @@ Infrastructure for training **Meta-Neural Operators (MNO)** and **Neural Operato
 
 ## Table of Contents
 
-- [🎯 What is Spinlock?](#-what-is-spinlock)
+- [🎯 What is Spinlock? (Target Architecture, WIP)](#-what-is-spinlock)
 - [🔬 Design Philosophy: Bias-Minimizing Discovery](#-design-philosophy-bias-minimizing-discovery)
 - [🧠 Neural Operator Agents (NOA)](#-neural-operator-agents-noa)
 - [🏗️ Architecture](#️-architecture)
@@ -27,9 +27,7 @@ Infrastructure for training **Meta-Neural Operators (MNO)** and **Neural Operato
 
 ---
 
-## 🎯 What is Spinlock?
-
-Spinlock provides infrastructure for training **Neural Operator Agents (NOA)**—foundation models that learn to predict, classify, and reason about dynamical system behaviors across diverse parameter regimes. Rather than studying individual operators in isolation, the system learns meta-operators by treating operator parameter space and initial conditions as structured domains for systematic exploration and discovery.
+## 🎯 What Architecture does Spinlock Traget?
 
 ### Learned Physics Engines
 
