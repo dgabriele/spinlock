@@ -158,6 +158,70 @@ Agent B: "Confirmed. Period 3. Checking for bifurcation."
 
 ---
 
+## Cross-Domain Agent Communication
+
+### Multi-Domain Collaborative Discovery
+
+When agents are specialized by physics domain but communicate via aligned token vocabularies, emergent cross-domain reasoning becomes possible:
+
+**Architecture:**
+```
+Agent-RD: Specializes in reaction-diffusion
+  ↓ (communicates via RD tokens)
+
+Agent-Fluids: Specializes in fluid dynamics
+  ↓ (communicates via Fluids tokens)
+
+Vocabulary Alignment: Maps RD tokens ↔ Fluids tokens
+  ↓
+
+Cross-Domain NOA: Reasons about both via shared symbolic layer
+```
+
+### Example: Analogical Transfer
+
+```
+Agent-RD: "I see oscillatory pattern, tokens [7, 12, 3]"
+Agent-Fluids: "In my domain, that corresponds to vortex shedding [9, 14, 5]"
+NOA: "Both are periodic limit cycles. Universal pattern?"
+
+Test: Does [7,12,3] → [9,14,5] mapping hold across parameter space?
+```
+
+### Research Questions
+
+1. **Vocabulary Alignment:**
+   - Can tokens from different domains be aligned via embedding similarity?
+   - Do aligned tokens have equivalent semantic meaning?
+
+2. **Transfer Learning:**
+   - If NOA learns "oscillatory → damping" transition in RD, does it recognize equivalent in fluids?
+   - Can symbolic patterns discovered in one domain guide exploration in another?
+
+3. **Emergent Protocols:**
+   - Will agents develop shorthand for cross-domain concepts?
+   - Can compositional token sequences describe multi-domain phenomena?
+
+4. **Universal Discovery:**
+   - Do agents identify patterns that appear in ALL domains?
+   - Can these be expressed as domain-independent symbolic rules?
+
+### Validation Criteria
+
+**Strong Transfer:**
+- NOA trained on RD achieves >80% accuracy classifying Fluids behaviors
+- Token alignment correlation >0.7 across domains
+- Emergent cross-domain communication protocols develop
+
+**Weak Transfer:**
+- Vocabularies don't align (correlation <0.3)
+- Domain-specific knowledge doesn't generalize
+- Conclusion: Physics families have distinct behavioral geometry
+
+**Outcome:** Either way, we learn fundamental truths about computational structure
+
+---
+
 ## Connection to Language Games
 
 ### Traditional Grounded Language Games

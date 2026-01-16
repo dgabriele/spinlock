@@ -276,6 +276,97 @@ MNO v3 (with IC reconstruction loss) currently training
 
 ---
 
+## Phase 1.5: Second Domain Integration (Planned)
+
+**Status:** 📋 **RESEARCH OBJECTIVE**
+
+**Objective:** Test multi-domain hypothesis by adding fluid dynamics
+
+**Research Questions:**
+- Do independently trained VQ-VAEs discover similar categories?
+- Can token sequences transfer semantic meaning across domains?
+- Does NOA trained on RD generalize to fluids?
+
+### 1.5.1: Fluid Dynamics Dataset Generation
+
+**Tasks:**
+- 2D Navier-Stokes CNO operators
+- Parameter space sampling (Reynolds number, forcing, viscosity)
+- 100K trajectories for diversity
+
+**Success Metrics:**
+- Dataset diversity comparable to RD domain
+- Reynolds numbers spanning laminar → turbulent regimes
+- Multiple IC types (vortices, shear layers, jets)
+
+### 1.5.2: MNO-Fluids Training
+
+**Tasks:**
+- Architecture: U-AFNO with vector-field modifications (if needed)
+- Pure MSE training (Stage 1)
+- Target: L_traj < 1.0 (physics accuracy)
+
+**Success Metrics:**
+- Validation loss competitive with MNO-RD
+- Captures turbulent cascades, vortex dynamics
+- Generalizes across Reynolds numbers
+
+### 1.5.3: VQ-VAE-Fluids Training
+
+**Tasks:**
+- Independent tokenization of MNO-Fluids distribution (Stage 3)
+- Orthogonality-weighted clustering for category discovery
+- Target: L_recon < 0.05, utilization > 40%
+
+**Success Metrics:**
+- Discovers ~10 categories (like VQ-VAE-RD)
+- High reconstruction quality
+- Categories interpretable (laminar, turbulent, transitional, etc.)
+
+### 1.5.4: Vocabulary Alignment Analysis
+
+**CRITICAL EXPERIMENT:**
+
+Compare VQ-VAE-RD and VQ-VAE-Fluids category structures:
+
+**Alignment Metrics:**
+1. **Category count**: Do both discover ~10 categories?
+2. **Cluster geometry**: Correlation between codebook embeddings
+3. **Semantic correspondence**: Do "oscillatory RD" and "oscillatory fluids" map to similar tokens?
+4. **Transfer success**: Can NOA trained on RD classify fluids via tokens?
+
+**Outcomes:**
+- **Strong alignment** → Computational universals exist, publish result
+- **Weak alignment** → Domain boundaries identified, proceed with domain-specific NOAs
+- **Partial alignment** → Refine hypotheses, investigate which categories transfer
+
+**Success Criteria:**
+- Vocabulary alignment analysis completed
+- Hypothesis clearly supported or refuted
+- Results documented for publication
+
+### 1.5.5: Cross-Domain NOA Architecture
+
+**Tasks:**
+- NOA that operates over BOTH token vocabularies
+- Shared attention mechanisms across domains
+- Token embedding alignment (if categories correspond)
+
+**Success Metrics:**
+- Single NOA handles RD and Fluids tokens
+- Cross-domain reasoning demonstrated
+- Transfer learning validated
+
+**Deliverables:**
+- [ ] Fluid dynamics CNO dataset (100K samples)
+- [ ] Trained MNO-Fluids (L_traj < 1.0)
+- [ ] Trained VQ-VAE-Fluids (L_recon < 0.05)
+- [ ] Vocabulary alignment analysis
+- [ ] Cross-domain NOA prototype
+- [ ] Publication: "Computational Universals in Spatiotemporal Dynamics"
+
+---
+
 ## Phase 2: Multi-Observation Context & Working Memory
 
 **Status:** 📋 **PLANNED**

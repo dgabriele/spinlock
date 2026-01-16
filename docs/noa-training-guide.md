@@ -696,6 +696,66 @@ poetry run python scripts/dev/train_noa_state_supervised.py \
 
 ---
 
+## Multi-Domain Training Strategy (Research Objective)
+
+### Training Order
+
+**Phase 1: Vertical Integration**
+Complete one domain fully before adding others:
+- ✓ Reaction-diffusion (complete)
+- → Fluid dynamics (next)
+- → Wave equations (future)
+
+**Rationale:** Deep understanding of one domain before cross-domain comparison
+
+### Per-Domain Training
+
+Each domain follows independent Stage 1-3:
+
+**Stage 1: Pure Physics MNO**
+- Architecture: Domain-appropriate (U-AFNO for parabolic, variants for others)
+- Loss: Pure MSE against CNO ground truth
+- Target: L_traj < 1.0
+
+**Stage 2: Feature Generation**
+- Sample diverse (θ, u₀) from domain parameter space
+- Generate 100K+ MNO rollouts
+- Extract domain-appropriate features
+
+**Stage 3: Domain VQ-VAE**
+- Train on MNO's distribution
+- Discover domain-specific categories
+- Target: L_recon < 0.05, utilization > 40%
+
+### Cross-Domain Analysis
+
+After ≥2 domains complete:
+
+**Vocabulary Alignment:**
+```python
+# Compare codebook embeddings
+rd_codebook = load_vqvae_codebook("checkpoints/vqvae/rd/")
+fluids_codebook = load_vqvae_codebook("checkpoints/vqvae/fluids/")
+
+alignment = compute_alignment(rd_codebook, fluids_codebook)
+# Returns: correlation matrix, aligned pairs, semantic correspondences
+```
+
+**Transfer Testing:**
+```python
+# Train NOA on Domain A, test on Domain B
+noa = train_noa(domain="rd", tokens=rd_tokens)
+transfer_acc = evaluate_noa(noa, domain="fluids", tokens=fluids_tokens)
+```
+
+### Current Status
+
+- Reaction-diffusion domain: Complete
+- Multi-domain architecture: Research objective
+- Vocabulary alignment: Awaiting second domain
+
+---
+
 ## See Also
 
 - [NOA Roadmap](noa-roadmap.md) - Phase 0-3 implementation plan

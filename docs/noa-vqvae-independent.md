@@ -746,6 +746,67 @@ Solution:
 
 ---
 
-**Last Updated:** 2026-01-12
+## Multi-Domain Extension (Research Objective)
+
+The independent optimization architecture naturally extends to multiple physics domains.
+
+### Architecture
+
+**Per-Domain Pipeline:**
+Each physics family gets independent Stage 1-3:
+
+**Domain: Reaction-Diffusion** (Current)
+- Stage 1: MNO-RD (U-AFNO, pure MSE)
+- Stage 2: Generate 100K RD features
+- Stage 3: VQ-VAE-RD (trained on MNO-RD distribution)
+
+**Domain: Fluid Dynamics** (Planned)
+- Stage 1: MNO-Fluids (U-AFNO variant, pure MSE)
+- Stage 2: Generate 100K Fluids features
+- Stage 3: VQ-VAE-Fluids (trained on MNO-Fluids distribution)
+
+**Domain: Wave Equations** (Future)
+- Stage 1: MNO-Waves (different architecture, hyperbolic-friendly)
+- Stage 2: Generate 100K Waves features
+- Stage 3: VQ-VAE-Waves (trained on MNO-Waves distribution)
+
+### Workflow
+
+```bash
+# Domain 1: Reaction-Diffusion (complete)
+spinlock train-meta-operator --config configs/noa/rd_pure_mse.yaml
+spinlock generate-noa-features --noa-checkpoint checkpoints/noa/rd/best.pt ...
+spinlock train-vqvae --config configs/vqvae/rd_100k.yaml
+
+# Domain 2: Fluid Dynamics (planned)
+spinlock train-meta-operator --config configs/noa/fluids_pure_mse.yaml
+spinlock generate-noa-features --noa-checkpoint checkpoints/noa/fluids/best.pt ...
+spinlock train-vqvae --config configs/vqvae/fluids_100k.yaml
+
+# Cross-Domain Analysis (research)
+spinlock analyze-vocabulary-alignment \
+    --domain1 checkpoints/vqvae/rd/ \
+    --domain2 checkpoints/vqvae/fluids/ \
+    --output results/alignment_analysis.json
+```
+
+### Research Objectives
+
+**Hypothesis Testing:**
+1. Train VQ-VAE independently per domain
+2. Extract codebook embeddings from each
+3. Compute cross-domain correlation matrix
+4. Test if behavioral categories align
+
+**Success Criteria:**
+- If alignment strong: Computational universals discovered
+- If alignment weak: Domain boundaries identified
+- Either outcome advances understanding
+
+**Current Status:** Architecture designed, awaiting second domain implementation
+
+---
+
+**Last Updated:** 2026-01-16
 **Branch:** `noa-vqvae-independent`
-**Status:** MNO training in progress (v3 with IC reconstruction loss, Epoch 1/30)
+**Status:** MNO training in progress (v3 with IC reconstruction loss, Epoch 1/30). Multi-domain architecture is research objective.

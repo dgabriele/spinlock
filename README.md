@@ -61,6 +61,24 @@ The NOA architecture layers symbolic reasoning capabilities atop the MNO physics
 
 **Research directions:** Autonomous systems that explore their own behavioral manifolds through perturbation-response loops, build episodic memories of dynamical patterns, develop curiosity signals from prediction error, and discover universal computational structures through self-directed experimentation.
 
+### Multi-Domain Research Objectives
+
+The architecture extends to multiple physics domains to test fundamental hypotheses about computational universality:
+
+**Research Questions:**
+1. Do behavioral categories discovered by domain-specific VQ-VAEs align across physics families?
+2. Can token sequences from one domain transfer semantic meaning to another (e.g., "oscillatory" in chemistry vs fluids)?
+3. Are there universal computational primitives that emerge across parabolic PDEs, hyperbolic equations, and other dynamical systems?
+4. Can NOA trained on one domain generalize to others via symbolic transfer?
+
+**Approach:**
+- Train specialized MNOs for distinct physics families (reaction-diffusion, Navier-Stokes, wave equations)
+- Extract domain-specific VQ-VAE tokenizers independently
+- Analyze vocabulary alignment: Do categories correspond to equivalent behavioral regimes?
+- Test cross-domain NOA: Does symbolic reasoning transfer where trajectory predictions fail?
+
+**Current Status:** Single domain complete (reaction-diffusion). Multi-domain architecture is research objective, not implemented system.
+
 ---
 
 ## 🔬 Design Philosophy: Bias-Minimizing Discovery
@@ -527,6 +545,32 @@ for (tokens, theta) in messages:
 - Cross-domain behavioral transfer via shared vocabulary
 
 📖 **Full documentation:** [docs/future/multiagent-token-communication.md](docs/future/multiagent-token-communication.md)
+
+### Domain Modularity and Transfer
+
+The architecture enables systematic testing of computational universals through modular domain integration:
+
+**Specialized MNOs per Domain:**
+- **Reaction-Diffusion MNO** (current): U-AFNO on parabolic PDEs, 226M params
+- **Fluid Dynamics MNO** (planned): Navier-Stokes, possibly vector-valued variant
+- **Wave Equation MNO** (future): Hyperbolic PDEs, different architectural requirements
+- **Quantum MNO** (speculative): Complex-valued fields, fundamentally different structure
+
+**Domain-Specific Tokenization:**
+Each MNO paired with VQ-VAE trained on its distribution:
+- VQ-VAE-RD: 10 categories from reaction-diffusion behaviors
+- VQ-VAE-Fluids: Categories for turbulence, vortex dynamics, flow regimes
+- VQ-VAE-Waves: Categories for propagation, interference, dispersion
+
+**Cross-Domain Discovery:**
+NOA operates over all vocabularies simultaneously:
+- **Hypothesis:** If categories align, computational universals exist
+- **Test:** Train NOA on Domain A tokens, evaluate on Domain B
+- **Metric:** Cross-domain transfer accuracy, vocabulary correlation
+- **Outcome:** Either discover universals or identify domain boundaries
+
+**Why This Matters:**
+If behavioral tokens transfer across domains, it suggests substrate-independent computational structures—patterns that emerge from the mathematics of spatiotemporal evolution regardless of specific equations. This would represent discovered physics rather than derived physics.
 
 ---
 
