@@ -6,7 +6,7 @@
 [![Poetry](https://img.shields.io/badge/dependency%20manager-poetry-blue)](https://python-poetry.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Pre-training infrastructure for **Neural Operator Agents (NOA)**—foundation models that learn to predict, classify, and reason about dynamical system behaviors. Generate large-scale operator datasets, extract multi-modal behavioral features, and train VQ-VAE tokenizers for downstream scientific ML applications.
+Infrastructure for training **Meta-Neural Operators (MNO)** and **Neural Operator Agents (NOA)**—systems that learn statistical regularities across thousands of dynamical systems to function as learned physics engines not bound to specific equations. The MNO learns autonomous spatiotemporal dynamics through diverse PDE training, while the NOA harnesses the MNO as a computational substrate for perturbation-driven exploration, episodic memory, and curiosity-based discovery of behavioral patterns.
 
 ---
 
@@ -31,33 +31,37 @@ Pre-training infrastructure for **Neural Operator Agents (NOA)**—foundation mo
 
 Spinlock provides infrastructure for training **Neural Operator Agents (NOA)**—foundation models that learn to predict, classify, and reason about dynamical system behaviors across diverse parameter regimes. Rather than studying individual operators in isolation, the system learns meta-operators by treating operator parameter space and initial conditions as structured domains for systematic exploration and discovery.
 
-### Foundation Models for Dynamical Systems
+### Learned Physics Engines
 
-The system enables pre-training on diverse dynamical behaviors for downstream application across physics, metaphysics, biochemistry, and engineering—analogous to language model pre-training on text corpora. The current implementation demonstrates this approach through independent optimization that trains meta-operators on 100K+ neural operator trajectories.
+The system is built around two distinct components: the **Meta-Neural Operator (MNO)**, a learned physics engine, and the **Neural Operator Agent (NOA)**, a higher-level cognitive architecture that harnesses the MNO for reasoning and exploration. The MNO forms the computational substrate—a U-AFNO neural operator trained on diverse PDE trajectories that learns statistical regularities across dynamical systems. The NOA operates over discrete behavioral tokens (VQ-VAE encoded) to enable symbolic reasoning, memory, and curiosity-driven discovery while using the MNO for precise physics execution.
 
-**Current Implementation:**
-- **Data:** 100K+ stratified operator trajectories with provably optimal parameter space coverage
-- **Features:** Multi-modal behavioral descriptors (INITIAL, SUMMARY, TEMPORAL) - see [Feature Catalog](docs/features/feature-catalog.md)
-- **Meta-Operator:** U-AFNO backbone (226M params) trained with pure MSE physics loss (no VQ constraints)
-- **Tokenization:** VQ-VAE trained on meta-neural operator (MNO) rollout distribution via **independent optimization**:
-  - Stage 1: Generate large-scale MNO rollout features (100K+ samples from trained MNO)
-  - Stage 2: Train VQ-VAE on MNO's distribution (alignment by construction)
-  - Result: Discovers 10 behavioral categories with hierarchical 3-level codebooks
+**MNO: The Physics Engine**
 
-**Research Directions:**
+When trained on thousands of distinct operators and deployed autonomously—driven by perturbations rather than explicit parameter conditioning—the MNO transitions from simulator to learned dynamical system. It no longer represents any specific PDE. Instead, it embodies statistical regularities extracted from its training distribution, functioning as **a learned physics engine not bound to specific equations**.
 
-*Dynamical Systems:*
-- Surrogate modeling for accelerated simulation
-- Anomaly detection in real-time sensor data
-- Transfer learning to domain-specific PDEs
-- Discovery of universal patterns in computational physics
+During training, the MNO learns P(u_t+1 | u_t) across the training ensemble. This implicit generative model captures characteristic timescales, typical relaxation dynamics, and behavioral patterns that recur across parameter space. The learned state space contains attractors corresponding not to specific parameter values, but to typical behavioral regimes—equilibrium patterns, oscillatory modes, chaotic mixing—averaged across thousands of systems.
 
-*Cognitive Capabilities:*
-- Meta-learning from dynamics: few-shot adaptation via abstract behavioral principles
-- Compositional reasoning: predict emergent behaviors from component interactions
-- Working memory: temporal state maintenance and transformation
-- Episodic encoding: consolidation and retrieval of dynamical event sequences
-- Cross-domain abstraction: domain-invariant behavioral patterns
+**Autonomous operation under perturbation:**
+
+The system evolves according to learned dynamics rather than prescribed equations. An impulse perturbation excites eigenmodes that decay or oscillate at characteristic timescales. Continuous video-frame perturbations create driven dynamics where internal relaxation balances external forcing. The observable trajectory represents the system's projection of arbitrary inputs onto its learned manifold of "dynamics-like" behavior.
+
+Internal states represent high-dimensional reservoir dynamics encoding perturbation history, coordinates in a learned Koopman eigenfunction space, predictive distributions over likely continuations, and implicit belief states about "what kind of system this resembles."
+
+**Learned distributions, not retrieval:**
+
+Like a language model trained on text corpora, the MNO learns to generate continuations statistically typical of its training distribution. It does not retrieve memorized trajectories—it samples from learned patterns. Given a perturbation, it produces the most likely spatiotemporal response according to implicit priors: "what would a typical reaction-diffusion system do if forced this way?" This is both less and more than simulation: less physically accurate for any specific system, but more general across behavioral families.
+
+**NOA: Harnessing the Physics Engine**
+
+The NOA architecture layers symbolic reasoning capabilities atop the MNO physics engine. While the MNO executes continuous spatiotemporal dynamics, the NOA operates over discrete behavioral tokens extracted via VQ-VAE encoding. This dual-system architecture enables fast symbolic screening (token-based categorical reasoning) and precise verification (MNO trajectory execution). The NOA uses the MNO as its "mental simulator" for exploring hypothetical perturbations, building episodic memories of dynamical patterns, and developing curiosity signals from prediction error.
+
+**Current implementation achieves this through independent optimization:**
+- **Stage 1:** Train MNO on 100K+ diverse CNO trajectories (pure MSE physics loss)
+- **Stage 2:** Generate large-scale MNO rollouts, extract behavioral features
+- **Stage 3:** Train VQ-VAE on MNO's learned distribution (discovers 10 behavioral categories)
+- **Result:** MNO physics engine + VQ-VAE tokenizer → foundation for NOA cognitive capabilities
+
+**Research directions:** Autonomous systems that explore their own behavioral manifolds through perturbation-response loops, build episodic memories of dynamical patterns, develop curiosity signals from prediction error, and discover universal computational structures through self-directed experimentation.
 
 ---
 
