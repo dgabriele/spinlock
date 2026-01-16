@@ -115,6 +115,8 @@ class NOAFeatureGenerationPipeline:
         noa_checkpoint: Path,
         config: Any,
         verbose: bool = False,
+        sampling_mode: str = "reference",
+        compile_model: bool = False,
     ):
         """
         Initialize NOA feature generation pipeline.
@@ -123,9 +125,13 @@ class NOAFeatureGenerationPipeline:
             noa_checkpoint: Path to trained NOA checkpoint
             config: SpinlockConfig (for sampling, simulation settings)
             verbose: Print detailed progress information
+            sampling_mode: Sampling strategy ('reference' or 'interpolated')
+            compile_model: Enable torch.compile() for faster inference (PyTorch 2.0+)
         """
         self.config = config
         self.verbose = verbose
+        self.sampling_mode = sampling_mode
+        self.compile_model = compile_model
 
         # Setup device
         device_str = config.simulation.device
@@ -139,7 +145,7 @@ class NOAFeatureGenerationPipeline:
             self.device = torch.device(device_str)
 
         # Load NOA directly from checkpoint
-        print("Loading trained NOA...")
+        print("Loading trained MNO...")
         checkpoint = torch.load(noa_checkpoint, map_location=self.device, weights_only=False)
 
         # Validate checkpoint format
@@ -149,16 +155,34 @@ class NOAFeatureGenerationPipeline:
                 f"Expected Stage 1 checkpoint format (from train-meta-operator)."
             )
 
-        # Reconstruct NOA from checkpoint config
+        # Reconstruct MNO from checkpoint config
         model_config = checkpoint["config"]["model"]
         self.noa = NOABackbone(**model_config)
         self.noa.load_state_dict(checkpoint["model_state_dict"])
         self.noa = self.noa.to(self.device).eval()
 
+        # Apply torch.compile() for faster inference (PyTorch 2.0+)
+        if compile_model:
+            try:
+                print("  Compiling MNO with torch.compile()...")
+
+                # Enable TF32 for better performance on Ampere+ GPUs
+                if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
+                    torch.set_float32_matmul_precision('high')
+                    print("  ✓ TensorFloat32 enabled for matmul")
+
+                # Use reduce-overhead mode for better performance on repeated calls
+                # This mode is optimized for models that run many times
+                self.noa = torch.compile(self.noa, mode="reduce-overhead")
+                print("  ✓ MNO compiled successfully (mode: reduce-overhead)")
+            except Exception as e:
+                print(f"  ⚠ torch.compile() failed: {e}")
+                print("  Continuing without compilation")
+
         # Print checkpoint info
         epoch = checkpoint.get("epoch", "unknown")
         val_loss = checkpoint.get("val_loss", "unknown")
-        print(f"  ✓ NOA loaded (epoch {epoch}, val_loss {val_loss})")
+        print(f"  ✓ MNO loaded (epoch {epoch}, val_loss {val_loss})")
         print(f"  ✓ Device: {self.device}")
 
         # Initialize input generator for diverse ICs
@@ -175,56 +199,85 @@ class NOAFeatureGenerationPipeline:
             device=self.device,
         )
 
-        # Load training parameters for distribution alignment
-        # MNO was trained on a stratified 2K subsample - we'll use denser stratification
-        # within that training span for feature generation
+        # Load training parameters and handle sampling strategy
         print("Calculating parameter sampling strategy...")
 
-        training_n_samples = checkpoint['config']['training']['n_samples']  # 2000
+        training_n_samples = checkpoint['config']['training']['n_samples']
         training_dataset_path = checkpoint['config']['data']['dataset_path']
 
-        # Calculate training span (matching NOAStateDataset stratified sampling)
+        n_generation_samples = config.sampling.total_samples
+
         with h5py.File(training_dataset_path, 'r') as f:
-            total_samples = f['parameters/params'].shape[0]  # 100K
+            total_samples = f['parameters/params'].shape[0]
 
-            # Training used stratified sampling: stride = 100K / 2K = 50
-            training_stride = total_samples // training_n_samples
-            training_min_idx = 0
-            training_max_idx = (training_n_samples - 1) * training_stride  # 99950
+            if sampling_mode == "reference":
+                # Reference mode: Use full reference dataset
+                # Validate n_samples doesn't exceed reference size
+                if n_generation_samples > total_samples:
+                    raise ValueError(
+                        f"Requested {n_generation_samples} samples but reference dataset "
+                        f"only has {total_samples} samples. Use --n-samples <={total_samples}."
+                    )
 
-            print(f"  Training span: indices [{training_min_idx}, {training_max_idx}] (stride={training_stride})")
+                # Use first n_generation_samples from reference dataset
+                self.generation_indices = np.arange(n_generation_samples)
 
-            # For generation: denser stratification within training span
-            # Use 10K samples with stride=10 to get indices [0, 10, 20, ..., 99990]
-            # This includes all 2K training points (0, 50, 100, ...) + 8K interpolations
-            n_generation_samples = config.sampling.total_samples  # 10K
-            generation_stride = (training_max_idx + training_stride) // n_generation_samples  # ~10
+                # Load parameters from reference dataset
+                self.generation_params = torch.from_numpy(
+                    f['parameters/params'][self.generation_indices]
+                ).float()
 
-            self.generation_indices = np.arange(0, training_max_idx + training_stride, generation_stride)[:n_generation_samples]
+                # Store path for batch IC loading (memory optimization)
+                self.reference_dataset_path = training_dataset_path
+                self.reference_ics = None  # Load on-demand
 
-            # Load parameter vectors at generation indices
-            self.generation_params = torch.from_numpy(
-                f['parameters/params'][self.generation_indices]
-            ).float()  # [10K, 12]
+                # All samples are reference points (not interpolated)
+                self.is_interpolated_mask = np.zeros(len(self.generation_indices), dtype=bool)
 
-            # Count how many are exact training points
-            training_indices_set = set(np.arange(0, total_samples, training_stride)[:training_n_samples])
-            n_exact_training = sum(1 for idx in self.generation_indices if idx in training_indices_set)
-            n_interpolated = len(self.generation_indices) - n_exact_training
+                print(f"  ✓ Reference mode: Using first {n_generation_samples} samples from reference dataset")
+                print(f"  ✓ Reference dataset: {training_dataset_path}")
+                print(f"  ✓ ICs will be loaded from reference (realization_idx=0)")
+                print(f"  ✓ All samples are exact reference points (is_interpolated=False)")
 
-            # Create interpolation mask for reference feature regularization
-            # True = interpolated point (MNO generalizing), False = exact training point (MNO learned)
-            self.is_interpolated_mask = np.ones(len(self.generation_indices), dtype=bool)
-            for i, idx in enumerate(self.generation_indices):
-                if idx in training_indices_set:
-                    self.is_interpolated_mask[i] = False
+            elif sampling_mode == "interpolated":
+                # Interpolated mode: Dense stratification within training span (current behavior)
+                training_stride = total_samples // training_n_samples
+                training_min_idx = 0
+                training_max_idx = (training_n_samples - 1) * training_stride
 
-        print(f"  ✓ Generation strategy: Denser stratification within training span")
-        print(f"  ✓ Generation indices: [{self.generation_indices[0]}, ..., {self.generation_indices[-1]}] (stride={generation_stride})")
-        print(f"  ✓ Total samples: {len(self.generation_indices)}")
-        print(f"  ✓ Exact training points: {n_exact_training}")
-        print(f"  ✓ Interpolated points: {n_interpolated}")
-        print(f"  ✓ Parameter space: {self.generation_params.shape[1]}D")
+                print(f"  Training span: indices [{training_min_idx}, {training_max_idx}] (stride={training_stride})")
+
+                generation_stride = (training_max_idx + training_stride) // n_generation_samples
+                self.generation_indices = np.arange(0, training_max_idx + training_stride, generation_stride)[:n_generation_samples]
+
+                # Load parameter vectors at generation indices
+                self.generation_params = torch.from_numpy(
+                    f['parameters/params'][self.generation_indices]
+                ).float()
+
+                self.reference_dataset_path = None
+                self.reference_ics = None
+
+                # Create interpolation mask (current logic)
+                training_indices_set = set(np.arange(0, total_samples, training_stride)[:training_n_samples])
+                self.is_interpolated_mask = np.ones(len(self.generation_indices), dtype=bool)
+                for i, idx in enumerate(self.generation_indices):
+                    if idx in training_indices_set:
+                        self.is_interpolated_mask[i] = False
+
+                n_exact = (~self.is_interpolated_mask).sum()
+                n_interp = self.is_interpolated_mask.sum()
+
+                print(f"  ✓ Interpolated mode: Denser stratification within training span")
+                print(f"  ✓ Generation indices: [{self.generation_indices[0]}, ..., {self.generation_indices[-1]}] (stride={generation_stride})")
+                print(f"  ✓ Exact training points: {n_exact}")
+                print(f"  ✓ Interpolated points: {n_interp}")
+
+            else:
+                raise ValueError(f"Unknown sampling_mode: '{sampling_mode}'. Must be 'reference' or 'interpolated'.")
+
+            print(f"  ✓ Total samples: {len(self.generation_indices)}")
+            print(f"  ✓ Parameter space: {self.generation_params.shape[1]}D")
 
         # Initialize feature extractors
         print("Initializing feature extractors...")
@@ -236,6 +289,9 @@ class NOAFeatureGenerationPipeline:
             config=summary_config,
         )
 
+        # INITIAL features (manual features from ICs)
+        self.initial_extractor = InitialManualExtractor(device=self.device)
+
         # Check if temporal features are enabled
         self.temporal_enabled = config.features.temporal.enabled
         if not self.temporal_enabled:
@@ -244,6 +300,7 @@ class NOAFeatureGenerationPipeline:
             print("  ✓ TEMPORAL features ENABLED")
 
         print("  ✓ SUMMARY features ENABLED")
+        print("  ✓ INITIAL features ENABLED")
         print(f"  ✓ Feature extractors ready")
 
         # Statistics
@@ -261,7 +318,7 @@ class NOAFeatureGenerationPipeline:
 
         Main entry point that coordinates all stages:
         1. Generate diverse initial conditions
-        2. Run NOA rollouts in batches
+        2. Run MNO rollouts in batches
         3. Extract features inline (GPU-optimized)
         4. Write features to HDF5
         """
@@ -273,7 +330,7 @@ class NOAFeatureGenerationPipeline:
         timesteps = self.config.simulation.num_timesteps
 
         print(f"\n{'='*70}")
-        print(f"Generating {n_samples} NOA rollouts with feature extraction")
+        print(f"Generating {n_samples} MNO rollouts with feature extraction")
         print(f"{'='*70}")
         print(f"  Batch size: {batch_size}")
         print(f"  Realizations: {num_realizations}")
@@ -310,7 +367,14 @@ class NOAFeatureGenerationPipeline:
                     len(registry.get_feature_names(category='operator_sensitivity'))
                 )
 
+                # Get INITIAL feature dimension by extracting from a dummy IC
+                dummy_grid_size = self.input_generator.grid_size
+                dummy_ic = torch.zeros(1, 1, 1, dummy_grid_size, dummy_grid_size, device=self.device)
+                dummy_features = self.initial_extractor.extract_all(dummy_ic)
+                initial_dim = dummy_features.shape[-1]
+
                 print(f"Feature dimensions calculated from registry:")
+                print(f"  INITIAL (manual): {initial_dim}")
                 print(f"  Per-timestep (TEMPORAL): {per_timestep_dim}")
                 print(f"  Per-trajectory (SUMMARY): {per_trajectory_dim}")
                 print(f"  Aggregated: {per_trajectory_dim * 3}\n")
@@ -378,12 +442,29 @@ class NOAFeatureGenerationPipeline:
                     'False for exact training points (MNO learned during training).'
                 )
 
-                print(f"Feature datasets created\n")
+                # Create INITIAL features dataset (manual features from ICs)
+                if 'features/initial' not in feature_writer.file:
+                    initial_group = feature_writer.file['features'].create_group('initial')
+                    initial_agg_group = initial_group.create_group('aggregated')
+                    initial_agg_group.create_dataset(
+                        'features',
+                        shape=(n_samples, initial_dim),
+                        dtype='float32',
+                        compression='gzip',
+                        compression_opts=4,
+                        chunks=(min(100, n_samples), initial_dim),
+                    )
+                    initial_agg_group['features'].attrs['description'] = (
+                        f'Manual INITIAL features extracted from raw ICs ({initial_dim}D): '
+                        'statistical and geometric properties of initial conditions'
+                    )
+
+                print(f"Feature datasets created (SUMMARY + TEMPORAL + INITIAL)\n")
 
                 # Generate in batches
                 num_batches = (n_samples + batch_size - 1) // batch_size
 
-                for batch_idx in tqdm(range(num_batches), desc="Generating NOA features"):
+                for batch_idx in tqdm(range(num_batches), desc="Generating MNO features"):
                     batch_start = batch_idx * batch_size
                     batch_end = min(batch_start + batch_size, n_samples)
                     current_batch_size = batch_end - batch_start
@@ -392,63 +473,79 @@ class NOAFeatureGenerationPipeline:
                     gen_start = time.time()
                     batch_params = self.generation_params[batch_start:batch_end].to(self.device)  # [B, D] in [0,1]
 
-                    # Step 2: Generate initial conditions with diverse IC types
-                    # Sample IC types for this batch
-                    ic_types = [self._sample_ic_type() for _ in range(current_batch_size)]
+                    # Step 2: Get initial conditions
+                    if self.sampling_mode == "reference":
+                        # Reference mode: Load ICs from reference dataset
+                        with h5py.File(self.reference_dataset_path, 'r') as f:
+                            batch_indices = self.generation_indices[batch_start:batch_end]
+                            reference_ics_batch = f['inputs/fields'][batch_indices, 0, :, :]  # [B, H, W]
 
-                    # Group by IC type for efficient batch generation
-                    from collections import defaultdict
-                    ic_type_to_indices = defaultdict(list)
-                    for i, ic_type in enumerate(ic_types):
-                        ic_type_to_indices[ic_type].append(i)
+                        ics = torch.from_numpy(reference_ics_batch).float().unsqueeze(1).to(self.device)  # [B, 1, H, W]
 
-                    # Generate ICs per type - create M realizations per sample for dataset compatibility
-                    # (MNO uses only the first realization for rollout)
-                    all_ics_single = []  # For MNO rollout: [B, 1, H, W]
-                    all_ics_multi = []  # For storage: [B, M, H, W]
+                        # For storage: replicate to M realizations (dataset compatibility)
+                        ics_for_storage = ics.unsqueeze(1).repeat(1, num_realizations, 1, 1, 1).squeeze(2)  # [B, M, H, W]
 
-                    for ic_type, indices in ic_type_to_indices.items():
-                        ic_params = self._get_ic_params(ic_type)
-                        base_ic_type = self._get_base_ic_type(ic_type)
+                        # ic_types for metadata
+                        ic_types = ["reference_ic"] * current_batch_size
 
-                        # Generate M realizations per sample
-                        # Total: len(indices) samples × M realizations
-                        batch_ics_all = self.input_generator.generate_batch(
-                            batch_size=len(indices) * num_realizations,
-                            field_type=base_ic_type,
-                            **ic_params,
-                        )  # [B*M, 1, H, W]
+                    elif self.sampling_mode == "interpolated":
+                        # Interpolated mode: Generate fresh ICs (current behavior)
+                        # Sample IC types for this batch
+                        ic_types = [self._sample_ic_type() for _ in range(current_batch_size)]
 
-                        # Reshape to [B, M, H, W]
-                        batch_ics_multi = batch_ics_all.view(len(indices), num_realizations,
-                                                              self.input_generator.grid_size,
-                                                              self.input_generator.grid_size)
+                        # Group by IC type for efficient batch generation
+                        from collections import defaultdict
+                        ic_type_to_indices = defaultdict(list)
+                        for i, ic_type in enumerate(ic_types):
+                            ic_type_to_indices[ic_type].append(i)
 
-                        # Extract first realization for MNO rollout
-                        batch_ics_single = batch_ics_multi[:, 0:1]  # [B, 1, H, W]
+                        # Generate ICs per type - create M realizations per sample for dataset compatibility
+                        # (MNO uses only the first realization for rollout)
+                        all_ics_single = []  # For MNO rollout: [B, 1, H, W]
+                        all_ics_multi = []  # For storage: [B, M, H, W]
 
-                        all_ics_single.append((indices, batch_ics_single))
-                        all_ics_multi.append((indices, batch_ics_multi))
+                        for ic_type, indices in ic_type_to_indices.items():
+                            ic_params = self._get_ic_params(ic_type)
+                            base_ic_type = self._get_base_ic_type(ic_type)
 
-                    # Assemble ICs for MNO rollout (single realization)
-                    ics = torch.zeros(
-                        (current_batch_size, 1, self.input_generator.grid_size, self.input_generator.grid_size),
-                        dtype=torch.float32,
-                        device=self.device,
-                    )
-                    for indices, batch_ics in all_ics_single:
-                        for i, idx in enumerate(indices):
-                            ics[idx] = batch_ics[i]
+                            # Generate M realizations per sample
+                            # Total: len(indices) samples × M realizations
+                            batch_ics_all = self.input_generator.generate_batch(
+                                batch_size=len(indices) * num_realizations,
+                                field_type=base_ic_type,
+                                **ic_params,
+                            )  # [B*M, 1, H, W]
 
-                    # Assemble ICs for storage (multiple realizations)
-                    ics_for_storage = torch.zeros(
-                        (current_batch_size, num_realizations, self.input_generator.grid_size, self.input_generator.grid_size),
-                        dtype=torch.float32,
-                        device=self.device,
-                    )
-                    for indices, batch_ics in all_ics_multi:
-                        for i, idx in enumerate(indices):
-                            ics_for_storage[idx] = batch_ics[i]
+                            # Reshape to [B, M, H, W]
+                            batch_ics_multi = batch_ics_all.view(len(indices), num_realizations,
+                                                                  self.input_generator.grid_size,
+                                                                  self.input_generator.grid_size)
+
+                            # Extract first realization for MNO rollout
+                            batch_ics_single = batch_ics_multi[:, 0:1]  # [B, 1, H, W]
+
+                            all_ics_single.append((indices, batch_ics_single))
+                            all_ics_multi.append((indices, batch_ics_multi))
+
+                        # Assemble ICs for MNO rollout (single realization)
+                        ics = torch.zeros(
+                            (current_batch_size, 1, self.input_generator.grid_size, self.input_generator.grid_size),
+                            dtype=torch.float32,
+                            device=self.device,
+                        )
+                        for indices, batch_ics in all_ics_single:
+                            for i, idx in enumerate(indices):
+                                ics[idx] = batch_ics[i]
+
+                        # Assemble ICs for storage (multiple realizations)
+                        ics_for_storage = torch.zeros(
+                            (current_batch_size, num_realizations, self.input_generator.grid_size, self.input_generator.grid_size),
+                            dtype=torch.float32,
+                            device=self.device,
+                        )
+                        for indices, batch_ics in all_ics_multi:
+                            for i, idx in enumerate(indices):
+                                ics_for_storage[idx] = batch_ics[i]
 
                     self.stats["generation_time"] += time.time() - gen_start
 
@@ -469,6 +566,13 @@ class NOAFeatureGenerationPipeline:
 
                     # Extract features
                     feat_start = time.time()
+
+                    # Extract INITIAL features from ICs (before rollout)
+                    # ICs shape: [B, 1, H, W] → add realization dim → [B, 1, 1, H, W]
+                    ics_for_initial = ics.unsqueeze(1)  # [B, 1, 1, H, W]
+                    initial_features = self.initial_extractor.extract_all(ics_for_initial)  # [B, M, D_initial]
+                    # Remove realization dimension (M=1)
+                    initial_features = initial_features.squeeze(1)  # [B, D_initial]
 
                     # Add realization dimension for feature extractor: [B, R, T, C, H, W]
                     trajectories_with_realizations = trajectories.unsqueeze(1)
@@ -509,6 +613,10 @@ class NOAFeatureGenerationPipeline:
                         aggregated=aggregated,  # Already numpy: [B, D*3]
                     )
 
+                    # Write INITIAL features
+                    initial_features_np = initial_features.cpu().numpy()  # [B, D_initial]
+                    feature_writer.file['features/initial/aggregated/features'][batch_start:batch_end] = initial_features_np
+
                     # Write operator parameters (from training dataset)
                     feature_writer.write_parameters(
                         batch_idx=batch_start,
@@ -522,8 +630,13 @@ class NOAFeatureGenerationPipeline:
                     )
 
                     # Write metadata (ic_types, noise_regimes, evolution_policies, grid_sizes)
-                    # Extract metadata from config and generated data
-                    noise_regimes = self._classify_noise_regimes(ic_types)
+                    if self.sampling_mode == "reference":
+                        # Reference mode: Use fixed metadata
+                        noise_regimes = ["reference"] * current_batch_size
+                    elif self.sampling_mode == "interpolated":
+                        # Interpolated mode: Extract from generated ICs
+                        noise_regimes = self._classify_noise_regimes(ic_types)
+
                     evolution_policies = [self._get_evolution_policy() for _ in range(current_batch_size)]
                     grid_sizes = np.full(current_batch_size, grid_size, dtype=np.int32)
 

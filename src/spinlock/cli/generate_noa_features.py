@@ -66,28 +66,28 @@ class GenerateNOAFeaturesCommand(ConfigurableCommand):
 
     @property
     def help(self) -> str:
-        return "Generate dataset from trained NOA model (same structure as CNO datasets)"
+        return "Generate dataset from trained MNO model (same structure as CNO datasets)"
 
     @property
     def description(self) -> str:
         return """
-Generate a feature dataset from a trained NOA model.
+Generate a feature dataset from a trained MNO model.
 
 This command is used in the "train tokenizer on simulator's distribution"
-architecture where VQ-VAE is trained on NOA's outputs for optimal alignment.
+architecture where VQ-VAE is trained on MNO's outputs for optimal alignment.
 
 Examples:
-  # Generate 10K NOA features for VQ-VAE validation
+  # Generate 10K MNO features for VQ-VAE validation
   spinlock generate-noa-features \\
       --noa-checkpoint checkpoints/noa/pure_mse_baseline/best_model.pt \\
-      --output datasets/noa_features_10k.h5 \\
+      --output datasets/mno_features_10k.h5 \\
       --n-samples 10000 \\
       --config configs/experiments/local_100k_optimized.yaml
 
   # Generate 100K features for production VQ-VAE training
   spinlock generate-noa-features \\
       --noa-checkpoint checkpoints/noa/pure_mse_baseline/best_model.pt \\
-      --output datasets/noa_features_100k.h5 \\
+      --output datasets/mno_features_100k.h5 \\
       --n-samples 100000 \\
       --config configs/experiments/local_100k_optimized.yaml \\
       --device cuda \\
@@ -110,7 +110,7 @@ Examples:
             type=Path,
             required=True,
             metavar="PATH",
-            help="Path to trained NOA checkpoint (.pt file)",
+            help="Path to trained MNO checkpoint (.pt file)",
         )
 
         parser.add_argument(
@@ -172,6 +172,19 @@ Examples:
             help="Random seed for parameter sampling (default: 42)",
         )
 
+        override_group.add_argument(
+            "--sampling-mode",
+            type=str,
+            choices=["reference", "interpolated"],
+            default="reference",
+            metavar="MODE",
+            help=(
+                "Sampling strategy for feature generation. "
+                "'reference': Load ICs and parameters from full reference dataset (default). "
+                "'interpolated': Use dense stratification within MNO training span (legacy)."
+            ),
+        )
+
         # Execution options
         exec_group = parser.add_argument_group("execution options")
 
@@ -187,11 +200,17 @@ Examples:
             help="Print detailed progress information",
         )
 
+        exec_group.add_argument(
+            "--compile",
+            action="store_true",
+            help="Compile MNO with torch.compile() for faster inference (requires PyTorch 2.0+)",
+        )
+
     def execute(self, args: Namespace) -> int:
         """Execute NOA feature generation."""
-        # Validate NOA checkpoint exists
+        # Validate MNO checkpoint exists
         if not args.noa_checkpoint.exists():
-            print(f"Error: NOA checkpoint not found: {args.noa_checkpoint}", file=sys.stderr)
+            print(f"Error: MNO checkpoint not found: {args.noa_checkpoint}", file=sys.stderr)
             return 1
 
         # Load base configuration
@@ -227,23 +246,23 @@ Examples:
 
         # Dry run: validate and load NOA
         if args.dry_run:
-            print("\nValidating NOA checkpoint...")
+            print("\nValidating MNO checkpoint...")
             try:
                 checkpoint = torch.load(args.noa_checkpoint, map_location='cpu', weights_only=False)
                 model_config = checkpoint.get('config', {}).get('model', {})
-                print(f"  ✓ NOA checkpoint valid")
+                print(f"  ✓ MNO checkpoint valid")
                 print(f"  ✓ Base channels: {model_config.get('base_channels', 'unknown')}")
                 print(f"  ✓ Encoder levels: {model_config.get('encoder_levels', 'unknown')}")
                 print(f"  ✓ Token conditioning: {model_config.get('token_conditioning', False)}")
                 print("\n✓ Configuration valid (dry-run mode, no dataset generated)")
                 return 0
             except Exception as e:
-                print(f"Error loading NOA checkpoint: {e}", file=sys.stderr)
+                print(f"Error loading MNO checkpoint: {e}", file=sys.stderr)
                 return 1
 
         # Execute generation
         try:
-            return self._run_noa_generation(args.noa_checkpoint, config, args.verbose)
+            return self._run_noa_generation(args.noa_checkpoint, config, args.verbose, args.sampling_mode, args.compile)
         except KeyboardInterrupt:
             print("\n\nGeneration interrupted by user", file=sys.stderr)
             return 130  # Standard SIGINT exit code
@@ -256,24 +275,27 @@ Examples:
 
     def _print_config_summary(self, args: Namespace, config: Any) -> None:
         """Print configuration summary."""
-        print("\nNOA Feature Generation Configuration:")
-        print(f"  NOA checkpoint: {args.noa_checkpoint}")
+        print("\nMNO Feature Generation Configuration:")
+        print(f"  MNO checkpoint: {args.noa_checkpoint}")
         print(f"  Output: {args.output}")
         print(f"  Samples: {args.n_samples}")
         print(f"  Batch size: {args.batch_size}")
         print(f"  Realizations: {args.num_realizations}")
         print(f"  Device: {args.device}")
         print(f"  Seed: {args.seed}")
+        print(f"  Sampling mode: {args.sampling_mode}")
         print(f"  Parameter space dimensions: {config.parameter_space.total_dimensions}")
 
-    def _run_noa_generation(self, noa_checkpoint: Path, config: Any, verbose: bool) -> int:
+    def _run_noa_generation(self, noa_checkpoint: Path, config: Any, verbose: bool, sampling_mode: str = "reference", compile_model: bool = False) -> int:
         """
         Run the actual NOA feature generation pipeline.
 
         Args:
-            noa_checkpoint: Path to trained NOA checkpoint
+            noa_checkpoint: Path to trained MNO checkpoint
             config: Validated SpinlockConfig
             verbose: Print detailed progress
+            sampling_mode: Sampling strategy ('reference' or 'interpolated')
+            compile_model: Enable torch.compile() for faster inference
 
         Returns:
             Exit code (0 for success)
@@ -281,9 +303,9 @@ Examples:
         from spinlock.noa.generation_pipeline import NOAFeatureGenerationPipeline
 
         print("\n" + "=" * 70)
-        print("NOA FEATURE GENERATION")
+        print("MNO FEATURE GENERATION")
         print("=" * 70)
-        print(f"NOA checkpoint: {noa_checkpoint}")
+        print(f"MNO checkpoint: {noa_checkpoint}")
         print(f"Output: {config.dataset.output_path}")
         print(f"Samples: {config.sampling.total_samples}")
         print(f"Device: {config.simulation.device}")
@@ -296,6 +318,8 @@ Examples:
             noa_checkpoint=noa_checkpoint,
             config=config,
             verbose=verbose,
+            sampling_mode=sampling_mode,
+            compile_model=compile_model,
         )
 
         if verbose:
