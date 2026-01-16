@@ -6,6 +6,8 @@ This document describes the complete pipeline for training meta-neural operators
 
 ## System Overview
 
+### Single-Domain Pipeline (Current Implementation)
+
 ```mermaid
 flowchart TB
     Config[YAML Config] --> Sampling[Stratified Sampling]
@@ -37,6 +39,45 @@ flowchart TB
     class Stage2,MNOFeatures stage2
     class Stage3,VQVAEModel stage3
     class Final deployment
+```
+
+### Multi-Domain Architecture (Research Objective)
+
+```mermaid
+flowchart TB
+    subgraph Domain1[Reaction-Diffusion Domain]
+        Config1[RD Config] --> CNO1[RD CNO Dataset]
+        CNO1 --> MNO1[Stage 1-3:<br/>MNO-RD +<br/>VQ-VAE-RD]
+        MNO1 --> Tokens1[RD Token<br/>Vocabulary]
+    end
+
+    subgraph Domain2[Fluid Dynamics Domain]
+        Config2[Fluids Config] --> CNO2[Fluids CNO Dataset]
+        CNO2 --> MNO2[Stage 1-3:<br/>MNO-Fluids +<br/>VQ-VAE-Fluids]
+        MNO2 --> Tokens2[Fluids Token<br/>Vocabulary]
+    end
+
+    subgraph Domain3[Future Domains]
+        ConfigN[...] --> CNON[...]
+        CNON --> MNON[...]
+        MNON --> TokensN[...]
+    end
+
+    Tokens1 --> NOA[NOA:<br/>Cross-Domain<br/>Symbolic Reasoning]
+    Tokens2 --> NOA
+    TokensN --> NOA
+
+    NOA --> Discovery[Computational<br/>Universal<br/>Discovery]
+
+    classDef domain1 fill:#c8e6c9,stroke:#4caf50,stroke-width:2px,color:#000
+    classDef domain2 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#000
+    classDef domain3 fill:#e1bee7,stroke:#7b1fa2,stroke-width:2px,color:#000
+    classDef noa fill:#b3e5fc,stroke:#0277bd,stroke-width:3px,color:#000
+
+    class Config1,CNO1,MNO1,Tokens1 domain1
+    class Config2,CNO2,MNO2,Tokens2 domain2
+    class ConfigN,CNON,MNON,TokensN domain3
+    class NOA,Discovery noa
 ```
 
 ### Pipeline Stages
@@ -112,6 +153,64 @@ Four complementary feature families:
 - [Feature Catalog](features/feature-catalog.md) - Enumeration of features in current configuration
 - [Feature Families](features/README.md) - Overview and philosophy
 - [Feature Reference](features/feature-reference.md) - Detailed formulas and interpretations
+
+---
+
+## Multi-Domain Architecture
+
+### Research Vision: Computational Universals
+
+The architecture extends to multiple physics domains to test whether behavioral categories discovered through VQ-VAE tokenization represent:
+- **Domain artifacts**: Specific to reaction-diffusion, fluids, etc.
+- **Computational universals**: Substrate-independent patterns across all spatiotemporal dynamics
+
+### Domain Independence
+
+Each physics family receives specialized treatment:
+
+**Per-Domain Pipeline:**
+1. **CNO Dataset**: Domain-specific operators (RD, Navier-Stokes, wave equations)
+2. **MNO Training**: Architecture optimized for domain (U-AFNO for parabolic, variants for hyperbolic)
+3. **Feature Extraction**: Domain-specific features capturing relevant physics
+4. **VQ-VAE Tokenization**: Trained on MNO's distribution, discovers domain categories
+
+**Why Independence:**
+- Optimal performance: Each MNO uses architecture suited to its physics
+- Clear hypothesis testing: Do independently discovered categories align?
+- Modular debugging: Improve one domain without affecting others
+- Incremental expansion: Add domains as research progresses
+
+### Vocabulary Alignment
+
+**The Key Experiment:**
+
+Train VQ-VAE independently on reaction-diffusion and fluid dynamics. Compare discovered categories:
+
+**If Categories Align:**
+- ✓ Computational universals exist
+- ✓ Token sequences transfer semantic meaning across domains
+- ✓ NOA can reason about cross-domain behavioral equivalences
+- ✓ Symbolic transfer works where trajectory transfer fails
+
+**If Categories Don't Align:**
+- ✓ Different physics have genuinely different behavioral geometry
+- ✓ Learned boundaries of universality
+- ✓ Each domain still has optimal MNO
+- ✓ Domain-specific NOAs remain valuable
+
+### Current Status
+
+**Implemented:**
+- Reaction-diffusion domain (MNO + VQ-VAE)
+- Single-domain independent optimization (Stage 1-3)
+
+**Research Objectives:**
+- Train second domain (2D Navier-Stokes)
+- Compare VQ-VAE category structures
+- Test vocabulary alignment hypotheses
+- Implement cross-domain NOA architecture
+
+---
 
 ## Multi-Modal Integration for Interpretability
 
