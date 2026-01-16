@@ -56,7 +56,7 @@ The NOA architecture layers symbolic reasoning capabilities atop the MNO physics
 **Current implementation achieves this through independent optimization:**
 - **Stage 1:** Train MNO on 100K+ diverse CNO trajectories (pure MSE physics loss)
 - **Stage 2:** Generate large-scale MNO rollouts, extract behavioral features
-- **Stage 3:** Train VQ-VAE on MNO's learned distribution (discovers 10 behavioral categories)
+- **Stage 3:** Train 3-level VQ-VAE on MNO's learned distribution (on 10+ discovered behavioral categories)
 - **Result:** MNO physics engine + VQ-VAE tokenizer → foundation for NOA cognitive capabilities
 
 **Research directions:** Autonomous systems that explore their own behavioral manifolds through perturbation-response loops, build episodic memories of dynamical patterns, develop curiosity signals from prediction error, and discover universal computational structures through self-directed experimentation.
