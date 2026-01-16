@@ -9,6 +9,7 @@
 Infrastructure for training **Meta-Neural Operators (MNO)** and **Neural Operator Agents (NOA)**—systems that learn statistical regularities across millions of dynamical systems to function as learned physics engines not bound to specific equations. The MNO learns autonomous spatiotemporal dynamics through diverse PDE training, while the NOA harnesses the MNO as a computational substrate for perturbation-driven exploration, episodic memory, and curiosity-based discovery of behavioral patterns.
 
 **Name Origin:** The name draws from quantum field spinlocking—coherence emerging from chaotic fluctuations through spin alignment. Similarly, this system discovers order arising from apparent chaos by systematically exploring stochastic neural operator behaviors to uncover stable, reproducible patterns in high-dimensional parameter space.
+
 ---
 
 ## Table of Contents
