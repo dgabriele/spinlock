@@ -8,6 +8,8 @@
 
 Infrastructure for training **Meta-Neural Operators (MNO)** and **Neural Operator Agents (NOA)**—systems that learn statistical regularities across millions of dynamical systems to function as learned physics engines not bound to specific equations. The MNO learns autonomous spatiotemporal dynamics through diverse PDE training, while the NOA harnesses the MNO as a computational substrate for perturbation-driven exploration, episodic memory, and curiosity-based discovery of behavioral patterns.
 
+**Name Origin:** The name draws from quantum field spinlocking—coherence emerging from chaotic fluctuations through spin alignment. Similarly, this system intends to discover order arising from apparent chaos by systematically exploring stochastic systems to uncover stable, reproducible patterns in high-dimensional parameter space.
+
 ---
 
 ## Table of Contents
@@ -56,7 +58,7 @@ The NOA architecture layers symbolic reasoning capabilities atop the MNO physics
 **Current implementation achieves this through independent optimization:**
 - **Stage 1:** Train MNO on 100K+ diverse CNO trajectories (pure MSE physics loss)
 - **Stage 2:** Generate large-scale MNO rollouts, extract behavioral features
-- **Stage 3:** Train VQ-VAE on MNO's learned distribution (discovers 10 behavioral categories)
+- **Stage 3:** Train 3-level VQ-VAE on MNO's learned distribution (on 10+ discovered behavioral categories)
 - **Result:** MNO physics engine + VQ-VAE tokenizer → foundation for NOA cognitive capabilities
 
 **Research directions:** Autonomous systems that explore their own behavioral manifolds through perturbation-response loops, build episodic memories of dynamical patterns, develop curiosity signals from prediction error, and discover universal computational structures through self-directed experimentation.
@@ -92,8 +94,6 @@ Spinlock operates on a foundational principle: **discovering novel computational
 - **Physics of change:** Study computational dynamics as a fundamental object, not task-specific optimization
 
 This approach enables discovery of universal patterns, phase transitions, and emergent taxonomies that reflect the true geometry of operator behavior space—structures potentially alien to human intuition but fundamental to understanding computation as a physical process.
-
-**Name Origin:** The name draws from quantum field spinlocking—coherence emerging from chaotic fluctuations through spin alignment. Similarly, this system discovers order arising from apparent chaos by systematically exploring stochastic neural operator behaviors to uncover stable, reproducible patterns in high-dimensional parameter space.
 
 ---
 
@@ -148,37 +148,29 @@ Why "meta"? It operates one level above individual operators, learning the relat
 See [Independent Optimization Guide](docs/noa-vqvae-independent.md) for complete implementation details and [Two-Stage Curriculum (Deprecated)](docs/two-stage-curriculum-architecture.md) for empirical analysis of competing gradient issues.
 
 ---
-
-**MNO vs NOA Distinction:**
-- **MNO (Meta-Neural Operator)**: Pure physics simulator (Phase 1). No agency, no reasoning—just accurate trajectory prediction.
-- **NOA (Neural Operator Agent)**: Higher-level agent architecture (Phase 2+). Uses MNO as physics engine + operates over VQ tokens. Has working memory, curiosity, planning capabilities.
-
----
-
-**Phase 2: Multi-Observation Context** (📋 Planned)
+### Future Extensions
+**Multi-Observation Context**
 - Lightweight transformer/recurrent heads on VQ token sequences
 - Capture higher-order dependencies and temporal correlations
 - In-context learning of operator physics through attention mechanisms
 
-**Phase 3: Curiosity-Driven Exploration** (📋 Planned)
+**Curiosity-Driven Exploration**
 - Adaptive refinement: Agent identifies high-variance regimes (prediction error/surprise) and autonomously re-parameterizes sampling
 - World model uncertainty: Track which regions of operator space are poorly understood
 - Directed discovery: Use prediction error as curiosity signal to guide exploration toward behavioral frontiers
 - Validation: Does curiosity-driven sampling discover fundamentally new behavioral categories?
 
-**Phase 4: Transparent Self-Modeling** (📋 Planned)
+**Transparent Self-Modeling**
 - Self-model learning: Agent develops interpretable internal model of its own behavioral prediction process
 - Calibration validation: Measure alignment between what the agent predicts about itself vs. actual performance
 - Distributional shift detection: Self-model enables identifying when the agent encounters truly novel operator regimes
 - Transparency requirement: Self-models must be inspectable—understand what the system "believes" about its own capabilities
 
-**Phase 5: Systematic Discovery of Computational Laws** (📋 Planned)
-- Hypothesis generation: Identify potential universal patterns in operator behavior (e.g., "operators with high spatial gradients exhibit turbulent temporal dynamics")
+**Systematic Discovery of Computational Laws**
+- Hypothesis generation: Identify potential universal patterns in operator behavior 
 - Rigorous testing: Validate hypotheses through directed sampling and statistical analysis
 - Symbolic regression: Distill discovered patterns into interpretable mathematical relationships
 - Falsifiability: Every discovered "law" must be testable and potentially refutable
-
-**Current Status:** Phase 0 complete, Phase 1 Stage 1 training in progress
 
 **Complete Training Workflow:**
 ```bash
@@ -590,10 +582,10 @@ For bugs and feature requests, please open an issue on GitHub.
 If you use Spinlock in your research, please cite:
 
 ```bibtex
-@software{spinlock2024,
+@software{spinlock2026,
   title = {Spinlock: Foundation for Neural Operator Agent Research},
   author = {Your Name},
-  year = {2024},
+  year = {2026},
   url = {https://github.com/yourusername/spinlock}
 }
 ```
