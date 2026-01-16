@@ -27,7 +27,7 @@ Infrastructure for training **Meta-Neural Operators (MNO)** and **Neural Operato
 
 ---
 
-## 🎯 What Architecture does Spinlock Traget?
+## 🎯 What Architecture does Spinlock Target?
 
 ### Learned Physics Engines
 
