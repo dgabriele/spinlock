@@ -231,13 +231,20 @@ class NOAFeatureGenerationPipeline:
                 self.reference_dataset_path = training_dataset_path
                 self.reference_ics = None  # Load on-demand
 
-                # All samples are reference points (not interpolated)
-                self.is_interpolated_mask = np.zeros(len(self.generation_indices), dtype=bool)
+                # Mark interpolated vs exact training points
+                # First training_n_samples are exact (MNO trained on these)
+                # Remaining samples are interpolated (MNO generalizing)
+                self.is_interpolated_mask = np.ones(len(self.generation_indices), dtype=bool)
+                self.is_interpolated_mask[:training_n_samples] = False
+
+                n_exact = (~self.is_interpolated_mask).sum()
+                n_interp = self.is_interpolated_mask.sum()
 
                 print(f"  ✓ Reference mode: Using first {n_generation_samples} samples from reference dataset")
                 print(f"  ✓ Reference dataset: {training_dataset_path}")
                 print(f"  ✓ ICs will be loaded from reference (realization_idx=0)")
-                print(f"  ✓ All samples are exact reference points (is_interpolated=False)")
+                print(f"  ✓ Exact training points (MNO trained): {n_exact} (indices 0-{training_n_samples-1})")
+                print(f"  ✓ Interpolated points (MNO generalizing): {n_interp} (indices {training_n_samples}-{n_generation_samples-1})")
 
             elif sampling_mode == "interpolated":
                 # Interpolated mode: Dense stratification within training span (current behavior)
