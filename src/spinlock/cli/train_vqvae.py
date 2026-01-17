@@ -1322,24 +1322,9 @@ Output:
                 interpolated_count = is_interpolated.sum() if is_interpolated is not None else 0
                 print(f"  Loaded interpolation mask: {interpolated_count} interpolated / {len(is_interpolated)} total")
 
-            # Load raw features for ALL families (MNO) for comparison with reference features (CNO)
-            # This should match ALL feature families used in training
-            raw_features_list = []
-
-            # INITIAL features (if used)
-            if any('initial' in fam for fam in feature_families):
-                if 'features/initial/aggregated/features' in f:
-                    raw_initial = f['features/initial/aggregated/features'][:]
-                    if max_samples is not None:
-                        raw_initial = raw_initial[:max_samples]
-                    nan_count = np.isnan(raw_initial).sum()
-                    if nan_count > 0:
-                        raw_initial = np.nan_to_num(raw_initial, nan=0.0)
-                        print(f"  initial: Replaced {nan_count} NaN values with 0 in raw INITIAL")
-                    print(f"  Loaded raw INITIAL features: {raw_initial.shape}")
-                    raw_features_list.append(raw_initial)
-
-            # SUMMARY features (if used) - use per_trajectory
+            # Load raw SUMMARY features ONLY (for reference regularization)
+            # Reference regularization compares MNO SUMMARY vs CNO SUMMARY
+            raw_summary = None
             if any('summary' in fam for fam in feature_families):
                 if 'features/summary/per_trajectory/features' in f:
                     raw_summary = f['features/summary/per_trajectory/features'][:]
@@ -1356,35 +1341,7 @@ Output:
                     if nan_count > 0:
                         raw_summary = np.nan_to_num(raw_summary, nan=0.0)
                         print(f"  summary: Replaced {nan_count} NaN values with 0 in raw SUMMARY")
-                    print(f"  Loaded raw SUMMARY features: {raw_summary.shape}")
-                    raw_features_list.append(raw_summary)
-
-            # TEMPORAL features (if used)
-            if any('temporal' in fam for fam in feature_families):
-                if 'features/temporal/features' in f:
-                    raw_temporal = f['features/temporal/features'][:]
-                    if max_samples is not None:
-                        raw_temporal = raw_temporal[:max_samples]
-
-                    # Reshape from [N, T, D] to [N, T*D]
-                    if len(raw_temporal.shape) == 3:
-                        N, T, D = raw_temporal.shape
-                        raw_temporal = raw_temporal.reshape(N, T * D)
-                        print(f"  Reshaped raw TEMPORAL from [{N}, {T}, {D}] to [{N}, {T*D}]")
-
-                    nan_count = np.isnan(raw_temporal).sum()
-                    if nan_count > 0:
-                        raw_temporal = np.nan_to_num(raw_temporal, nan=0.0)
-                        print(f"  temporal: Replaced {nan_count} NaN values with 0 in raw TEMPORAL")
-                    print(f"  Loaded raw TEMPORAL features: {raw_temporal.shape}")
-                    raw_features_list.append(raw_temporal)
-
-            # Concatenate all raw features
-            if raw_features_list:
-                raw_summary = np.concatenate(raw_features_list, axis=1)
-                print(f"  Combined raw features (all families): {raw_summary.shape}")
-            else:
-                raw_summary = None
+                    print(f"  Loaded raw SUMMARY features for reference regularization: {raw_summary.shape}")
 
         return features, all_feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated, raw_summary
 

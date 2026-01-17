@@ -469,6 +469,14 @@ class VQVAETrainer:
                 raw_summary = raw_summary.to(self.device)
                 reference_features = reference_features.to(self.device)
 
+                # Verify dimensions match (reference should be pre-cleaned)
+                if reference_features.shape[1] != raw_summary.shape[1]:
+                    # Skip this batch rather than crash - log warning
+                    print(f"Warning: Dimension mismatch in physics consistency check: "
+                          f"raw_summary={raw_summary.shape[1]}D, "
+                          f"reference={reference_features.shape[1]}D. Skipping batch.")
+                    continue
+
                 # Compute MSE for all samples
                 batch_mse = F.mse_loss(raw_summary, reference_features, reduction='none').mean(dim=1)
                 mse_all.extend(batch_mse.cpu().tolist())

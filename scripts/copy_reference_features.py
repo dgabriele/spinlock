@@ -5,12 +5,20 @@ Directly copy reference features from CNO dataset to MNO dataset.
 Since MNO dataset was generated using generation_indices pointing into
 the reference dataset, we can directly copy the corresponding features
 without any matching logic.
+
+Uses FeaturePreprocessor to clean reference features (remove operator_sensitivity)
+before copying to match MNO dimension.
 """
 
 import h5py
 import numpy as np
 import argparse
+import sys
 from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.spinlock.features.preprocessing import FeaturePreprocessor
 
 
 def main():
@@ -59,19 +67,33 @@ def main():
         print(f"  Range: [{gen_indices[0]}, {gen_indices[-1]}]")
         print()
 
-    # Copy features from reference dataset
+    # Create feature preprocessor from reference dataset to clean features
+    print("Creating feature preprocessor from reference dataset...")
+    preprocessor = FeaturePreprocessor.from_dataset(str(ref_path))
+    info = preprocessor.get_info()
+    if 'summary_aggregated' in info:
+        print(f"  Summary features: {info['summary_aggregated']['total']} total, "
+              f"{info['summary_aggregated']['valid']} valid, "
+              f"{info['summary_aggregated']['nan']} NaN (operator_sensitivity)")
+    print()
+
+    # Copy and clean features from reference dataset
     with h5py.File(ref_path, 'r') as ref:
         if 'features/summary/aggregated/features' not in ref:
             print("Error: Reference dataset missing summary features")
             return 1
 
-        ref_features = ref['features/summary/aggregated/features']
-        print(f"Reference features shape: {ref_features.shape}")
+        ref_features = ref['features/summary/aggregated/features'][gen_indices]
+        print(f"Reference features (raw): {ref_features.shape}")
 
-        # Extract features at generation indices
-        print(f"Copying features at indices {gen_indices[0]}-{gen_indices[-1]}...")
-        copied_features = ref_features[gen_indices]
-        print(f"Copied features shape: {copied_features.shape}")
+        # Clean features using preprocessor (removes operator_sensitivity)
+        import torch
+        ref_features_tensor = torch.from_numpy(ref_features)
+        cleaned_features = preprocessor.clean_features(ref_features_tensor, 'summary_aggregated')
+        copied_features = cleaned_features.numpy()
+
+        print(f"Reference features (cleaned): {copied_features.shape}")
+        print(f"  Removed {ref_features.shape[1] - copied_features.shape[1]} operator_sensitivity features")
         print()
 
     # Write to MNO dataset
