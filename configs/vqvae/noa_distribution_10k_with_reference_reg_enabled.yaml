@@ -31,7 +31,7 @@
 #      spinlock train-vqvae --config configs/vqvae/noa_distribution_10k_with_reference_reg.yaml
 
 # Dataset (generated from MNO with reference features)
-dataset_path: "datasets/noa_features/mno_v3_10k.h5"
+dataset_path: "datasets/mno_features_100k.h5"
 
 # Feature Families (based on production/100k_full_features.yaml)
 families:
