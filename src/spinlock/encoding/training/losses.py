@@ -268,6 +268,15 @@ def reference_regularization_loss(
     else:
         reference_summary = reference_features
 
+    # Verify dimensions match (reference features should be pre-cleaned)
+    if reference_summary.shape[1] != mno_summary.shape[1]:
+        raise ValueError(
+            f"Dimension mismatch: MNO summary={mno_summary.shape[1]}D, "
+            f"reference={reference_summary.shape[1]}D. "
+            f"Reference features should be pre-cleaned using FeaturePreprocessor "
+            f"to remove operator_sensitivity features before training."
+        )
+
     # MSE between MNO SUMMARY and reference (CNO) SUMMARY in raw space
     loss = F.mse_loss(mno_summary, reference_summary)
 
