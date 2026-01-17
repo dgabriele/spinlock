@@ -41,14 +41,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from src.spinlock.perturbations import ImpulsePerturbationFactory
 from src.spinlock.noa.behavioral_encoding import BehavioralSignature, BehavioralEncoder
+from src.spinlock.noa.episode import EpisodeRunner
+from src.spinlock.noa.early_stopping import StandardStoppingPolicy
+from src.spinlock.noa.validation_utils import (
+    load_mno_checkpoint,
+    load_vqvae_checkpoint,
+    sample_initial_condition,
+    get_vqvae_num_categories_and_levels,
+)
 
 
 def load_models(mno_checkpoint: str, vqvae_checkpoint: str, device: str):
     """Load trained MNO and VQ-VAE models."""
-    print(f"Loading MNO from {mno_checkpoint}")
-    print(f"Loading VQ-VAE from {vqvae_checkpoint}")
-    # TODO: Implement actual model loading
-    return None, None
+    mno = load_mno_checkpoint(mno_checkpoint, device)
+    vqvae = load_vqvae_checkpoint(vqvae_checkpoint, device)
+    return mno, vqvae
 
 
 def sample_ic_and_perturbation(spatial_size: Tuple[int, int], device: str, seed: int):
@@ -61,7 +68,13 @@ def sample_ic_and_perturbation(spatial_size: Tuple[int, int], device: str, seed:
     torch.manual_seed(seed)
 
     # Sample IC
-    u0 = torch.randn(2, *spatial_size, device=device)  # [C, H, W]
+    u0 = sample_initial_condition(
+        num_channels=2,
+        spatial_size=spatial_size,
+        ic_type="smooth_random",
+        device=device,
+        seed=seed,
+    )
 
     # Sample perturbation type
     pattern_type = np.random.choice(["center", "corner", "uniform"])
@@ -83,41 +96,6 @@ def sample_ic_and_perturbation(spatial_size: Tuple[int, int], device: str, seed:
         )
 
     return u0, perturbation
-
-
-def generate_episode_dummy(u0, perturbation, run_idx: int, pair_idx: int) -> Dict:
-    """Generate dummy episode for reproducibility testing.
-
-    Adds small noise to simulate numerical precision limits, but ensures
-    high reproducibility for same inputs.
-
-    Returns:
-        Episode data with token sequence
-    """
-    # Base trajectory length
-    base_length = 100 + pair_idx * 5  # Deterministic based on pair
-
-    # Add tiny noise to simulate numerical precision (should still be >0.95 similar)
-    noise_scale = 0.01  # 1% noise
-    length = base_length + int(np.random.randn() * noise_scale * base_length)
-    length = max(50, min(250, length))  # Clamp
-
-    # Generate token sequence with high reproducibility
-    # Same pair_idx should give highly similar tokens
-    np.random.seed(pair_idx * 1000)  # Deterministic seed based on pair
-    base_tokens = np.random.randint(0, 10, size=(length, 20))
-
-    # Add small run-specific noise
-    run_noise = np.random.randint(-1, 2, size=(length, 20))  # Small perturbations
-    tokens = base_tokens + run_noise
-    tokens = np.clip(tokens, 0, 9)  # Keep in valid range
-
-    token_tensor = torch.tensor(tokens, dtype=torch.long)
-
-    return {
-        "token_sequence": token_tensor,
-        "episode_id": f"pair{pair_idx:03d}_run{run_idx}",
-    }
 
 
 def compute_token_similarity(tokens1: torch.Tensor, tokens2: torch.Tensor) -> float:
@@ -169,13 +147,16 @@ def run_experiment(
     print(f"Testing reproducibility on {n_pairs} (u0, perturbation) pairs")
     print(f"Running each pair {n_runs} times\n")
 
+    # Create episode runner
+    stopping = StandardStoppingPolicy()
+    runner = EpisodeRunner(mno, vqvae, stopping, device=device)
+
     # Storage
     all_similarities = []  # Within-pair similarities
     all_signature_variances = []  # Signature variance across runs
     outlier_pairs = []  # Pairs with low reproducibility
 
-    num_categories = 10
-    num_levels = 3
+    num_categories, num_levels = get_vqvae_num_categories_and_levels(vqvae)
     encoder = BehavioralEncoder(num_categories, num_levels)
 
     for pair_idx in range(n_pairs):
@@ -185,9 +166,9 @@ def run_experiment(
         # Run multiple times
         episodes = []
         for run_idx in range(n_runs):
-            # TODO: Replace with actual episode generation
-            episode_data = generate_episode_dummy(u0, perturbation, run_idx, pair_idx)
-            episodes.append(episode_data)
+            # Run episode (should be deterministic for same inputs)
+            episode = runner.run_episode(u0, perturbation, max_steps=256)
+            episodes.append(episode)
 
         # Compute pairwise token similarities
         pair_similarities = []
@@ -203,14 +184,7 @@ def run_experiment(
         all_similarities.extend(pair_similarities)
 
         # Compute behavioral signature variance
-        from dataclasses import dataclass
-
-        @dataclass
-        class DummyEpisode:
-            token_sequence: torch.Tensor
-
-        dummy_episodes = [DummyEpisode(token_sequence=ep["token_sequence"]) for ep in episodes]
-        signatures = encoder.encode_batch(dummy_episodes)
+        signatures = encoder.encode_batch(episodes)
 
         # Compute variance of key signature features
         entropies = [sig["token_entropy"] for sig in signatures]
@@ -290,8 +264,8 @@ def run_experiment(
         u0, perturbation = sample_ic_and_perturbation(spatial_size, device, seed=i)
         episodes = []
         for run_idx in range(n_runs):
-            episode_data = generate_episode_dummy(u0, perturbation, run_idx, i)
-            episodes.append(episode_data)
+            episode = runner.run_episode(u0, perturbation, max_steps=256)
+            episodes.append(episode)
 
         # Compute similarity matrix for this pair
         for run_i in range(n_runs):
@@ -302,8 +276,8 @@ def run_experiment(
                     heatmap_data[global_i, global_j] = 1.0
                 else:
                     sim = compute_token_similarity(
-                        episodes[run_i]["token_sequence"],
-                        episodes[run_j]["token_sequence"]
+                        episodes[run_i].token_sequence,
+                        episodes[run_j].token_sequence
                     )
                     heatmap_data[global_i, global_j] = sim
 

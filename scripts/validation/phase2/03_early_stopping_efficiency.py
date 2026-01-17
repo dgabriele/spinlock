@@ -47,62 +47,19 @@ from src.spinlock.noa.early_stopping import (
     MaxStepsStop,
     CompositeEarlyStopping,
 )
+from src.spinlock.noa.episode import EpisodeRunner
+from src.spinlock.noa.validation_utils import (
+    load_mno_checkpoint,
+    load_vqvae_checkpoint,
+    sample_initial_condition,
+)
 
 
 def load_models(mno_checkpoint: str, vqvae_checkpoint: str, device: str):
     """Load trained MNO and VQ-VAE models."""
-    print(f"Loading MNO from {mno_checkpoint}")
-    print(f"Loading VQ-VAE from {vqvae_checkpoint}")
-    # TODO: Implement actual model loading
-    return None, None
-
-
-def generate_episode_dummy(perturbation, device: str) -> Dict[str, any]:
-    """Generate dummy episode for testing early stopping.
-
-    Simulates various convergence behaviors:
-    - Fast convergence (20-50 steps)
-    - Medium convergence (80-120 steps)
-    - Slow convergence (150-200 steps)
-    - Never converges (hits max_steps=256)
-
-    Returns:
-        Dictionary with:
-        - stopping_time: When episode stopped
-        - stop_reason: Why it stopped
-        - final_state_diff: ||u_T - u_{T-1}|| at stopping
-        - token_stable: Whether tokens were stable at stopping
-    """
-    # Simulate stopping behavior
-    behavior_type = np.random.choice(["fast", "medium", "slow", "none"], p=[0.3, 0.4, 0.2, 0.1])
-
-    if behavior_type == "fast":
-        stopping_time = np.random.randint(20, 50)
-        stop_reason = "Converged (||Δu||_l2 = 5.2e-05 < 1.0e-04)"
-        final_diff = np.random.uniform(1e-5, 9e-5)
-        token_stable = True
-    elif behavior_type == "medium":
-        stopping_time = np.random.randint(80, 120)
-        stop_reason = "Token stability (repeated 3 times with period 5)"
-        final_diff = np.random.uniform(1e-4, 5e-4)
-        token_stable = True
-    elif behavior_type == "slow":
-        stopping_time = np.random.randint(150, 200)
-        stop_reason = "Converged (||Δu||_l2 = 8.7e-05 < 1.0e-04)"
-        final_diff = np.random.uniform(2e-5, 8e-5)
-        token_stable = False
-    else:  # none
-        stopping_time = 256
-        stop_reason = "Max steps reached (t = 256 >= 256)"
-        final_diff = np.random.uniform(1e-3, 1e-2)  # Not converged
-        token_stable = False
-
-    return {
-        "stopping_time": stopping_time,
-        "stop_reason": stop_reason,
-        "final_state_diff": final_diff,
-        "token_stable": token_stable,
-    }
+    mno = load_mno_checkpoint(mno_checkpoint, device)
+    vqvae = load_vqvae_checkpoint(vqvae_checkpoint, device)
+    return mno, vqvae
 
 
 def categorize_stop_reason(reason: str) -> str:
@@ -130,6 +87,10 @@ def run_experiment(
 
     print(f"Running {n_episodes} episodes with early stopping...")
 
+    # Create episode runner
+    stopping = StandardStoppingPolicy()
+    runner = EpisodeRunner(mno, vqvae, stopping, device=device)
+
     # Generate diverse perturbations
     np.random.seed(42)
     torch.manual_seed(42)
@@ -141,6 +102,15 @@ def run_experiment(
     token_stabilities = []
 
     for i in range(n_episodes):
+        # Sample IC
+        u0 = sample_initial_condition(
+            num_channels=2,
+            spatial_size=spatial_size,
+            ic_type="smooth_random",
+            device=device,
+            seed=i,
+        )
+
         # Create random perturbation
         amp = np.random.uniform(0.5, 2.0)
         pattern_type = np.random.choice(["center", "corner", "uniform"])
@@ -160,13 +130,26 @@ def run_experiment(
                 t_impulse=0, amplitude=amp, spatial_size=spatial_size, device=device
             )
 
-        # TODO: Replace with actual episode generation
-        episode_data = generate_episode_dummy(perturbation, device)
+        # Run episode
+        episode = runner.run_episode(u0, perturbation, max_steps=256)
 
-        stopping_times.append(episode_data["stopping_time"])
-        stop_reasons.append(episode_data["stop_reason"])
-        final_diffs.append(episode_data["final_state_diff"])
-        token_stabilities.append(episode_data["token_stable"])
+        # Extract metrics
+        stopping_times.append(episode.num_steps())
+        stop_reasons.append(episode.stop_reason)
+
+        # Compute final state diff (last - second-to-last)
+        if episode.trajectory.shape[0] >= 2:
+            final_diff = torch.norm(episode.trajectory[-1] - episode.trajectory[-2]).item()
+        else:
+            final_diff = 0.0
+        final_diffs.append(final_diff)
+
+        # Check token stability (simple: last token == previous token)
+        if len(episode.token_sequence) >= 2:
+            token_stable = torch.equal(episode.token_sequence[-1], episode.token_sequence[-2])
+        else:
+            token_stable = False
+        token_stabilities.append(token_stable)
 
         if (i + 1) % 100 == 0:
             print(f"  {i + 1}/{n_episodes} episodes completed")

@@ -45,17 +45,26 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from src.spinlock.perturbations import ImpulsePerturbation, ImpulsePerturbationFactory
 from src.spinlock.noa.behavioral_encoding import BehavioralSignature, BehavioralEncoder, RegimeClassifier
+from src.spinlock.noa.episode import EpisodeRunner
+from src.spinlock.noa.early_stopping import StandardStoppingPolicy
+from src.spinlock.noa.validation_utils import (
+    load_mno_checkpoint,
+    load_vqvae_checkpoint,
+    sample_initial_condition,
+    get_vqvae_num_categories_and_levels,
+)
 
 
 def load_models(mno_checkpoint: str, vqvae_checkpoint: str, device: str):
     """Load trained MNO and VQ-VAE models."""
-    print(f"Loading MNO from {mno_checkpoint}")
-    print(f"Loading VQ-VAE from {vqvae_checkpoint}")
-    # TODO: Implement actual model loading
-    return None, None
+    mno = load_mno_checkpoint(mno_checkpoint, device)
+    vqvae = load_vqvae_checkpoint(vqvae_checkpoint, device)
+    return mno, vqvae
 
 
-def generate_episodes(n_episodes: int, spatial_size: Tuple[int, int], device: str):
+def generate_episodes(
+    mno, vqvae, n_episodes: int, spatial_size: Tuple[int, int], device: str
+):
     """Generate diverse episodes with varied perturbations and ICs.
 
     Returns:
@@ -63,51 +72,55 @@ def generate_episodes(n_episodes: int, spatial_size: Tuple[int, int], device: st
     """
     episodes = []
 
+    # Create episode runner
+    stopping = StandardStoppingPolicy()
+    runner = EpisodeRunner(mno, vqvae, stopping, device=device)
+
     # Define perturbation categories for purity analysis
-    perturbation_categories = {
-        "center": ["center_blob_low", "center_blob_mid", "center_blob_high"],
-        "corner": ["corner_TL", "corner_TR", "corner_BL", "corner_BR"],
-        "uniform": ["uniform_low", "uniform_high"],
-        "fourier": ["fourier_k11", "fourier_k22", "fourier_k12"],
-    }
+    categories = ["center", "corner", "uniform", "fourier"]
 
     for i in range(n_episodes):
         # Sample perturbation category
         cat_idx = i % 4
-        categories = ["center", "corner", "uniform", "fourier"]
         category = categories[cat_idx]
 
-        # Create dummy episode (TODO: replace with actual episode generation)
-        # Simulate token sequences that cluster by perturbation type
-        T = np.random.randint(50, 150)  # Variable length
-        D = 20  # Token dimension
-
-        # Add category-specific bias to tokens for clustering validation
-        base_tokens = np.random.randint(0, 10, size=(T, D))
-        if category == "center":
-            base_tokens[:, :5] += 10  # High values in first features
-        elif category == "corner":
-            base_tokens[:, 5:10] += 10  # High values in middle features
-        elif category == "uniform":
-            base_tokens[:, 10:15] += 10  # High values in later features
-        elif category == "fourier":
-            base_tokens[:, 15:] += 10  # High values in last features
-
-        dummy_tokens = torch.tensor(base_tokens, dtype=torch.long)
-
-        # Create dummy episode
-        from dataclasses import dataclass
-
-        @dataclass
-        class DummyEpisode:
-            token_sequence: torch.Tensor
-            episode_id: str
-
-        episode = DummyEpisode(
-            token_sequence=dummy_tokens,
-            episode_id=f"ep_{i:04d}"
+        # Sample IC
+        u0 = sample_initial_condition(
+            num_channels=2,
+            spatial_size=spatial_size,
+            ic_type="smooth_random",
+            device=device,
+            seed=i,
         )
 
+        # Create perturbation based on category
+        if category == "center":
+            amp = [0.5, 1.0, 2.0][i % 3]
+            perturbation = ImpulsePerturbationFactory.center_blob(
+                t_impulse=0, amplitude=amp, spatial_size=spatial_size, device=device
+            )
+        elif category == "corner":
+            corners = ["top_left", "top_right", "bottom_left", "bottom_right"]
+            corner = corners[i % 4]
+            perturbation = ImpulsePerturbationFactory.corner_blob(
+                t_impulse=0, amplitude=1.0, spatial_size=spatial_size,
+                corner=corner, device=device
+            )
+        elif category == "uniform":
+            amp = [0.5, 1.0][i % 2]
+            perturbation = ImpulsePerturbationFactory.uniform_forcing(
+                t_impulse=0, amplitude=amp, spatial_size=spatial_size, device=device
+            )
+        else:  # fourier
+            wavenumbers = [(1, 1), (2, 2), (1, 2)]
+            k = wavenumbers[i % 3]
+            perturbation = ImpulsePerturbation(
+                t_impulse=0, amplitude=1.0, pattern="fourier_mode",
+                spatial_size=spatial_size, wavenumber=k, device=device
+            )
+
+        # Run episode
+        episode = runner.run_episode(u0, perturbation, max_steps=256)
         episodes.append((episode, category, f"ic_{i % 10}"))
 
         if (i + 1) % 100 == 0:
@@ -183,14 +196,13 @@ def run_experiment(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("Generating episodes...")
-    episode_data = generate_episodes(n_episodes, spatial_size, device)
+    episode_data = generate_episodes(mno, vqvae, n_episodes, spatial_size, device)
     episodes = [ep for ep, _, _ in episode_data]
     perturbation_types = [pt for _, pt, _ in episode_data]
 
     # Extract token-based behavioral signatures
     print("\nExtracting behavioral signatures from tokens...")
-    num_categories = 10  # From VQ-VAE
-    num_levels = 3  # Hierarchical levels
+    num_categories, num_levels = get_vqvae_num_categories_and_levels(vqvae)
     encoder = BehavioralEncoder(num_categories, num_levels)
     signatures = encoder.encode_batch(episodes)
 
