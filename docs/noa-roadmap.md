@@ -1,19 +1,19 @@
 # Neural Operator Agent (NOA) Roadmap
 
-**A hierarchical, meta-cognitive neural operator system for learning, generating, and reflecting on complex dynamical behaviors with general intelligence capabilities.**
+**Autonomous perturbation-driven system for discovering computational structure through episodic memory and curiosity-driven exploration.**
 
-This roadmap provides a practical blueprint for building a Neural Operator Agent (NOA)—a **hybrid neural operator (U-AFNO backbone) with discrete VQ-VAE perceptual loss**. The NOA operates directly in continuous function space, generating rollouts whose behavioral features are encoded into discrete tokens via a frozen VQ-VAE. This physics-native architecture enables self-referential understanding of its own generative behavior while providing a testbed for cognitive capabilities including working memory, compositional reasoning, episodic memory formation, meta-learning, and metacognitive monitoring—all grounded in measurable, empirically testable mechanisms.
+This roadmap provides a practical blueprint for building a Neural Operator Agent (NOA)—an **online perturbation-response system** that operates autonomously without parameter conditioning. The NOA combines a trained Meta-Neural Operator (MNO) as a learned physics engine with VQ-VAE behavioral tokenization, episodic memory, and curiosity signals to enable self-directed exploration and symbolic discovery of dynamical patterns.
 
 ## Overview
 
 ```mermaid
 flowchart LR
     Phase0[Phase 0:<br/>Foundation]
-    Phase1[Phase 1:<br/>U-AFNO Backbone]
-    Phase2[Phase 2:<br/>Working Memory &<br/>Composition]
-    Phase3[Phase 3:<br/>Exploration &<br/>Memory Selection]
-    Phase4[Phase 4:<br/>Metacognition &<br/>Self-Modeling]
-    Phase5[Phase 5:<br/>Scientific Discovery]
+    Phase1[Phase 1:<br/>MNO Training]
+    Phase2[Phase 2:<br/>Perturbation<br/>Framework]
+    Phase3[Phase 3:<br/>Runtime<br/>Optimization]
+    Phase4[Phase 4:<br/>Episodic Memory &<br/>Curiosity]
+    Phase5[Phase 5:<br/>Symbolic<br/>Discovery]
 
     Phase0 --> Phase1
     Phase1 --> Phase2
@@ -22,7 +22,7 @@ flowchart LR
     Phase4 --> Phase5
 
     style Phase0 fill:#4CAF50,color:#fff
-    style Phase1 fill:#FFC107,color:#000
+    style Phase1 fill:#4CAF50,color:#fff
     style Phase2 fill:#e0e0e0,color:#000
     style Phase3 fill:#e0e0e0,color:#000
     style Phase4 fill:#e0e0e0,color:#000
@@ -31,7 +31,6 @@ flowchart LR
 
 **Legend:**
 - 🟢 **Green**: Complete
-- 🟡 **Yellow**: In Development
 - ⚪ **Gray**: Planned
 
 ---
@@ -71,28 +70,18 @@ Behavioral categories discovered through **unsupervised hierarchical clustering*
 
 **Validation**: Cluster quality metrics (silhouette, Davies-Bouldin) ensure structure is genuine, not forced
 
-### 4. Topological Positional Encoding: Reasoning About Functional Similarity
+### 4. Perturbation-Driven Exploration: Autonomous Discovery
 
-**Innovation**: Positional encoding based on **parameter-space distance**, not chronological time
+**Phase 2+ Innovation**: Agent explores through perturbation-response loops, not parameter conditioning
 
-**Standard Transformer**: Position = sequence order (temporal)
-**NOA Transformer**: Position = behavioral similarity (topological)
+- **Perturbations excite learned dynamics**: Impulse perturbations → eigenmodes, continuous forcing → driven dynamics
+- **Token-based behavioral signatures**: VQ-VAE encodes episodes into discrete symbols
+- **Curiosity from prediction error**: High-variance responses indicate knowledge gaps
+- **Self-directed experimentation**: Agent generates perturbations targeting unexplored regimes
 
-Enables the agent to reason: "This operator I've never seen is similar to these three I have seen, based on parameter proximity."
+**This is discovery without predetermined structure**: The system identifies patterns through autonomous exploration of its own behavioral manifold.
 
-**Why it matters**: In-context learning of operator physics—the attention mechanism performs implicit regression over parameter-behavior relationships.
-
-### 5. Curiosity-Driven Adaptive Refinement: Closing the Loop
-
-**Phase 3 Innovation**: Agent actively directs its own exploration
-
-- **Prediction error** as curiosity signal: High-variance regions = poor understanding
-- **Autonomous re-parameterization**: Agent refines sampling to explore behavioral frontiers
-- **Self-directed discovery**: System identifies gaps in its world model and fills them
-
-**This is the "meta" in meta-cognitive**: Not just learning from data, but learning *what to learn about*.
-
-### 6. Transparent Mechanisms at Every Level
+### 5. Transparent Mechanisms at Every Level
 
 Even advanced phases maintain interpretability:
 - **Feature → Token mapping**: Inspectable through attribution analysis
@@ -147,14 +136,14 @@ Establish the data infrastructure and tokenization system that enables behaviora
 
 ## Phase 1: MNO Training (Meta-Neural Operator)
 
-**Status:** 🔄 **IN DEVELOPMENT** (Core training infrastructure complete)
+**Status:** ✅ **COMPLETE** (Stages 1-3)
 
 ### Objective
-Train a U-AFNO neural operator as the **MNO** (Meta-Neural Operator) - a pure physics simulator that produces accurate rollout predictions. The MNO serves as the physics engine for the eventual **NOA** (Neural Operator Agent) which will add agency, working memory, and curiosity-driven exploration in later phases.
+Train a U-AFNO neural operator as the **MNO** (Meta-Neural Operator) - a pure physics simulator that produces accurate rollout predictions. The MNO serves as the physics engine for the eventual **NOA** (Neural Operator Agent) which will add autonomous perturbation-driven operation, episodic memory, and curiosity-driven exploration in later phases.
 
 **MNO vs NOA:**
-- **MNO**: Pure physics simulator (Phase 1 output). No agency, no reasoning—just accurate trajectory prediction.
-- **NOA**: Higher-level agent architecture (Phase 2+). Uses MNO as physics engine + operates over VQ tokens with working memory and planning.
+- **MNO**: Pure physics simulator (Phase 1 output). Trained on parameter-conditioned CNO data, learns P(u_t+1 | u_t) across training ensemble.
+- **NOA**: Autonomous agent architecture (Phase 2+). Operates under perturbations (no θ conditioning), builds episodic memory, generates curiosity signals.
 
 ### Why U-AFNO as MNO Backbone?
 
@@ -167,494 +156,761 @@ Train a U-AFNO neural operator as the **MNO** (Meta-Neural Operator) - a pure ph
 ### Architecture
 
 **MNO Backbone: U-AFNO Neural Operator**
-- **Input**: θ (operator parameters) + u₀ (initial grid)
+- **Training input**: θ (operator parameters) + u₀ (initial grid) - parameter-conditioned supervised learning
+- **Autonomous operation**: Perturbations drive dynamics (Phase 2+), no explicit θ conditioning
 - **Output**: Predicted rollout trajectory [B, T, C, H, W]
 - **Latent extraction**: Bottleneck spectral modes + multi-scale encoder skips via `get_intermediate_features()`
-- **Implementation**: `src/spinlock/noa/backbone.py` (NOABackbone class used for MNO, 144-226M parameters)
-- **Training**: Pure MSE optimization against CNO ground truth (Stage 1 only)
+- **Implementation**: `src/spinlock/noa/backbone.py` (NOABackbone class used for MNO, 226M parameters)
 
-### Current Training Approach: Independent Optimization (**Recommended**)
+### Three-Stage Independent Optimization ✅ COMPLETE
 
 **Primary Guide:** See [Independent Optimization Architecture](noa-vqvae-independent.md) for complete implementation details.
 
-**Three Independent Stages:**
-
-**Stage 1: Pure MSE Physics Training** (no token conditioning)
+**Stage 1: Pure MSE Physics Training** ✅
 - **Implementation:** `src/spinlock/cli/train_meta_operator.py`
 - **Loss:** `L = L_traj` (pure MSE against CNO ground truth)
-- **Config:** `configs/noa/experiments/phase2/exp_pure_mse.yaml`
+- **Training:** 10K/100K CNO samples (10% of full dataset)
 - **Target:** L_traj < 1.0 (RMSE < field variation)
-- **Output:** Trained MNO checkpoint (physics-optimal simulator)
+- **Result:** Trained MNO checkpoint (physics-optimal simulator)
 
-**Stage 2: MNO Feature Generation** (100K+ samples)
+**Stage 2: MNO Feature Generation** ✅
 - **Implementation:** `src/spinlock/cli/generate_noa_features.py`
-- **Process:** Load trained MNO → sample diverse (θ, u₀) → generate rollouts → extract features inline
-- **Output:** Large-scale feature dataset from MNO's distribution (~1 GB for 100K samples)
+- **Process:** Load trained MNO → sample 100K (θ, u₀) → generate rollouts → extract features inline
+- **Distribution:** 10K exact (MNO trained on these), 90K interpolated (MNO generalizing)
+- **Output:** Large-scale feature dataset from MNO's distribution
 
-**Stage 3: VQ-VAE Training on MNO Distribution**
+**Stage 3: VQ-VAE Training on MNO Distribution** ✅
 - **Implementation:** `src/spinlock/cli/train_vqvae.py`
-- **Loss:** `L = L_recon + L_commit` (standard VQ-VAE, no physics loss)
-- **Config:** `configs/vqvae/mno_distribution_100k.yaml`
-- **Target:** L_recon < 0.05 (better than CNO baseline of 0.067)
-- **Output:** VQ-VAE optimized for MNO's behavioral manifold (ready for NOA agent in Phase 2+)
+- **Loss:** `L = L_recon + L_commit + auxiliary_losses` (orthogonality, topographic, reference regularization)
+- **Training:** 100K MNO features (90% from interpolation/generalization)
+- **Output:** VQ-VAE optimized for MNO's behavioral manifold
 
-**Why Independent Optimization?**
-- **No competing gradients**: Physics and VQ objectives decouple, both reach optimal values
-- **Alignment by construction**: VQ-VAE learns MNO's actual distribution
-- **Massive scale**: 100K+ MNO samples vs 1K CNO samples
-- **Simplicity**: No loss balancing, proven stable training for each stage
+### Proof-of-Concept Results: Excellent Baseline ✅
 
-**Training Infrastructure:**
-- **CNOReplayer** (`src/spinlock/noa/cno_replay.py`): Generates CNO ground truth for Stage 1
-- **MSELedLoss** (`src/spinlock/noa/losses/mse_led.py`): Pure physics loss implementation
-- **Truncated BPTT** (`src/spinlock/noa/truncated_bptt.py`): Long-horizon training (256-step rollouts)
+**Stage 1 (MNO Training):**
+- Architecture: U-AFNO, 226M parameters
+- Training: 10K/100K CNO samples (10% of dataset)
+- Result: L_traj < 1.0 achieved
 
-**Current Results (MNO v2, Stage 1):**
-```
-Validation loss: 0.511 (37% better than v1's 0.813)
-Target: L_traj < 1.0 reached at epoch 2-3
-MNO v3 (with IC reconstruction loss) currently training
-```
+**Stage 3 (VQ-VAE Tokenization) - Outstanding Results:**
 
-**Alternative Approach: Simultaneous Training** (explored but not recommended)
-- Three-loss structure: `L = L_traj + λ₁·L_latent + λ₂·L_commit`
-- Suffers from competing gradients between physics and VQ objectives
-- See [NOA Training Guide](noa-training-guide.md) for details
-- Deprecated in favor of independent optimization
+**Metrics (Epoch 305, commitment=0.35):**
+- **Reconstruction error:** 0.018 (quality=98.16%)
+- **Val loss:** 0.095237 (total loss including auxiliary components)
+- **Codebook utilization:** 70.7% (excellent category coverage)
+- **Topology preservation:** 0.999 (minimal degradation: 0.0066)
+- **Pre-quantization correlation:** 0.995 (encoder quality)
+- **Post-quantization correlation:** 0.999 (VQ quality)
+- **Categories discovered:** 10 behavioral categories (automatic clustering)
 
-### First Training Task: MNO Physics Training
+**Why These Metrics Are Excellent:**
+1. **MNO trained on only 10K samples** (10% of full CNO dataset) yet generalizes well
+2. **90% of VQ-VAE data from MNO interpolation** - tokenizer learns generalization, not memorization
+3. **0.018 reconstruction error** with 70.7% utilization shows clean category separation
+4. **0.999 topology preservation** means behavioral neighborhoods maintained through quantization
+5. **Ready for downstream use** - foundation validated for Phase 2 autonomous operation
 
-**Objective:** Train U-AFNO MNO to generate accurate physics rollouts (Stage 1: Pure MSE). Later stages generate features for VQ-VAE training that adapts to MNO's distribution.
+**Comparison to Target:**
+- Target: L_recon < 0.05 (from old CNO-direct architecture)
+- Achieved: 0.018 pure reconstruction error (significantly better)
+- Val loss 0.095 includes auxiliary losses (orthogonality, topographic, reference regularization)
 
-**Training Dataset:**
-- Sample θ + u₀ pairs from existing stratified dataset (100K operators)
-- Ground-truth: CNO rollouts via replay from parameter vectors
-- Teacher forcing: use ground-truth rollouts during initial training phases
+### Transition to Autonomous Operation (Phase 2)
 
-**Why This Task First?**
-- Builds directly on existing VQ-VAE (already trained on dataset features)
-- Avoids full end-to-end training over 100k operators initially
-- Produces immediately usable discrete symbols for Phase 2 evaluation
+**Key Insight:** During training, MNO learns P(u_t+1 | u_t) across the training ensemble. This implicit generative model captures characteristic timescales, relaxation dynamics, and behavioral patterns that recur across parameter space.
 
-### Evaluation Metrics
+**Autonomous deployment:** When operated without explicit θ conditioning, the MNO transitions from simulator to learned dynamical system:
+- **Perturbations excite eigenmodes**: Impulse perturbations probe the learned attractor landscape
+- **Continuous forcing creates driven dynamics**: Sustained perturbations balance internal relaxation
+- **Observable trajectories**: System projects inputs onto learned manifold of "dynamics-like" behavior
 
-- **Rollout fidelity**: MSE over 256+ timesteps vs ground-truth operators
-- **VQ reconstruction quality**: Feature-space error after encode→decode
-- **Token distribution**: Entropy, codebook utilization, category coverage
-- **Behavioral clustering coherence**: Do NOA-generated rollouts cluster correctly?
-
-### Validation Methodology
-
-**Interpretability Metrics**:
-- **Feature-token alignment**: Do tokens capture feature-space structure?
-- **Reconstruction fidelity**: Can we recover interpretable features from tokens?
-- **Category coherence**: Are discovered clusters semantically meaningful?
-
-**Transparency Mechanisms**:
-- **Codebook inspection**: Visualize what each token represents in feature space
-- **Attribution analysis**: Which features contribute most to each token assignment?
-- **Failure case analysis**: When does the mapping break down and why?
-
-**Success Criteria** (Phase 1 → Phase 2):
-- **Stage 1 (Physics):** L_traj < 1.0 (MNO matches CNO ground truth)
-- **Stage 3 (Tokenization):** L_recon < 0.05 (VQ-VAE compresses MNO features well)
-- Discrete token distribution matches MNO's behavioral manifold (entropy, usage)
-- Codebook utilization > 60% (diverse behavioral coverage)
-- Manual inspection confirms behavioral categories are interpretable
+Phase 2 builds the perturbation framework and validates that MNO responds meaningfully to autonomous operation.
 
 ### Deliverables
-- [x] U-AFNO MNO architecture implementation (`src/spinlock/noa/backbone.py` - NOABackbone class used for MNO training)
-- [x] Pure MSE loss implementation (`src/spinlock/noa/losses/mse_led.py`)
-- [x] CNO replay for ground truth generation (`src/spinlock/noa/cno_replay.py`)
-- [x] MNO training script (`src/spinlock/cli/train_meta_operator.py`)
-- [x] MNO feature generation script (`src/spinlock/cli/generate_noa_features.py`)
-- [ ] Full-scale Stage 1 training run (2000+ samples, 30+ epochs) - **In Progress (v3)**
-- [ ] Stage 2: Generate 100K MNO features for VQ-VAE
-- [ ] Stage 3: Train VQ-VAE on MNO distribution
-- [ ] Evaluation metrics and benchmarks
-- [ ] Phase 1 completion documentation
+- ✅ U-AFNO MNO architecture implementation (`src/spinlock/noa/backbone.py`)
+- ✅ Pure MSE loss implementation (`src/spinlock/noa/losses/mse_led.py`)
+- ✅ CNO replay for ground truth generation (`src/spinlock/noa/cno_replay.py`)
+- ✅ MNO training script (`src/spinlock/cli/train_meta_operator.py`)
+- ✅ MNO feature generation script (`src/spinlock/cli/generate_noa_features.py`)
+- ✅ VQ-VAE training script (`src/spinlock/cli/train_vqvae.py`)
+- ✅ Stage 1: MNO training complete (L_traj < 1.0)
+- ✅ Stage 2: 100K MNO features generated
+- ✅ Stage 3: VQ-VAE trained (0.018 recon error, 70.7% utilization, 10 categories)
+- ✅ Proof-of-concept metrics validate foundation for Phase 2
 
 ---
 
-## Phase 1.5: Second Domain Integration (Planned)
+## Phase 2: Perturbation Framework & MNO Behavioral Validation
 
-**Status:** 📋 **RESEARCH OBJECTIVE**
+**Status:** 📋 **PLANNED**
 
-**Objective:** Test multi-domain hypothesis by adding fluid dynamics
+### Objective
+Build minimal perturbation interface and validate that the trained MNO responds meaningfully to impulse perturbations when operated autonomously (without θ conditioning). Establish token-based behavioral signatures and early stopping criteria for episodes.
+
+**Strategy:** Parallel approach - develop minimal perturbation interface while running validation experiments to empirically test autonomous operation.
+
+### Key Infrastructure
+
+#### 1. Perturbation Module (`src/spinlock/perturbations/`)
+
+**Abstract Base Interface:**
+```python
+class BasePerturbation(ABC):
+    @abstractmethod
+    def apply(self, state: Tensor, t: int) -> Tensor:
+        """Apply perturbation to state at timestep t"""
+
+    @abstractmethod
+    def is_active(self, t: int) -> bool:
+        """Check if perturbation active at timestep t"""
+
+    def get_metadata(self) -> Dict[str, Any]:
+        """Return parameters for logging/memory"""
+```
+
+**Impulse Perturbations (Phase 2):**
+- `ImpulsePerturbation` - Single-timestep perturbations
+  - Gaussian blobs: amplitude, spatial_scale, center_location
+  - Spatial patterns: sinusoidal, blob, edge injection
+  - Frequency modes: specific Fourier mode excitation
+
+**Future Extensibility (designed now, implemented later):**
+- `SustainedPerturbation` - Multi-timestep forcing (Phase 3+)
+- `StructuredPerturbation` - Pattern-based, learned perturbations (Phase 4+)
+
+**Design Principles:**
+- **Modular OOP**: Single responsibility per class
+- **Extensible**: Add new perturbation types without changing existing code
+- **Metadata logging**: All perturbations track parameters for episodic memory
+- **Domain-agnostic**: Architecture supports multi-domain (implement single-domain first)
+
+#### 2. Episode Runner (`src/spinlock/noa/episode.py`)
+
+```python
+@dataclass
+class Episode:
+    """Single perturbation-response episode"""
+    perturbation: BasePerturbation
+    initial_state: Tensor
+    trajectory: Tensor  # [T, C, H, W]
+    token_sequence: Tensor  # [T, num_categories * num_levels]
+    metadata: Dict[str, Any]
+
+class EpisodeRunner:
+    """Execute MNO rollouts with perturbations and early stopping"""
+    def __init__(self, mno: NOABackbone, vqvae: VQVAEModel,
+                 early_stop_criterion: EarlyStopCriterion):
+        ...
+
+    def run_episode(self, u0: Tensor, perturbation: BasePerturbation,
+                    max_steps: int = 256) -> Episode:
+        """Run MNO until early stopping triggers"""
+```
+
+#### 3. Early Stopping (`src/spinlock/noa/early_stopping.py`)
+
+```python
+class EarlyStopCriterion(ABC):
+    @abstractmethod
+    def should_stop(self, trajectory: Tensor, tokens: Tensor, t: int) -> bool:
+        """Determine if episode should terminate"""
+
+class ConvergenceStop(EarlyStopCriterion):
+    """Stop when ||u_t - u_{t-1}|| < threshold (equilibrium)"""
+
+class TokenStabilityStop(EarlyStopCriterion):
+    """Stop when token sequence repeats (limit cycle detected)"""
+
+class MaxStepsStop(EarlyStopCriterion):
+    """Stop after fixed timesteps (safety fallback)"""
+
+class CompositeStop(EarlyStopCriterion):
+    """Combine criteria with OR/AND logic"""
+```
+
+#### 4. Behavioral Encoding (`src/spinlock/noa/behavioral_encoding.py`)
+
+```python
+class BehavioralEncoder:
+    """Extract behavioral signatures from token sequences"""
+
+    def encode_episode(self, episode: Episode) -> BehavioralSignature:
+        """Convert token sequence → behavioral fingerprint"""
+        # - Token entropy over time
+        # - L0→L1→L2 transition patterns
+        # - Regime identification (stable/oscillatory/chaotic)
+
+    def compute_similarity(self, sig1: BehavioralSignature,
+                          sig2: BehavioralSignature) -> float:
+        """Token sequence similarity for memory retrieval"""
+```
+
+### Validation Experiments
 
 **Research Questions:**
-- Do independently trained VQ-VAEs discover similar categories?
-- Can token sequences transfer semantic meaning across domains?
-- Does NOA trained on RD generalize to fluids?
 
-### 1.5.1: Fluid Dynamics Dataset Generation
+1. **Does MNO respond meaningfully to impulse perturbations?**
+   - Experiment: Gaussian blob at t=0, observe relaxation dynamics
+   - Metric: Token sequence divergence from unperturbed baseline
+   - Success: Different perturbation locations → different token sequences
 
-**Tasks:**
-- 2D Navier-Stokes CNO operators
-- Parameter space sampling (Reynolds number, forcing, viscosity)
-- 100K trajectories for diversity
+2. **Do token sequences capture behavioral regimes?**
+   - Experiment: Same perturbation, different ICs → cluster by tokens
+   - Metric: Silhouette score (token-based vs spatial-based clustering)
+   - Success: Token clustering ≥ spatial clustering (compression without information loss)
 
-**Success Metrics:**
-- Dataset diversity comparable to RD domain
-- Reynolds numbers spanning laminar → turbulent regimes
-- Multiple IC types (vortices, shear layers, jets)
+3. **When should episodes terminate?**
+   - Experiment: Run 256 steps, analyze convergence distribution across 1000 episodes
+   - Metric: Convergence timestep distribution
+   - Success: Early stopping saves 30-50% computation vs fixed max_steps
 
-### 1.5.2: MNO-Fluids Training
+4. **Are perturbation-response patterns reproducible?**
+   - Experiment: Same (u₀, perturbation) repeated 5 times
+   - Metric: Token sequence cosine similarity
+   - Success: >0.95 similarity (MNO deterministic → exact match)
 
-**Tasks:**
-- Architecture: U-AFNO with vector-field modifications (if needed)
-- Pure MSE training (Stage 1)
-- Target: L_traj < 1.0 (physics accuracy)
+**Validation Dataset:** 1000 episodes = 10 ICs × 100 impulse perturbations (varied location/amplitude)
 
-**Success Metrics:**
-- Validation loss competitive with MNO-RD
-- Captures turbulent cascades, vortex dynamics
-- Generalizes across Reynolds numbers
+### Success Criteria (Phase 2 → 3)
 
-### 1.5.3: VQ-VAE-Fluids Training
+**Metrics:**
+- 90% episodes show token divergence from baseline (not just noise)
+- 40%+ episodes terminate early with valid stopping criteria
+- Behavioral signature extraction <10ms per episode
+- >0.95 token similarity for identical (u₀, perturbation) pairs
+- 3+ interpretable behavioral regimes identified (manual inspection)
 
-**Tasks:**
-- Independent tokenization of MNO-Fluids distribution (Stage 3)
-- Orthogonality-weighted clustering for category discovery
-- Target: L_recon < 0.05, utilization > 40%
-
-**Success Metrics:**
-- Discovers ~10 categories (like VQ-VAE-RD)
-- High reconstruction quality
-- Categories interpretable (laminar, turbulent, transitional, etc.)
-
-### 1.5.4: Vocabulary Alignment Analysis
-
-**CRITICAL EXPERIMENT:**
-
-Compare VQ-VAE-RD and VQ-VAE-Fluids category structures:
-
-**Alignment Metrics:**
-1. **Category count**: Do both discover ~10 categories?
-2. **Cluster geometry**: Correlation between codebook embeddings
-3. **Semantic correspondence**: Do "oscillatory RD" and "oscillatory fluids" map to similar tokens?
-4. **Transfer success**: Can NOA trained on RD classify fluids via tokens?
-
-**Outcomes:**
-- **Strong alignment** → Computational universals exist, publish result
-- **Weak alignment** → Domain boundaries identified, proceed with domain-specific NOAs
-- **Partial alignment** → Refine hypotheses, investigate which categories transfer
-
-**Success Criteria:**
-- Vocabulary alignment analysis completed
-- Hypothesis clearly supported or refuted
-- Results documented for publication
-
-### 1.5.5: Cross-Domain NOA Architecture
-
-**Tasks:**
-- NOA that operates over BOTH token vocabularies
-- Shared attention mechanisms across domains
-- Token embedding alignment (if categories correspond)
-
-**Success Metrics:**
-- Single NOA handles RD and Fluids tokens
-- Cross-domain reasoning demonstrated
-- Transfer learning validated
-
-**Deliverables:**
-- [ ] Fluid dynamics CNO dataset (100K samples)
-- [ ] Trained MNO-Fluids (L_traj < 1.0)
-- [ ] Trained VQ-VAE-Fluids (L_recon < 0.05)
-- [ ] Vocabulary alignment analysis
-- [ ] Cross-domain NOA prototype
-- [ ] Publication: "Computational Universals in Spatiotemporal Dynamics"
+### Deliverables
+- [ ] Perturbation module (`perturbations/`: base, impulse, factory)
+- [ ] Episode infrastructure (`noa/`: episode, early_stopping, behavioral_encoding)
+- [ ] Validation scripts (4 experiments)
+- [ ] Documentation (architecture guide, validation results)
+- [ ] Unit tests (perturbations, episode runner, early stopping)
 
 ---
 
-## Phase 2: Multi-Observation Context & Working Memory
+## Phase 3: Dynamic Sampling & Runtime Optimization
 
 **Status:** 📋 **PLANNED**
 
 ### Objective
-Capture temporal correlations and higher-order operator dependencies across multiple observations, enabling compositional reasoning and working memory dynamics.
+Implement intelligent MNO rollout sampling (skip predictable timesteps) and token-based screening (skip expensive MNO calls when token prediction is sufficient). Optimize quality vs runtime trade-offs through senior-level ML strategies.
 
-### Architecture Upgrade
-Building on the Phase 1 U-AFNO backbone:
-- **Lightweight transformer or recurrent heads** operating on sequences of discrete VQ codes produced by the U-AFNO backbone
-- **Input:** Sequence of VQ tokens from multiple rollouts/observations
-- **Output:** Contextualized predictions conditioned on multi-step patterns
-- **Key insight:** U-AFNO generates continuous rollouts → VQ-VAE produces discrete codes → transformer reasons over code sequences
+### Key Infrastructure
 
-### Cognitive Capabilities (Grounded in Mechanisms)
+#### 1. Adaptive Sampler (`src/spinlock/noa/adaptive_sampler.py`)
 
-**Working Memory Dynamics:**
-- Transformer attention mechanism maintains limited-capacity state over operator sequences
-- Empirically measurable: track which prior observations influence current predictions (attention weights)
-- Testable hypothesis: Does performance degrade with sequence length in a capacity-limited manner?
+**Concept:** Dense sampling during transients (high dynamics), sparse sampling during equilibrium (low dynamics).
 
-**Compositional Reasoning:**
-- Learn how operator components combine to produce emergent behaviors
-- Mechanism: Attention over operator parameter subspaces reveals compositional structure
-- Validation: Zero-shot generalization to novel parameter combinations not seen during training
-- Quantifiable metric: Prediction accuracy on held-out compositional configurations
+```python
+class AdaptiveSampler:
+    """Dynamically adjust MNO sampling rate based on dynamics"""
 
-**Meta-Learning from Dynamics:**
-- Few-shot adaptation to novel operator families through in-context learning
-- No gradient updates required—adaptation via attention over similar past experiences
-- Testable: Measure generalization error after N shots vs. baselines (k-NN, direct transfer)
+    def __init__(self, base_rate: int = 1, max_skip: int = 8):
+        # base_rate=1: every timestep
+        # max_skip=8: skip up to 8 steps during equilibrium
 
-### Key Emphasis
-Attention across sequences is critical for eventual **self-modeling**—the agent must identify invariant traits in its own operator generation over time. This phase establishes measurable analogues to cognitive working memory through attention mechanisms.
+    def get_sampling_schedule(self, episode: Episode) -> List[int]:
+        """Determine which timesteps to compute MNO forward pass"""
+        # High dynamics (transient) → dense sampling
+        # Low dynamics (equilibrium) → sparse sampling
+        # Interpolate skipped timesteps linearly
+```
+
+**Strategies:**
+- **Gradient-based:** Skip when ||u_t - u_{t-1}|| < threshold
+- **Token-based:** Dense when tokens change, sparse when stable
+- **Hybrid:** Start dense, gradually sparse as convergence detected
+
+**Validation:**
+- Metric: Speedup (30-50% fewer MNO calls)
+- Metric: Fidelity (final tokens 90%+ match vs dense sampling)
+- Metric: Error (interpolated states <5% RMSE vs true MNO)
+
+#### 2. Token Predictor (`src/spinlock/noa/token_predictor.py`)
+
+**Fast Path: Predict next tokens without full MNO rollout**
+
+```python
+class TokenPredictor(nn.Module):
+    """Predict next tokens without full MNO rollout"""
+    # Small transformer: token_sequence[-K:] → next_token
+    # K=5-10 context window
+    # 100K-1M params (vs 226M MNO)
+    # Train on Phase 2 episodes
+
+class ScreeningPipeline:
+    """Two-stage: fast token screening + precise MNO verification"""
+
+    def screen(self, perturbation: BasePerturbation, u0: Tensor) -> bool:
+        """Fast: Does this → interesting token sequence?"""
+
+    def verify(self, perturbation: BasePerturbation, u0: Tensor) -> Episode:
+        """Precise: Run full MNO for selected candidates"""
+```
+
+**Use Case:**
+- Explore 10K perturbations
+- Screen 10K with TokenPredictor (<1 min)
+- Filter to 1K novel/uncertain
+- Verify 1K with MNO → **10× speedup**
+
+#### 3. Execution Policies (`src/spinlock/noa/execution_policy.py`)
+
+**Strategy pattern for quality/runtime trade-offs:**
+
+```python
+class ExecutionPolicy(ABC):
+    @abstractmethod
+    def execute(self, perturbation, u0) -> Episode:
+        """Execute with specific quality/runtime trade-off"""
+
+class HighFidelityPolicy(ExecutionPolicy):
+    """Dense MNO sampling, all timesteps (100% fidelity)"""
+
+class BalancedPolicy(ExecutionPolicy):
+    """Adaptive sampling + early stopping (90-95% fidelity, 30-50% speedup)"""
+
+class ExploratoryPolicy(ExecutionPolicy):
+    """Token screening + selective verification (80-90% fidelity, 10× speedup)"""
+```
+
+**Quality vs Runtime Trade-offs:**
+
+| Strategy | MNO Calls | Token Fidelity | Use Case |
+|----------|-----------|----------------|----------|
+| Dense | 256 | 100% | High-value validation |
+| Adaptive | 120-180 | 90-95% | Standard exploration |
+| Screening | 10-50 | 80-90% | Large-scale search |
+| Pure prediction | 0 | 60-70% | Initial filtering only |
+
+### Success Criteria (Phase 3 → 4)
+
+**Metrics:**
+- 30-50% speedup with <10% token fidelity loss (adaptive sampling)
+- 70%+ top-1 token prediction accuracy (TokenPredictor)
+- 10× throughput increase for large-scale exploration (screening pipeline)
+- <100ms end-to-end episode generation (balanced policy)
+- GPU utilization >70% (profiling and optimization)
 
 ### Deliverables
-- [ ] Transformer-based temporal encoder
-- [ ] Multi-observation training protocol
-- [ ] Contextualized representation analysis
-- [ ] Temporal dependency metrics
-- [ ] Working memory capacity analysis
-- [ ] Compositional generalization benchmarks
-- [ ] Few-shot adaptation evaluation
+- [ ] Adaptive sampling (`adaptive_sampler.py`, `execution_policy.py`)
+- [ ] Token screening (`token_predictor.py`, `screening_pipeline.py`)
+- [ ] Training scripts (train TokenPredictor on Phase 2 episodes)
+- [ ] Validation scripts (benchmark sampling strategies, profiling)
+- [ ] Documentation (adaptive sampling guide, token screening guide)
 
 ---
 
-## Phase 3: Curiosity-Driven Exploration & Attention-Based Memory Selection
+## Phase 4: Episodic Memory & Curiosity-Driven Exploration
 
 **Status:** 📋 **PLANNED**
 
 ### Objective
-Close the loop: agent actively directs its own exploration by identifying knowledge gaps and adaptively refining sampling. Develop attention-based mechanisms for determining which experiences are worth encoding vs. discarding.
+Build episodic memory indexed by token sequence similarity. Develop prediction-error curiosity signals. Enable self-directed perturbation generation targeting knowledge gaps. Create autonomous exploration loop.
 
-### Core Mechanism: Adaptive Refinement
-- **Prediction error as curiosity signal**: High-variance regions indicate poor understanding
-- **World model uncertainty**: Track which regions of operator space are poorly understood
-- **Autonomous re-parameterization**: Agent refines sampling to explore behavioral frontiers
-- **Directed discovery**: Use prediction error to guide exploration toward novel regimes
+### Key Infrastructure
 
-### Cognitive Capabilities (Grounded in Mechanisms)
+#### 1. Episode Store (`src/spinlock/noa/memory/episode_store.py`)
 
-**Attention-Based Memory Selection:**
-- Mechanism: Use prediction error gradient to determine which operator experiences merit long-term encoding
-- High-surprise operators → higher retention probability (analogous to biological memory consolidation)
-- Quantifiable: Compare replay buffer composition under error-weighted vs. uniform sampling
-- Testable: Does selective memory improve sample efficiency vs. random replay?
+**Persistent HDF5 storage for episodes:**
 
-**Episodic-Like Memory Indexing:**
-- Organize operator "experiences" by behavioral similarity (not chronological order)
-- Retrieval mechanism: Query by feature-space proximity, not recency
-- Validation: Measure retrieval precision/recall on held-out operator queries
-- Metric: Does similarity-based indexing outperform temporal or random retrieval?
+```python
+class EpisodeStore:
+    """Persistent HDF5 storage for episodes"""
+    # Schema: /category_id/episode_id/{perturbation, tokens, trajectory}
 
-**Cross-Domain Abstraction (Empirical):**
-- Identify parameter-invariant behavioral patterns across different operator families
-- Mechanism: Hierarchical clustering in learned representation space
-- Test: Train on operator family A, evaluate abstraction transfer to family B
-- Quantify: Measure zero-shot transfer accuracy as proxy for domain-invariant learning
+    def store(self, episode: Episode) -> int:
+        """Store episode, return unique ID"""
 
-### Why This Matters
-This is the **"meta" in meta-cognitive**: Not just learning from data, but learning *what to learn about*.
+    def retrieve(self, episode_id: int) -> Episode:
+        """Load episode by ID"""
 
-The NOA doesn't just model existing data—it actively identifies gaps in its world model and fills them through targeted exploration. This transforms the system from passive learner to active discoverer.
+    def query_by_tokens(self, token_seq: Tensor, k: int) -> List[Episode]:
+        """K most similar episodes by token sequence"""
+```
 
-### Validation Questions
-- Does curiosity-driven sampling discover fundamentally new behavioral categories?
-- Are identified "knowledge gaps" semantically meaningful?
-- Does adaptive refinement improve coverage of operator space more efficiently than uniform sampling?
-- Does attention-weighted memory selection improve sample efficiency vs. uniform replay?
-- Can the system identify and retrieve behaviorally similar operators across different parameter regimes?
+**Memory Organization:**
+- **Primary index:** Token sequence similarity (behavioral)
+- **Secondary:** Perturbation type, outcome regime, timestamp
+- **Metadata:** Perturbation params, IC fingerprint, convergence time
+- **Compression:** Store tokens + metadata, reconstruct trajectories on-demand
 
-### Key Emphasis
-This phase closes the discovery loop: the NOA becomes self-directed, autonomously identifying behavioral frontiers and adapting its exploration strategy. It develops mechanisms for selective memory encoding and cross-domain pattern recognition.
+#### 2. Token Index (`src/spinlock/noa/memory/token_index.py`)
+
+**Fast ANN search over token sequences:**
+
+```python
+class TokenSequenceIndex:
+    """Fast ANN search over token sequences (FAISS/Annoy)"""
+
+    def build(self, episodes: List[Episode]):
+        """Build index from episode token sequences"""
+
+    def search(self, query_tokens: Tensor, k: int) -> List[int]:
+        """Find K nearest episodes (approximate nearest neighbors)"""
+```
+
+#### 3. Memory-Based Predictor (`src/spinlock/noa/curiosity/predictor.py`)
+
+**Predict token sequences from perturbations using memory:**
+
+```python
+class MemoryBasedPredictor:
+    """Predict token sequence from perturbation using memory"""
+
+    def predict(self, perturbation: BasePerturbation, u0: Tensor) ->
+        Tuple[Tensor, float]:
+        """Predict tokens + confidence from similar past episodes"""
+        # 1. Embed perturbation parameters
+        # 2. K-NN retrieval from memory (similar perturbations)
+        # 3. Weighted average of neighbor tokens
+        # 4. Confidence = agreement across neighbors
+```
+
+#### 4. Curiosity Signal (`src/spinlock/noa/curiosity/signal.py`)
+
+**Measure prediction error as curiosity/novelty:**
+
+```python
+class CuriositySignal:
+    """Measure prediction error as curiosity/novelty"""
+
+    def compute(self, predicted_tokens: Tensor, actual_tokens: Tensor,
+                confidence: float) -> float:
+        """Curiosity = prediction_error × (1 - confidence)"""
+        # High curiosity: Wrong prediction AND low confidence (knowledge gap)
+        # Low curiosity: Correct prediction OR high confidence (known territory)
+```
+
+#### 5. Perturbation Generator (`src/spinlock/noa/curiosity/perturbation_generator.py`)
+
+**Generate perturbations targeting knowledge gaps:**
+
+```python
+class CuriosityDrivenGenerator:
+    """Generate perturbations targeting knowledge gaps"""
+
+    def generate_batch(self, n: int, strategy: str) -> List[BasePerturbation]:
+        """N perturbations using exploration strategy"""
+        # - "exploit": Near high-reward past (refine understanding)
+        # - "explore": Far from all past (coverage)
+        # - "curious": High prediction error regions (knowledge gaps)
+        # - "balanced": Epsilon-greedy mix
+```
+
+#### 6. Exploration Loop (`src/spinlock/noa/curiosity/exploration_loop.py`)
+
+**Autonomous self-directed exploration:**
+
+```python
+class ExplorationLoop:
+    """Autonomous exploration with curiosity-driven sampling"""
+
+    def run(self, n_iterations: int, batch_size: int):
+        """Self-directed exploration loop"""
+        for i in range(n_iterations):
+            # 1. Generate curious perturbations (target knowledge gaps)
+            # 2. Execute episodes (with Phase 3 screening)
+            # 3. Compute curiosity signals (prediction error)
+            # 4. Store high-curiosity episodes in memory
+            # 5. Update perturbation generator
+```
+
+### Validation Experiments
+
+1. **Memory retrieval accuracy:** 80%+ precision@10 for behavioral similarity
+2. **Curiosity signal validity:** Novel perturbations have 2× median curiosity vs familiar
+3. **Exploration coverage:** Curiosity-driven explores 50%+ more token states than random
+4. **Novel regime discovery:** 70%+ high-curiosity episodes show interpretable novel behaviors
+
+### Success Criteria (Phase 4 → 5)
+
+**Metrics:**
+- 100K episodes stored, <100ms retrieval latency
+- 80%+ precision@10 for token similarity retrieval
+- 2× median curiosity for novel vs familiar perturbations
+- 50%+ more token coverage vs random exploration
+- 10+ interpretable behavioral patterns discovered (manual inspection)
 
 ### Deliverables
-- [ ] Prediction error-based curiosity metric
-- [ ] World model uncertainty quantification
-- [ ] Adaptive sampling re-parameterization
-- [ ] Discovery validation framework
-- [ ] Attention-weighted memory consolidation
-- [ ] Similarity-based retrieval system
-- [ ] Cross-domain transfer benchmarks
+- [ ] Memory system (`memory/`: episode_store, token_index, retrieval_strategies)
+- [ ] Curiosity framework (`curiosity/`: predictor, signal, perturbation_generator, exploration_loop)
+- [ ] Analysis tools (memory coverage visualization, curiosity landscape)
+- [ ] Validation scripts (4 experiments)
+- [ ] Documentation (episodic memory guide, curiosity framework guide, validation results)
 
 ---
 
-## Phase 4: Transparent Self-Modeling & Metacognitive Monitoring
-
-**Status:** 📋 **PLANNED**
-
-### Research Question
-Can an agent develop interpretable internal models of its own generative processes, enabling metacognitive monitoring of prediction confidence and capability boundaries?
-
-### Core Mechanism
-The NOA learns a **self-model**: a function mapping from internal state → predicted behavioral outcomes. This is not "self-awareness" in an anthropomorphic sense, but rather:
-- A learned approximation of the agent's own input-output mapping
-- An inspectable representation of what the system "expects" itself to do
-- A tool for detecting distributional shift in the agent's own behavior
-
-### Cognitive Capabilities (Grounded in Mechanisms)
-
-**Metacognitive Confidence Estimation:**
-- Mechanism: Learn mapping from internal activation patterns → prediction error
-- Output: Calibrated uncertainty estimates for each operator prediction
-- Validation: Measure calibration curve (predicted confidence vs. actual accuracy)
-- Testable: Does the agent "know when it doesn't know"? (High uncertainty → high error correlation)
-
-**Capability Boundary Detection:**
-- Identify parameter regions where self-model uncertainty is high (knowledge gaps)
-- Mechanism: Track prediction variance across ensemble or dropout samples
-- Quantifiable: Compare identified "uncertain" regions to actual generalization error
-- Use case: Explicit refusal on out-of-distribution operators vs. silent failure
-
-**Episodic Memory Consolidation:**
-- Selective encoding of high-information operator sequences into long-term memory
-- Mechanism: Prioritize replay of experiences where self-model was most surprised
-- Metric: Does surprise-weighted replay improve sample efficiency vs. uniform?
-- Biological analogue: Replay of hippocampal sequences during consolidation (empirically testable)
-
-**Forward Modeling of Own Behavior:**
-- Predict how NOA's own predictions will change with additional observations
-- Mechanism: Second-order model (model of the model) for meta-level prediction
-- Test: Can agent predict its own learning trajectory on held-out tasks?
-- Application: Active learning—query examples that maximally reduce self-model uncertainty
-
-### Transparency Requirements
-
-1. **Inspectable self-models**: The learned self-representation should be analyzable
-   - Can we visualize what the agent "believes" about its own behavior?
-   - Are self-model predictions calibrated with actual outcomes?
-
-2. **Validation against ground truth**: Compare self-model predictions to actual behavior
-   - Measure alignment: does the agent accurately predict its own outputs?
-   - Identify blind spots: where does the self-model fail?
-
-3. **Interpretable discrepancies**: When self-model diverges from reality, understand why
-   - Distribution shift detection
-   - Novel scenario identification
-   - Failure mode analysis
-
-### Scientific Validation
-- **Hypothesis**: Self-modeling improves exploration efficiency by identifying knowledge gaps
-- **Test**: Compare exploration in agents with/without self-models
-- **Interpretability check**: Are identified "knowledge gaps" semantically meaningful?
-- **Calibration test**: Plot predicted uncertainty vs. actual error (should be monotonic)
-- **Active learning test**: Does self-model-guided querying outperform random or uncertainty sampling?
-
-### Key Emphasis
-This approach treats self-modeling as a **mechanistic tool** for understanding and improving agent behavior, not as a mystical property. The self-model must be transparent and inspectable. Metacognitive capabilities are operationalized as uncertainty quantification and capability boundary detection—measurable, testable phenomena.
-
-### Deliverables
-- [ ] Self-model learning architecture
-- [ ] Calibration validation metrics
-- [ ] Distributional shift detection
-- [ ] Interpretability analysis tools
-- [ ] Metacognitive confidence estimation
-- [ ] Capability boundary detection system
-- [ ] Surprise-weighted episodic replay
-- [ ] Forward model of learning dynamics
-
----
-
-## Phase 5: Systematic Discovery of Computational Laws
+## Phase 5: Symbolic Discovery & Self-Modeling
 
 **Status:** 📋 **PLANNED**
 
 ### Objective
-Move from behavioral categorization to discovering fundamental principles governing the "physics of change" in computational systems.
+Formalize perturbation-response relationships as testable symbolic rules. Develop self-models predicting MNO's own behavioral responses to perturbations (not operator predictions). Enable hypothesis generation, testing, and falsification.
 
-### Core Research Goal
-Identify universal patterns and relationships in operator behavior that can be expressed as testable, falsifiable mathematical statements.
+### Key Infrastructure
 
-### Hypothesis Generation
-- Identify potential universal patterns in operator behavior
-- Example: "Operators with high spatial gradients exhibit turbulent temporal dynamics"
-- Example: "Parameter regions near bifurcation points show high sensitivity to initial conditions"
-- Generate candidate relationships between ARCHITECTURE parameters and SUMMARY behavioral signatures
+#### 1. Pattern Extractor (`src/spinlock/noa/symbolic/pattern_extractor.py`)
 
-### Rigorous Testing
-- **Directed sampling**: Generate operators specifically designed to test hypotheses
-- **Statistical validation**: Use rigorous hypothesis testing (not just correlation)
-- **Falsification**: Actively search for counter-examples
-- **Replication**: Verify discoveries hold across independent datasets
+**Association rule mining from episodic memory:**
 
-### Symbolic Regression
-- Distill discovered patterns into interpretable mathematical relationships
-- Express laws as symbolic equations, not black-box models
-- Enable human understanding and verification of discoveries
+```python
+class PatternExtractor:
+    """Extract symbolic rules from episodic memory"""
 
-### Falsifiability Requirement
-Every discovered "law" must be:
-- Expressed precisely enough to be testable
-- Potentially refutable through counter-examples
-- Validated through independent experiments
+    def mine_rules(self, memory: EpisodeStore, min_support: int) -> List[Rule]:
+        """Find frequent perturbation → token sequence patterns"""
+        # Association rule mining
+        # E.g., "High amplitude center → [Category 3, L1=5]"
 
-### Key Capabilities
-- **Autonomous hypothesis generation**: Formulate testable conjectures about operator families
-- **Experimental design**: Create targeted operator configurations to test specific hypotheses
-- **Statistical rigor**: Apply proper hypothesis testing methodology
-- **Interpretable discoveries**: Express findings as human-understandable mathematical relationships
+@dataclass
+class SymbolicRule:
+    antecedent: PerturbationProfile  # Perturbation characteristics
+    consequent: TokenPattern  # Expected token sequence
+    support: int  # Episodes supporting rule
+    confidence: float  # P(consequent | antecedent)
+    exceptions: List[int]  # Violating episodes
+```
+
+**Pattern Types:**
+- **Regime transitions:** "Amplitude > 0.5 → Category 7 (chaotic)"
+- **Spatial patterns:** "Central perturbation → symmetric tokens"
+- **Temporal patterns:** "Fast convergence (t<50) ↔ Category 2"
+- **Compositional:** "Perturbation A + location B → tokens C"
+
+#### 2. Self-Model (`src/spinlock/noa/self_model/predictor.py`)
+
+**Predict MNO's own behavioral responses:**
+
+```python
+class SelfModel(nn.Module):
+    """Predict MNO's behavioral response to perturbations"""
+    # Input: Perturbation embedding + state embedding
+    # Output: Predicted token sequence (NOT full trajectory)
+    # Architecture: Lightweight transformer (10M vs 226M MNO)
+
+    def predict_response(self, perturbation: BasePerturbation,
+                        u0: Tensor) -> Tensor:
+        """Predict token sequence without running MNO"""
+```
+
+**Metacognitive Capabilities:**
+- **Uncertainty estimation:** Predict when self-model will be wrong
+- **Capability boundaries:** Identify perturbations outside training distribution
+- **Confidence calibration:** P(correct | confidence) monotonic (ECE < 0.1)
+
+#### 3. Hypothesis Generator (`src/spinlock/noa/symbolic/hypothesis.py`)
+
+**Generate testable hypotheses from discovered rules:**
+
+```python
+@dataclass
+class Hypothesis:
+    statement: str  # Natural language
+    formal_rule: SymbolicRule  # Machine-readable
+    predicted_outcomes: Dict[str, Any]  # Testable predictions
+
+class HypothesisGenerator:
+    """Generate testable hypotheses from discovered rules"""
+
+    def generate(self, rules: List[SymbolicRule]) -> List[Hypothesis]:
+        """Create hypotheses from frequent patterns"""
+```
+
+#### 4. Hypothesis Tester (`src/spinlock/noa/symbolic/falsification.py`)
+
+**Design experiments to test/falsify hypotheses:**
+
+```python
+class HypothesisTester:
+    """Design experiments to test/falsify hypotheses"""
+
+    def design_experiment(self, hypothesis: Hypothesis) -> List[BasePerturbation]:
+        """Generate perturbations to test hypothesis"""
+
+    def evaluate(self, hypothesis: Hypothesis,
+                 results: List[Episode]) -> TestResult:
+        """Statistical validation (p-values, confidence intervals)"""
+```
+
+#### 5. Symbolic Regressor (`src/spinlock/noa/symbolic/regression.py`)
+
+**Fit symbolic equations to perturbation-response data:**
+
+```python
+class SymbolicRegressor:
+    """Fit symbolic equations to perturbation-response data (PySR)"""
+
+    def fit(self, episodes: List[Episode]) -> SymbolicEquation:
+        """Discover f: perturbation_params → behavioral_features"""
+```
+
+**Example Discovered Laws:**
+- `token_entropy = 2.3 * log(amplitude) + 0.5 * spatial_scale - 1.1`
+- `convergence_time = 45 / amplitude^0.8`
+- `category = floor(amplitude / 0.3) % 10`
+
+### Validation Experiments
+
+1. **Rule discovery:** 50+ interpretable rules (support >100, confidence >0.8)
+2. **Self-model accuracy:** 75%+ token prediction on held-out perturbations
+3. **Hypothesis testing:** 70%+ hypotheses validated, 30% rejected (filters noise)
+4. **Symbolic regression:** 5+ laws with R² > 0.8
+5. **Metacognitive calibration:** ECE < 0.1 (agent knows when uncertain)
+
+### Success Criteria (Phase 5 Complete)
+
+**Metrics:**
+- 50+ high-confidence symbolic rules discovered
+- 75%+ self-model token prediction accuracy (held-out test set)
+- 70%+ hypotheses validated through empirical testing
+- 5+ symbolic equations with R² > 0.8
+- ECE < 0.1 for uncertainty calibration (Expected Calibration Error)
 
 ### Deliverables
-- [ ] Hypothesis generation framework
-- [ ] Directed experimental design system
-- [ ] Statistical validation pipeline
-- [ ] Symbolic regression tools
-- [ ] Falsifiability verification framework
+- [ ] Symbolic discovery (`symbolic/`: pattern_extractor, hypothesis, falsification, regression)
+- [ ] Self-modeling (`self_model/`: predictor, calibration, capability_boundaries)
+- [ ] Analysis tools (rule mining, hypothesis testing, law fitting)
+- [ ] Validation scripts (5 experiments)
+- [ ] Documentation (symbolic discovery guide, self-modeling guide, discovered laws catalog)
+- [ ] Publication materials (research paper draft, visualizations)
 
 ---
 
-## Design Philosophy
+## Architecture Design: Extensibility for Future Expansion
 
-This roadmap systematically integrates multiple advanced components:
-- **Tokenized latent representations** (Phase 0)
-- **U-AFNO neural operator backbone with VQ-VAE perceptual loss** (Phase 1)
-- **Multi-step attention & working memory** (Phase 2)
-- **Exploratory agency & memory selection** (Phase 3)
-- **Self-referential modeling & metacognition** (Phase 4)
-- **Scientific discovery** (Phase 5)
+### Multi-Domain Support (Future)
 
-### Dual Purpose Architecture
+**Design enabling multi-domain without current implementation:**
 
-The resulting architecture serves dual purposes:
+1. **Domain-agnostic perturbation interface:**
+   ```python
+   # Works for any state representation
+   BasePerturbation.apply(state, t)
 
-1. **Research platform** for studying emergent cognitive-like behavior in dynamical systems
-   - Working memory dynamics through attention mechanisms
-   - Compositional reasoning via parameter-space decomposition
-   - Meta-learning through in-context adaptation
-   - Episodic memory formation via selective consolidation
-   - Cross-domain abstraction through representation learning
-   - Metacognitive monitoring via uncertainty quantification
+   # Physics-specific subclasses (future)
+   ImpulsePerturbationRD vs ImpulsePerturbationFluid
+   ```
 
-2. **Foundation for autonomous scientific exploration**, enabling the system to abstract, reason about, and experiment with its own operator space
+2. **Modular episode storage:**
+   ```python
+   # HDF5: /domain/{domain_name}/episodes/...
+   class MultiDomainMemory:
+       vqvaes: Dict[str, VQVAEModel]  # domain → tokenizer
+       stores: Dict[str, EpisodeStore]  # domain → storage
+   ```
 
-### From Dynamical Systems to General Intelligence
+3. **Cross-domain analysis (future Phase 6):**
+   - Compare token vocabularies for computational universals
+   - Test if RD perturbation patterns generalize to fluids
+   - Vocabulary alignment as key experiment
 
-The NOA architecture provides a testbed for general intelligence capabilities grounded in dynamical system reasoning:
+**Implementation strategy:**
+- Single-domain (reaction-diffusion) in Phases 2-5
+- Architecture supports multi-domain extension
+- No multi-domain code until Phase 5 complete
 
-**Meta-Learning:** Few-shot adaptation to novel operator families tests whether the system learns abstract behavioral principles rather than memorizing specific instances. This is empirically measurable through generalization error after N<10 shots.
+### Adding New Perturbation Types
 
-**Compositional Reasoning:** Predicting emergent behaviors from operator component combinations tests systematic generalization—a core challenge in general intelligence. Zero-shot accuracy on held-out configurations provides quantifiable metrics.
+**3-step process:**
 
-**Working Memory:** Attention-based maintenance of limited operator sequences mirrors cognitive working memory constraints. Capacity limits and performance degradation with sequence length are directly measurable.
+1. **Implement `BasePerturbation` subclass:**
+   ```python
+   class VideoFramePerturbation(BasePerturbation):
+       def apply(self, state, t): ...
+       def is_active(self, t): ...
+       def get_metadata(self): ...
+   ```
 
-**Episodic Memory:** Selective encoding and retrieval of high-information operator experiences tests whether the system develops efficient memory indexing strategies. Retrieval precision/recall on similarity queries provides ground truth.
+2. **Register in factory:**
+   ```python
+   PerturbationFactory.register("video_frame", VideoFramePerturbation)
+   ```
 
-**Cross-Domain Abstraction:** Identifying domain-invariant patterns across different operator families tests transfer learning capabilities. Zero-shot transfer accuracy from domain A→B quantifies abstraction quality.
+3. **Update metadata schema:**
+   - Add `video_frame_id` to HDF5 episode storage
+   - Update retrieval indices
 
-**Metacognitive Monitoring:** Uncertainty-aware prediction and capability boundary detection test whether the system develops accurate self-models. Calibration curves (predicted vs. actual error) provide rigorous validation.
+**No changes needed:** Episode runner, memory system, token encoding (all generic)
 
-These capabilities are not anthropomorphic analogies—they are operationalized as measurable, testable phenomena grounded in concrete mechanisms. The dynamical systems domain provides clean experimental conditions for studying these phenomena without the confounds of natural language or vision tasks.
+### Progressive Complexity
 
-This approach could lead to novel insights and discoveries by allowing the system to develop its own understanding of dynamical behavior while simultaneously advancing our understanding of general intelligence architectures.
+```
+Phase 0-1: Foundation (complete)
+    ↓ Stratified data, MNO training, VQ-VAE tokenization
+
+Phase 2: Minimal perturbation framework (impulse only, basic validation)
+    ↓ Validate autonomous operation, token-based encoding
+
+Phase 3: Efficient runtime (adaptive sampling, token screening)
+    ↓ Quality/runtime trade-offs, 10× speedup for exploration
+
+Phase 4: Memory + curiosity (autonomous exploration)
+    ↓ Episodic storage, prediction-error curiosity, self-directed generation
+
+Phase 5: Symbolic discovery (interpretable laws)
+    ↓ Rule mining, self-modeling, hypothesis testing
+
+Future: Multi-domain, video perturbations, learned patterns, cross-domain universals
+```
 
 ---
 
-## References
+## Critical Files by Phase
 
-- Spinlock codebase: `/home/daniel/projects/spinlock/`
-- Feature extraction: `src/spinlock/features/`
-- VQ-VAE tokenization: `src/spinlock/encoding/`
-- Dataset generation: `src/spinlock/dataset/`
-- Operator architectures: `src/spinlock/operators/` (CNN, U-AFNO)
-- NOA implementation: `src/spinlock/noa/`
-  - `backbone.py` - U-AFNO NOA backbone (144M parameters)
-  - `vqvae_alignment.py` - VQ-VAE three-loss alignment
-  - `cno_replay.py` - CNO replay for state supervision
-  - `training.py` - Training utilities
-- Training scripts: `scripts/dev/train_noa_state_supervised.py`
+### Phase 2: Perturbation Framework & Validation
+- `src/spinlock/perturbations/base.py` - Abstract perturbation interface (NEW, foundation)
+- `src/spinlock/perturbations/impulse.py` - Impulse perturbations (NEW)
+- `src/spinlock/noa/episode.py` - Episode management (NEW, core execution)
+- `src/spinlock/noa/early_stopping.py` - Termination criteria (NEW)
+- `src/spinlock/noa/behavioral_encoding.py` - Token signatures (NEW)
+- `src/spinlock/noa/backbone.py` - MNO interface (MODIFY, add perturbation hooks)
+- `src/spinlock/encoding/categorical_vqvae.py` - Token encoding (EXISTING, use as-is)
 
-For detailed architecture and implementation, see [architecture.md](architecture.md).
-For VQ-VAE alignment training details, see `notes/RESUME-2026-01-06-vqvae-alignment-nan-fix.md`.
+### Phase 3: Runtime Optimization
+- `src/spinlock/noa/adaptive_sampler.py` - Intelligent timestep selection (NEW)
+- `src/spinlock/noa/token_predictor.py` - Next-token forecasting (NEW)
+- `src/spinlock/noa/execution_policy.py` - Strategy pattern for trade-offs (NEW)
+- `src/spinlock/noa/screening_pipeline.py` - Fast path screening (NEW)
+
+### Phase 4: Memory & Curiosity
+- `src/spinlock/noa/memory/episode_store.py` - HDF5 storage (NEW)
+- `src/spinlock/noa/memory/token_index.py` - Similarity retrieval (NEW)
+- `src/spinlock/noa/curiosity/predictor.py` - Memory-based prediction (NEW)
+- `src/spinlock/noa/curiosity/signal.py` - Prediction error curiosity (NEW)
+- `src/spinlock/noa/curiosity/perturbation_generator.py` - Self-directed generation (NEW)
+- `src/spinlock/noa/curiosity/exploration_loop.py` - Autonomous loop (NEW)
+
+### Phase 5: Symbolic Discovery
+- `src/spinlock/noa/symbolic/pattern_extractor.py` - Rule mining (NEW)
+- `src/spinlock/noa/symbolic/hypothesis.py` - Hypothesis generation (NEW)
+- `src/spinlock/noa/symbolic/falsification.py` - Hypothesis testing (NEW)
+- `src/spinlock/noa/self_model/predictor.py` - Self-modeling (NEW)
+- `src/spinlock/noa/symbolic/regression.py` - Symbolic equations (NEW)
+
+### Documentation
+- `docs/noa-roadmap.md` - This document
+- `docs/architecture.md` - Update Phase 2-5 sections (AFTER roadmap complete)
+- `docs/noa-training-guide.md` - Add perturbation framework guide (Phase 2)
+- `README.md` - Update progress status as phases complete
+
+---
+
+## Summary
+
+This roadmap transitions the NOA from **parameter-conditioned batch training** (outdated) to **autonomous perturbation-driven online operation** (README vision). Each phase builds progressively:
+
+**Phase 0-1 (Complete):** Foundation established with excellent PoC metrics (0.018 recon error, 70.7% utilization, 10 behavioral categories)
+
+**Phase 2:** Validate autonomous operation - Does MNO respond meaningfully to perturbations? Build minimal framework.
+
+**Phase 3:** Optimize runtime - Intelligent sampling, token screening, 10× speedup for large-scale exploration.
+
+**Phase 4:** Enable curiosity - Episodic memory, prediction-error signals, self-directed perturbation generation.
+
+**Phase 5:** Discover laws - Symbolic rules, self-modeling, hypothesis testing, interpretable equations.
+
+**Future:** Multi-domain extension tests computational universals via vocabulary alignment.
+
+The architecture maintains DRY principles, modular OOP design, and extensibility for multi-domain while implementing single-domain (reaction-diffusion) first. Each phase has concrete deliverables (specific OOP classes, validation scripts, documentation), measurable success criteria, and empirical validation experiments.

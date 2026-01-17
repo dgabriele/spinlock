@@ -1,8 +1,12 @@
 # Spinlock Architecture
 
-**End-to-end meta-neural operator training system with behavioral tokenization via independent optimization.**
+**End-to-end meta-neural operator training system with behavioral tokenization and autonomous perturbation-driven exploration.**
 
-This document describes the complete pipeline for training meta-neural operators (MNO) that learn universal dynamics from diverse operator datasets. The system combines stratified dataset generation, multi-modal feature extraction, hierarchical VQ-VAE encoding, and a three-stage independent optimization approach where MNO trains purely for physics accuracy, then generates features for VQ-VAE training that adapts to MNO's distribution.
+This document describes the complete pipeline for training meta-neural operators (MNO) that learn universal dynamics from diverse operator datasets, followed by autonomous operation under perturbations for curiosity-driven behavioral discovery. The system combines:
+
+1. **Foundation (Phase 0-1):** Stratified dataset generation, multi-modal feature extraction, hierarchical VQ-VAE encoding, and three-stage independent optimization where MNO trains purely for physics accuracy, then generates features for VQ-VAE training that adapts to MNO's distribution.
+
+2. **Autonomous Operation (Phase 2-5):** Perturbation framework, episodic memory, token-based curiosity signals, and symbolic discovery that enable self-directed exploration of MNO's behavioral manifold without parameter conditioning.
 
 ## System Overview
 
@@ -39,6 +43,42 @@ flowchart TB
     class Stage2,MNOFeatures stage2
     class Stage3,VQVAEModel stage3
     class Final deployment
+```
+
+### Autonomous Operation Pipeline (Phase 2-5)
+
+```mermaid
+flowchart TB
+    Foundation[Phase 0-1:<br/>MNO + VQ-VAE<br/>Complete]
+
+    Foundation --> Phase2[Phase 2:<br/>Perturbation<br/>Framework]
+    Phase2 --> Episodes[Episode<br/>Generation]
+
+    Episodes --> Phase3[Phase 3:<br/>Runtime<br/>Optimization]
+    Phase3 --> FastEpisodes[Efficient<br/>Episodes]
+
+    FastEpisodes --> Phase4[Phase 4:<br/>Memory &<br/>Curiosity]
+    Phase4 --> Storage[Episodic<br/>Memory]
+    Phase4 --> Curiosity[Curiosity<br/>Signals]
+
+    Storage --> Phase5[Phase 5:<br/>Symbolic<br/>Discovery]
+    Curiosity --> Phase5
+
+    Phase5 --> Rules[Association<br/>Rules]
+    Phase5 --> SelfModel[Self-Model]
+    Phase5 --> Laws[Symbolic<br/>Laws]
+
+    Curiosity -.Autonomous Loop.-> Episodes
+
+    classDef complete fill:#4CAF50,color:#fff,stroke:#2E7D32,stroke-width:2px
+    classDef active fill:#2196F3,color:#fff,stroke:#1976D2,stroke-width:2px
+    classDef future fill:#e0e0e0,color:#000,stroke:#9e9e9e,stroke-width:2px
+    classDef output fill:#FFF9C4,color:#000,stroke:#F9A825,stroke-width:2px
+
+    class Foundation complete
+    class Phase2,Episodes,Phase3,FastEpisodes future
+    class Phase4,Storage,Curiosity,Phase5 future
+    class Rules,SelfModel,Laws output
 ```
 
 ### Multi-Domain Architecture (Research Objective)
@@ -82,6 +122,8 @@ flowchart TB
 
 ### Pipeline Stages
 
+**Phase 0-1: Foundation (Complete)**
+
 **Dataset Generation**
 - Stratified parameter sampling (Sobol sequences with Owen scrambling)
 - CNO operator construction from sampled parameters
@@ -110,6 +152,17 @@ flowchart TB
 - Standard VQ-VAE training: L_recon + L_commit
 - Alignment by construction (VQ learns MNO's structure)
 - Output: Discrete tokenization of MNO's behavior space
+
+**Phase 2-5: Autonomous Operation (Planned)**
+
+After completing Phase 0-1 foundation, the system transitions from parameter-conditioned supervised learning to autonomous perturbation-driven operation:
+
+- **Phase 2:** Perturbation framework validates MNO responds meaningfully to impulse forcing without θ conditioning
+- **Phase 3:** Runtime optimization (adaptive sampling, token screening) enables large-scale exploration
+- **Phase 4:** Episodic memory and curiosity signals drive self-directed perturbation generation
+- **Phase 5:** Symbolic discovery extracts interpretable laws from autonomous exploration data
+
+See "Autonomous Operation Architecture (Phase 2-5)" section below for detailed technical design.
 
 ## Core Components
 
@@ -388,6 +441,562 @@ Training Loss: L = L_recon + L_commit
 
 See [Independent Optimization Architecture](noa-vqvae-independent.md) for complete training guide and [NOA Architecture](noa-architecture.md) for architectural details.
 
+---
+
+## Autonomous Operation Architecture (Phase 2-5)
+
+After Phase 1 (MNO training complete, VQ-VAE trained on MNO distribution), the system transitions from **parameter-conditioned supervised learning** to **autonomous perturbation-driven operation**. The MNO becomes a learned dynamical system that evolves under perturbations, with the VQ-VAE providing behavioral tokenization for episodic memory and curiosity-driven exploration.
+
+### Phase 2: Perturbation Framework & Behavioral Validation
+
+**Objective:** Build minimal perturbation interface and validate that MNO responds meaningfully to autonomous operation without parameter conditioning.
+
+#### Perturbation Interface
+
+**Location:** `src/spinlock/perturbations/`
+
+```python
+class BasePerturbation(ABC):
+    """Abstract interface for all perturbation types."""
+
+    @abstractmethod
+    def apply(self, state: Tensor, t: int) -> Tensor:
+        """Apply perturbation to state at timestep t.
+
+        Args:
+            state: Current state [B, C, H, W]
+            t: Current timestep
+
+        Returns:
+            Perturbed state [B, C, H, W]
+        """
+
+    @abstractmethod
+    def is_active(self, t: int) -> bool:
+        """Check if perturbation active at timestep t."""
+
+    def get_metadata(self) -> Dict[str, Any]:
+        """Return parameters for logging/memory storage."""
+        return {"type": self.__class__.__name__}
+```
+
+**Perturbation Types (Modular Expansion):**
+
+| Type | File | Description | Use Case |
+|------|------|-------------|----------|
+| **Impulse** | `impulse.py` | Single-timestep δ-function | Eigenmode excitation, transient response |
+| **Sustained** | `sustained.py` | Multi-timestep forcing | Driven dynamics, energy injection |
+| **Structured** | `structured.py` | Pattern-based (Phase 4+) | Learned perturbation generation |
+
+**Design Principles:**
+- **Domain-agnostic:** Works with any state representation (reaction-diffusion, fluids, etc.)
+- **Composable:** Multiple perturbations can be combined (Phase 3+)
+- **Metadata-complete:** All parameters logged for episodic memory retrieval
+- **DRY expansion:** New perturbation types inherit from `BasePerturbation`, register in factory
+
+#### Episode Management
+
+**Location:** `src/spinlock/noa/episode.py`
+
+```python
+@dataclass
+class Episode:
+    """Complete record of perturbation-response experiment."""
+    perturbation: BasePerturbation
+    initial_state: Tensor              # u₀ [C, H, W]
+    trajectory: Tensor                 # [T, C, H, W]
+    token_sequence: Tensor             # [T, num_categories * num_levels]
+    metadata: Dict[str, Any]
+
+class EpisodeRunner:
+    """Executes MNO under perturbations until early stopping."""
+
+    def __init__(self, mno: NOABackbone, vqvae: CategoricalHierarchicalVQVAE,
+                 early_stopping: EarlyStoppingCriteria):
+        self.mno = mno
+        self.vqvae = vqvae
+        self.early_stopping = early_stopping
+
+    def run_episode(self, u0: Tensor, perturbation: BasePerturbation,
+                    max_steps: int = 256) -> Episode:
+        """Run MNO rollout with perturbation until stopping criteria met.
+
+        Process:
+        1. Initialize state from u₀
+        2. At each timestep:
+           - Apply perturbation if active
+           - MNO forward step: u_{t+1} = MNO(u_t)
+           - Extract features, tokenize with VQ-VAE
+           - Check early stopping criteria
+        3. Return complete episode record
+        """
+```
+
+**Early Stopping Criteria:**
+
+**Location:** `src/spinlock/noa/early_stopping.py`
+
+| Criterion | Description | Mathematical Definition | Use Case |
+|-----------|-------------|------------------------|----------|
+| **Convergence** | Equilibrium reached | \|\|u_t - u_{t-1}\|\| < ε | Stable fixed point |
+| **Token Stability** | Behavioral loop | token_t = token_{t-k} for k steps | Limit cycle detected |
+| **Max Steps** | Safety fallback | t ≥ T_max | Prevent infinite runs |
+| **Composite** | Combine criteria | OR/AND logic over multiple conditions | Flexible policies |
+
+```python
+class CompositeEarlyStopping:
+    """Combine multiple stopping criteria with AND/OR logic."""
+
+    def __init__(self, criteria: List[EarlyStoppingCriterion],
+                 logic: Literal["OR", "AND"] = "OR"):
+        self.criteria = criteria
+        self.logic = logic
+
+    def should_stop(self, episode_state: EpisodeState) -> Tuple[bool, str]:
+        """Returns (should_stop, reason)."""
+```
+
+#### Behavioral Encoding
+
+**Location:** `src/spinlock/noa/behavioral_encoding.py`
+
+Token sequences encode MNO's behavioral trajectory. Extract signatures for memory indexing and curiosity computation:
+
+```python
+class BehavioralSignature:
+    """Compressed representation of episode behavior."""
+
+    @staticmethod
+    def from_tokens(token_sequence: Tensor) -> Dict[str, Any]:
+        """Extract behavioral features from token sequence.
+
+        Features:
+        - Token entropy: H(tokens) - behavioral complexity
+        - Level transitions: L0→L1→L2 progression patterns
+        - Regime stability: Run-length encoding of token states
+        - Trajectory length: Total timesteps before convergence
+        """
+
+    @staticmethod
+    def similarity(sig1: Dict, sig2: Dict) -> float:
+        """Compute behavioral similarity between episodes."""
+```
+
+**Validation Experiments (Phase 2):**
+1. **Perturbation response divergence:** Different perturbations → different token sequences
+2. **Regime clustering:** Token-based clusters match spatial behavior clusters
+3. **Early stopping efficiency:** 30-50% computation savings vs fixed max_steps
+4. **Reproducibility:** Same (u₀, perturbation) → same tokens (>0.95 similarity)
+
+### Phase 3: Dynamic Sampling & Runtime Optimization
+
+**Objective:** Intelligent MNO rollout sampling and token-based screening for 10× exploration speedup.
+
+#### Adaptive Sampling
+
+**Location:** `src/spinlock/noa/adaptive_sampler.py`
+
+During episode execution, dynamically adjust MNO timestep density:
+
+```python
+class AdaptiveSampler:
+    """Intelligent timestep sampling based on dynamics."""
+
+    def __init__(self, base_rate: int = 1, max_skip: int = 8,
+                 strategy: Literal["gradient", "token", "hybrid"] = "hybrid"):
+        """
+        Args:
+            base_rate: Minimum sampling frequency (1 = every step)
+            max_skip: Maximum timesteps to skip during equilibrium
+            strategy: Sampling criterion
+                - gradient: High ||∂u/∂t|| → dense sampling
+                - token: Token changes → dense sampling
+                - hybrid: Combine both signals
+        """
+
+    def should_sample(self, state_history: List[Tensor],
+                     token_history: List[Tensor]) -> bool:
+        """Decide whether to run full MNO step or interpolate."""
+```
+
+**Strategy Trade-offs:**
+
+| Strategy | Speedup | Token Fidelity | Compute Cost |
+|----------|---------|----------------|--------------|
+| Dense (no skip) | 1× | 100% | High |
+| Adaptive (hybrid) | 1.5-2× | 90-95% | Medium |
+| Aggressive skip | 2-3× | 80-85% | Low |
+
+**Key Insight:** During equilibrium/transient phases, MNO output becomes predictable → skip expensive forward passes, interpolate states linearly, re-engage dense sampling when dynamics accelerate.
+
+#### Token Screening Pipeline
+
+**Location:** `src/spinlock/noa/token_predictor.py`, `src/spinlock/noa/screening_pipeline.py`
+
+For large-scale exploration (1000s of perturbations), use lightweight token predictor to filter candidates before expensive MNO rollouts.
+
+```python
+class TokenPredictor(nn.Module):
+    """Lightweight transformer: token_history → next_token.
+
+    Architecture:
+    - Input: Token sequence [seq_len, num_categories * num_levels]
+    - Transformer: 4 layers, 256 dim, 4 heads (~1M params)
+    - Output: Next token probabilities [num_categories * num_levels, vocab_size]
+
+    Training: Supervised on Phase 2 episodes
+    Cost: 100-1000× cheaper than full MNO rollout
+    """
+
+class ScreeningPipeline:
+    """Fast-path filtering for perturbation exploration."""
+
+    def screen_perturbations(self,
+                            perturbations: List[BasePerturbation],
+                            u0: Tensor,
+                            k_keep: int = 100) -> List[BasePerturbation]:
+        """Filter perturbations using token predictor.
+
+        Process:
+        1. Fast prediction: Run TokenPredictor on all perturbations
+        2. Novelty scoring: Entropy, uncertainty, memory distance
+        3. Select top-k novel/uncertain perturbations
+        4. Run full MNO episodes on filtered set
+
+        Result: 10× throughput increase for exploration
+        """
+```
+
+**Execution Policies:**
+
+**Location:** `src/spinlock/noa/execution_policy.py`
+
+```python
+class ExecutionPolicy(ABC):
+    """Strategy pattern for quality vs runtime trade-offs."""
+
+class HighFidelityPolicy(ExecutionPolicy):
+    """Dense MNO sampling, no screening."""
+    mno_calls: 256, token_fidelity: 100%, use_case: "validation"
+
+class BalancedPolicy(ExecutionPolicy):
+    """Adaptive sampling + early stopping."""
+    mno_calls: 120-180, token_fidelity: 90-95%, use_case: "standard exploration"
+
+class ExploratoryPolicy(ExecutionPolicy):
+    """Token screening + selective verification."""
+    mno_calls: 10-50, token_fidelity: 80-90%, use_case: "large-scale search"
+```
+
+### Phase 4: Episodic Memory & Curiosity-Driven Exploration
+
+**Objective:** Store episodes in token-indexed memory, compute prediction-error curiosity, generate self-directed perturbations.
+
+#### Episode Storage
+
+**Location:** `src/spinlock/noa/memory/episode_store.py`
+
+```python
+class EpisodeStore:
+    """Persistent HDF5 storage for episodes."""
+
+    # Schema: /episodes/{episode_id}/{perturbation, tokens, trajectory, metadata}
+
+    def store(self, episode: Episode) -> str:
+        """Store episode, return episode_id."""
+
+    def retrieve(self, episode_id: str) -> Episode:
+        """Load complete episode."""
+
+    def query(self, criteria: Dict[str, Any]) -> List[str]:
+        """Query by metadata (perturbation type, regime, etc.)."""
+```
+
+**Storage Optimization:**
+- **Compression:** Store tokens + metadata (KB), reconstruct trajectories on-demand (MB)
+- **Chunking:** HDF5 chunks for fast partial reads
+- **Indexing:** Separate token index for similarity search
+
+#### Token-Based Similarity Index
+
+**Location:** `src/spinlock/noa/memory/token_index.py`
+
+```python
+class TokenIndex:
+    """Fast ANN search over token sequences (FAISS/Annoy)."""
+
+    def __init__(self, embedding_dim: int = 128):
+        """
+        Process:
+        1. Embed token sequences → fixed-dim vectors
+        2. Build ANN index (L2 distance)
+        3. Enable K-NN retrieval by behavioral similarity
+        """
+
+    def add(self, episode_id: str, token_sequence: Tensor):
+        """Add episode to index."""
+
+    def search(self, query_tokens: Tensor, k: int = 10) -> List[Tuple[str, float]]:
+        """Find K most similar episodes.
+
+        Returns:
+            List of (episode_id, similarity_score)
+        """
+```
+
+**Embedding Strategies:**
+- **Simple:** Flatten token sequence, apply PCA
+- **Learned:** Train autoencoder on token sequences (Phase 4+)
+- **Behavioral:** Weight by signature features (entropy, transitions)
+
+#### Curiosity Signal
+
+**Location:** `src/spinlock/noa/curiosity/signal.py`, `src/spinlock/noa/curiosity/predictor.py`
+
+```python
+class MemoryBasedPredictor:
+    """Predict token sequence from perturbation using K-NN retrieval."""
+
+    def predict(self, perturbation: BasePerturbation, u0: Tensor,
+                k: int = 10) -> Tuple[Tensor, float]:
+        """
+        Process:
+        1. Encode perturbation metadata
+        2. Retrieve K similar episodes from memory
+        3. Average token sequences (weighted by similarity)
+        4. Confidence = agreement across neighbors
+
+        Returns:
+            (predicted_tokens, confidence)
+        """
+
+class CuriositySignal:
+    """Compute prediction-error curiosity."""
+
+    @staticmethod
+    def compute(predicted_tokens: Tensor, actual_tokens: Tensor,
+                confidence: float) -> float:
+        """
+        Curiosity = prediction_error × (1 - confidence)
+
+        High curiosity: Wrong prediction AND low confidence (knowledge gap)
+        Low curiosity: Correct prediction OR high confidence (known region)
+        """
+```
+
+#### Self-Directed Perturbation Generation
+
+**Location:** `src/spinlock/noa/curiosity/perturbation_generator.py`, `src/spinlock/noa/curiosity/exploration_loop.py`
+
+```python
+class PerturbationGenerator:
+    """Generate perturbations targeting exploration goals."""
+
+    def generate(self, strategy: Literal["exploit", "explore", "curious", "balanced"],
+                 n_samples: int = 100) -> List[BasePerturbation]:
+        """
+        Strategies:
+        - exploit: Near high-reward regions (known good behaviors)
+        - explore: Maximize coverage (space-filling)
+        - curious: Target high prediction error + low confidence
+        - balanced: Weighted combination of above
+        """
+
+class ExplorationLoop:
+    """Autonomous curiosity-driven exploration."""
+
+    def run(self, n_iterations: int = 1000,
+            strategy: str = "curious") -> List[Episode]:
+        """
+        Process:
+        1. Generate perturbations using strategy
+        2. Execute episodes (with runtime optimization)
+        3. Compute curiosity for each episode
+        4. Store high-curiosity episodes
+        5. Update perturbation generator
+        6. Repeat
+
+        Result: Self-directed behavioral exploration
+        """
+```
+
+**Success Metrics:**
+- **Coverage:** 50%+ more unique token patterns vs random exploration
+- **Efficiency:** 2× median curiosity for novel vs familiar regions
+- **Memory:** 100K episodes, <100ms retrieval latency
+- **Precision:** 80%+ precision@10 for token similarity search
+
+### Phase 5: Symbolic Discovery & Self-Modeling
+
+**Objective:** Extract interpretable symbolic rules from episodic memory, develop self-models predicting MNO's responses, enable hypothesis generation and falsification.
+
+#### Pattern Extraction & Association Rules
+
+**Location:** `src/spinlock/noa/symbolic/pattern_extractor.py`
+
+```python
+class PatternExtractor:
+    """Mine association rules from episodic memory."""
+
+    def extract_rules(self, min_support: float = 0.05,
+                     min_confidence: float = 0.7) -> List[AssociationRule]:
+        """
+        Association rule mining:
+
+        Antecedent (perturbation profile) → Consequent (token pattern)
+
+        Example rules:
+        - "High amplitude center perturbation" → "[Category 3, L1=5, L2=12]"
+        - "Low amplitude edge forcing" → "[Category 1, L1=2, L2=8]"
+        - "Sustained forcing > 20 steps" → "Token entropy > 2.5"
+
+        Metrics:
+        - Support: P(antecedent ∧ consequent)
+        - Confidence: P(consequent | antecedent)
+        - Lift: P(consequent | antecedent) / P(consequent)
+        """
+```
+
+**Rule Format:**
+```python
+@dataclass
+class AssociationRule:
+    antecedent: Dict[str, Any]  # Perturbation conditions
+    consequent: Dict[str, Any]  # Token/behavioral outcomes
+    support: float
+    confidence: float
+    lift: float
+    examples: List[str]  # Episode IDs supporting rule
+```
+
+#### Self-Modeling
+
+**Location:** `src/spinlock/noa/self_model/predictor.py`
+
+```python
+class SelfModel(nn.Module):
+    """Lightweight model predicting MNO's behavioral response.
+
+    Purpose: Fast approximation of MNO's perturbation-response mapping
+    without running full 226M-parameter physics rollout.
+
+    Architecture:
+    - Input: Perturbation embedding + state embedding
+    - Transformer: 6 layers, 512 dim (~10M params)
+    - Output: Predicted token sequence [T, num_categories * num_levels]
+
+    Training:
+    - Supervised on episodic memory
+    - Loss: CrossEntropy(predicted_tokens, actual_tokens)
+    - Auxiliary: Token entropy, convergence time regression
+
+    Calibration:
+    - Uncertainty estimation via ensemble/dropout
+    - ECE (Expected Calibration Error) < 0.1
+    - Identify capability boundaries (when predictions fail)
+    """
+
+    def predict_with_uncertainty(self, perturbation: BasePerturbation,
+                                 u0: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        Returns:
+            (predicted_tokens, uncertainty_per_timestep)
+        """
+```
+
+**Self-Model Applications:**
+1. **Fast screening:** 100× faster than MNO for perturbation filtering
+2. **Counterfactual reasoning:** "What if I applied different perturbation?"
+3. **Capability boundaries:** Detect when self-model confidence low (needs real MNO)
+4. **Hypothesis testing:** Generate predictions to falsify symbolic rules
+
+#### Symbolic Regression
+
+**Location:** `src/spinlock/noa/symbolic/regression.py`
+
+```python
+class SymbolicRegressor:
+    """Fit symbolic equations to perturbation-response data (PySR)."""
+
+    def fit(self, X: np.ndarray, y: np.ndarray,
+            operators: List[str] = ["+", "-", "*", "/", "exp", "log"]) -> str:
+        """
+        Discover interpretable mathematical relationships:
+
+        Example laws:
+        - token_entropy = 2.3 * log(amplitude) + 0.5 * spatial_scale - 1.1
+        - convergence_time = 45 / amplitude^0.8
+        - regime_transitions = exp(-0.3 * perturbation_duration)
+
+        Returns:
+            Symbolic equation as string (SymPy format)
+        """
+```
+
+**Discovery Workflow:**
+1. **Feature engineering:** Extract perturbation parameters (amplitude, location, duration, etc.)
+2. **Target variables:** Token entropy, convergence time, regime labels, etc.
+3. **Symbolic regression:** Fit interpretable equations with PySR
+4. **Validation:** R² > 0.8 on held-out episodes
+5. **Interpretation:** Convert equations to natural language hypotheses
+
+#### Hypothesis Generation & Falsification
+
+**Location:** `src/spinlock/noa/symbolic/hypothesis.py`, `src/spinlock/noa/symbolic/falsification.py`
+
+```python
+class Hypothesis:
+    """Testable scientific hypothesis about MNO behavior."""
+
+    natural_language: str  # "High amplitude perturbations cause chaotic regimes"
+    formal_rule: AssociationRule  # Quantitative formulation
+    predicted_outcomes: Dict[str, Any]  # What should happen if true
+    confidence: float  # Based on supporting evidence
+
+class HypothesisTester:
+    """Design experiments to test/falsify hypotheses."""
+
+    def design_experiment(self, hypothesis: Hypothesis) -> List[BasePerturbation]:
+        """
+        Generate perturbations that would:
+        - Confirm hypothesis (positive examples)
+        - Falsify hypothesis (edge cases, counterexamples)
+        """
+
+    def test(self, hypothesis: Hypothesis,
+            n_experiments: int = 100) -> HypothesisResult:
+        """
+        Execute designed experiments, collect evidence.
+
+        Statistical validation:
+        - Chi-square test for association rules
+        - Confidence intervals for symbolic equations
+        - Multiple testing correction (Bonferroni)
+
+        Returns:
+            - confirmed: Hypothesis supported by data
+            - rejected: Hypothesis falsified
+            - inconclusive: Insufficient evidence
+        """
+```
+
+**Example Discoveries:**
+
+| Hypothesis | Symbolic Law | R² | Validation |
+|------------|--------------|-----|-----------|
+| "High amplitude → chaos" | entropy = 2.1 * log(A) - 0.8 | 0.87 | Confirmed (p<0.001) |
+| "Center perturbations faster convergence" | t_conv = 120 / (1 + 0.5*center_weight) | 0.91 | Confirmed (p<0.001) |
+| "Sustained forcing prevents equilibrium" | P(equilibrium\|duration>30) = 0.05 | N/A | Confirmed (χ²<0.001) |
+
+**Success Criteria (Phase 5):**
+- 50+ high-confidence symbolic rules extracted
+- 75%+ self-model token prediction accuracy
+- 70%+ hypotheses validated, 30% rejected (healthy falsification rate)
+- 5+ symbolic equations with R² > 0.8
+- ECE < 0.1 for uncertainty calibration
+
+---
+
 ## Why Independent Optimization?
 
 ### The Problem with Coupled Training
@@ -484,24 +1093,39 @@ See [Two-Stage Curriculum Architecture](two-stage-curriculum-architecture.md) (S
 
 ## Research Applications
 
-While the primary focus is scientific simulation and operator reasoning, the architecture provides infrastructure for investigating several cognitive capabilities in the controlled domain of dynamical systems:
+The autonomous operation architecture (Phase 2-5) enables investigation of several scientific and cognitive capabilities in the controlled domain of dynamical systems:
 
-**Compositional Generalization**: The factored parameter space enables testing whether learned representations can predict behaviors of novel operator configurations through compositional combination of known components.
+**Perturbation-Response Discovery**: The MNO transitions from parameter-conditioned simulator to autonomous dynamical system. Impulse and sustained perturbations excite eigenmodes and probe the learned attractor landscape, revealing behavioral structure without explicit parameter knowledge.
 
-**Few-Shot Adaptation**: Behavioral tokens and multi-modal features support research into in-context learning—can agents adapt to new operator families with minimal examples?
+**Curiosity-Driven Exploration**: Phase 4 implements prediction-error curiosity signals that drive self-directed perturbation generation. The system autonomously identifies knowledge gaps (high prediction error + low confidence) and generates experiments targeting unexplored behavioral regimes.
 
-**Memory-Based Prediction**: The distinction between SUMMARY (aggregated) and TEMPORAL (sequential) features provides a natural testbed for studying working memory constraints and episodic retrieval strategies.
+**Episodic Memory & Retrieval**: Token-indexed memory enables behavioral similarity search. Episodes cluster by token sequences rather than spatial trajectories, testing whether discrete symbolic representations capture meaningful behavioral equivalences.
 
-**Metacognitive Monitoring**: Uncertainty quantification over learned behavioral representations offers a framework for studying calibrated confidence and capability boundary detection.
+**Symbolic Law Discovery**: Phase 5 extracts interpretable association rules and fits symbolic equations (via PySR) from autonomous exploration data. Discovered laws are testable, falsifiable, and expressed in human-interpretable mathematical form.
 
-These applications are secondary to the core goal of understanding operator behavior, but the infrastructure naturally supports such investigations through its multi-modal, hierarchical design.
+**Self-Modeling**: The self-model predicts MNO's responses to perturbations 100× faster than full physics rollouts. Uncertainty calibration identifies capability boundaries—regions where the self-model knows it doesn't know, requiring verification via real MNO execution.
+
+**Metacognitive Monitoring**: The system tracks its own prediction accuracy, adjusts exploration strategies, and validates hypotheses through designed experiments. This closed-loop autonomy tests whether agents can discover computational structure through self-directed investigation.
+
+These applications are secondary to the core goal of understanding operator behavior, but Phase 2-5 provides concrete infrastructure for empirical investigation of discovery mechanisms.
 
 ## References
 
+**Phase 0-1 (Foundation - Complete):**
 - [Independent Optimization Architecture](noa-vqvae-independent.md) - **Primary guide** for MNO + VQ-VAE training
 - [Two-Stage Curriculum Architecture](two-stage-curriculum-architecture.md) - Historical approach and architectural pivot rationale
-- [NOA Roadmap](noa-roadmap.md) - 5-phase development plan
 - [Feature Families](features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL documentation
 - [VQ-VAE Training Guide](vqvae/training-guide.md) - VQ-VAE configuration and training details
+
+**Phase 2-5 (Autonomous Operation - Planned):**
+- [NOA Roadmap](noa-roadmap.md) - **Complete 5-phase development plan** with Phase 2-5 autonomous operation architecture
+- This document (architecture.md) - Technical design for perturbation framework, episodic memory, curiosity, symbolic discovery
+
+**Multi-Domain Research:**
+- [Multi-Domain Vision](multi-domain-vision.md) - Computational universals hypothesis and vocabulary alignment
+- [Cross-Domain Discovery](cross-domain-discovery.md) - Cross-domain NOA architecture and transfer mechanisms
+- [Domain Integration Guide](domain-integration-guide.md) - Practical implementation guide for multi-domain systems
+
+**Getting Started:**
 - [Getting Started](getting-started.md) - Usage tutorials
 - [Installation](installation.md) - Setup instructions
