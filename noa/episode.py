@@ -160,10 +160,12 @@ class EpisodeRunner:
                 if extract_features_fn is not None:
                     features = extract_features_fn(u_current)
                 else:
-                    features = u_current  # Assume already features
+                    # Use simple feature extraction by default
+                    from .simple_feature_extraction import extract_features_for_vqvae
+                    features = extract_features_for_vqvae(u_current)
 
                 # VQ-VAE encoding
-                vq_output = self.vqvae({"features": features})
+                vq_output = self.vqvae(features)
                 tokens = self._extract_tokens(vq_output)  # [num_categories * num_levels]
 
                 # Store
@@ -234,18 +236,9 @@ class EpisodeRunner:
             The MNO has learned P(u_{t+1} | u_t) from training, which implicitly
             captures dynamics across the training ensemble.
         """
-        # TODO: Implement actual MNO forward pass
-        # For now, this is a placeholder - actual implementation depends on
-        # how NOABackbone is structured (single-step vs multi-step rollout)
-        #
-        # Expected interface:
-        # u_next = self.mno.step(u)  # Single autonomous step
-        #
-        # This will be implemented once we integrate with the actual NOABackbone
-        raise NotImplementedError(
-            "MNO single-step forward pass not yet implemented. "
-            "Need to integrate with NOABackbone.step() method."
-        )
+        with torch.no_grad():
+            u_next = self.mno.single_step(u)
+        return u_next
 
     def _extract_tokens(self, vq_output: Dict[str, Any]) -> Tensor:
         """Extract token sequence from VQ-VAE output.
@@ -256,14 +249,13 @@ class EpisodeRunner:
         Returns:
             Token tensor [num_categories * num_levels]
         """
-        # Extract quantized indices from VQ-VAE output
-        # Format: List of [B, num_levels] tensors (one per category)
-        quantized_indices = vq_output["quantized_indices"]
+        # VQ-VAE returns tokens in the output dict
+        # Format: [B, num_categories * num_levels]
+        tokens = vq_output["tokens"]
 
-        # Flatten to [num_categories * num_levels]
-        tokens = torch.cat(
-            [indices.flatten() for indices in quantized_indices]
-        )  # Remove batch dim and concatenate
+        # Remove batch dimension (we're processing single states)
+        if tokens.ndim == 2:
+            tokens = tokens[0]  # [num_categories * num_levels]
 
         return tokens
 

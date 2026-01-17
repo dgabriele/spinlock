@@ -43,10 +43,12 @@ from src.spinlock.perturbations import ImpulsePerturbation, ImpulsePerturbationF
 from src.spinlock.noa.episode import EpisodeRunner, Episode
 from src.spinlock.noa.early_stopping import StandardStoppingPolicy
 from src.spinlock.noa.behavioral_encoding import BehavioralSignature, BehavioralEncoder
-
-# TODO: Import actual model classes when integrated
-# from src.spinlock.noa.backbone import NOABackbone
-# from src.spinlock.encoding.categorical_vqvae import CategoricalHierarchicalVQVAE
+from src.spinlock.noa.validation_utils import (
+    load_mno_checkpoint,
+    load_vqvae_checkpoint,
+    sample_initial_condition,
+    get_vqvae_num_categories_and_levels,
+)
 
 
 def load_models(mno_checkpoint: str, vqvae_checkpoint: str, device: str):
@@ -60,36 +62,9 @@ def load_models(mno_checkpoint: str, vqvae_checkpoint: str, device: str):
     Returns:
         (mno, vqvae) model tuple
     """
-    # TODO: Implement actual model loading
-    # For now, placeholder
-    print(f"Loading MNO from {mno_checkpoint}")
-    print(f"Loading VQ-VAE from {vqvae_checkpoint}")
-
-    # Placeholder: return None for now
-    # Once integrated:
-    # mno = NOABackbone.load_from_checkpoint(mno_checkpoint).to(device)
-    # vqvae = CategoricalHierarchicalVQVAE.load_from_checkpoint(vqvae_checkpoint).to(device)
-
-    return None, None
-
-
-def sample_initial_condition(spatial_size: Tuple[int, int], device: str) -> torch.Tensor:
-    """Sample random initial condition.
-
-    Args:
-        spatial_size: (H, W) spatial dimensions
-        device: Device placement
-
-    Returns:
-        Initial state [C, H, W]
-    """
-    # TODO: Implement proper IC sampling
-    # For now, random Gaussian
-    H, W = spatial_size
-    num_channels = 2  # Reaction-diffusion (u, v)
-
-    u0 = torch.randn(num_channels, H, W, device=device)
-    return u0
+    mno = load_mno_checkpoint(mno_checkpoint, device)
+    vqvae = load_vqvae_checkpoint(vqvae_checkpoint, device)
+    return mno, vqvae
 
 
 def create_perturbation_set(
@@ -205,8 +180,7 @@ def run_experiment(
 
     # Create episode runner
     stopping = StandardStoppingPolicy()
-    # TODO: Uncomment when models integrated
-    # runner = EpisodeRunner(mno, vqvae, stopping, device=device)
+    runner = EpisodeRunner(mno, vqvae, stopping, device=device)
 
     # Create perturbation set
     perturbations = create_perturbation_set(spatial_size, device)
@@ -222,28 +196,23 @@ def run_experiment(
         print(f"\nInitial condition {ic_idx + 1}/{n_initial_conditions}")
 
         # Sample IC
-        u0 = sample_initial_condition(spatial_size, device)
+        u0 = sample_initial_condition(
+            num_channels=2,
+            spatial_size=spatial_size,
+            ic_type="smooth_random",
+            device=device,
+            seed=ic_idx,
+        )
 
         # Run episodes for all perturbations
         episodes = []
         for p_idx, perturbation in enumerate(perturbations):
             print(f"  Running perturbation {p_idx + 1}/{n_perturbations}: {perturbation.name}")
 
-            # TODO: Uncomment when models integrated
-            # episode = runner.run_episode(u0, perturbation)
-            # episodes.append(episode)
-
-            # Placeholder: create dummy episode for testing structure
-            dummy_tokens = torch.randint(0, 10, (100, 20))  # [T=100, D=20]
-            from dataclasses import dataclass
-
-            @dataclass
-            class DummyEpisode:
-                token_sequence: torch.Tensor
-                episode_id: str
-
-            episode = DummyEpisode(token_sequence=dummy_tokens, episode_id=f"ep_{ic_idx}_{p_idx}")
+            episode = runner.run_episode(u0, perturbation, max_steps=256)
             episodes.append(episode)
+
+            print(f"    → {episode.num_steps()} steps, stopped by: {episode.stop_reason}")
 
         # Compute pairwise divergences
         divergence_matrix = np.zeros((n_perturbations, n_perturbations))
