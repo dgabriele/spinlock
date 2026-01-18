@@ -21,7 +21,7 @@ from typing import Dict, Optional, TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from spinlock.features.summary.config import SummaryCrossChannelConfig
+    from spinlock.features.temporal.config import SummaryCrossChannelConfig
 
 
 class CrossChannelFeatureExtractor:

@@ -56,8 +56,8 @@ class NOAFeatureExtractor:
             device: Computation device
             preprocessor: Optional FeaturePreprocessor to clean NaN features
         """
-        from spinlock.features.summary.config import SummaryConfig
-        from spinlock.features.summary.extractors import SummaryExtractor
+        from spinlock.features.temporal.config import TemporalFeatureConfig as SummaryConfig
+        from spinlock.features.temporal.extractors import TemporalFeatureOrchestrator as SummaryExtractor
 
         self.device = torch.device(device)
         self.preprocessor = preprocessor

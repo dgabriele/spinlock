@@ -390,7 +390,7 @@ class NOAFeatureGenerationPipeline:
                 param_dim = self.config.parameter_space.total_dimensions
                 grid_size = self.input_generator.grid_size
 
-                feature_writer.create_summary_group(
+                feature_writer.create_temporal_group(
                     num_samples=n_samples,
                     num_timesteps=timesteps,
                     num_realizations=num_realizations,
@@ -399,8 +399,6 @@ class NOAFeatureGenerationPipeline:
                     compression="gzip",
                     compression_opts=4,
                     chunk_size=min(100, n_samples),
-                    temporal_enabled=self.temporal_enabled,
-                    learned_dim=0,  # No learned features for NOA
                     param_dim=param_dim,  # Operator parameter space dimension
                 )
 

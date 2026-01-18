@@ -18,7 +18,7 @@ from typing import Dict, Optional, TYPE_CHECKING
 import math
 
 if TYPE_CHECKING:
-    from spinlock.features.summary.config import SummarySpectralConfig
+    from spinlock.features.temporal.config import SummarySpectralConfig
 
 
 class SpectralFeatureExtractor:

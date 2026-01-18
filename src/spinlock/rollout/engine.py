@@ -26,8 +26,9 @@ from .metrics import MetricsComputer, TrajectoryMetrics
 from .trajectory import TrajectoryWriter
 
 # Optional: Import for operator feature extraction
+# NOTE: OperatorSensitivityExtractor removed in v3.0.0 (trajectory-level features deprecated)
 try:
-    from spinlock.features.summary.operator_sensitivity import OperatorSensitivityExtractor
+    from spinlock.features.temporal.operator_sensitivity import OperatorSensitivityExtractor
     OPERATOR_FEATURES_AVAILABLE = True
 except ImportError:
     OPERATOR_FEATURES_AVAILABLE = False

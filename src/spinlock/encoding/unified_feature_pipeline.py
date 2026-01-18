@@ -158,8 +158,8 @@ class SummaryFeatureExtractor(FamilyFeatureExtractor):
             device: Device for computation
         """
         super().__init__('summary', encoder=encoder)
-        from spinlock.features.summary.config import SummaryConfig
-        from spinlock.features.summary.extractors import SummaryExtractor
+        from spinlock.features.temporal.config import TemporalFeatureConfig as SummaryConfig
+        from spinlock.features.temporal.extractors import TemporalFeatureOrchestrator as SummaryExtractor
 
         # Use completely default config to extract all summary features
         # This should produce 360D output matching VQ-VAE training
@@ -224,8 +224,8 @@ class TemporalFeatureExtractor(FamilyFeatureExtractor):
             device: Device for computation
         """
         super().__init__('temporal', encoder=encoder)
-        from spinlock.features.summary.config import SummaryConfig
-        from spinlock.features.summary.extractors import SummaryExtractor
+        from spinlock.features.temporal.config import TemporalFeatureConfig as SummaryConfig
+        from spinlock.features.temporal.extractors import TemporalFeatureOrchestrator as SummaryExtractor
 
         # Configuration for per-timestep features
         config = SummaryConfig(

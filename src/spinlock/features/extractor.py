@@ -14,7 +14,7 @@ Two sibling feature families:
 Example:
     >>> from spinlock.features.extractor import FeatureExtractor
     >>> from spinlock.features.config import FeatureExtractionConfig, TemporalConfig
-    >>> from spinlock.features.summary.config import SummaryConfig
+    >>> from spinlock.features.temporal.config import TemporalFeatureConfig as SummaryConfig
     >>>
     >>> config = FeatureExtractionConfig(
     ...     input_dataset=Path("datasets/benchmark_10k.h5"),
@@ -35,8 +35,8 @@ from tqdm import tqdm
 
 from spinlock.features.config import FeatureExtractionConfig
 from spinlock.features.storage import HDF5FeatureWriter, HDF5FeatureReader
-from spinlock.features.summary.extractors import SummaryExtractor
-from spinlock.features.summary.config import SummaryConfig
+from spinlock.features.temporal.extractors import TemporalFeatureOrchestrator as SummaryExtractor
+from spinlock.features.temporal.config import TemporalFeatureConfig as SummaryConfig
 
 
 class FeatureExtractor:
