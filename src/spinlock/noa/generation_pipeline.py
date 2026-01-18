@@ -53,7 +53,7 @@ import h5py
 
 from ..noa.backbone import NOABackbone
 from ..dataset.generators import InputFieldGenerator
-from ..features.summary import SummaryExtractor, SummaryConfig
+from ..features.temporal import TemporalFeatureOrchestrator, TemporalFeatureConfig
 from ..features.initial import InitialManualExtractor
 from ..features.storage import HDF5FeatureWriter
 
@@ -289,11 +289,11 @@ class NOAFeatureGenerationPipeline:
         # Initialize feature extractors
         print("Initializing feature extractors...")
 
-        # SUMMARY + TEMPORAL features
-        summary_config = SummaryConfig.from_schema_config(config.features.summary)
-        self.summary_extractor = SummaryExtractor(
+        # TEMPORAL features (per-timestep only)
+        temporal_config = TemporalFeatureConfig.from_schema_config(config.features.temporal)
+        self.temporal_extractor = TemporalFeatureOrchestrator(
             device=self.device,
-            config=summary_config,
+            config=temporal_config,
         )
 
         # INITIAL features (manual features from ICs)
@@ -354,7 +354,7 @@ class NOAFeatureGenerationPipeline:
         try:
             with feature_writer:
                 # Calculate feature dimensions for HDF5 allocation (mirroring standard pipeline)
-                registry = self.summary_extractor.get_feature_registry()
+                registry = self.temporal_extractor.get_feature_registry()
 
                 # Per-timestep (TEMPORAL) categories: spatial, spectral, cross_channel
                 if self.temporal_enabled:
@@ -395,7 +395,7 @@ class NOAFeatureGenerationPipeline:
                     num_timesteps=timesteps,
                     num_realizations=num_realizations,
                     registry=registry,
-                    config=self.summary_extractor.config,
+                    config=self.temporal_extractor.config,
                     compression="gzip",
                     compression_opts=4,
                     chunk_size=min(100, n_samples),
@@ -584,40 +584,20 @@ class NOAFeatureGenerationPipeline:
                     # Add realization dimension for feature extractor: [B, R, T, C, H, W]
                     trajectories_with_realizations = trajectories.unsqueeze(1)
 
-                    # Extract per-timestep features (TEMPORAL)
-                    if self.temporal_enabled:
-                        per_timestep = self.summary_extractor.extract_per_timestep(
-                            trajectories_with_realizations
-                        )  # [B, R, T, D]
-                    else:
-                        per_timestep = None
-
-                    # Extract per-trajectory features (SUMMARY)
-                    per_trajectory = self.summary_extractor.extract_per_trajectory(
+                    # Extract per-timestep features (TEMPORAL only - 193D)
+                    # New per-timestep-only architecture
+                    per_timestep = self.temporal_extractor.extract_per_timestep(
                         trajectories_with_realizations
-                    )  # [B, M, D]
-
-                    # Aggregate across realizations (mean, std, cv)
-                    aggregated_list = []
-                    for method in ['mean', 'std', 'cv']:
-                        agg = self.summary_extractor.aggregate_realizations(
-                            per_trajectory, method=method
-                        )
-                        aggregated_list.append(agg.cpu())
-
-                    # Concatenate aggregations: [B, D*3]
-                    aggregated = torch.cat(aggregated_list, dim=1).numpy()
+                    )  # [B, T, 193]
 
                     self.stats["feature_extraction_time"] += time.time() - feat_start
 
                     # Write to HDF5
                     storage_start = time.time()
 
-                    feature_writer.write_summary_batch(
+                    feature_writer.write_temporal_batch(
                         batch_idx=batch_start,
-                        per_timestep=per_timestep.cpu().numpy() if per_timestep is not None else None,
-                        per_trajectory=per_trajectory.cpu().numpy(),  # [B, M, D]
-                        aggregated=aggregated,  # Already numpy: [B, D*3]
+                        per_timestep=per_timestep.cpu().numpy(),  # [B, T, 193]
                     )
 
                     # Write INITIAL features

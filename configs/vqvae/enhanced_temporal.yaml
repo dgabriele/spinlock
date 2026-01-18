@@ -1,0 +1,154 @@
+# VQ-VAE Training Config for Enhanced Temporal Architecture
+#
+# Trains categorical hierarchical VQ-VAE on per-timestep-only features.
+#
+# Architecture Change (v3.0.0):
+# - REMOVED: SUMMARY family (330D trajectory-level features)
+# - EXPANDED: TEMPORAL family (63D → 193D per-timestep features)
+# - KEPT: INITIAL family (14D manual + 28D CNN = 42D)
+#
+# New TEMPORAL breakdown (193D total):
+# - Spatial: 24D (statistics, gradients, Laplacian, percentiles)
+# - Spectral: 27D (FFT power, frequencies, bandwidth)
+# - Cross-channel: 12D (correlation, mutual information, eigenvalues)
+# - Enhanced temporal: 130D comprising:
+#   * Instantaneous dynamics: 22D (energy, dissipation, spectral, structure)
+#   * Local temporal: 28D (autocorr, trends, windowed stats, oscillations, growth)
+#   * Local stability: 24D (Lipschitz, stability, divergence, regularity)
+#   * Phase space geometry: 26D (flow, vorticity, strain, topology, manifold)
+#   * Multi-scale temporal: 30D (hierarchical averaging, cross-scale, persistence)
+#
+# Total input: 235D (42D initial + 193D temporal)
+#
+# Usage:
+#   1. Regenerate feature datasets with enhanced temporal architecture:
+#      python scripts/regenerate_cno_features.py
+#      python scripts/regenerate_mno_features.py
+#   2. Validate feature extraction:
+#      python scripts/validate_feature_extraction.py
+#   3. Train VQ-VAE:
+#      spinlock train-vqvae --config configs/vqvae/enhanced_temporal.yaml
+
+# Dataset (regenerated with enhanced temporal features)
+dataset_path: "datasets/mno_features_100k_enhanced.h5"
+
+# Feature Families (per-timestep-only architecture)
+families:
+  # INITIAL features (unchanged from v2.x)
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      # Hybrid INITIAL encoder: manual features (14D) + CNN trained end-to-end (28D)
+      manual_dim: 14
+      cnn_embedding_dim: 28
+      encode_manual: false  # Pass manual features through directly
+      in_channels: 1
+
+  # TEMPORAL features (enhanced per-timestep: 63D → 193D)
+  # Encodes 193D per-timestep features to 256D embedding
+  temporal:
+    encoder: MLPEncoder
+    encoder_params:
+      hidden_dims: [384, 256]  # Larger capacity for richer features
+      output_dim: 256  # Increased from 128D to accommodate 193D input
+      dropout: 0.1
+      activation: "relu"
+      batch_norm: true
+
+  # SUMMARY family REMOVED (trajectory-level features no longer exist)
+
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 256
+  group_hidden_dim: 512
+
+  # Hierarchical levels (empty for autoscaling)
+  # Auto-computed based on feature count and compression ratios
+  levels: []
+
+  # Adaptive compression ratios
+  # "auto" mode computes per-category ratios based on feature characteristics
+  compression_ratios: "auto"
+  auto_compression_strategy: "balanced"
+
+  # VQ-VAE hyperparameters
+  uniform_codebook_init: true
+  commitment_cost: 0.35
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.12
+
+# Training
+training:
+  batch_size: 1024
+  learning_rate: 0.0007
+  num_epochs: 550
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 0
+
+  # Category assignment - AUTOMATIC via clustering
+  category_assignment: "auto"
+  num_categories_auto: null  # Auto-determine optimal number
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+  max_clusters: 25
+
+  # Category assignment configuration
+  category_assignment_config:
+    method: "clustering"
+    isolated_families: []
+    reassign_orphans: true
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.3
+  topo_samples: 1024
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/enhanced_temporal_v3"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets - DISABLED for small codebooks with uniform init
+  dead_code_reset_interval: 0  # 0 = disabled
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Expected Performance:
+# - Reconstruction loss: < 0.02 (target: match or beat old 0.018)
+# - Codebook utilization: > 60% per level
+# - Category separation: orthogonality < 0.15
+# - Training time: ~3-4 hours on RTX 3060 Ti
+# - Feature quality: PCA variance ≥ old trajectory-level features
+# - Extraction latency: < 10ms per timestep (CPU)

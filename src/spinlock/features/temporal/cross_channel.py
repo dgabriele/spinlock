@@ -292,11 +292,14 @@ class CrossChannelFeatureExtractor:
 
         features = {}
 
-        # Top-k eigenvalues
+        # Top-k eigenvalues (pad with NaN if C < num_eigen_top)
         num_eigen_top = config.num_eigen_top if config else 3
-        num_eigen_top = min(num_eigen_top, C)  # Don't exceed C
         for i in range(num_eigen_top):
-            features[f'cross_channel_eigen_top_{i+1}'] = eigenvalues[:, i]
+            if i < C:
+                features[f'cross_channel_eigen_top_{i+1}'] = eigenvalues[:, i]
+            else:
+                # Pad with NaN for missing eigenvalues when C < num_eigen_top
+                features[f'cross_channel_eigen_top_{i+1}'] = torch.full((NMT,), float('nan'), device=eigenvalues.device)
 
         # Trace (sum of eigenvalues, should equal C for correlation matrix)
         features['cross_channel_eigen_trace'] = eigenvalues.sum(dim=1)

@@ -89,7 +89,6 @@ class FeatureExtractorBase(ABC):
         """
         pass
 
-    @abstractmethod
     def extract_per_trajectory(
         self,
         trajectories: torch.Tensor,  # [N, M, T, C, H, W]
@@ -98,8 +97,8 @@ class FeatureExtractorBase(ABC):
         """
         Extract per-trajectory features (aggregated over time).
 
-        Computes trajectory-level summaries that capture overall dynamics
-        (growth rates, oscillation periods, stability measures, etc.).
+        DEPRECATED in v3.0.0: Per-timestep-only architecture no longer uses
+        trajectory-level aggregation for online autonomous operation.
 
         Args:
             trajectories: Stochastic trajectories [N, M, T, C, H, W]
@@ -107,14 +106,15 @@ class FeatureExtractorBase(ABC):
 
         Returns:
             Per-trajectory features with shape [N, M, D_traj]
-                D_traj = number of trajectory-level features
 
-            Note: Each realization gets its own feature vector, preserving
-            information about stochastic variability.
+        Raises:
+            NotImplementedError: If subclass doesn't implement (v3.0+ default)
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement extract_per_trajectory "
+            "(deprecated in v3.0.0 per-timestep-only architecture)"
+        )
 
-    @abstractmethod
     def aggregate_realizations(
         self,
         per_trajectory_features: torch.Tensor,  # [N, M, D_traj]
@@ -123,23 +123,23 @@ class FeatureExtractorBase(ABC):
         """
         Aggregate per-trajectory features across realizations.
 
-        Reduces stochastic realizations to a single summary vector per sample.
+        DEPRECATED in v3.0.0: Per-timestep-only architecture no longer uses
+        trajectory-level aggregation for online autonomous operation.
 
         Args:
             per_trajectory_features: Per-realization features [N, M, D_traj]
             method: Aggregation method
-                "mean" - Average across realizations
-                "std" - Standard deviation across realizations
-                "min" - Minimum across realizations
-                "max" - Maximum across realizations
-                "cv" - Coefficient of variation (std/mean)
 
         Returns:
             Aggregated features [N, D_final]
-                D_final = D_traj (for single aggregation method)
-                       or D_traj * num_methods (if combining multiple)
+
+        Raises:
+            NotImplementedError: If subclass doesn't implement (v3.0+ default)
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement aggregate_realizations "
+            "(deprecated in v3.0.0 per-timestep-only architecture)"
+        )
 
     @abstractmethod
     def get_feature_registry(self) -> 'FeatureRegistry':

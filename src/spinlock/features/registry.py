@@ -8,7 +8,7 @@ The registry system handles:
 - Serialization to/from JSON for HDF5 storage
 
 Example:
-    >>> registry = FeatureRegistry("summary")
+    >>> registry = FeatureRegistry("temporal")
     >>> idx = registry.register("spatial_mean", "spatial", "Mean field value")
     >>> idx = registry.register("fft_power_scale_0", "spectral", "FFT power in band 0")
     >>>
@@ -16,7 +16,7 @@ Example:
     >>> json_str = registry.to_json()
     >>>
     >>> # Load from HDF5
-    >>> loaded_registry = FeatureRegistry.from_json(json_str, "summary")
+    >>> loaded_registry = FeatureRegistry.from_json(json_str, "temporal")
     >>> assert loaded_registry.get_index("spatial_mean") == 0
 """
 
@@ -73,17 +73,17 @@ class FeatureRegistry:
     The registry organizes features by category for easier analysis and selection.
 
     Attributes:
-        family_name: Feature family identifier (e.g., "summary")
+        family_name: Feature family identifier (e.g., "temporal")
         features: Dict mapping feature names to metadata
         categories: Dict mapping category names to CategoryInfo
     """
 
-    def __init__(self, family_name: str = "summary"):
+    def __init__(self, family_name: str = "temporal"):
         """
         Initialize feature registry.
 
         Args:
-            family_name: Feature family identifier (default: "summary")
+            family_name: Feature family identifier (default: "temporal")
         """
         self.family_name = family_name
         self._features: Dict[str, FeatureMetadata] = {}
@@ -116,7 +116,7 @@ class FeatureRegistry:
             ValueError: If name is empty or contains invalid characters
 
         Example:
-            >>> reg = FeatureRegistry("summary")
+            >>> reg = FeatureRegistry("temporal")
             >>> reg.register("spatial_mean", "spatial", "Mean field value")
             0
             >>> reg.register("spatial_std", "spatial", "Std dev field value")
@@ -172,7 +172,7 @@ class FeatureRegistry:
             List of feature indices
 
         Example:
-            >>> reg = FeatureRegistry("summary")
+            >>> reg = FeatureRegistry("temporal")
             >>> names = ["mean", "std", "skewness", "kurtosis"]
             >>> indices = reg.register_batch(
             ...     [f"spatial_{n}" for n in names],
@@ -198,7 +198,7 @@ class FeatureRegistry:
             Feature index if found, None otherwise
 
         Example:
-            >>> reg = FeatureRegistry("summary")
+            >>> reg = FeatureRegistry("temporal")
             >>> reg.register("spatial_mean", "spatial")
             0
             >>> reg.get_index("spatial_mean")
@@ -233,7 +233,7 @@ class FeatureRegistry:
             List of FeatureMetadata in the category, sorted by index
 
         Example:
-            >>> reg = FeatureRegistry("summary")
+            >>> reg = FeatureRegistry("temporal")
             >>> reg.register("spatial_mean", "spatial")
             >>> reg.register("spatial_std", "spatial")
             >>> reg.register("spectral_centroid", "spectral")
@@ -258,7 +258,7 @@ class FeatureRegistry:
             List of feature names in index order
 
         Example:
-            >>> reg = FeatureRegistry("summary")
+            >>> reg = FeatureRegistry("temporal")
             >>> reg.register("spatial_mean", "spatial")
             >>> reg.register("spectral_centroid", "spectral")
             >>> reg.get_feature_names()
@@ -272,6 +272,16 @@ class FeatureRegistry:
             features = sorted(self._features.values(), key=lambda f: f.index)
 
         return [f.name for f in features]
+
+    @property
+    def features(self) -> List[FeatureMetadata]:
+        """
+        All registered features in index order.
+
+        Returns:
+            List of FeatureMetadata sorted by index
+        """
+        return sorted(self._features.values(), key=lambda f: f.index)
 
     @property
     def num_features(self) -> int:
@@ -313,7 +323,7 @@ class FeatureRegistry:
             Nested dict with structure: {category: {name: index}}
 
         Example:
-            >>> reg = FeatureRegistry("summary")
+            >>> reg = FeatureRegistry("temporal")
             >>> reg.register("spatial_mean", "spatial")
             >>> reg.register("spectral_centroid", "spectral")
             >>> reg.to_dict()
@@ -342,7 +352,7 @@ class FeatureRegistry:
             JSON string representation
 
         Example:
-            >>> reg = FeatureRegistry("summary")
+            >>> reg = FeatureRegistry("temporal")
             >>> reg.register("spatial_mean", "spatial")
             >>> print(reg.to_json())
             {
@@ -357,7 +367,7 @@ class FeatureRegistry:
     def from_dict(
         cls,
         data: Dict[str, Dict[str, int]],
-        family_name: str = "summary"
+        family_name: str = "temporal"
     ) -> 'FeatureRegistry':
         """
         Load registry from nested dict.
@@ -380,7 +390,7 @@ class FeatureRegistry:
             ...     "spatial": {"spatial_mean": 0, "spatial_std": 1},
             ...     "spectral": {"spectral_centroid": 2}
             ... }
-            >>> reg = FeatureRegistry.from_dict(data, "summary")
+            >>> reg = FeatureRegistry.from_dict(data, "temporal")
             >>> reg.num_features
             3
         """
@@ -403,7 +413,7 @@ class FeatureRegistry:
         return registry
 
     @classmethod
-    def from_json(cls, json_str: str, family_name: str = "summary") -> 'FeatureRegistry':
+    def from_json(cls, json_str: str, family_name: str = "temporal") -> 'FeatureRegistry':
         """
         Load registry from JSON string.
 
@@ -416,7 +426,7 @@ class FeatureRegistry:
 
         Example:
             >>> json_str = '{"spatial": {"spatial_mean": 0}}'
-            >>> reg = FeatureRegistry.from_json(json_str, "summary")
+            >>> reg = FeatureRegistry.from_json(json_str, "temporal")
             >>> reg.get_index("spatial_mean")
             0
         """

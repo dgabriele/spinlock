@@ -130,7 +130,7 @@ flowchart TB
 - Stochastic rollout execution with multiple realizations
 
 **Feature Learning**
-- Multi-modal feature extraction (INITIAL, SUMMARY, TEMPORAL)
+- Per-timestep feature extraction (INITIAL, TEMPORAL)
 - Automatic feature cleaning and category discovery
 - Hierarchical VQ-VAE training for behavioral tokenization
 
@@ -196,11 +196,28 @@ See "Autonomous Operation Architecture (Phase 2-5)" section below for detailed t
 ### 4. Feature Extraction
 **Location:** `src/spinlock/features/`
 
-Four complementary feature families:
-- **INITIAL (Initial Condition):** Hybrid features (manual + learned CNN embeddings)
-- **ARCHITECTURE (Neural Operator Parameters):** Operator parameter features
-- **SUMMARY (Summary Descriptor Features):** Aggregated statistics across trajectory
-- **TEMPORAL (Temporal Dynamics):** Per-timestep sequences (full temporal resolution)
+**Per-timestep-only architecture (v3.0.0):**
+
+Two complementary feature families for online autonomous operation:
+
+- **INITIAL (Initial Condition):** Hybrid features (14D manual + 28D learned CNN embeddings = 42D)
+  - Extracted once from u₀ at episode start
+  - Combines domain-driven manual features with learned CNN representations
+
+- **TEMPORAL (Per-Timestep Dynamics):** Enhanced temporal features (193D per timestep)
+  - Spatial statistics (24D): moments, gradients, Laplacian, percentiles
+  - Spectral features (27D): FFT power, frequencies, bandwidth
+  - Cross-channel interactions (12D): correlation, mutual information, eigenvalues
+  - **Enhanced temporal dynamics (130D):**
+    - Instantaneous dynamics (22D): energy, dissipation, spectral characteristics, structure
+    - Local temporal (28D): autocorr, trends, windowed stats, oscillations, growth rates
+    - Local stability (24D): Lipschitz estimates, stability proxies, divergence, regularity
+    - Phase space geometry (26D): flow alignment, vorticity, strain, topology, manifold
+    - Multi-scale temporal (30D): hierarchical averaging, cross-scale correlations, persistence
+
+**Total:** 235D per-timestep input (42D initial + 193D temporal)
+
+**Key Design:** All features computable online from current state and short temporal buffers (5-50 timesteps), enabling autonomous episode execution without requiring complete trajectories.
 
 **Documentation**:
 - [Feature Catalog](features/feature-catalog.md) - Enumeration of features in current configuration
@@ -267,32 +284,38 @@ Train VQ-VAE independently on reaction-diffusion and fluid dynamics. Compare dis
 
 ## Multi-Modal Integration for Interpretability
 
-### Why Four Feature Families?
+### Why Per-Timestep-Only Architecture?
 
-The decomposition into INITIAL, ARCHITECTURE, SUMMARY, and TEMPORAL is not arbitrary—each family answers distinct questions about operator behavior:
+The v3.0.0 architecture uses only INITIAL and TEMPORAL families, both computable online for autonomous operation:
 
-| Family | Question Answered | Interpretability Value | Cognitive Analogue |
+| Family | Question Answered | Interpretability Value | Online Availability |
 |--------|------------------|----------------------|-------------------|
-| **INITIAL** | How do input characteristics influence behavior? | Identifies sensitivity to initial conditions | Input encoding |
-| **ARCHITECTURE** | Which design choices determine behavioral regimes? | Links structure to function explicitly | Structural priors |
-| **SUMMARY** | What are the observable signatures of behavior? | Provides statistical evidence of patterns | Episodic summaries |
-| **TEMPORAL** | How do behaviors evolve and transition? | Reveals dynamical mechanisms | Sequential processing |
+| **INITIAL** | How do input characteristics influence behavior? | Identifies sensitivity to initial conditions | ✓ Extracted once from u₀ |
+| **TEMPORAL** | How do behaviors evolve at each timestep? | Reveals instantaneous dynamics, local stability, phase space structure | ✓ Computable from state + short history buffers |
 
-This multi-modal decomposition mirrors cognitive architectures that integrate information across multiple timescales and representations—though here applied to learning operator behavior rather than perceptual tasks.
+**Design Rationale:**
 
-### Cross-Validation Through Multiple Perspectives
+The enhanced TEMPORAL family (193D) captures equivalent information to the old trajectory-level features through:
+- **Instantaneous snapshots:** Energy, dissipation, spectral characteristics at current state
+- **Local temporal context:** Windowed features over recent history (5-50 timesteps)
+- **Stability proxies:** Lipschitz estimates, divergence metrics without full trajectory
+- **Phase space geometry:** Local flow properties, vorticity, manifold structure
 
-Multi-modal training enables **consistency checking**:
-- If ARCHITECTURE suggests chaotic behavior, do SUMMARY entropy features confirm this?
-- If TEMPORAL shows period-doubling bifurcations, do SUMMARY spectral features detect harmonics?
-- If INITIAL indicates smooth inputs, does SUMMARY show expected spatial autocorrelation?
+This enables **autonomous perturbation-driven episodes** where features are extracted at each timestep without requiring complete trajectory access, supporting online curiosity-driven exploration (Phase 2-5).
 
-This cross-validation improves confidence that discovered categories reflect genuine behavioral differences, not statistical artifacts.
+### Cross-Validation Through Temporal Evolution
+
+Per-timestep feature extraction enables **temporal consistency checking**:
+- If TEMPORAL instantaneous features show high energy, do local temporal features confirm sustained dynamics?
+- If phase space geometry indicates chaotic flow, does multi-scale temporal show high entropy persistence?
+- If INITIAL indicates smooth inputs, do TEMPORAL spectral features show expected low-frequency dominance?
+
+This temporal cross-validation improves confidence that discovered categories reflect genuine behavioral differences, not statistical artifacts.
 
 ### Transparent Behavioral Taxonomy
 
-The VQ-VAE codebook learns to compress behavior across all four perspectives simultaneously. This creates tokens that:
-1. **Integrate evidence** from structure, statistics, and dynamics
+The VQ-VAE codebook learns to compress behavior from per-timestep features. This creates tokens that:
+1. **Integrate evidence** from initial conditions and temporal dynamics across multiple scales
 2. **Are interpretable** through feature-space attribution
 3. **Enable validation** by reconstructing interpretable features
 
@@ -323,7 +346,7 @@ flowchart LR
 - **Category discovery:** Correlation-based hierarchical clustering with orphan reassignment (100% feature assignment)
 - **Adaptive compression ratios:** Per-category latent dimensions computed from feature characteristics (variance, dimensionality, information content, correlation)
 - **Hierarchical VQ:** 3-level discrete latent space per category (coarse → medium → fine)
-- **Joint training:** Unified representations across INITIAL+SUMMARY+TEMPORAL (ARCHITECTURE excluded; MNO already knows operator parameters θ)
+- **Joint training:** Unified representations across INITIAL+TEMPORAL families (235D total per-timestep input)
 
 #### Interpretability Properties
 
@@ -407,7 +430,7 @@ Training Loss: L = L_traj (pure physics)
 # Generate 100K features from trained MNO
 poetry run spinlock generate-noa-features \
   --noa-checkpoint checkpoints/noa/pure_mse_baseline/meta_operator_best.pt \
-  --output datasets/mno_features_100k.h5 \
+  --output datasets/mno_features_100k_enhanced.h5 \
   --n-samples 100000 \
   --batch-size 16
 
@@ -415,7 +438,7 @@ Process:
 1. Load trained MNO checkpoint
 2. Sample diverse (θ, u₀) from parameter space
 3. Generate rollouts (fast, no gradients)
-4. Extract features inline (INITIAL, SUMMARY, TEMPORAL)
+4. Extract features inline (INITIAL + TEMPORAL per-timestep: 235D)
 5. Save features only (99% space savings vs full trajectories)
 ```
 

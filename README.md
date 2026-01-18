@@ -89,7 +89,7 @@ Spinlock operates on a foundational principle: **discovering novel computational
 
 **Core Approach:**
 - **Stratified sampling:** Sobol sequences with Owen scrambling provide provably optimal space-filling coverage (discrepancy <0.01), eliminating blind spots in high-dimensional parameter spaces
-- **Data-driven features:** Multi-modal extraction (INITIAL, SUMMARY, TEMPORAL) captures comprehensive behavioral signatures without predetermined "interesting" features
+- **Data-driven features:** Per-timestep extraction (INITIAL, TEMPORAL) captures comprehensive behavioral signatures without predetermined "interesting" features
 - **Unsupervised tokenization:** VQ-VAE discovers discrete behavioral vocabularies through compression, learning categories from empirical data rather than human labels
 - **Physics of change:** Study computational dynamics as a fundamental object, not task-specific optimization
 
@@ -110,9 +110,9 @@ The NOA uses a **U-AFNO backbone** that operates directly in continuous function
 
 ### The NOA Vision: From Data to Systematic Discovery
 
-**Phase 0: Foundation** 
+**Phase 0: Foundation**
 - Stratified neural operator datasets with diverse parameter coverage
-- Multi-modal feature extraction (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL)
+- Per-timestep feature extraction (INITIAL: 42D, TEMPORAL: 193D)
 - Data-driven behavioral taxonomy via hierarchical clustering
 
 **Phase 1: MNO Training (Meta-Neural Operator)** (🔄 In Progress - Independent Optimization)
@@ -242,7 +242,7 @@ flowchart TB
 **Stage 0: Foundation - CNO Dataset Generation** (blue-grey)
 1. Stratified parameter sampling via Sobol sequences (provably optimal space-filling)
 2. CNO operator construction and stochastic rollout execution (256 steps)
-3. Multi-modal feature extraction (INITIAL, SUMMARY, TEMPORAL)
+3. Per-timestep feature extraction (INITIAL: 42D, TEMPORAL: 193D per timestep)
 4. CNO dataset establishing ground truth physics (1K samples for Stage 1 training)
 
 **Stage 1: High Fidelity Physics Baseline** (green)
@@ -278,7 +278,7 @@ See [Independent Optimization Guide](docs/noa-vqvae-independent.md) for complete
 ### Key Components
 
 - **Stratified Sampling**: Sobol sequences with Owen scrambling for uniform parameter space coverage
-- **Multi-Modal Features**: INITIAL (42D), ARCHITECTURE (21D), SUMMARY (420-520D), TEMPORAL (variable)
+- **Per-Timestep Features**: INITIAL (42D once per episode), TEMPORAL (193D per timestep)
 - **VQ-VAE Tokenization**: Automatic category discovery, hierarchical 3-level encoding, adaptive compression
 - **Independent Optimization**: Three-stage pipeline (pure physics → feature generation → VQ-VAE training)
 - **CLI Commands**: `spinlock generate`, `spinlock train-meta-operator`, `spinlock generate-noa-features`, `spinlock train-vqvae`
@@ -289,14 +289,25 @@ See [docs/architecture.md](docs/architecture.md) for comprehensive system design
 
 ## 📊 Feature Families
 
-Spinlock extracts **4 complementary feature families** that jointly capture neural operator behavior from different perspectives:
+Spinlock v3.0.0 uses a **per-timestep-only architecture** for online autonomous operation:
 
-| Family | Captures | Granularity |
-|--------|----------|-------------|
-| **INITIAL** | Initial condition characteristics (spatial, spectral, information, morphology) | Per-realization |
-| **ARCHITECTURE** | Operator parameters (architecture, stochastic, evolution) | Per-operator |
-| **SUMMARY** | Aggregated behavioral statistics (spatial, spectral, temporal, causality) | Per-rollout (aggregated across timesteps and realizations) |
-| **TEMPORAL** | Full temporal trajectories preserving time-series structure | Per-timestep |
+| Family | Captures | Dimensions | Granularity |
+|--------|----------|------------|-------------|
+| **INITIAL** | Initial condition characteristics (14D manual + 28D CNN) | 42D | Once per episode from u₀ |
+| **TEMPORAL** | Per-timestep dynamics across multiple scales | 193D | Every timestep |
+
+**TEMPORAL breakdown (193D):**
+- **Spatial** (24D): Statistics, gradients, Laplacian, percentiles
+- **Spectral** (27D): FFT power, frequencies, bandwidth
+- **Cross-channel** (12D): Correlation, mutual information, eigenvalues
+- **Enhanced temporal** (130D):
+  - Instantaneous dynamics (22D): Energy, dissipation, spectral characteristics
+  - Local temporal (28D): Autocorr, trends, windowed stats, oscillations, growth
+  - Local stability (24D): Lipschitz estimates, stability proxies, divergence, regularity
+  - Phase space geometry (26D): Flow, vorticity, strain, topology, manifold
+  - Multi-scale temporal (30D): Hierarchical averaging, cross-scale, persistence
+
+**Key Design:** All features computable from current state + short temporal buffers (5-50 timesteps), enabling online extraction during autonomous episodes without requiring complete trajectories.
 
 ### Joint Training
 
