@@ -247,7 +247,7 @@ class HDF5FeatureWriter:
                 'extraction_time',
                 shape=(num_samples,),
                 dtype=np.float64,
-                chunks=(chunk_size,)
+                chunks=(min(chunk_size, num_samples),)
             )
 
         # Learned features [N, D_learned] - extracted from U-AFNO latents

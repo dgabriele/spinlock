@@ -174,25 +174,32 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
         self,
         batch_outputs: torch.Tensor,
         operators: Optional[Any] = None
-    ) -> Tuple[Optional[torch.Tensor], None, None, None]:
+    ) -> Dict[str, torch.Tensor]:
         """Legacy compatibility adapter for pipeline code.
 
         In v3.0, only per-timestep features exist. This method adapts the old
-        interface to the new v3.0 architecture.
+        interface to the new v3.0 architecture by returning a dict.
 
         Args:
             batch_outputs: [N, M, T, C, H, W] trajectories
             operators: Optional operator metadata (unused in v3.0)
 
         Returns:
-            Tuple of (per_timestep, None, None, None)
-                - per_timestep: [N, T, 193] features
-                - per_trajectory: None (removed in v3.0)
-                - aggregated: None (removed in v3.0)
-                - learned: None (removed in v3.0)
+            Dictionary with keys:
+                - per_timestep: [N, T, ~328] features
+                - per_trajectory: [N, M, 0] empty (removed in v3.0)
+                - aggregated_mean: [N, 0] empty (removed in v3.0)
         """
         per_timestep = self.extract_per_timestep(batch_outputs)
-        return per_timestep, None, None, None
+        N = batch_outputs.shape[0]
+        M = batch_outputs.shape[1]
+
+        # Return empty tensors for removed features (for backward compatibility)
+        return {
+            'per_timestep': per_timestep,
+            'per_trajectory': torch.zeros(N, M, 0, device=self.device),
+            'aggregated_mean': torch.zeros(N, 0, device=self.device),
+        }
 
     def get_feature_dims(self) -> Dict[str, int]:
         """Get feature dimensions for each component.

@@ -26,9 +26,11 @@ class SpectralConfig:
     Attributes:
         enabled: Whether spectral features are enabled
         per_channel: Extract features per channel (vs. aggregated)
+        num_fft_scales: Number of FFT scales (for CLI compatibility)
     """
     enabled: bool = True
     per_channel: bool = True
+    num_fft_scales: int = 5  # For backward compatibility with CLI
 
 
 @dataclass
@@ -60,16 +62,40 @@ class TemporalConfig:
 
 
 @dataclass
+class StructuralConfig:
+    """Stub config for removed structural features (v2.x legacy)."""
+    enabled: bool = False  # Removed in v3.0
+
+
+@dataclass
+class PhysicsConfig:
+    """Stub config for removed physics features (v2.x legacy)."""
+    enabled: bool = False  # Removed in v3.0
+
+
+@dataclass
+class MorphologicalConfig:
+    """Stub config for removed morphological features (v2.x legacy)."""
+    enabled: bool = False  # Removed in v3.0
+
+
+@dataclass
+class MultiscaleConfig:
+    """Stub config for removed multiscale features (v2.x legacy)."""
+    enabled: bool = False  # Removed in v3.0
+
+
+@dataclass
 class TemporalFeatureConfig:
     """Complete per-timestep feature configuration (v3.0).
 
     This replaces the v2.x SummaryConfig with a focus on per-timestep-only features.
 
-    Total dimensions: 193D
-    - Spatial: 24D
-    - Spectral: 27D
-    - Cross-channel: 12D
-    - Enhanced temporal: 130D
+    Total dimensions: ~328D per timestep
+    - Spatial: ~105D
+    - Spectral: ~93D
+    - Cross-channel: ~10D
+    - Enhanced temporal: ~120D
 
     Attributes:
         spatial: Spatial feature configuration
@@ -78,6 +104,10 @@ class TemporalFeatureConfig:
         temporal: Enhanced temporal feature configuration
         per_channel: Global per-channel setting (can be overridden by component configs)
         version: Configuration version
+        structural: Stub for v2.x legacy (disabled in v3.0)
+        physics: Stub for v2.x legacy (disabled in v3.0)
+        morphological: Stub for v2.x legacy (disabled in v3.0)
+        multiscale: Stub for v2.x legacy (disabled in v3.0)
 
     Example:
         >>> config = TemporalFeatureConfig()
@@ -90,6 +120,16 @@ class TemporalFeatureConfig:
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
     per_channel: bool = True
     version: str = "3.0.0"
+
+    # v2.x legacy stubs (removed features)
+    structural: StructuralConfig = field(default_factory=StructuralConfig)
+    physics: PhysicsConfig = field(default_factory=PhysicsConfig)
+    morphological: MorphologicalConfig = field(default_factory=MorphologicalConfig)
+    multiscale: MultiscaleConfig = field(default_factory=MultiscaleConfig)
+
+    # v2.x aggregation settings (not used in v3.0, but needed for backward compat)
+    temporal_aggregation: list = field(default_factory=lambda: ["mean"])
+    realization_aggregation: list = field(default_factory=lambda: ["mean"])
 
     @classmethod
     def from_schema_config(cls, schema_config):
@@ -120,6 +160,28 @@ class TemporalFeatureConfig:
             dims += 12
         if self.temporal.enabled:
             dims += 130
+        return dims
+
+    def estimate_feature_count(self) -> int:
+        """Estimate total feature count (for backward compatibility).
+
+        In v3.0, this returns the actual per-timestep feature count.
+        For legacy compatibility with CLI that expects this method.
+
+        Returns:
+            Estimated feature count (~328D per timestep in practice)
+        """
+        # Return approximate actual dimensions based on extractors
+        # (spatial: ~105D, spectral: ~93D, cross-channel: ~10D, temporal: ~120D)
+        dims = 0
+        if self.spatial.enabled:
+            dims += 105  # Actual from extractor (includes gradients, histograms)
+        if self.spectral.enabled:
+            dims += 93   # Actual from extractor (multi-scale FFT)
+        if self.cross_channel.enabled:
+            dims += 10   # Actual from extractor
+        if self.temporal.enabled:
+            dims += 120  # Actual from enhanced temporal extractor
         return dims
 
 
