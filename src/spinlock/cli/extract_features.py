@@ -233,7 +233,7 @@ Examples:
     def _create_default_config(self, args: Namespace):
         """Create default feature extraction config."""
         from spinlock.features.config import FeatureExtractionConfig
-        from spinlock.features.summary.config import SummaryConfig
+        from spinlock.features.temporal.config import SummaryConfig
 
         return FeatureExtractionConfig(
             input_dataset=args.dataset,

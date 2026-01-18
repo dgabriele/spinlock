@@ -27,7 +27,7 @@ from .trajectory import TrajectoryWriter
 
 # Optional: Import for operator feature extraction
 try:
-    from spinlock.features.summary.operator_sensitivity import OperatorSensitivityExtractor
+    from spinlock.features.temporal.operator_sensitivity import OperatorSensitivityExtractor
     OPERATOR_FEATURES_AVAILABLE = True
 except ImportError:
     OPERATOR_FEATURES_AVAILABLE = False

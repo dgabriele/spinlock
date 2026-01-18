@@ -41,7 +41,7 @@ from ..operators.partitioning import get_architecture_signature, bucket_channels
 from ..operators.training import OperatorTrainer
 from ..execution import ParallelExecutor, AdaptiveBatchSizer, MemoryManager
 from ..config import SpinlockConfig
-from ..features.summary import SummaryExtractor, SummaryConfig
+from ..features.temporal import SummaryExtractor, SummaryConfig
 from ..features.storage import HDF5FeatureWriter
 
 

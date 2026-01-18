@@ -8,7 +8,7 @@ two sibling feature families:
 
 Example:
     >>> from spinlock.features.config import FeatureExtractionConfig, TemporalConfig
-    >>> from spinlock.features.summary.config import SummaryConfig
+    >>> from spinlock.features.temporal.config import SummaryConfig
     >>>
     >>> config = FeatureExtractionConfig(
     ...     input_dataset=Path("datasets/benchmark_10k.h5"),
@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, field_validator
 from pathlib import Path
 
 if TYPE_CHECKING:
-    from spinlock.features.summary.config import SummaryConfig
+    from spinlock.features.temporal.config import SummaryConfig
 
 
 class TemporalConfig(BaseModel):
@@ -61,7 +61,7 @@ class FeatureExtractionConfig(BaseModel):
         cache_trajectories: Cache full trajectories in memory vs streaming
 
     Example:
-        >>> from spinlock.features.summary.config import SummaryConfig
+        >>> from spinlock.features.temporal.config import SummaryConfig
         >>> config = FeatureExtractionConfig(
         ...     input_dataset=Path("datasets/benchmark_10k.h5"),
         ...     temporal=TemporalConfig(enabled=False),  # Disable TEMPORAL
@@ -122,7 +122,7 @@ class FeatureExtractionConfig(BaseModel):
 def _rebuild_model():
     """Rebuild FeatureExtractionConfig after SummaryConfig is defined."""
     try:
-        from spinlock.features.summary.config import SummaryConfig  # noqa: F401
+        from spinlock.features.temporal.config import SummaryConfig  # noqa: F401
         FeatureExtractionConfig.model_rebuild()
     except ImportError:
         # SummaryConfig not yet available (during initial import)

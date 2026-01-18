@@ -715,8 +715,8 @@ class TrajectoryFeatureExtractor(nn.Module):
         self.device = torch.device(device)
 
         # Import extractors
-        from spinlock.features.summary.config import SummaryConfig
-        from spinlock.features.summary.extractors import SummaryExtractor
+        from spinlock.features.temporal.config import SummaryConfig
+        from spinlock.features.temporal.extractors import SummaryExtractor
 
         # Create summary extractor with config that avoids NaN for M=1
         config = SummaryConfig(

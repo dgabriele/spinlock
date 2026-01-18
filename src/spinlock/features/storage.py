@@ -191,7 +191,7 @@ class HDF5FeatureWriter:
                 del features_group['temporal']
 
             temporal_group = features_group.create_group('temporal')
-            temporal_group.attrs['version'] = "1.0.0"
+            temporal_group.attrs['version'] = "3.0.0"
             temporal_group.create_dataset(
                 'features',
                 shape=(num_samples, num_timesteps, D_per_timestep),
