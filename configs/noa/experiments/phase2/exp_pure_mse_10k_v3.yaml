@@ -1,0 +1,66 @@
+# Pure MSE Training on 10K v3.0 CNO Dataset
+#
+# Train MNO on 10K CNO-generated operators with v3.0 enhanced temporal features.
+# This uses the completed cno_10k_v3.h5 dataset with 14D parameter space.
+#
+# Dataset details:
+# - 10,000 CNO operators with v3.0 enhanced TEMPORAL features (~328D)
+# - 14D parameter space (includes dt and alpha variation)
+# - 3 realizations per operator, single channel, 64x64 grid, 256 timesteps
+# - NO trajectory storage (generated on-the-fly by CNOReplayer)
+#
+# Training approach:
+# - Pure MSE objective (no VQ-VAE involvement)
+# - Learn to approximate CNO forward operator
+# - Use truncated BPTT for memory efficiency
+
+model:
+  spatial_dim: 64
+  in_channels: 1              # Single channel per realization
+  out_channels: 1             # Single channel output
+  base_channels: 32           # Reasonable size for 10k dataset
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  token_conditioning: false   # Pure MSE training (no tokens)
+
+training:
+  n_samples: 10000            # Use all 10K samples
+  sampling_strategy: "sequential"  # Sequential preserves Sobol properties
+  batch_size: 4               # Balance memory and efficiency
+  epochs: 50                  # Train to convergence
+  learning_rate: 1.0e-4       # Standard learning rate
+  warmup_steps: 2500          # ~10% of total steps for warmup
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  # Truncated BPTT for memory efficiency
+  timesteps: 256              # Match CNO dataset (256 timesteps)
+  bptt_window: 32             # Backprop window
+
+  early_stopping_patience: 5
+
+loss:
+  # Pure MSE - trajectory matching only
+  mode: "mse_led"
+  lambda_traj: 1.0            # Primary objective: match CNO rollouts
+  lambda_ic: 0.0              # No IC reconstruction penalty
+
+data:
+  dataset_path: "datasets/cno_10k_v3.h5"
+  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  val_split: 0.1              # 9K train, 1K val
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/noa/pure_mse_10k_v3"
+  save_every: 5               # Save every 5 epochs
+  keep_best: true             # Keep best checkpoint
+
+device: "cuda"
+seed: 42
+
+# Expected performance:
+# - Training time: ~2-3 hours per epoch on GPU
+# - Target val_loss: < 1.0 after convergence
+# - After training, MNO can generate rollouts for downstream tasks
