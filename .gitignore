@@ -79,3 +79,11 @@ Thumbs.db
 *.a
 .env
 datasets/*.backup
+
+# Temporary scripts and PID files
+/*.sh
+*.pid
+
+# Temporary session notes (should be in docs/sessions/)
+/*_SUMMARY.md
+/RESUME_*.md

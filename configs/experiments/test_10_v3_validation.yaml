@@ -1,0 +1,124 @@
+version: "1.0"
+
+metadata:
+  name: "test_10_v3_validation"
+  description: "Small test dataset (10 samples) for v3.0 feature extraction validation"
+  author: "Spinlock Team"
+  created: "2026-01-18"
+  purpose: "Validate v3.0 per-timestep-only feature extraction pipeline"
+
+# Minimal parameter space for quick testing
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 3]
+    base_channels:
+      type: integer
+      bounds: [16, 32]
+    kernel_size:
+      type: choice
+      choices: [3, 5]
+    activation:
+      type: choice
+      choices: ["gelu"]
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.2]
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian"]
+    noise_scale:
+      type: continuous
+      bounds: [0.001, 0.1]
+      log_scale: true
+    noise_schedule:
+      type: choice
+      choices: ["constant"]
+    spatial_correlation:
+      type: continuous
+      bounds: [0.0, 0.2]
+
+  operator:
+    normalization:
+      type: choice
+      choices: ["instance"]
+    grid_size:
+      type: choice
+      choices: [64]  # Smaller for speed
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["residual"]
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+  sobol:
+    scramble: true
+    seed: 42
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 2
+    min_samples_per_stratum: 1
+  validation:
+    check_discrepancy: true
+    check_correlation: true
+  total_samples: 10
+  batch_size: 2
+
+# Simulation - minimal for testing
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "sampled"
+
+    ic_type_weights:
+      gaussian_random_field_v0: 0.5
+      structured: 0.5
+
+    gaussian_random_field_v0:
+      length_scale: 0.05
+      variance: 1.0
+
+    structured:
+      num_structures: 2
+      structure_types: ["stripe"]
+
+  precision: "float16"
+  num_realizations: 2  # Minimal for testing
+  num_timesteps: 20    # Very short for quick validation
+
+  extract_operator_features: true
+
+# Dataset generation
+dataset:
+  output_path: "./datasets/test_10_v3_validation.h5"
+
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 10
+    store_trajectories: false  # Feature-only mode for v3.0 validation
+
+# Feature extraction configuration
+features:
+  extract_initial_condition: true
+
+  summary:
+    enabled: true
+    per_channel: true
+    temporal_aggregation: "none"  # v3.0: per-timestep only
+    realization_aggregation: "mean"
+
+logging:
+  level: "INFO"
