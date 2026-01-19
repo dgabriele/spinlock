@@ -613,10 +613,28 @@ Output:
 
         # Create model
         print("Creating NOA backbone..." if rank == 0 else "")
-        noa = NOABackbone(**config["model"])
+
+        # Prepare model config
+        model_config = dict(config["model"])
+
+        # Transform 'film' section to 'film_config' for NOABackbone constructor
+        if "film" in model_config:
+            model_config["film_config"] = model_config.pop("film")
+
+        noa = NOABackbone(**model_config)
         noa = noa.to(device)
         if rank == 0:
             print(f"  ✓ NOA created ({sum(p.numel() for p in noa.parameters()):,} parameters)")
+
+            # Log FiLM configuration if enabled
+            conditioning_mode = model_config.get("conditioning_mode", "concat")
+            if conditioning_mode in ("film", "both"):
+                print(f"  ✓ FiLM conditioning enabled (mode: {conditioning_mode})")
+                if hasattr(noa, 'operator') and hasattr(noa.operator, 'get_film_parameter_count'):
+                    film_params = noa.operator.get_film_parameter_count()
+                    total_params = sum(p.numel() for p in noa.parameters())
+                    overhead_pct = 100 * film_params / total_params if total_params > 0 else 0
+                    print(f"    FiLM parameters: {film_params:,} ({overhead_pct:.1f}% overhead)")
 
         # Wrap model in DDP if distributed
         if is_distributed:

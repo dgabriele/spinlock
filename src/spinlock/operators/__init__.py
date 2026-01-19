@@ -4,13 +4,30 @@ from .blocks import (
     BaseBlock,
     ConvBlock,
     ResidualBlock,
+    FiLMResidualBlock,
     StochasticBlock,
     DownsampleBlock,
     UpsampleBlock,
     OutputLayer
 )
-from .afno import SpectralMixingBlock, AFNOBlock
-from .u_afno import UAFNOOperator, UNetEncoder, UNetDecoder
+from .afno import SpectralMixingBlock, AFNOBlock, FiLMAFNOBlock
+from .u_afno import (
+    UAFNOOperator,
+    UNetEncoder,
+    UNetDecoder,
+    FiLMUNetEncoder,
+    FiLMUNetDecoder,
+    FiLMUAFNOOperator,
+)
+from .film import (
+    FiLMConfig,
+    FiLMLayerSpec,
+    FiLMLayer,
+    FiLMGenerator,
+    FiLMProjectionHead,
+    build_film_layer_specs,
+    estimate_film_parameter_overhead,
+)
 from .simple_cnn import SimpleCNNOperator
 from .builder import OperatorBuilder, NeuralOperator
 from .parameters import (
@@ -33,6 +50,7 @@ __all__ = [
     "BaseBlock",
     "ConvBlock",
     "ResidualBlock",
+    "FiLMResidualBlock",
     "StochasticBlock",
     "DownsampleBlock",
     "UpsampleBlock",
@@ -40,10 +58,23 @@ __all__ = [
     # AFNO blocks
     "SpectralMixingBlock",
     "AFNOBlock",
+    "FiLMAFNOBlock",
     # U-AFNO operator
     "UAFNOOperator",
     "UNetEncoder",
     "UNetDecoder",
+    # FiLM U-AFNO operator
+    "FiLMUNetEncoder",
+    "FiLMUNetDecoder",
+    "FiLMUAFNOOperator",
+    # FiLM modulation
+    "FiLMConfig",
+    "FiLMLayerSpec",
+    "FiLMLayer",
+    "FiLMGenerator",
+    "FiLMProjectionHead",
+    "build_film_layer_specs",
+    "estimate_film_parameter_overhead",
     # CNN operator
     "SimpleCNNOperator",
     # Builder and wrapper

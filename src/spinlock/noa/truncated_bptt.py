@@ -106,46 +106,56 @@ class TruncatedBPTT(nn.Module):
 
         B, C, H, W = ic.shape
 
+        # Determine conditioning mode
+        conditioning_mode = getattr(self.model, 'conditioning_mode', 'concat')
+
         # Prepare parameter embeddings if model uses param conditioning
-        param_spatial = None
+        param_embed = None  # Vector embedding for FiLM
+        param_spatial = None  # Spatial broadcast for concat
         if hasattr(self.model, 'param_conditioning') and self.model.param_conditioning:
             if params is None:
                 raise ValueError("params required when model has param_conditioning=True")
             # Embed parameters: [B, param_dim] -> [B, param_embed_dim]
             param_embed = self.model.param_embedding(params)
-            # Broadcast to spatial dimensions
-            param_spatial = param_embed.view(B, -1, 1, 1).expand(-1, -1, H, W)
+            # Broadcast to spatial dimensions for concat mode
+            if conditioning_mode in ("concat", "both"):
+                param_spatial = param_embed.view(B, -1, 1, 1).expand(-1, -1, H, W)
 
         # Prepare token embeddings if model uses token conditioning
         token_spatial = None
         if hasattr(self.model, 'token_conditioning') and self.model.token_conditioning:
             if tokens is None:
                 # Stage 2: No tokens provided, use zero embeddings (model must self-regulate)
-                token_spatial = torch.zeros(
-                    B, self.model.token_embed_dim, H, W,
-                    device=ic.device, dtype=ic.dtype
-                )
+                if conditioning_mode in ("concat", "both"):
+                    token_spatial = torch.zeros(
+                        B, self.model.token_embed_dim, H, W,
+                        device=ic.device, dtype=ic.dtype
+                    )
             else:
                 # Stage 1: Tokens provided, use them for conditioning
                 # Embed tokens: [B, num_tokens] -> [B, token_embed_dim]
                 token_embed = self.model.token_embedding(tokens)
                 # Broadcast to spatial dimensions
-                token_spatial = token_embed.view(B, -1, 1, 1).expand(-1, -1, H, W)
-                # token_spatial is now [B, token_embed_dim, H, W]
+                if conditioning_mode in ("concat", "both"):
+                    token_spatial = token_embed.view(B, -1, 1, 1).expand(-1, -1, H, W)
 
         # Phase 1: Warmup without gradients
         x = ic.clone()
         with torch.no_grad():
             for _ in range(self.warmup_steps):
-                # Augment with conditioning embeddings
+                # Augment with conditioning embeddings (for concat mode)
                 x_augmented = x
-                if param_spatial is not None:
-                    x_augmented = torch.cat([x_augmented, param_spatial], dim=1)
-                if token_spatial is not None:
-                    x_augmented = torch.cat([x_augmented, token_spatial], dim=1)
+                if conditioning_mode in ("concat", "both"):
+                    if param_spatial is not None:
+                        x_augmented = torch.cat([x_augmented, param_spatial], dim=1)
+                    if token_spatial is not None:
+                        x_augmented = torch.cat([x_augmented, token_spatial], dim=1)
 
-                # Single step (returns [B, out_channels, H, W])
-                x = self.model.single_step(x_augmented)
+                # Single step - pass conditioning for FiLM mode
+                if conditioning_mode in ("film", "both"):
+                    x = self.model.single_step(x_augmented, conditioning=param_embed)
+                else:
+                    x = self.model.single_step(x_augmented)
 
         # Detach warmup state from computation graph
         warmup_state = x.clone()

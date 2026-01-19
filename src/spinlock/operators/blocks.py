@@ -16,7 +16,7 @@ Design principles:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Literal, Callable
+from typing import Optional, Literal, Callable, Tuple
 from abc import ABC
 
 
@@ -231,6 +231,105 @@ class ResidualBlock(BaseBlock):
 
         # Add skip connection
         return residual + identity
+
+
+class FiLMResidualBlock(ResidualBlock):
+    """Residual block with FiLM modulation support.
+
+    Extends ResidualBlock to accept optional gamma/beta parameters for
+    feature-wise linear modulation. FiLM is applied AFTER the conv path
+    but BEFORE the skip connection add.
+
+    This is SPATIAL modulation - safe for long rollouts (T=256).
+
+    Args:
+        in_channels: Input channels
+        out_channels: Output channels
+        num_convs: Number of convolution blocks in residual path
+        kernel_size: Convolution kernel size
+        stochastic_depth: Probability of dropping residual branch
+        post_norm: Whether to apply LayerNorm after FiLM modulation
+        **kwargs: Additional arguments passed to ConvBlock
+
+    Example:
+        >>> block = FiLMResidualBlock(64, 128, post_norm=True)
+        >>> x = torch.randn(8, 64, 32, 32)
+        >>> gamma = torch.ones(8, 128)
+        >>> beta = torch.zeros(8, 128)
+        >>> out = block(x, gamma=gamma, beta=beta)  # Shape: (8, 128, 32, 32)
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        num_convs: int = 2,
+        kernel_size: int = 3,
+        stochastic_depth: float = 0.0,
+        post_norm: bool = True,
+        **kwargs,
+    ):
+        super().__init__(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_convs=num_convs,
+            kernel_size=kernel_size,
+            stochastic_depth=stochastic_depth,
+            **kwargs,
+        )
+
+        # Import here to avoid circular import
+        from .film import FiLMLayer
+
+        # FiLM layer for modulation
+        self.film_layer = FiLMLayer(out_channels, post_norm=post_norm)
+        self._post_norm = post_norm
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        gamma: Optional[torch.Tensor] = None,
+        beta: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Forward pass with optional FiLM modulation.
+
+        When gamma/beta are None, behaves exactly like standard ResidualBlock.
+        When provided, applies FiLM modulation AFTER conv path, BEFORE skip add.
+
+        Args:
+            x: Input tensor [B, C, H, W]
+            gamma: Optional scale parameters [B, out_channels]
+            beta: Optional shift parameters [B, out_channels]
+
+        Returns:
+            Output tensor [B, out_channels, H, W]
+        """
+        identity = x
+
+        # Apply projection if needed
+        if self.projection is not None:
+            identity = self.projection(identity)
+
+        # Residual path
+        residual = x
+        for block in self.blocks:
+            # Stochastic depth: randomly drop residual branch during training
+            if self.training and self.stochastic_depth > 0:
+                if torch.rand(1).item() < self.stochastic_depth:
+                    continue  # Skip this block
+
+            residual = block(residual)
+
+        # Apply FiLM modulation AFTER conv path, BEFORE skip add
+        if gamma is not None and beta is not None:
+            residual = self.film_layer(residual, gamma, beta)
+
+        # Add skip connection
+        return residual + identity
+
+    def get_film_channels(self) -> int:
+        """Return the number of channels for FiLM modulation."""
+        return self.out_channels
 
 
 class StochasticBlock(BaseBlock):

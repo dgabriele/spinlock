@@ -26,9 +26,10 @@ Documentation:
 import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 
-from spinlock.operators.u_afno import UAFNOOperator
+from spinlock.operators.u_afno import UAFNOOperator, FiLMUAFNOOperator
+from spinlock.operators.film import FiLMConfig
 from spinlock.noa.base_backbone import BaseNOABackbone
 
 
@@ -71,15 +72,19 @@ class NOABackbone(BaseNOABackbone):
         use_checkpointing: bool = True,
         checkpoint_every: int = 16,
         update_mode: str = "residual",  # "residual" or "autoregressive"
-        # NEW: Parameter conditioning (operator θ)
+        # Parameter conditioning (operator θ)
         param_conditioning: bool = False,
         param_dim: int = 14,
         param_embed_dim: int = 64,
-        # NEW: Token conditioning parameters
+        # Token conditioning parameters
         token_conditioning: bool = False,
         token_embed_dim: int = 64,
         num_tokens: int = 21,
         codebook_sizes: Optional[List[int]] = None,
+        # FiLM conditioning mode: "concat" (default), "film", or "both"
+        conditioning_mode: Literal["concat", "film", "both"] = "concat",
+        # FiLM configuration (only used when conditioning_mode includes "film")
+        film_config: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
         super().__init__()
@@ -92,6 +97,41 @@ class NOABackbone(BaseNOABackbone):
         self.residual_scale = 0.1  # Scale down residuals initially
         self.param_conditioning = param_conditioning
         self.token_conditioning = token_conditioning
+        self.conditioning_mode = conditioning_mode
+
+        # Validate conditioning_mode
+        if conditioning_mode not in ("concat", "film", "both"):
+            raise ValueError(
+                f"conditioning_mode must be 'concat', 'film', or 'both', got '{conditioning_mode}'"
+            )
+
+        # FiLM mode requires param_conditioning
+        if conditioning_mode in ("film", "both") and not param_conditioning:
+            raise ValueError(
+                "FiLM conditioning requires param_conditioning=True"
+            )
+
+        # Parse FiLM config
+        self.film_config = None
+        if conditioning_mode in ("film", "both"):
+            if film_config is None:
+                # Default FiLM config: spatial-only modulation
+                film_config = {
+                    "enabled": True,
+                    "embed_dim": param_embed_dim,
+                    "hidden_dim": 128,
+                    "post_norm": True,
+                    "modulate_encoder": True,
+                    "modulate_decoder": True,
+                    "modulate_afno_post": False,
+                }
+            else:
+                # Ensure embed_dim matches param_embed_dim
+                film_config = dict(film_config)  # Copy to avoid mutation
+                film_config["enabled"] = True
+                film_config.setdefault("embed_dim", param_embed_dim)
+
+            self.film_config = film_config
 
         # Initialize parameter embedding if enabled
         if param_conditioning:
@@ -126,25 +166,47 @@ class NOABackbone(BaseNOABackbone):
             self.token_embedding = None
             self.token_embed_dim = None
 
-        # Calculate operator input channels (base + conditioning)
+        # Calculate operator input channels based on conditioning mode
+        # - "concat": add param_embed_dim + token_embed_dim to input channels
+        # - "film": no extra input channels (FiLM modulates internally)
+        # - "both": add concat channels AND use FiLM modulation
         operator_input_channels = in_channels
-        if param_conditioning:
-            operator_input_channels += param_embed_dim
-        if token_conditioning:
-            operator_input_channels += token_embed_dim
 
-        # Build U-AFNO operator
-        self.operator = UAFNOOperator(
-            in_channels=operator_input_channels,
-            out_channels=out_channels,
-            base_channels=base_channels,
-            encoder_levels=encoder_levels,
-            modes=modes,
-            afno_blocks=afno_blocks,
-            noise_type=noise_type,
-            noise_scale=noise_scale,
-            **kwargs,
-        )
+        if conditioning_mode in ("concat", "both"):
+            # Add conditioning channels for concatenation
+            if param_conditioning:
+                operator_input_channels += param_embed_dim
+            if token_conditioning:
+                operator_input_channels += token_embed_dim
+
+        # Build operator based on conditioning mode
+        if conditioning_mode in ("film", "both"):
+            # Use FiLMUAFNOOperator for FiLM-based conditioning
+            self.operator = FiLMUAFNOOperator(
+                in_channels=operator_input_channels,
+                out_channels=out_channels,
+                base_channels=base_channels,
+                encoder_levels=encoder_levels,
+                modes=modes,
+                afno_blocks=afno_blocks,
+                film_config=self.film_config,
+                noise_type=noise_type,
+                noise_scale=noise_scale,
+                **kwargs,
+            )
+        else:
+            # Use standard UAFNOOperator for concat-only conditioning
+            self.operator = UAFNOOperator(
+                in_channels=operator_input_channels,
+                out_channels=out_channels,
+                base_channels=base_channels,
+                encoder_levels=encoder_levels,
+                modes=modes,
+                afno_blocks=afno_blocks,
+                noise_type=noise_type,
+                noise_scale=noise_scale,
+                **kwargs,
+            )
 
     def forward(
         self,
@@ -223,37 +285,42 @@ class NOABackbone(BaseNOABackbone):
         B, C, H, W = u0.shape
 
         # Prepare parameter embeddings if conditioning is enabled
+        param_embed = None  # Vector embedding for FiLM
+        param_spatial = None  # Spatial broadcast for concat
         if self.param_conditioning:
             if params is None:
                 raise ValueError("params required when param_conditioning=True")
             # Embed parameter vector: [B, param_dim] -> [B, param_embed_dim]
             param_embed = self.param_embedding(params)
-            # Broadcast to spatial dimensions: [B, param_embed_dim] -> [B, param_embed_dim, H, W]
-            param_spatial = param_embed.view(B, -1, 1, 1).expand(-1, -1, H, W)
-        else:
-            param_spatial = None
+
+            # Broadcast to spatial dimensions for concat mode
+            if self.conditioning_mode in ("concat", "both"):
+                param_spatial = param_embed.view(B, -1, 1, 1).expand(-1, -1, H, W)
 
         # Prepare token embeddings if conditioning is enabled
+        token_spatial = None
         if self.token_conditioning:
             if tokens is None:
                 # Stage 2: No tokens provided, use zero embeddings (model must self-regulate)
                 # This allows loading token-conditioned checkpoints for VQ-led training
-                token_spatial = torch.zeros(
-                    B, self.token_embed_dim, H, W,
-                    device=u0.device, dtype=u0.dtype
-                )
+                if self.conditioning_mode in ("concat", "both"):
+                    token_spatial = torch.zeros(
+                        B, self.token_embed_dim, H, W,
+                        device=u0.device, dtype=u0.dtype
+                    )
             else:
                 # Stage 1: Tokens provided, use them for conditioning
                 # Embed tokens: [B, num_tokens] -> [B, token_embed_dim]
                 token_embed = self.token_embedding(tokens)
                 # Broadcast to spatial dimensions
-                token_spatial = token_embed.view(B, -1, 1, 1).expand(-1, -1, H, W)
-                # token_spatial is now [B, token_embed_dim, H, W]
-        else:
-            token_spatial = None
+                if self.conditioning_mode in ("concat", "both"):
+                    token_spatial = token_embed.view(B, -1, 1, 1).expand(-1, -1, H, W)
 
         if num_realizations > 1:
-            return self._rollout_multi_realization(u0, steps, return_all_steps, num_realizations, param_spatial, token_spatial)
+            return self._rollout_multi_realization(
+                u0, steps, return_all_steps, num_realizations,
+                param_embed, param_spatial, token_spatial
+            )
 
         # Use checkpointing in training mode for memory efficiency
         # Note: We check self.training, not u0.requires_grad, because the model
@@ -277,32 +344,47 @@ class NOABackbone(BaseNOABackbone):
                 # We need to collect intermediate states, so run step-by-step
                 # but wrap in checkpoint for memory efficiency
                 for _ in range(block_size):
-                    # Concatenate conditioning embeddings
+                    # Augment input based on conditioning mode
                     x_augmented = x
-                    if param_spatial is not None:
-                        x_augmented = torch.cat([x_augmented, param_spatial], dim=1)
-                    if token_spatial is not None:
-                        x_augmented = torch.cat([x_augmented, token_spatial], dim=1)
+                    if self.conditioning_mode in ("concat", "both"):
+                        if param_spatial is not None:
+                            x_augmented = torch.cat([x_augmented, param_spatial], dim=1)
+                        if token_spatial is not None:
+                            x_augmented = torch.cat([x_augmented, token_spatial], dim=1)
 
                     # Checkpoint each step to allow collecting intermediates
-                    x = checkpoint(
-                        self._single_step_for_checkpoint,
-                        x_augmented,
-                        use_reentrant=False,
-                    )
+                    # For FiLM mode, pass param_embed to single_step
+                    if self.conditioning_mode in ("film", "both"):
+                        x = checkpoint(
+                            lambda x_aug: self.single_step(x_aug, conditioning=param_embed),
+                            x_augmented,
+                            use_reentrant=False,
+                        )
+                    else:
+                        x = checkpoint(
+                            self._single_step_for_checkpoint,
+                            x_augmented,
+                            use_reentrant=False,
+                        )
                     trajectory.append(x)
                     t += 1
         else:
             # Standard rollout (inference or single-output mode)
             for t in range(steps):
-                # Concatenate conditioning embeddings
+                # Augment input based on conditioning mode
                 x_augmented = x
-                if param_spatial is not None:
-                    x_augmented = torch.cat([x_augmented, param_spatial], dim=1)
-                if token_spatial is not None:
-                    x_augmented = torch.cat([x_augmented, token_spatial], dim=1)
+                if self.conditioning_mode in ("concat", "both"):
+                    if param_spatial is not None:
+                        x_augmented = torch.cat([x_augmented, param_spatial], dim=1)
+                    if token_spatial is not None:
+                        x_augmented = torch.cat([x_augmented, token_spatial], dim=1)
 
-                x = self.single_step(x_augmented)
+                # Pass param_embed for FiLM conditioning
+                if self.conditioning_mode in ("film", "both"):
+                    x = self.single_step(x_augmented, conditioning=param_embed)
+                else:
+                    x = self.single_step(x_augmented)
+
                 if return_all_steps:
                     trajectory.append(x)
 
@@ -318,6 +400,7 @@ class NOABackbone(BaseNOABackbone):
         steps: int,
         return_all_steps: bool,
         num_realizations: int,
+        param_embed: Optional[torch.Tensor] = None,
         param_spatial: Optional[torch.Tensor] = None,
         token_spatial: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -331,6 +414,7 @@ class NOABackbone(BaseNOABackbone):
             steps: Number of timesteps
             return_all_steps: If True, return full trajectories
             num_realizations: Number of realizations (M)
+            param_embed: Optional parameter embedding [B, param_embed_dim] for FiLM
             param_spatial: Optional pre-computed parameter embeddings [B, param_embed_dim, H, W]
             token_spatial: Optional pre-computed token embeddings [B, token_embed_dim, H, W]
 
@@ -350,14 +434,20 @@ class NOABackbone(BaseNOABackbone):
 
             # Standard rollout (no checkpointing for multi-realization)
             for t in range(steps):
-                # Concatenate conditioning embeddings
+                # Augment input based on conditioning mode
                 x_augmented = x
-                if param_spatial is not None:
-                    x_augmented = torch.cat([x_augmented, param_spatial], dim=1)
-                if token_spatial is not None:
-                    x_augmented = torch.cat([x_augmented, token_spatial], dim=1)
+                if self.conditioning_mode in ("concat", "both"):
+                    if param_spatial is not None:
+                        x_augmented = torch.cat([x_augmented, param_spatial], dim=1)
+                    if token_spatial is not None:
+                        x_augmented = torch.cat([x_augmented, token_spatial], dim=1)
 
-                x = self.single_step(x_augmented)
+                # Pass param_embed for FiLM conditioning
+                if self.conditioning_mode in ("film", "both"):
+                    x = self.single_step(x_augmented, conditioning=param_embed)
+                else:
+                    x = self.single_step(x_augmented)
+
                 if return_all_steps:
                     trajectory.append(x)
 
@@ -374,33 +464,52 @@ class NOABackbone(BaseNOABackbone):
             # Each x is [B, C, H, W] → stack to [B, M, C, H, W]
             return torch.stack(realizations, dim=1)
 
-    def single_step(self, x: torch.Tensor) -> torch.Tensor:
+    def single_step(
+        self, x: torch.Tensor, conditioning: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """Single-step prediction (next state from current state).
 
         Args:
             x: Current state [B, C, H, W]
-               When token_conditioning=True, this is augmented:
-               [B, C + token_embed_dim, H, W]
+               When conditioning_mode="concat" or "both", this is augmented:
+               [B, C + param_embed_dim + token_embed_dim, H, W]
+            conditioning: Optional conditioning embedding [B, embed_dim] for FiLM
 
         Returns:
             Next state [B, out_channels, H, W]
         """
         if self.update_mode == "residual":
             # Extract base state for residual connection
-            # When conditioning is enabled, x has extra channels (params and/or tokens)
-            if self.param_conditioning or self.token_conditioning:
+            # When concat conditioning is enabled, x has extra channels
+            if self.conditioning_mode in ("concat", "both") and (
+                self.param_conditioning or self.token_conditioning
+            ):
                 # Split: base_state [B, C, H, W] and conditioning channels
                 base_state = x[:, :self._in_channels, :, :]
-                # Operator receives full augmented input (base + param + token channels)
-                delta = self.operator(x)
+                # Operator receives full augmented input
+                # For FiLM mode, also pass conditioning embedding
+                if isinstance(self.operator, FiLMUAFNOOperator):
+                    delta = self.operator(x, conditioning=conditioning)
+                else:
+                    delta = self.operator(x)
                 # Residual update only on base state
                 return base_state + self.residual_scale * delta
+            elif self.conditioning_mode == "film" and self.param_conditioning:
+                # Pure FiLM mode: no concat, just pass embedding
+                if isinstance(self.operator, FiLMUAFNOOperator):
+                    delta = self.operator(x, conditioning=conditioning)
+                else:
+                    delta = self.operator(x)
+                return x + self.residual_scale * delta
             else:
                 # u_{t+1} = u_t + scale * NOA(u_t) - Euler-style, better gradient flow
                 return x + self.residual_scale * self.operator(x)
         else:
             # u_{t+1} = NOA(u_t) - pure autoregressive
-            return self.operator(x)
+            if isinstance(self.operator, FiLMUAFNOOperator):
+                return self.operator(x, conditioning=conditioning)
+            else:
+                return self.operator(x)
 
     def get_intermediate_features(
         self,

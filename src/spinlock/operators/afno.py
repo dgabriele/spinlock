@@ -13,9 +13,10 @@ Design principles:
 
 import torch
 import torch.nn as nn
-from typing import Optional
+from typing import Optional, Tuple
 
 from .blocks import BaseBlock
+from .film import FiLMLayer
 
 
 class SpectralMixingBlock(BaseBlock):
@@ -272,3 +273,93 @@ class AFNOBlock(BaseBlock):
         x = x + self.drop2(self.mlp(self.norm2(x)))
 
         return x
+
+
+class FiLMAFNOBlock(AFNOBlock):
+    """AFNO block with POST-spectral FiLM modulation.
+
+    CRITICAL: FiLM is applied AFTER the complete spectral path (FFT -> filter -> IFFT),
+    preserving frequency-domain integrity while allowing theta-dependent scaling.
+
+    DO NOT modulate inside the spectral path - this causes:
+    - Spectral leakage and phase shifts accumulating over T=256 rollouts
+    - Loss of AFNO's global mixing benefits
+    - Higher MSE in chaotic/high-freq regimes
+
+    The modulation is applied AFTER both the spectral mixing and feedforward paths,
+    just before the final output.
+
+    Args:
+        channels: Number of channels (input == output)
+        modes: Number of Fourier modes for spectral mixing
+        mlp_ratio: Ratio of hidden dim to channels in feedforward
+        activation: Activation function
+        dropout: Dropout probability
+        post_norm: Whether to apply LayerNorm after FiLM modulation
+
+    Example:
+        >>> block = FiLMAFNOBlock(256, modes=16, post_norm=True)
+        >>> x = torch.randn(8, 256, 8, 8)
+        >>> gamma = torch.ones(8, 256)
+        >>> beta = torch.zeros(8, 256)
+        >>> out = block(x, gamma=gamma, beta=beta)
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        modes: int = 32,
+        mlp_ratio: float = 4.0,
+        activation: str = "gelu",
+        dropout: float = 0.0,
+        post_norm: bool = True,
+        **kwargs,
+    ):
+        super().__init__(
+            channels=channels,
+            modes=modes,
+            mlp_ratio=mlp_ratio,
+            activation=activation,
+            dropout=dropout,
+            **kwargs,
+        )
+
+        # FiLM layer for post-spectral modulation
+        self.film_layer = FiLMLayer(channels, post_norm=post_norm)
+        self._post_norm = post_norm
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        gamma: Optional[torch.Tensor] = None,
+        beta: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Forward pass with optional FiLM modulation.
+
+        When gamma/beta are None, behaves exactly like standard AFNOBlock.
+        When provided, applies FiLM modulation AFTER the complete spectral path.
+
+        Args:
+            x: Input tensor [B, C, H, W]
+            gamma: Optional scale parameters [B, C]
+            beta: Optional shift parameters [B, C]
+
+        Returns:
+            Output tensor [B, C, H, W]
+        """
+        # Standard AFNO: spectral + feedforward paths with residuals
+        # Spectral mixing path: Norm -> Spectral -> Dropout -> Residual
+        x = x + self.drop1(self.spectral(self.norm1(x)))
+
+        # Feedforward path: Norm -> MLP -> Dropout -> Residual
+        x = x + self.drop2(self.mlp(self.norm2(x)))
+
+        # POST-spectral FiLM modulation (safe - operates on spatial features)
+        if gamma is not None and beta is not None:
+            x = self.film_layer(x, gamma, beta)
+
+        return x
+
+    def get_film_channels(self) -> int:
+        """Return the number of channels for FiLM modulation."""
+        return self.channels
