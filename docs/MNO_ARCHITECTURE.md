@@ -1,8 +1,8 @@
 # Meta-Neural Operator (MNO) Architecture Documentation
 
-**Document Version**: 1.0
-**Date**: January 10, 2026
-**Model**: Token-Conditioned U-AFNO Backbone
+**Document Version**: 2.0
+**Date**: January 19, 2026
+**Model**: Token-Conditioned U-AFNO Backbone with FiLM Modulation
 
 ---
 
@@ -10,14 +10,17 @@
 
 1. [Overview](#overview)
 2. [Architecture Summary](#architecture-summary)
-3. [Token Conditioning Module](#token-conditioning-module)
-4. [U-AFNO Core Architecture](#u-afno-core-architecture)
-5. [Autoregressive Rollout Mechanism](#autoregressive-rollout-mechanism)
-6. [Complete Data Flow](#complete-data-flow)
-7. [Parameter Counts](#parameter-counts)
-8. [Design Decisions](#design-decisions)
-9. [Training Configuration](#training-configuration)
-10. [Code References](#code-references)
+3. [Conditioning Modes](#conditioning-modes)
+4. [Parameter Conditioning (θ)](#parameter-conditioning-θ)
+5. [FiLM Modulation](#film-modulation)
+6. [Token Conditioning Module](#token-conditioning-module)
+7. [U-AFNO Core Architecture](#u-afno-core-architecture)
+8. [Autoregressive Rollout Mechanism](#autoregressive-rollout-mechanism)
+9. [Complete Data Flow](#complete-data-flow)
+10. [Parameter Counts](#parameter-counts)
+11. [Design Decisions](#design-decisions)
+12. [Training Configuration](#training-configuration)
+13. [Code References](#code-references)
 
 ---
 
@@ -100,6 +103,185 @@ The **Meta-Neural Operator (MNO)** is a deep learning model designed to learn un
 │   u_0 → u_1 → u_2 → ... → u_T                                   │
 │   (Tokens broadcast and concatenated at each step)              │
 └─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Conditioning Modes
+
+The MNO supports multiple conditioning mechanisms that can be used independently or combined:
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| **Parameter Conditioning (θ)** | 14D operator parameter vector | Specialize rollouts per-operator |
+| **Token Conditioning** | VQ-VAE behavioral tokens | Learned behavior specialization |
+| **FiLM Modulation** | Feature-wise Linear Modulation | Efficient parameter conditioning |
+
+### conditioning_mode Parameter
+
+The `conditioning_mode` parameter controls how parameter conditioning (θ) is applied:
+
+| Value | Description | Input Channels |
+|-------|-------------|----------------|
+| `"concat"` | Concatenate param embedding to input (default legacy) | `in_channels + param_embed_dim` |
+| `"film"` | Apply FiLM modulation internally | `in_channels` (no augmentation) |
+| `"both"` | Both concatenation AND FiLM | `in_channels + param_embed_dim` |
+
+**Example Configuration:**
+
+```yaml
+model:
+  param_conditioning: true
+  param_dim: 14
+  param_embed_dim: 64
+  conditioning_mode: "film"  # Use FiLM instead of concat
+```
+
+---
+
+## Parameter Conditioning (θ)
+
+Parameter conditioning allows the MNO to adapt its behavior based on the 14D operator parameter vector θ, which encodes physical properties like diffusion coefficients, reaction rates, and advection velocities.
+
+### Parameter Embedding
+
+```
+Input: θ [B, 14] (normalized to [0, 1])
+    ↓
+MLP:
+    Linear(14 → 128) → LayerNorm → ReLU → Dropout(0.1)
+    Linear(128 → 64) → LayerNorm
+    ↓
+Output: param_embed [B, 64]
+```
+
+### Conditioning Methods
+
+#### 1. Concatenation Mode (`conditioning_mode: "concat"`)
+
+```
+param_embed [B, 64] → Broadcast → [B, 64, H, W]
+    ↓
+Concatenate with state: [B, 1, H, W] ⊕ [B, 64, H, W] = [B, 65, H, W]
+```
+
+**Pros**: Simple, clear gradient flow
+**Cons**: Increases input channels significantly
+
+#### 2. FiLM Mode (`conditioning_mode: "film"`)
+
+```
+param_embed [B, 64] → FiLMGenerator → {gamma, beta} per layer
+    ↓
+Apply modulation: features' = gamma * features + beta
+```
+
+**Pros**: No input channel increase, fine-grained control
+**Cons**: More complex architecture
+
+---
+
+## FiLM Modulation
+
+**FiLM (Feature-wise Linear Modulation)** applies learned affine transformations to feature maps, enabling fine-grained theta-conditioned control without inflating input channels.
+
+### Key Design Principles
+
+Based on UFNO-FiLM literature (2025-2026):
+
+1. **Spatial-only modulation by default** - Apply FiLM to encoder/decoder conv layers
+2. **POST-spectral AFNO modulation only** - Never modulate inside FFT path (causes spectral leakage)
+3. **Post-FiLM LayerNorm** - Prevents activation drift on long rollouts (T=256)
+4. **Identity initialization** - gamma=1, beta=0 at start for stable training
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     FiLM GENERATOR                               │
+│  param_embed [B, 64] → Per-layer projection heads                │
+│                                                                   │
+│  For each modulated layer:                                        │
+│    MLP: 64 → 128 → 2*channels                                    │
+│    Split: gamma [B, channels], beta [B, channels]                │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                     FiLM MODULATION                              │
+│                                                                   │
+│  For encoder/decoder layers (spatial - safe):                    │
+│    features' = gamma * features + beta                           │
+│    Optional: LayerNorm(features')                                │
+│                                                                   │
+│  For AFNO blocks (post-spectral only - use with caution):        │
+│    Apply AFTER complete spectral path (FFT → filter → IFFT)     │
+│    features' = gamma * afno_output + beta                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Configuration
+
+```yaml
+model:
+  conditioning_mode: "film"
+
+  film:
+    enabled: true
+    embed_dim: 64             # Must match param_embed_dim
+    hidden_dim: 128           # Projection head hidden size
+    init_gamma: 1.0           # Identity initialization
+    init_beta: 0.0
+    post_norm: true           # Recommended for T=256 stability
+
+    # Spatial modulation (DEFAULT - safe)
+    modulate_encoder: true    # Apply to encoder conv outputs
+    modulate_decoder: true    # Apply to decoder conv outputs
+    encoder_levels: null      # null = all levels
+    decoder_levels: null
+
+    # Spectral modulation (USE WITH CAUTION)
+    modulate_afno_post: false # POST-spectral only
+    afno_blocks: null         # Which blocks if enabled
+```
+
+### Parameter Overhead
+
+| Configuration | FiLM Parameters | Overhead |
+|---------------|-----------------|----------|
+| Encoder + Decoder only (default) | ~281K | ~0.2% |
+| + AFNO post-spectral (all 4) | ~450K | ~0.3% |
+| + AFNO post-spectral (last 1) | ~320K | ~0.2% |
+
+### Code Reference
+
+```python
+from spinlock.noa.backbone import NOABackbone
+
+# FiLM-conditioned MNO
+model = NOABackbone(
+    in_channels=1,
+    out_channels=1,
+    base_channels=32,
+    encoder_levels=3,
+    modes=16,
+    afno_blocks=4,
+    param_conditioning=True,
+    param_dim=14,
+    param_embed_dim=64,
+    conditioning_mode="film",
+    film_config={
+        "enabled": True,
+        "embed_dim": 64,
+        "hidden_dim": 128,
+        "post_norm": True,
+        "modulate_encoder": True,
+        "modulate_decoder": True,
+        "modulate_afno_post": False,
+    },
+)
+
+# Forward pass - param embedding used for FiLM modulation
+trajectory = model.rollout(u0, steps=256, params=theta)
 ```
 
 ---
@@ -594,23 +776,31 @@ Normalization & Other         | ~132,924,080    | 91.80%
 
 ## Design Decisions
 
-### 1. Token Conditioning via Concatenation
+### 1. Conditioning Approaches
 
-**Chosen Approach**: Concatenate token embeddings to state channels at every timestep
+The MNO supports multiple conditioning approaches:
 
-**Alternatives Considered**:
-- **FiLM (Feature-wise Linear Modulation)**: More expressive but requires modifying all AFNO blocks
-- **Cross-attention**: High computational cost
-- **Additive conditioning**: Weaker signal
+#### Token Conditioning via Concatenation (Legacy)
+
+**Approach**: Concatenate token embeddings to state channels at every timestep
 
 **Rationale**:
 - ✅ Minimal architecture changes (only input layer)
 - ✅ Clear gradient flow
-- ✅ Fast to implement and test
-- ✅ Tokens persist throughout forward pass
 - ⚠️ Increases input channels (65 vs 1)
 
-**Future Work**: FiLM modulation if concatenation proves insufficient
+#### Parameter Conditioning via FiLM (New in v2.0)
+
+**Approach**: Apply Feature-wise Linear Modulation from parameter embedding
+
+**Rationale**:
+- ✅ No input channel increase (1 vs 65)
+- ✅ ~30-40% fewer FLOPs in early convolutions
+- ✅ Fine-grained control at each encoder/decoder depth
+- ✅ Spatial-only modulation safe for T=256 rollouts
+- ✅ Identity initialization for stable training
+
+**Configuration**: Use `conditioning_mode: "film"` for pure FiLM, or `"both"` to combine with concatenation
 
 ### 2. Residual Updates
 
@@ -790,11 +980,13 @@ checkpointing:
 |------|-------------|
 | `src/spinlock/noa/backbone.py` | NOABackbone wrapper, autoregressive rollout |
 | `src/spinlock/noa/token_embedding.py` | Token conditioning module |
-| `src/spinlock/operators/u_afno.py` | U-AFNO core architecture |
-| `src/spinlock/operators/afno.py` | AFNO block implementation |
-| `src/spinlock/operators/blocks.py` | Building blocks (ResBlock, Conv, etc.) |
+| `src/spinlock/operators/u_afno.py` | U-AFNO core architecture + FiLMUAFNOOperator |
+| `src/spinlock/operators/afno.py` | AFNO block implementation + FiLMAFNOBlock |
+| `src/spinlock/operators/blocks.py` | Building blocks (ResBlock, FiLMResidualBlock, etc.) |
+| `src/spinlock/operators/film.py` | FiLM modulation (FiLMConfig, FiLMGenerator, FiLMLayer) |
 | `src/spinlock/cli/train_meta_operator.py` | Training script |
-| `configs/noa/experiments/phase2/exp2b_token_baseline.yaml` | Experiment config |
+| `configs/noa/experiments/phase2/exp_film_10k_v3.yaml` | FiLM experiment config |
+| `tests/operators/test_film.py` | FiLM unit tests (41 tests) |
 
 ### Usage Example
 
