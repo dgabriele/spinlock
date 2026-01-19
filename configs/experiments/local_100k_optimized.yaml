@@ -19,7 +19,7 @@ metadata:
     Features: Fast v1.0 + v2.0 + Multiscale (v2.1)
     Disabled by default: Distributional, Structural, Physics, Morphological (opt-in via config)
 
-# 14-dimensional parameter space
+# 14-dimensional parameter space (architecture: 5, stochastic: 4, operator: 2, evolution: 3)
 parameter_space:
   architecture:
     num_layers:
@@ -86,6 +86,16 @@ parameter_space:
       choices: ["residual", "convex"]
       weights: [0.75, 0.25]
       description: "Temporal update policy"
+
+    dt:
+      type: choice
+      choices: [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05]
+      description: "Integration step size for residual policy"
+
+    alpha:
+      type: choice
+      choices: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+      description: "Mixing parameter for convex policy (persistence of previous state)"
 
 # Sampling configuration for 100K samples
 sampling:
@@ -184,7 +194,7 @@ simulation:
       min_width: 5.0
       max_width: 15.0
 
-  num_realizations: 5  # 5 realizations for statistics (M=5 with 64×64, T=256)
+  num_realizations: 3  # 3 realizations for statistics (reduced for speed)
   num_timesteps: 256  # Power of 2 for GPU efficiency, captures transient dynamics
 
 # Dataset output configuration
@@ -192,8 +202,8 @@ dataset:
   output_path: "datasets/local_100k_optimized.h5"
 
   storage:
-    compression: "gzip"
-    compression_level: 4
+    compression: "lzf"  # Much faster than gzip (12x), minimal size increase
+    compression_level: 4  # Not used by lzf, but kept for compatibility
     chunk_size: 8  # Match batch_size for optimal HDF5 performance
     store_trajectories: false  # Feature-only mode (saves space)
 

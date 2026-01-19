@@ -136,6 +136,9 @@ class HDF5FeatureWriter:
         temporal_enabled: bool = True,
         learned_dim: int = 0,
         param_dim: int = 0,
+        per_timestep_dim: Optional[int] = None,
+        per_trajectory_dim: Optional[int] = None,
+        aggregated_dim: Optional[int] = None,
     ) -> None:
         """
         Create TEMPORAL and SUMMARY feature group structures.
@@ -157,6 +160,9 @@ class HDF5FeatureWriter:
             temporal_enabled: Whether TEMPORAL (per-timestep) features are enabled
             learned_dim: Dimension of learned features (0 = disabled)
             param_dim: Dimension of operator parameter space (0 = disabled)
+            per_timestep_dim: Explicit per-timestep dimension (None = auto-detect from registry)
+            per_trajectory_dim: Explicit per-trajectory dimension (None = auto-detect from registry)
+            aggregated_dim: Explicit aggregated dimension (None = auto-detect from registry)
 
         Raises:
             RuntimeError: If file not opened
@@ -176,10 +182,10 @@ class HDF5FeatureWriter:
                 'compression_opts': compression_opts if compression == "gzip" else None
             }
 
-        # Estimate feature dimensions
-        D_per_timestep = self._estimate_per_timestep_dim(registry, config)
-        D_per_trajectory = self._estimate_per_trajectory_dim(registry, config)
-        D_aggregated = self._estimate_aggregated_dim(registry, config)
+        # Use explicit dimensions if provided, otherwise estimate from registry
+        D_per_timestep = per_timestep_dim if per_timestep_dim is not None else self._estimate_per_timestep_dim(registry, config)
+        D_per_trajectory = per_trajectory_dim if per_trajectory_dim is not None else self._estimate_per_trajectory_dim(registry, config)
+        D_aggregated = aggregated_dim if aggregated_dim is not None else self._estimate_aggregated_dim(registry, config)
 
         # Create TEMPORAL group (per-timestep features) if enabled
         if D_per_timestep > 0:
@@ -704,9 +710,10 @@ class HDF5FeatureWriter:
         if not self._temporal_enabled:
             return 0
 
-        # Count features in per-timestep categories (spatial, spectral, cross_channel, etc.)
-        per_timestep_categories = ['spatial', 'spectral', 'cross_channel', 'distributional',
-                                   'structural', 'physics', 'morphological', 'multiscale']
+        # Count features in per-timestep categories (spatial, spectral, cross_channel, temporal, etc.)
+        # v3.0: 'temporal' is now per-timestep (was per-trajectory in v2.x)
+        per_timestep_categories = ['spatial', 'spectral', 'cross_channel', 'temporal',
+                                   'distributional', 'structural', 'physics', 'morphological', 'multiscale']
 
         dim = 0
         for category in per_timestep_categories:
@@ -729,8 +736,8 @@ class HDF5FeatureWriter:
         Returns:
             Estimated dimension
         """
-        # Temporal features are trajectory-level
-        temporal_features = registry.get_features_by_category('temporal')
+        # v3.0: Temporal features moved to per-timestep (no longer trajectory-level)
+        # Only count trajectory-level categories: causality, invariant_drift, nonlinear, operator_sensitivity
 
         # v2.0 trajectory-level features (causality, invariant_drift)
         # Note: operator_sensitivity is only included when inline extraction is enabled
@@ -741,8 +748,7 @@ class HDF5FeatureWriter:
         # Nonlinear features (if enabled)
         nonlinear_features = registry.get_features_by_category('nonlinear')
 
-        return (len(temporal_features) + len(causality_features) +
-                len(invariant_drift_features) + len(nonlinear_features))
+        return (len(causality_features) + len(invariant_drift_features) + len(nonlinear_features))
 
     def _estimate_aggregated_dim(self, registry: FeatureRegistry, config: Any) -> int:
         """

@@ -204,29 +204,38 @@ class FeatureExtractionPipeline:
 
             # Extract manual features (for "manual" and "hybrid" modes)
             if summary_mode in ("manual", "hybrid"):
+                # v3.0: Use extract_all() which returns a dict
+                features_dict = self.summary_extractor.extract_all(batch_outputs)
+
                 # Stage 1: Extract per-timestep (TEMPORAL) features - only if enabled
-                if self.temporal_enabled:
-                    per_timestep_gpu = self.summary_extractor.extract_per_timestep(batch_outputs)
-                    per_timestep_np = per_timestep_gpu.cpu().numpy()
-                    del per_timestep_gpu
+                if self.temporal_enabled and 'per_timestep' in features_dict:
+                    per_timestep_gpu = features_dict['per_timestep']
+                    if per_timestep_gpu is not None and per_timestep_gpu.numel() > 0:
+                        per_timestep_np = per_timestep_gpu.cpu().numpy()
+                        del per_timestep_gpu
 
                 # Stage 2: Extract per-trajectory (SUMMARY) features
-                per_trajectory_gpu = self.summary_extractor.extract_per_trajectory(batch_outputs)
-                per_trajectory_np = per_trajectory_gpu.cpu().numpy()
+                # v3.0: per_trajectory is removed (empty tensor)
+                per_trajectory_gpu = features_dict.get('per_trajectory')
+                if per_trajectory_gpu is not None and per_trajectory_gpu.numel() > 0:
+                    per_trajectory_np = per_trajectory_gpu.cpu().numpy()
+                else:
+                    # v3.0: No trajectory-level features, return empty array
+                    B, M = batch_outputs.shape[0], batch_outputs.shape[1]
+                    per_trajectory_np = np.zeros((B, M, 0), dtype=np.float32)
 
-                # Stage 3: Aggregate using same GPU tensor (no recomputation)
-                aggregated_list = []
-                for method in ['mean', 'std', 'cv']:
-                    agg_gpu = self.summary_extractor.aggregate_realizations(
-                        per_trajectory_gpu, method=method
-                    )
-                    aggregated_list.append(agg_gpu.cpu())
-                    del agg_gpu
-
-                aggregated_np = torch.cat(aggregated_list, dim=1).numpy()
+                # Stage 3: Aggregate
+                # v3.0: aggregated_mean is already empty
+                aggregated_gpu = features_dict.get('aggregated_mean')
+                if aggregated_gpu is not None and aggregated_gpu.numel() > 0:
+                    aggregated_np = aggregated_gpu.cpu().numpy()
+                else:
+                    # v3.0: No aggregated features, return empty array
+                    B = batch_outputs.shape[0]
+                    aggregated_np = np.zeros((B, 0), dtype=np.float32)
 
                 # Free GPU memory
-                del per_trajectory_gpu, aggregated_list
+                del features_dict
 
             # Extract learned features (for "learned" and "hybrid" modes)
             if summary_mode in ("learned", "hybrid"):
@@ -427,37 +436,40 @@ class DatasetGenerationPipeline:
 
         return self._policy_cache[cache_key]
 
-    def _get_or_create_compiled_template(
+    def _get_or_create_compiled_model_template(
         self,
         param_dict: Dict[str, Any],
-        operator: nn.Module,
+        model: nn.Module,
     ) -> nn.Module:
         """
-        Get cached compiled template or compile this operator as template.
+        Get cached compiled model template or compile this model as template.
 
-        Phase 1 CUDA optimization: Operators with the same architecture signature
+        Phase 1 CUDA optimization: Models with the same architecture signature
         share a single compiled kernel. This avoids torch.compile overhead for
-        each operator while enabling 1.3-1.5× inference speedup.
+        each model while enabling 1.3-1.5× inference speedup.
+
+        IMPORTANT: This compiles the MODEL directly, not the NeuralOperator wrapper,
+        so that operator.model returns a compiled model for use in rollout.
 
         Args:
             param_dict: Mapped operator parameters
-            operator: Built operator (will be compiled if first in partition)
+            model: Built model (will be compiled if first in partition)
 
         Returns:
-            Compiled template operator (may be the input operator if first,
-            or a cached template with weights loaded from input operator)
+            Compiled template model (may be the input model if first,
+            or a cached template with weights loaded from input model)
         """
         if not self._partition_compile_enabled or self.device.type != "cuda":
-            return operator
+            return model
 
         # Get architecture signature
         sig = get_architecture_signature(param_dict, self._channel_bucket_size)
 
         if sig not in self._architecture_templates:
-            # First operator with this architecture - compile and cache
+            # First model with this architecture - compile and cache
             try:
                 compiled = torch.compile(
-                    operator,
+                    model,
                     mode=self._partition_compile_mode,
                     fullgraph=False,
                     dynamic=False,
@@ -466,27 +478,42 @@ class DatasetGenerationPipeline:
 
                 # Log first compilation per partition
                 if len(self._architecture_templates) <= 5:
-                    print(f"  [Partition] Compiled template for {sig}")
+                    print(f"  [Partition] Compiled model template for {sig}")
                 elif len(self._architecture_templates) == 6:
                     print(f"  [Partition] (additional partitions will not be logged)")
 
                 return compiled
             except Exception as e:
                 print(f"  [Partition] WARNING: Failed to compile {sig}: {e}")
-                return operator
+                return model
         else:
-            # Reuse cached template - load this operator's weights
+            # Reuse cached template - load this model's weights
             template = self._architecture_templates[sig]
 
-            # Load state dict from new operator into template
+            # Load state dict from new model into template
             # torch.compile wraps the module, so we need to load into the original
             # The wrapped module is accessible via _orig_mod attribute
             if hasattr(template, "_orig_mod"):
-                template._orig_mod.load_state_dict(operator.state_dict())
+                template._orig_mod.load_state_dict(model.state_dict())
             else:
-                template.load_state_dict(operator.state_dict())
+                template.load_state_dict(model.state_dict())
 
             return template
+
+    def _get_or_create_compiled_template(
+        self,
+        param_dict: Dict[str, Any],
+        operator: nn.Module,
+    ) -> nn.Module:
+        """
+        DEPRECATED: Use _get_or_create_compiled_model_template instead.
+
+        This method compiled NeuralOperator wrappers, but since we extract
+        .model before rollout, the compilation was wasted. The new method
+        compiles the inner model directly.
+        """
+        # For backward compatibility, just return the operator unchanged
+        return operator
 
     def _warmup_compiled_templates(
         self,
@@ -710,24 +737,24 @@ class DatasetGenerationPipeline:
                 registry = summary_extractor.get_feature_registry()
                 summary_config = summary_extractor.config
 
-                # Calculate dimensions for logging
-                # Per-timestep (TEMPORAL) categories: spatial, spectral, cross_channel
+                # Calculate dimensions dynamically at runtime
+                # Use extractor's runtime dimension detection if available
                 if temporal_enabled:
-                    per_timestep_dim = (
-                        len(registry.get_feature_names(category='spatial')) +
-                        len(registry.get_feature_names(category='spectral')) +
-                        len(registry.get_feature_names(category='cross_channel'))
-                    )
+                    if hasattr(summary_extractor, 'get_actual_per_timestep_dim'):
+                        per_timestep_dim = summary_extractor.get_actual_per_timestep_dim()
+                    else:
+                        # Fallback: count registry features
+                        per_timestep_dim = (
+                            len(registry.get_feature_names(category='spatial')) +
+                            len(registry.get_feature_names(category='spectral')) +
+                            len(registry.get_feature_names(category='cross_channel')) +
+                            len(registry.get_feature_names(category='temporal'))
+                        )
                 else:
                     per_timestep_dim = 0  # TEMPORAL disabled
 
-                # Per-trajectory categories: temporal, causality, invariant_drift, operator_sensitivity
-                per_trajectory_dim = (
-                    len(registry.get_feature_names(category='temporal')) +
-                    len(registry.get_feature_names(category='causality')) +
-                    len(registry.get_feature_names(category='invariant_drift')) +
-                    len(registry.get_feature_names(category='operator_sensitivity'))
-                )
+                # Per-trajectory: v3.0 has none (empty)
+                per_trajectory_dim = 0
 
                 # Determine learned feature dimension (for U-AFNO latent extraction)
                 learned_dim = 0
@@ -776,7 +803,10 @@ class DatasetGenerationPipeline:
                     compression_opts=self.config.dataset.storage.compression_level,
                     chunk_size=self.config.dataset.storage.chunk_size,
                     temporal_enabled=temporal_enabled,
-                    learned_dim=learned_dim
+                    learned_dim=learned_dim,
+                    per_timestep_dim=per_timestep_dim,
+                    per_trajectory_dim=per_trajectory_dim,
+                    aggregated_dim=per_trajectory_dim * 3 if per_trajectory_dim > 0 else 0
                 )
 
                 # Initialize optimized feature extraction pipeline
@@ -1096,15 +1126,20 @@ class DatasetGenerationPipeline:
                 model = self.operator_builder.build_u_afno(param_dict)
             else:
                 model = self.operator_builder.build_simple_cnn(param_dict)
+
+            # Move model to device FIRST (before NeuralOperator wrapping)
+            model = model.to(self.device)
+            model.eval()
+
+            # Phase 1 CUDA optimization: Compile the MODEL (not the wrapper)
+            # This way operator.model will be the compiled model
+            model = self._get_or_create_compiled_model_template(param_dict, model)
+
+            # NOW wrap the compiled model in NeuralOperator
             operator = NeuralOperator(model)
 
-            # Prepare for inference
+            # Prepare for inference (memory optimization)
             operator = MemoryManager.optimize_for_inference(operator)
-            operator = operator.to(self.device)
-
-            # Phase 1 CUDA optimization: Use compiled template for same-architecture operators
-            # Partitions by (num_layers, channels_bucket, kernel_size), reuses compiled kernels
-            operator = self._get_or_create_compiled_template(param_dict, operator)
 
             operators.append(operator)
 
@@ -1221,12 +1256,20 @@ class DatasetGenerationPipeline:
                 # Extract evolution parameters from sampled params
                 param_dict = self._map_single_parameter_set(param_batch[i])
 
-                # Group by policy tuple
-                policy_tuple = (
-                    param_dict.get("update_policy", "residual"),
-                    param_dict.get("dt", 0.01),
-                    param_dict.get("alpha", 0.5),
-                )
+                # Normalize policy tuple (same logic as _get_or_create_policy cache key)
+                # This ensures operators sharing the same cached policy are grouped together
+                policy_type = param_dict.get("update_policy", "residual")
+                dt = param_dict.get("dt", 0.01)
+                alpha = param_dict.get("alpha", 0.5)
+
+                if policy_type == "autoregressive":
+                    dt, alpha = 0.0, 0.0
+                elif policy_type == "residual":
+                    alpha = 0.0
+                elif policy_type == "convex":
+                    dt = 0.0
+
+                policy_tuple = (policy_type, dt, alpha)
 
                 # Store with original index for order preservation
                 policy_groups[policy_tuple].append((i, operator, inputs[i]))
@@ -1518,16 +1561,20 @@ class DatasetGenerationPipeline:
                     model = self.operator_builder.build_u_afno(param_dict)
                 else:
                     model = self.operator_builder.build_simple_cnn(param_dict)
+
+                # Move model to device FIRST (before NeuralOperator wrapping)
+                model = model.to(self.device)
+                model.eval()
+
+                # Phase 1 CUDA optimization: Compile the MODEL (not the wrapper)
+                # This way operator.model will be the compiled model
+                model = self._get_or_create_compiled_model_template(param_dict, model)
+
+                # NOW wrap the compiled model in NeuralOperator
                 operator = NeuralOperator(model)
 
-                # Prepare for inference
+                # Prepare for inference (memory optimization)
                 operator = MemoryManager.optimize_for_inference(operator)
-                operator = operator.to(self.device)
-
-                # Phase 1 CUDA optimization: Use compiled template for same-architecture operators
-                # This replaces the disabled per-operator compile with partition-aware caching
-                # Speedup: 1.3-1.5× from torch.compile kernel reuse
-                operator = self._get_or_create_compiled_template(param_dict, operator)
 
                 operators.append(operator)
 

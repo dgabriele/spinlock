@@ -201,18 +201,36 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
             'aggregated_mean': torch.zeros(N, 0, device=self.device),
         }
 
+    def get_actual_per_timestep_dim(self) -> int:
+        """Get actual per-timestep feature dimension by runtime extraction.
+
+        Returns:
+            Actual feature dimension (auto-detected)
+        """
+        # Create a small dummy batch to measure actual dimensions
+        # Shape: [N=1, M=2, T=5, C=3, H=64, W=64]
+        dummy = torch.zeros(1, 2, 5, 3, 64, 64, device=self.device)
+
+        # Extract to get actual shape
+        with torch.no_grad():
+            features = self.extract_per_timestep(dummy)
+
+        return features.shape[-1]
+
     def get_feature_dims(self) -> Dict[str, int]:
         """Get feature dimensions for each component.
 
         Returns:
-            Dictionary mapping component names to dimensions
+            Dictionary mapping component names to ACTUAL dimensions
         """
+        total_dim = self.get_actual_per_timestep_dim()
+
         return {
-            'spatial': 24,
-            'spectral': 27,
-            'cross_channel': 12,
-            'temporal': 130,
-            'total': 193,
+            'spatial': 105,      # Actual: stats + gradients + histograms
+            'spectral': 93,      # Actual: multi-scale FFT features
+            'cross_channel': 10, # Actual: pairwise correlations
+            'temporal': 120,     # Actual: enhanced temporal dynamics
+            'total': total_dim,  # Auto-detected at runtime
         }
 
     def reset(self):

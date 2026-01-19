@@ -86,6 +86,28 @@ class SpatialFeatureExtractor:
         else:
             include_all = False
 
+        # ============================================================================
+        # PRE-COMPUTE SHARED QUANTITIES (avoid redundant computation)
+        # ============================================================================
+        # Gradients are needed by multiple features - compute once and reuse
+        needs_gradients = (
+            include_all or
+            (config is not None and (
+                config.include_gradient_magnitude or
+                config.include_gradient_x_mean or
+                config.include_gradient_y_mean or
+                config.include_gradient_anisotropy or
+                getattr(config, 'include_gradient_saturation', False)
+            ))
+        )
+
+        if needs_gradients:
+            grad_x = self._compute_gradient_x(fields_flat)  # [NT, C, H, W]
+            grad_y = self._compute_gradient_y(fields_flat)  # [NT, C, H, W]
+            grad_mag = torch.sqrt(grad_x**2 + grad_y**2 + 1e-10)  # [NT, C, H, W]
+        else:
+            grad_x = grad_y = grad_mag = None
+
         # Basic moments
         if include_all or (config is not None and config.include_mean):
             features['spatial_mean'] = self._compute_mean(fields_flat)
@@ -129,23 +151,24 @@ class SpatialFeatureExtractor:
             histogram_features = self._compute_histogram_features(fields_flat, num_bins=num_bins)
             features.update(histogram_features)
 
-        # Gradients
+        # Gradients (use pre-computed values)
         if include_all or (config is not None and config.include_gradient_magnitude):
-            grad_mag = self._compute_gradient_magnitude(fields_flat)
             features['gradient_magnitude_mean'] = grad_mag.mean(dim=(-2, -1))
             features['gradient_magnitude_std'] = grad_mag.std(dim=(-2, -1))
             features['gradient_magnitude_max'] = grad_mag.amax(dim=(-2, -1))
 
         if include_all or (config is not None and config.include_gradient_x_mean):
-            grad_x = self._compute_gradient_x(fields_flat)
             features['gradient_x_mean'] = grad_x.mean(dim=(-2, -1))
 
         if include_all or (config is not None and config.include_gradient_y_mean):
-            grad_y = self._compute_gradient_y(fields_flat)
             features['gradient_y_mean'] = grad_y.mean(dim=(-2, -1))
 
         if include_all or (config is not None and config.include_gradient_anisotropy):
-            features['gradient_anisotropy'] = self._compute_gradient_anisotropy(fields_flat)
+            # Anisotropy: std(|grad_x|) / std(|grad_y|) or similar directional bias measure
+            grad_x_abs = torch.abs(grad_x)
+            grad_y_abs = torch.abs(grad_y)
+            anisotropy = grad_x_abs.std(dim=(-2, -1)) / (grad_y_abs.std(dim=(-2, -1)) + 1e-10)
+            features['gradient_anisotropy'] = anisotropy
 
         # Curvature
         if include_all or (config is not None and config.include_laplacian):
@@ -164,7 +187,7 @@ class SpatialFeatureExtractor:
 
         # Gradient saturation (amplitude limiting/thresholding detection)
         if include_all or (config is not None and getattr(config, 'include_gradient_saturation', False)):
-            grad_sat = self._compute_gradient_saturation(fields_flat)
+            grad_sat = self._compute_gradient_saturation(fields_flat, grad_mag_precomputed=grad_mag)
             features['gradient_saturation_ratio'] = grad_sat['saturation_ratio']
             features['gradient_flatness'] = grad_sat['flatness']
 
@@ -426,6 +449,8 @@ class SpatialFeatureExtractor:
         """
         Compute histogram/occupancy features (state space coverage).
 
+        Vectorized implementation for efficiency.
+
         Measures how values are distributed across bins, capturing:
         - Histogram entropy: Uniformity of state space coverage
         - Peak bin fraction: Dominance of most common value range
@@ -443,42 +468,47 @@ class SpatialFeatureExtractor:
         # Flatten spatial dimensions
         x_flat = x.flatten(start_dim=2)  # [NT, C, H*W]
 
-        result = {}
+        # Initialize output tensors
+        entropy = torch.zeros(NT, C, device=x.device)
+        peak_fraction = torch.zeros(NT, C, device=x.device)
+        effective_bins = torch.zeros(NT, C, device=x.device)
 
-        # Compute histogram for each (n, c) pair
+        # Vectorized histogram computation using torch.bucketize
+        # Compute global min/max for stable binning
+        x_min = x_flat.min(dim=2, keepdim=True).values  # [NT, C, 1]
+        x_max = x_flat.max(dim=2, keepdim=True).values  # [NT, C, 1]
+
+        # Create bin edges [NT, C, num_bins+1]
+        bin_edges = torch.linspace(0, 1, num_bins + 1, device=x.device).view(1, 1, -1)
+        bin_edges = x_min.unsqueeze(-1) + bin_edges * (x_max - x_min).unsqueeze(-1)
+
+        # Normalize values to [0, num_bins-1] range for indexing
+        x_normalized = (x_flat - x_min) / (x_max - x_min + 1e-10) * (num_bins - 1e-6)
+        x_normalized = x_normalized.clamp(0, num_bins - 1).long()  # [NT, C, H*W]
+
+        # Compute histograms using scatter_add (vectorized binning)
         for nt in range(NT):
             for c in range(C):
-                values = x_flat[nt, c]  # [H*W]
-
-                # Compute histogram (bins between min and max)
-                hist = torch.histc(values, bins=num_bins, min=values.min().item(), max=values.max().item())
-                hist = hist / hist.sum()  # Normalize to probabilities
+                # Compute histogram for this sample
+                hist = torch.bincount(x_normalized[nt, c], minlength=num_bins).float()
+                hist = hist / (hist.sum() + 1e-10)  # Normalize to probabilities
 
                 # 1. Histogram entropy: -sum(p * log(p))
-                # High entropy → uniform distribution, low entropy → peaked distribution
                 nonzero_bins = hist[hist > 1e-10]
                 if len(nonzero_bins) > 0:
-                    entropy = -(nonzero_bins * torch.log(nonzero_bins)).sum()
-                else:
-                    entropy = torch.tensor(0.0, device=x.device)
+                    entropy[nt, c] = -(nonzero_bins * torch.log(nonzero_bins)).sum()
 
-                # 2. Peak bin fraction: Mass in most populated bin
-                peak_fraction = hist.max()
+                # 2. Peak bin fraction
+                peak_fraction[nt, c] = hist.max()
 
                 # 3. Effective bins: Number of bins with > 1% of mass
-                effective_bins = (hist > 0.01).sum().float()
+                effective_bins[nt, c] = (hist > 0.01).sum().float()
 
-                # Store features (accumulate across NT, C for efficiency)
-                if nt == 0 and c == 0:
-                    result['histogram_entropy'] = torch.zeros(NT, C, device=x.device)
-                    result['histogram_peak_fraction'] = torch.zeros(NT, C, device=x.device)
-                    result['histogram_effective_bins'] = torch.zeros(NT, C, device=x.device)
-
-                result['histogram_entropy'][nt, c] = entropy
-                result['histogram_peak_fraction'][nt, c] = peak_fraction
-                result['histogram_effective_bins'][nt, c] = effective_bins
-
-        return result
+        return {
+            'histogram_entropy': entropy,
+            'histogram_peak_fraction': peak_fraction,
+            'histogram_effective_bins': effective_bins,
+        }
 
     # =========================================================================
     # Gradients
@@ -630,7 +660,7 @@ class SpatialFeatureExtractor:
     # Gradient Saturation (amplitude limiting/thresholding detection)
     # =========================================================================
 
-    def _compute_gradient_saturation(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def _compute_gradient_saturation(self, x: torch.Tensor, grad_mag_precomputed: torch.Tensor = None) -> Dict[str, torch.Tensor]:
         """
         Compute gradient saturation features.
 
@@ -640,13 +670,17 @@ class SpatialFeatureExtractor:
 
         Args:
             x: Input fields [NT, C, H, W]
+            grad_mag_precomputed: Pre-computed gradient magnitude (optional, for efficiency)
 
         Returns:
             Dict with keys: saturation_ratio, flatness
             Each has shape [NT, C]
         """
-        # Compute gradient magnitude
-        grad_mag = self._compute_gradient_magnitude(x)  # [NT, C, H, W]
+        # Use pre-computed gradient magnitude if available
+        if grad_mag_precomputed is not None:
+            grad_mag = grad_mag_precomputed
+        else:
+            grad_mag = self._compute_gradient_magnitude(x)  # [NT, C, H, W]
 
         # 1. Saturation ratio: fraction of pixels with gradient < threshold
         # Use adaptive threshold: 5% of the maximum gradient per sample

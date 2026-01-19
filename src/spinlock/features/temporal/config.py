@@ -4,7 +4,7 @@ Configuration classes for per-timestep-only feature extraction.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Any
 
 
 @dataclass
@@ -130,6 +130,10 @@ class TemporalFeatureConfig:
     # v2.x aggregation settings (not used in v3.0, but needed for backward compat)
     temporal_aggregation: list = field(default_factory=lambda: ["mean"])
     realization_aggregation: list = field(default_factory=lambda: ["mean"])
+
+    # v2.x summary mode (v3.0 uses manual hand-crafted features only)
+    summary_mode: str = "manual"  # Options: "manual", "learned", "hybrid"
+    learned: Optional[Any] = None  # v2.x learned feature config (not used in v3.0)
 
     @classmethod
     def from_schema_config(cls, schema_config):

@@ -285,17 +285,25 @@ class HDF5DatasetWriter:
         batch_size = parameters.shape[0]
 
         # Convert tensors to numpy and free GPU memory immediately
+        # Optimization: Only transfer what we'll actually write
         if isinstance(inputs, torch.Tensor):
             inputs_np = inputs.cpu().numpy()
             del inputs  # Free GPU memory
         else:
             inputs_np = inputs
 
-        if isinstance(outputs, torch.Tensor):
-            outputs_np = outputs.cpu().numpy()
-            del outputs  # Free GPU memory
+        # Optimization: Skip expensive GPU->CPU transfer if not storing trajectories
+        if self.store_trajectories:
+            if isinstance(outputs, torch.Tensor):
+                outputs_np = outputs.cpu().numpy()
+                del outputs  # Free GPU memory
+            else:
+                outputs_np = outputs
         else:
-            outputs_np = outputs
+            # Feature-only mode: don't transfer outputs (saves ~38MB per batch transfer)
+            outputs_np = None
+            if isinstance(outputs, torch.Tensor):
+                del outputs  # Free GPU memory immediately
 
         # Create parameters dataset on first write
         param_group = cast(h5py.Group, self.file["parameters"])
@@ -313,7 +321,8 @@ class HDF5DatasetWriter:
         # Accumulate in buffer
         self._write_buffer["parameters"].append(parameters)
         self._write_buffer["inputs"].append(inputs_np)
-        self._write_buffer["outputs"].append(outputs_np)
+        if outputs_np is not None:
+            self._write_buffer["outputs"].append(outputs_np)
 
         if ic_types is not None:
             if len(ic_types) != batch_size:
@@ -349,7 +358,12 @@ class HDF5DatasetWriter:
         # Concatenate buffered arrays
         parameters = np.concatenate(self._write_buffer["parameters"], axis=0)
         inputs_np = np.concatenate(self._write_buffer["inputs"], axis=0)
-        outputs_np = np.concatenate(self._write_buffer["outputs"], axis=0)
+
+        # Only concatenate outputs if we have them (feature-only mode may skip)
+        if self._write_buffer["outputs"]:
+            outputs_np = np.concatenate(self._write_buffer["outputs"], axis=0)
+        else:
+            outputs_np = None
 
         actual_batch_size = parameters.shape[0]
         end_idx = self.current_idx + actual_batch_size
@@ -365,7 +379,7 @@ class HDF5DatasetWriter:
         cast(h5py.Dataset, self.file["inputs/fields"])[self.current_idx : end_idx] = inputs_np
 
         # Only write trajectories if storing them (not feature-only mode)
-        if self.store_trajectories:
+        if self.store_trajectories and outputs_np is not None:
             cast(h5py.Dataset, self.file["outputs/fields"])[self.current_idx : end_idx] = outputs_np
 
         # Write discovery metadata if tracking enabled
