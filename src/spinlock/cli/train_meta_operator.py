@@ -1152,7 +1152,7 @@ Output:
             for b in range(B):
                 try:
                     target_traj = replayer.rollout(
-                        params_vector=params[b].numpy(),
+                        params_vector=params[b].cpu().numpy(),  # Move to CPU for CNOReplayer
                         ic=ic[b:b+1],
                         timesteps=timesteps,
                         num_realizations=1,
@@ -1369,7 +1369,7 @@ Output:
                 for b in range(B):
                     try:
                         target_traj = replayer.rollout(
-                            params_vector=params[b].numpy(),
+                            params_vector=params[b].cpu().numpy(),  # Move to CPU for CNOReplayer
                             ic=ic[b:b+1],
                             timesteps=timesteps,
                             num_realizations=1,
