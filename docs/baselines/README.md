@@ -63,3 +63,8 @@ When creating new production baselines:
 3. **Config:** Store in `configs/vqvae/production/`
 4. Update this README with comparison tables
 5. Reference from main README.md
+
+## Dataset Regeneration
+
+For migrating from v2.x datasets or regenerating datasets with v3.0 features, see:
+- [Dataset Regeneration Guide](dataset-regeneration-guide.md)
