@@ -2,13 +2,17 @@
 
 Production datasets and VQ-VAE tokenizers for Neural Operator Agent research.
 
+**Last Updated:** 2026-01-18 (v3.0)
+
 ## Available Baselines
 
 ### Datasets
 
 | Dataset | Samples | Features | Size | Status |
 |---------|---------|----------|------|--------|
-| [**100K Full Features**](100k-full-features-dataset.md) | 100,000 | SUMMARY+TEMPORAL+ARCHITECTURE | ~10 GB | PRODUCTION |
+| [**100K Full Features v3.0**](100k-full-features-dataset.md) | 100,000 | TEMPORAL (~328D) | ~12 GB | PRODUCTION |
+
+**v3.0 Changes:** SUMMARY features removed, TEMPORAL enhanced from 63D → ~328D per-timestep, parameter space 12D → 14D
 
 ### VQ-VAE Tokenizers
 
@@ -33,16 +37,22 @@ Production datasets and VQ-VAE tokenizers for Neural Operator Agent research.
 | Dataset Config | [100k-full-features-dataset.md](100k-full-features-dataset.md) |
 | VQ-VAE Config | [100k-full-features-vqvae.md](100k-full-features-vqvae.md) |
 
-### Feature Summary
+### Feature Summary (v3.0)
 
 | Family | Raw Dim | Encoded Dim | Encoder |
 |--------|---------|-------------|---------|
-| SUMMARY | 360 | ~150 | MLPEncoder [512, 256] |
-| TEMPORAL | 256×63 | ~38 | TemporalCNNEncoder |
-| ARCHITECTURE | 12 | 12 | IdentityEncoder |
-| **Total** | - | **200** | - |
+| INITIAL | 42 | ~32 | MLPEncoder [128, 64] |
+| TEMPORAL | T×~328 | ~180 | TemporalCNNEncoder |
+| ARCHITECTURE | 14 | Excluded | N/A (NOA knows params) |
+| **Total** | - | **~212** | - |
 
-After cleaning: **200 features** → **14 categories**
+**v3.0 Architecture:**
+- TEMPORAL features: Enhanced to ~328D per-timestep (was 63D in v2.x)
+- SUMMARY features: Removed (incompatible with online prediction)
+- INITIAL features: Computed inline from inputs (42D)
+- ARCHITECTURE: Stored in `/parameters/params [N, 14]` but excluded from VQ-VAE training
+
+After cleaning: **~212 features** → **~14-16 behavioral categories**
 
 ## Adding New Baselines
 

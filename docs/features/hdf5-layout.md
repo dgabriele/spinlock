@@ -2,12 +2,14 @@
 
 This document describes the complete HDF5 schema for Spinlock datasets, including the feature storage structure used by the VQ-VAE tokenization pipeline.
 
+**Last Updated:** 2026-01-18 (v3.0 - SUMMARY features removed)
+
 ## Overview
 
 Spinlock datasets use HDF5 format with two main sections:
 
 1. **Core Dataset** (`/metadata/`, `/parameters/`, `/inputs/`, `/outputs/`) - Operator parameters and rollout data
-2. **Features** (`/features/`) - Extracted behavioral features (TEMPORAL and SUMMARY families)
+2. **Features** (`/features/`) - Extracted behavioral features (TEMPORAL family only in v3.0+)
 
 ## Complete Schema
 
@@ -19,7 +21,7 @@ dataset.h5
 │   └── version             # Schema version
 │
 ├── parameters/
-│   ├── vectors [N, P]      # float32 - Sobol parameter vectors
+│   ├── params [N, P]       # float32 - Sobol parameter vectors (P=14 in v3.0)
 │   └── @dimension_names    # Attribute: parameter dimension names
 │
 ├── inputs/
@@ -29,35 +31,20 @@ dataset.h5
 │   └── trajectories [N, M, T, C, H, W]  # float32 - Rollout data
 │
 └── features/
-    ├── @family_versions    # {"temporal": "1.0.0", "summary": "1.0.0"}
+    ├── @family_versions    # {"temporal": "3.0.0"}
     ├── @extraction_timestamp
     ├── @extraction_config
     │
-    ├── temporal/           # TEMPORAL family (per-timestep)
-    │   ├── @version
-    │   └── features [N, T, D_temporal]  # float32
-    │
-    └── summary/            # SUMMARY family (aggregated)
+    └── temporal/           # TEMPORAL family (per-timestep only)
         ├── @version
         ├── @feature_registry   # JSON {category: {name: index}}
-        ├── @num_features
-        │
-        ├── per_trajectory/
-        │   └── features [N, M, D_traj]  # float32
-        │
-        ├── aggregated/
-        │   ├── features [N, D_final]    # float32
-        │   └── metadata/
-        │       └── extraction_time [N]  # float64
-        │
-        ├── learned/        # Optional (U-AFNO latents)
-        │   ├── @version
-        │   ├── @description
-        │   └── features [N, D_learned]  # float32
-        │
-        └── operator_sensitivity_inline/  # Sparse inline features
-            └── {feature_name} [N]       # float32
+        └── features [N, T, D_temporal]  # float32 - D_temporal ≈ 328
 ```
+
+**v3.0 Changes:**
+- Removed `/features/summary/` entirely (incompatible with online prediction)
+- TEMPORAL features enhanced from ~63D to ~328D per-timestep
+- All features now per-timestep computable for NOA online operation
 
 ## Dimensions
 
@@ -68,45 +55,34 @@ dataset.h5
 | T | Number of timesteps | 100 - 500 |
 | C | Number of channels | 1 |
 | H, W | Grid height/width | 128 |
-| P | Parameter dimension | 14 |
-| D_temporal | TEMPORAL feature dim | ~120 |
-| D_traj | Per-trajectory feature dim | ~120 |
-| D_final | Aggregated feature dim | ~360 |
-| D_learned | Learned feature dim | 64 - 256 |
+| P | Parameter dimension (v3.0+) | 14 |
+| D_temporal | TEMPORAL feature dim (v3.0+) | ~328 |
 
 ## Feature Families
 
 ### TEMPORAL Family (`/features/temporal/`)
 
-Per-timestep time series preserving full temporal resolution.
+Per-timestep time series preserving full temporal resolution. **This is the only feature family stored in `/features/` as of v3.0.**
 
-**Shape:** `[N, T, D_temporal]`
+**Shape:** `[N, T, D_temporal]` where D_temporal ≈ 328
 
-**Contents:**
-- Spatial statistics per timestep (gradients, anisotropy)
-- Spectral features per timestep (FFT power, dominant frequencies)
-- Cross-channel correlations per timestep
+**Contents (v3.0 Enhanced):**
+- **Spatial features (~105D):** Per-channel statistics, gradients, Laplacian, histogram features
+- **Spectral features (~93D):** Multi-scale FFT, power spectrum, frequency bands, spectral entropy
+- **Cross-channel features (~10D):** Pairwise correlations, covariance eigenvalues
+- **Enhanced temporal dynamics (~120D):** Windowed statistics, stability metrics, phase space features, autocorrelation
 
-**Use Case:** Working memory analysis, temporal pattern detection, trajectory classification.
+**Use Case:** Working memory analysis, temporal pattern detection, trajectory classification, online NOA predictions.
 
-### SUMMARY Family (`/features/summary/`)
+**Key Property:** All features are **per-timestep computable** (no lookahead required), enabling online operation.
 
-Aggregated scalar statistics collapsed across time and realizations.
+### ~~SUMMARY Family~~ [REMOVED in v3.0]
 
-**Structure:**
+Aggregated trajectory-level features (causality, invariant drift, operator sensitivity) were removed in v3.0 because they require complete trajectories and are incompatible with online prediction.
 
-| Dataset | Shape | Description |
-|---------|-------|-------------|
-| `per_trajectory/features` | [N, M, D_traj] | Per-realization aggregates |
-| `aggregated/features` | [N, D_final] | Final cross-realization aggregates |
-| `learned/features` | [N, D_learned] | U-AFNO latent embeddings (optional) |
+**Archived code:** `src/spinlock/features/temporal_old_v2/summary/`
 
-**Contents:**
-- Temporal dynamics (autocorrelation, stationarity, regimes)
-- Causality metrics (information flow, Granger causality)
-- Invariant drift (long-term behavioral evolution)
-
-**Use Case:** VQ-VAE tokenization, operator clustering, behavioral classification.
+**Migration:** If you need trajectory-level aggregates, compute them post-hoc from TEMPORAL features or use v2.x datasets.
 
 ## Reading Examples
 
@@ -117,38 +93,38 @@ import h5py
 import numpy as np
 
 with h5py.File("dataset.h5", "r") as f:
-    # Check available feature families
+    # Check available feature families (v3.0: only 'temporal')
     families = list(f["/features"].keys())
-    print(f"Available families: {families}")
-
-    # Read SUMMARY aggregated features (primary VQ-VAE input)
-    if "summary" in families:
-        features = f["/features/summary/aggregated/features"][:]
-        print(f"SUMMARY shape: {features.shape}")  # [N, D_final]
+    print(f"Available families: {families}")  # ['temporal']
 
     # Read TEMPORAL per-timestep features
-    if "temporal" in families:
-        temporal = f["/features/temporal/features"][:]
-        print(f"TEMPORAL shape: {temporal.shape}")  # [N, T, D]
+    temporal = f["/features/temporal/features"][:]
+    print(f"TEMPORAL shape: {temporal.shape}")  # [N, T, ~328]
+
+    # Read parameter vectors (14D Sobol space)
+    params = f["/parameters/params"][:]
+    print(f"Parameters shape: {params.shape}")  # [N, 14]
 
     # Read feature registry for interpretability
-    registry_json = f["/features/summary"].attrs["feature_registry"]
+    registry_json = f["/features/temporal"].attrs["feature_registry"]
     import json
     registry = json.loads(registry_json)
     # registry = {category: {feature_name: index}}
+
+    # Check metadata
+    version = f["/metadata/version"][()]
+    print(f"Dataset version: {version}")
 ```
 
-### Multi-Family Loading (VQ-VAE)
+### VQ-VAE Feature Loading (v3.0)
 
 ```python
-# VQ-VAE loads features using this path pattern:
-# /features/{family}/{type}/features
-
-# For SUMMARY aggregated:
-features_path = "/features/summary/aggregated/features"
-
-# For TEMPORAL:
+# VQ-VAE loads TEMPORAL features directly
 features_path = "/features/temporal/features"
+
+# Load INITIAL features (computed inline from /inputs/fields)
+# Load TEMPORAL features from HDF5
+# ARCHITECTURE features excluded from VQ-VAE training
 ```
 
 ## Compression
@@ -165,17 +141,36 @@ Default HDF5 settings:
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 1.0.0 | 2026-01 | Initial two-family structure (TEMPORAL, SUMMARY) |
+| 3.0.0 | 2026-01-18 | Removed SUMMARY features; enhanced TEMPORAL to ~328D; 14D parameter space |
+| 2.0.0 | 2026-01-12 | Two-family structure (TEMPORAL, SUMMARY) with enhanced features |
+| 1.0.0 | 2025-12 | Initial implementation |
 
 ## Migration Notes
 
-### From Legacy 4-Family Structure
+### v3.0 Changes (2026-01-18)
 
-Earlier versions conceptually used 4 families (INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL). The current implementation consolidates these into 2 HDF5 families:
+**Breaking Changes:**
+- **Removed `/features/summary/`** entirely (per_trajectory, aggregated, learned, operator_sensitivity_inline)
+- **Enhanced TEMPORAL** from ~63D to ~328D per-timestep
+- **Parameter space** expanded from 12D to 14D (added dt and alpha)
+- **Feature families** reduced from 4 conceptual families to 3
 
-- **INITIAL** features → Now part of SUMMARY (spatial/spectral characteristics of initial conditions)
-- **ARCHITECTURE** features → Stored in `/parameters/vectors` (not in `/features/`)
-- **SUMMARY** features → `/features/summary/aggregated/features`
-- **TEMPORAL** features → `/features/temporal/features`
+**Rationale:**
+SUMMARY features (causality, invariant drift, operator sensitivity, nonlinear dynamics) required complete trajectories for aggregation, making them incompatible with online NOA predictions. All features must now be computable per-timestep.
 
-The conceptual 4-family framework remains valid for understanding feature semantics; see [Feature Families README](README.md) for details.
+**Current Structure (v3.0):**
+- **INITIAL** features → Computed inline from `/inputs/fields` (not stored in `/features/`)
+- **ARCHITECTURE** features → Stored in `/parameters/params [N, 14]` (Sobol unit cube)
+- **TEMPORAL** features → `/features/temporal/features [N, T, ~328]` (per-timestep only)
+
+**Archived Code:**
+Old SUMMARY implementation available at `src/spinlock/features/temporal_old_v2/summary/` for reference.
+
+### From v2.x to v3.0
+
+If you have v2.x datasets with SUMMARY features:
+1. **Regenerate datasets** using v3.0 feature extraction (recommended)
+2. **Convert features** by extracting TEMPORAL features and discarding SUMMARY
+3. **Use v2.x datasets** if you need trajectory-level aggregates (not compatible with v3.0 models)
+
+The conceptual 3-family framework (INITIAL, ARCHITECTURE, TEMPORAL) is described in [Feature Families README](README.md).

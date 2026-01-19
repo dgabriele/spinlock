@@ -13,11 +13,13 @@ poetry run spinlock generate \
 ```
 
 This will:
-- Sample 10,000 operator parameter vectors using Sobol stratification
+- Sample 10,000 operator parameter vectors using Sobol stratification (14D parameter space)
 - Construct CNN-based neural operators
 - Generate 500-timestep stochastic rollouts (3 realizations each)
-- Extract INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL features inline
+- Extract INITIAL and TEMPORAL features inline (~328D per-timestep, v3.0)
 - Store everything in HDF5 format
+
+**v3.0 Note:** SUMMARY features removed. All features are now per-timestep computable for online NOA operation.
 
 **Expected time:** ~12 hours on GPU
 
@@ -29,8 +31,9 @@ poetry run spinlock inspect datasets/my_operators.h5
 
 View dataset contents:
 - Number of operators and realizations
-- Feature dimensions (SUMMARY aggregated, TEMPORAL if enabled)
+- Feature dimensions (TEMPORAL ~328D per-timestep)
 - Metadata (initial condition types, evolution policies, parameter stratification)
+- Parameter space (14D Sobol unit cube)
 
 ### 3. Understanding Feature Semantics
 
@@ -44,23 +47,25 @@ import numpy as np
 import json
 from pathlib import Path
 
-# Load dataset
+# Load dataset (v3.0)
 with h5py.File("datasets/my_operators.h5", "r") as f:
-    # SUMMARY features: aggregated behavioral statistics [N, D]
-    summary_features = f["/features/summary/aggregated/features"][:]
+    # TEMPORAL features: per-timestep behavioral features [N, T, D_temporal]
+    temporal_features = f["/features/temporal/features"][:]  # [N, T, ~328]
 
-    # TEMPORAL features: per-timestep time series [N, T, D] (if enabled)
-    if "/features/temporal/features" in f:
-        temporal_features = f["/features/temporal/features"][:]
-    else:
-        temporal_features = None
+    # ARCHITECTURE parameters: 14D Sobol unit cube [N, 14]
+    params = f["/parameters/params"][:]
 
-    # ARCHITECTURE features: from parameter vectors [N, P]
-    arch_features = f["/parameters/vectors"][:]
+    # Initial conditions
+    inputs = f["/inputs/fields"][:]
 
     # Feature registry for interpretability
-    registry_json = f["/features/summary"].attrs["feature_registry"]
+    registry_json = f["/features/temporal"].attrs["feature_registry"]
     registry = json.loads(registry_json)
+
+    print(f"Dataset shapes:")
+    print(f"  TEMPORAL: {temporal_features.shape}")  # [N, T, ~328]
+    print(f"  Parameters: {params.shape}")  # [N, 14]
+    print(f"  Inputs: {inputs.shape}")  # [N, C, H, W]
 
 # Example 1: Find features by category
 # Registry structure: {category: {feature_name: index}}
@@ -72,55 +77,56 @@ def get_feature_indices(registry, category):
 
 spatial_indices = get_feature_indices(registry, "spatial")
 spectral_indices = get_feature_indices(registry, "spectral")
-temporal_indices = get_feature_indices(registry, "temporal")
+cross_channel_indices = get_feature_indices(registry, "cross_channel")
+temporal_dynamics_indices = get_feature_indices(registry, "temporal_dynamics")
 
 print(f"Feature dimensions by category:")
-print(f"  Spatial: {len(spatial_indices)} features")
-print(f"  Spectral: {len(spectral_indices)} features")
-print(f"  Temporal: {len(temporal_indices)} features")
+print(f"  Spatial: {len(spatial_indices)} features (~105)")
+print(f"  Spectral: {len(spectral_indices)} features (~93)")
+print(f"  Cross-channel: {len(cross_channel_indices)} features (~10)")
+print(f"  Temporal dynamics: {len(temporal_dynamics_indices)} features (~120)")
 
-# Example 2: Analyze SUMMARY spectral features
+# Example 2: Analyze spectral features across time
 # Strong spectral peaks → periodic or quasi-periodic behavior
 if spectral_indices:
-    spectral_features = summary_features[:, spectral_indices]
-    spectral_strength = spectral_features.max(axis=1)
+    # Average spectral features over time for each operator
+    spectral_time_avg = temporal_features[:, :, spectral_indices].mean(axis=1)  # [N, D_spectral]
+    spectral_strength = spectral_time_avg.max(axis=1)
 
     print(f"\nOperators with strong periodic components:")
     periodic_ops = np.where(spectral_strength > np.percentile(spectral_strength, 80))[0]
     print(f"  Found {len(periodic_ops)} operators in top 20%")
 
-# Example 3: Temporal evolution patterns (if TEMPORAL enabled)
-if temporal_features is not None:
-    # Examine how features evolve over time
-    early_mean = temporal_features[:, :50, :].mean(axis=(1, 2))
-    late_mean = temporal_features[:, -50:, :].mean(axis=(1, 2))
-    feature_growth = (late_mean - early_mean) / (np.abs(early_mean) + 1e-8)
+# Example 3: Temporal evolution patterns
+# Examine how features evolve over time
+early_mean = temporal_features[:, :50, :].mean(axis=(1, 2))  # Average over early timesteps
+late_mean = temporal_features[:, -50:, :].mean(axis=(1, 2))  # Average over late timesteps
+feature_growth = (late_mean - early_mean) / (np.abs(early_mean) + 1e-8)
 
-    print(f"\nTemporal behavior classification:")
-    print(f"  Growing operators: {(feature_growth > 0.5).sum()}")
-    print(f"  Stable operators: {(np.abs(feature_growth) < 0.5).sum()}")
-    print(f"  Decaying operators: {(feature_growth < -0.5).sum()}")
-else:
-    print("\nTEMPORAL features not available in this dataset")
+print(f"\nTemporal behavior classification:")
+print(f"  Growing operators: {(feature_growth > 0.5).sum()}")
+print(f"  Stable operators: {(np.abs(feature_growth) < 0.5).sum()}")
+print(f"  Decaying operators: {(feature_growth < -0.5).sum()}")
 ```
 
-**Interpretation Tips:**
+**Interpretation Tips (v3.0):**
 
 | Feature Category | High Values Indicate | Low Values Indicate |
 |-----------------|---------------------|-------------------|
 | **Spatial gradients** | Sharp interfaces, localized structures | Smooth, diffuse patterns |
 | **Spectral peaks** | Periodic or quasi-periodic behavior | Aperiodic or chaotic behavior |
 | **Spectral entropy** | Chaotic or irregular dynamics | Ordered or simple patterns |
-| **Temporal autocorrelation** | Persistent dynamics | Rapidly changing states |
-| **Causality metrics** | Strong information flow | Weak dependencies |
-| **Invariant drift** | Evolving behavioral regimes | Stable dynamics |
+| **Temporal autocorrelation (windowed)** | Persistent dynamics | Rapidly changing states |
+| **Stability metrics** | Unstable/chaotic trajectories | Stable/convergent behavior |
+| **Phase space features** | Complex attractor dynamics | Simple trajectories |
 
-**Cross-Validation Strategy:**
+**Cross-Validation Strategy (v3.0):**
 
-Multi-modal features enable consistency checking across perspectives:
-- If **parameter vectors** suggest high noise, do **SUMMARY** entropy features confirm chaotic behavior?
-- If **TEMPORAL** features show period-doubling, do **SUMMARY** spectral features detect harmonics?
-- Compare spatial features at early vs. late timesteps to detect pattern evolution.
+Multi-modal per-timestep features enable consistency checking:
+- If **parameter vectors** suggest high noise, do **spatial entropy** features at each timestep confirm chaotic behavior?
+- If **temporal autocorrelation** shows periodic patterns, do **spectral** features detect corresponding harmonics?
+- Compare early vs. late timesteps to detect pattern evolution and regime transitions
+- Use **stability metrics** to validate parameter-inferred stability properties
 
 This cross-validation increases confidence that discovered categories reflect genuine behavioral differences, not statistical artifacts.
 
@@ -134,12 +140,14 @@ poetry run spinlock train-vqvae \
 ```
 
 This will:
-- Load SUMMARY aggregated features from `/features/summary/aggregated/features`
-- Optionally concatenate TEMPORAL features if available
+- Load TEMPORAL per-timestep features from `/features/temporal/features`
+- Optionally concatenate INITIAL features (computed inline from inputs)
 - Automatically clean features (NaN removal, variance filtering, deduplication)
-- Discover ~8-15 categories via hierarchical clustering
-- Train 3-level hierarchical VQ-VAE
+- Discover ~8-15 behavioral categories via hierarchical clustering
+- Train 3-level hierarchical VQ-VAE on per-timestep features
 - Save checkpoints and training history
+
+**v3.0 Note:** VQ-VAE now operates on per-timestep TEMPORAL features, enabling online tokenization for NOA predictions.
 
 **Expected time:** ~2-6 hours on GPU
 

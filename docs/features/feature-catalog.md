@@ -1,9 +1,11 @@
-# Feature Catalog: Current Configuration
+# Feature Catalog: Current Configuration (v3.0)
 
-**Date**: 2026-01-12
+**Date**: 2026-01-18
 **Purpose**: Enumerate features computed in the current system configuration
 
 This document lists the multi-modal features extracted from operator rollouts, organized by family and analysis category. Feature dimensions reflect the current configuration and are adjustable based on enabled categories and embedding sizes.
+
+**v3.0 Update**: SUMMARY features removed. All features are now per-timestep computable for online NOA predictions.
 
 ---
 
@@ -12,10 +14,14 @@ This document lists the multi-modal features extracted from operator rollouts, o
 | Family | Dimensions (Current Config) | Temporal Resolution | Purpose |
 |--------|-----------|---------------------|---------|
 | **INITIAL** | Manual (14) + CNN (configurable) | Single snapshot (IC) | Encode initial condition characteristics |
-| **SUMMARY** | Varies by enabled categories | Trajectory-level aggregation | Compress behavioral signatures across full rollout |
-| **TEMPORAL** | Varies by enabled categories | Per-timestep sequence | Capture temporal evolution for sequential reasoning |
+| **TEMPORAL** | ~328D per-timestep (v3.0) | Per-timestep sequence | Capture behavioral evolution with online-computable features |
 
 **Configuration-Dependent**: Exact dimensions vary based on which feature categories are enabled and CNN embedding size.
+
+**v3.0 Changes**:
+- Removed SUMMARY features (incompatible with online prediction)
+- Enhanced TEMPORAL features from ~63D to ~328D per-timestep
+- All features are now per-timestep computable (no trajectory lookahead)
 
 ---
 
@@ -64,9 +70,26 @@ Hand-crafted features providing interpretable, domain-driven characterization.
 
 ---
 
-## SUMMARY Features
+## ~~SUMMARY Features~~ [REMOVED in v3.0]
 
-**Purpose**: Aggregate behavioral signatures across full trajectory, providing compressed episodic representation.
+**SUMMARY features were removed in v3.0.0** to enable online per-timestep predictions in the Neural Operator Apprentice (NOA).
+
+**Why removed:** Aggregated trajectory-level features (causality, invariant drift, operator sensitivity, nonlinear dynamics) require seeing the complete trajectory, making them incompatible with real-time online operation where the model must make predictions at each timestep without lookahead.
+
+**Archived implementation:** `src/spinlock/features/temporal_old_v2/summary/`
+
+**Migration:** Users needing trajectory-level aggregates can compute them post-hoc from TEMPORAL features or use v2.x datasets.
+
+---
+
+### Legacy SUMMARY Categories (v2.x only - for reference)
+
+<details>
+<summary>Click to expand legacy SUMMARY feature documentation (v2.x)</summary>
+
+**Note:** This documentation is preserved for reference but describes features that are **not present in v3.0+ datasets**.
+
+**Purpose**: Aggregate behavioral signatures across full trajectory (v2.x only)
 
 **Resolution**: Trajectory-level (single vector per rollout)
 
@@ -312,99 +335,161 @@ Hand-crafted features providing interpretable, domain-driven characterization.
 - `fixed_point_stability` (convergence to equilibrium)
 - `limit_cycle_stability` (periodic attractor robustness)
 
+</details>
+
 ---
 
 ## TEMPORAL Features (per timestep)
 
-**Purpose**: Per-timestep time series for sequential reasoning, working memory constraints, and attention mechanisms.
+**Purpose**: Per-timestep behavioral features for sequential reasoning, online prediction, and real-time NOA operation.
 
-**Resolution**: One 63D vector per timestep (full temporal resolution preserved)
+**Resolution**: One D_temporal-dimensional vector per timestep (typical: ~328D in v3.0)
 
-### Per-Timestep Feature Breakdown
+**v3.0 Enhancement**: Expanded from ~63D to ~328D per-timestep by adding multi-scale spatial features, enhanced spectral analysis, and advanced temporal dynamics.
 
-**Spatial Statistics** (26 features):
-- Moments: mean, variance, std, skewness, kurtosis
-- Extrema: min, max, range, median
-- Spread: MAD, IQR, quartiles
-- Entropy, autocorrelation, isotropy
-- Gradients: mean, std, max
-- Laplacian: mean, std
-- Energy measures: total, concentration
+### Per-Timestep Feature Categories
 
-**Spectral Properties** (12 features):
-- Power: total, mean, std
-- Frequency: dominant, centroid, bandwidth
-- Multi-scale: low, mid, high power
-- Ratios: low-to-high
-- Shape: flatness, entropy
+#### 1. Spatial Features (~105D)
 
-**Temporal Context** (8 features):
-- Rate of change from previous step
-- Local acceleration
-- Recent trend (short window)
-- Recent volatility
-- Deviation from trajectory mean
-- Cumulative drift
-- Time-since-event markers
-- Regime indicator
+**Per-Channel Statistics**:
+- Moments: mean, variance, std, skewness, kurtosis (per channel)
+- Extrema: min, max, range, median, quartiles (per channel)
+- Spread: MAD, IQR, percentiles (p10, p90, p95, p99)
+- Entropy measures (histogram-based)
 
-**Cross-Channel Dynamics** (9 features):
-- Instantaneous correlation
-- Covariance
-- Mutual information
-- Phase synchronization
-- Amplitude coupling
-- Directional flow (TE)
-- Coherence
-- Effective connectivity
-- Nonlinear coupling
+**Spatial Gradients**:
+- Gradient magnitude statistics (mean, std, max)
+- Laplacian statistics (mean, std, max)
+- Directional gradients (x, y components)
+- Edge density metrics
 
-**Structural Features** (8 features):
-- Gradient magnitude
-- Laplacian magnitude
-- Divergence (source/sink strength)
-- Curl (rotational flow)
-- Pattern complexity (fractal dim)
-- Cluster count
-- Largest cluster size
+**Histogram Features (v3.0 NEW)**:
+- Multi-bin histogram distributions (10-20 bins)
+- Distribution shape metrics
+- Multi-scale histogram features
+- Adaptive binning statistics
+
+**Pattern Metrics**:
+- Autocorrelation (Moran's I)
+- Isotropy/anisotropy measures
 - Spatial coherence length
+- Clustering metrics
+
+#### 2. Spectral Features (~93D)
+
+**Power Spectrum (v3.0 ENHANCED)**:
+- Total power, mean power, std power
+- Multi-scale FFT features (2-4 scales)
+- Frequency band decomposition (low, mid, high, ultra-high)
+- Per-band energy distributions
+
+**Frequency Characteristics**:
+- Dominant frequency, spectral centroid
+- Spectral bandwidth, rolloff frequency
+- Frequency spread metrics
+- Peak frequency locations
+
+**Spectral Shape**:
+- Spectral flatness (Wiener entropy)
+- Spectral entropy (Shannon entropy)
+- Power law exponent
+- Spectral slope
+
+**Multi-Scale Analysis (v3.0 NEW)**:
+- Wavelet energy per scale (4-8 scales)
+- Scale-specific spectral features
+- Cross-scale coupling metrics
+
+#### 3. Cross-Channel Features (~10D)
+
+**Pairwise Correlations**:
+- Instantaneous correlation coefficients
+- Covariance statistics
+- Correlation matrix properties
+
+**Covariance Matrix Analysis**:
+- Eigenvalue statistics (max, min, sum)
+- Condition number
+- Effective rank
+- Trace and determinant
+
+**Synchronization**:
+- Phase synchronization metrics
+- Amplitude coupling
+
+#### 4. Enhanced Temporal Dynamics (~120D, v3.0 NEW)
+
+**Windowed Statistics**:
+- Velocity (first derivative) statistics over short windows
+- Acceleration (second derivative) statistics
+- Local trend estimates
+- Recent volatility measures
+
+**Stability Metrics (Lyapunov-inspired)**:
+- Local divergence rates
+- Trajectory stability indicators
+- Perturbation sensitivity (online estimate)
+- Convergence/divergence indicators
+
+**Phase Space Reconstruction**:
+- Embedding dimension estimates
+- Attractor reconstruction metrics
+- Recurrence features (online RQA)
+- Phase space occupancy
+
+**Temporal Autocorrelation (windowed)**:
+- Short-lag autocorrelation (lags 1-5)
+- Decorrelation timescale estimates
+- Memory depth indicators
+- Persistence metrics
+
+**Rate of Change Features**:
+- Instantaneous rate of change
+- Smoothed derivatives
+- Cumulative change tracking
+- Change detection metrics
 
 ---
 
-## Usage in NOA Pipeline
+## Usage in NOA Pipeline (v3.0)
 
 ### Stage 1: MNO Training (Pure MSE)
 - **INITIAL features**: Not used (MNO trains on raw IC grids)
-- **SUMMARY features**: Not used
 - **TEMPORAL features**: Not used
 
 ### Stage 2: Feature Generation
-- Extract **INITIAL**, **SUMMARY**, **TEMPORAL** from 100K+ MNO rollouts
+- Extract **INITIAL** and **TEMPORAL** from 100K+ MNO rollouts
 - Inline GPU-optimized extraction (no trajectory storage)
-- Output: ~1 GB compressed HDF5 dataset
+- **v3.0**: Enhanced TEMPORAL features (~328D per-timestep)
+- Output: ~2 GB compressed HDF5 dataset (larger due to enhanced features)
 
 ### Stage 3: VQ-VAE Training
 - Train hierarchical VQ-VAE on MNO's feature distribution
-- **INITIAL** + **SUMMARY** + **TEMPORAL** jointly encoded
-- **ARCHITECTURE** features excluded (MNO already conditions on θ)
+- **INITIAL** + **TEMPORAL** jointly encoded
+- **ARCHITECTURE** features excluded (NOA already conditions on θ)
 - Discover behavioral categories through compression
+- **v3.0**: Per-timestep encoding for online operation
 
 ### Phase 2+: NOA Agent
 - **INITIAL**: Encode IC characteristics for state representation
-- **SUMMARY**: Episodic memory compression (behavioral "gist")
-- **TEMPORAL**: Working memory sequences for attention/prediction
-- Discrete VQ tokens enable symbolic reasoning over behavioral manifold
+- **TEMPORAL**: Per-timestep working memory for online prediction
+- Discrete VQ tokens enable online symbolic reasoning
+- **v3.0**: All features computable without trajectory lookahead
 
 ---
 
 ## References
 
-- [Feature Reference](feature-reference.md) - Detailed formulas and interpretations for SUMMARY + TEMPORAL
+- [Feature Reference](feature-reference.md) - Detailed formulas and interpretations for TEMPORAL features
+- [Feature Families README](README.md) - Overview of 3-family architecture
+- [HDF5 Layout](hdf5-layout.md) - Dataset schema and storage format
 - [NOA Architecture](../noa-architecture.md) - How features integrate with NOA backbone
 - [VQ-VAE Training Guide](../vqvae/training-guide.md) - Feature-to-token encoding pipeline
-- [Independent Optimization](../noa-vqvae-independent.md) - MNO → features → VQ-VAE workflow
 
-**Implementation**:
+**Implementation (v3.0)**:
 - INITIAL: `src/spinlock/features/initial/`
-- SUMMARY: `src/spinlock/features/summary/`
 - TEMPORAL: `src/spinlock/features/temporal/`
+- ARCHITECTURE: `src/spinlock/features/architecture/` (parameter extraction only)
+
+**Archived (v2.x)**:
+- SUMMARY (removed): `src/spinlock/features/temporal_old_v2/summary/`

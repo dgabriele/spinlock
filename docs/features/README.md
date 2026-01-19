@@ -1,15 +1,16 @@
 # Feature Families
 
-Spinlock extracts **4 complementary feature families** that jointly capture neural operator behavior from different perspectives. This multi-modal representation provides a foundation for studying compositional reasoning, working memory dynamics, and episodic encoding in the controlled domain of dynamical systems.
+Spinlock extracts **3 complementary feature families** that jointly capture neural operator behavior from different perspectives. This multi-modal representation provides a foundation for studying compositional reasoning, working memory dynamics, and online behavioral prediction in the controlled domain of dynamical systems.
+
+**Last Updated:** 2026-01-18 (v3.0 - SUMMARY features removed, TEMPORAL features enhanced)
 
 ## Overview
 
 | Family | Dimensions | Captures | Granularity | Cognitive Role |
 |--------|-----------|----------|-------------|----------------|
 | **INITIAL** | 42D | Initial condition characteristics (spatial, spectral, information, morphology) | Per-realization | Input encoding |
-| **ARCHITECTURE** | 21D+ | Operator parameters (architecture, stochastic, evolution) | Per-operator | Structural priors |
-| **SUMMARY** | 420-520D | Aggregated behavioral statistics (spatial, spectral, temporal, causality) | Scalar summaries | Episodic compression |
-| **TEMPORAL** | Variable | Full temporal trajectories preserving time-series structure | Per-timestep | Working memory |
+| **ARCHITECTURE** | ~20D | Operator parameters from 14D parameter space (architecture, stochastic, evolution) | Per-operator | Structural priors |
+| **TEMPORAL** | ~328D | Per-timestep behavioral features (spatial, spectral, cross-channel, temporal dynamics) | Per-timestep | Working memory |
 
 ## Feature Family Details
 
@@ -27,53 +28,71 @@ See [Feature Reference](feature-reference.md) for complete feature specification
 
 **Location:** `src/spinlock/features/architecture/`
 
-21+ dimensional features directly from the parameter space:
-- Architecture features (6D): Layer counts, kernel sizes, channels
-- Stochastic features (5D): Noise parameters, schedules
-- Operator features (3D): Operator type identifiers
-- Evolution features (3D): Update policies, integration parameters
-- Stratification features (4D): Parameter space location
+~20 dimensional features derived from the **14D parameter space**:
+- Architecture features (5D): num_layers, base_channels, kernel_size, activation, dropout_rate
+- Stochastic features (4D): noise_type, noise_scale, noise_schedule, spatial_correlation
+- Operator features (2D): normalization, grid_size
+- Evolution features (3D): update_policy, dt (timestep size), alpha (convex weight)
+- Stratification features (variable): Parameter space location indicators
+
+**Parameter Space Details (14D):**
+- `dt`: 10 discrete choices [0.005, 0.01, 0.015, ..., 0.05] for residual policy
+- `alpha`: 9 discrete choices [0.1, 0.2, 0.3, ..., 0.9] for convex policy
+- Results in ~19 unique evolution dynamics (10 dt values + 9 alpha values)
+
+**Note:** ARCHITECTURE features are stored in `/parameters/params [N, 14]` as Sobol unit cube values in HDF5 files, not in `/features/architecture/`.
 
 See [Feature Reference](feature-reference.md) for complete feature specifications.
 
-### Summary Descriptor Features (SUMMARY)
+### ~~Summary Descriptor Features (SUMMARY)~~ [REMOVED in v3.0]
 
-**Location:** `src/spinlock/features/summary/`
+**SUMMARY features were removed in v3.0.0** to support online Neural Operator Apprentice (NOA) predictions. Aggregated trajectory-level features (causality, invariant drift, operator sensitivity, nonlinear dynamics) are incompatible with per-timestep online computation.
 
-420-520 dimensional aggregated behavioral statistics:
+Archived code available in `src/spinlock/features/temporal_old_v2/summary/` for reference.
 
-**v1.0 Features:**
-- Spatial features (34D): Gradients, anisotropy, multiscale statistics
-- Spectral features (31D): FFT power, dominant frequencies, spectral entropy
-- Temporal features (44D): Autocorrelation, stationarity, regime transitions
-
-**v2.0 Features:**
-- Operator sensitivity (12D): Response to parameter perturbations
-- Cross-channel correlations (12D): Multi-channel interactions
-- Causality metrics (15D): Temporal information flow
-- Invariant drift (64D): Long-term behavioral evolution
-
-See [Feature Reference](feature-reference.md) for complete feature specifications.
+**Rationale:** NOA must make predictions at each timestep without seeing the full trajectory, requiring features to be computable online. SUMMARY features required complete trajectories and were thus incompatible with this architecture.
 
 ### Temporal Dynamics (TEMPORAL) Features
 
 **Location:** `src/spinlock/features/temporal/`
 
-Variable-dimensional temporal features preserving time-series structure:
-- Per-timestep feature vectors [N, M, T, D]
-- Derived temporal curves (growth rates, curvature, oscillation)
-- 1D CNN encoder for temporal pattern extraction
+**~328D per-timestep behavioral features** (enhanced from 63D in v2.x):
+
+**Spatial Features (~105D):**
+- Per-channel statistics (mean, std, min, max, percentiles)
+- Spatial gradients and Laplacian features
+- Histogram-based distribution features
+
+**Spectral Features (~93D):**
+- Multi-scale FFT features (power spectrum, dominant frequencies)
+- Frequency band energy distributions
+- Spectral entropy and complexity metrics
+
+**Cross-Channel Features (~10D):**
+- Pairwise channel correlations
+- Eigenvalue statistics of covariance matrix
+
+**Enhanced Temporal Dynamics (~120D):**
+- Windowed temporal statistics (velocity, acceleration)
+- Stability metrics (Lyapunov-inspired features)
+- Phase space reconstruction features
+- Temporal autocorrelation and memory depth
+
+**Storage Format:** `[N, T, D_temporal]` where T is the number of timesteps and D_temporal ≈ 328.
+
+All features are **per-timestep computable**, making them suitable for online prediction in NOA.
 
 See [Feature Reference](feature-reference.md) for complete feature specifications.
 
 ## Joint Training
 
-The VQ-VAE jointly trains on 3 behavioral feature families (INITIAL, SUMMARY, TEMPORAL). ARCHITECTURE is excluded because the NOA already knows operator parameters θ—including it would be redundant.
+The VQ-VAE jointly trains on **2 behavioral feature families (INITIAL, TEMPORAL)**. ARCHITECTURE is excluded because the NOA already knows operator parameters θ—including it would be redundant.
 
 This multi-modal approach allows the model to learn representations that integrate:
 - How initial conditions influence operator dynamics (INITIAL → input encoding)
-- Statistical signatures of emergent patterns (SUMMARY → episodic compression)
-- Temporal evolution and regime transitions (TEMPORAL → working memory sequences)
+- Per-timestep behavioral evolution and regime transitions (TEMPORAL → working memory sequences)
+
+**v3.0 Change:** SUMMARY features were removed, simplifying the architecture to focus on per-timestep online-computable features that support real-time NOA predictions.
 
 ## NOA Feature Heads
 
@@ -82,24 +101,25 @@ In the Phase 1 NOA architecture, the U-AFNO backbone produces **auxiliary featur
 | Head | Source | Output | Purpose |
 |------|--------|--------|---------|
 | **INITIAL-like** | U-AFNO bottleneck at t=0 | 42D | Quality of generated initial conditions |
-| **SUMMARY-like** | Bottleneck across full trajectory | 128D | Aggregated behavioral statistics |
-| **TEMPORAL-like** | Skip connections over time | 128D | Trajectory dynamics embedding |
+| **TEMPORAL-like** | Skip connections at each timestep | ~328D | Per-timestep behavioral features |
 
 This means features are **both extracted from datasets** (Phase 0) and **predicted by the NOA** (Phase 1+). The frozen VQ-VAE encodes both → discrete tokens, enabling loss computation via token reconstruction.
 
+**v3.0 Change:** Removed SUMMARY-like head (aggregated features incompatible with online prediction). TEMPORAL features are now predicted per-timestep, enabling online NOA operation.
+
 ### Cognitive Architecture Analogues
 
-The four-family decomposition provides measurable analogues to cognitive processing:
+The three-family decomposition provides measurable analogues to cognitive processing:
 
 **Input Encoding (INITIAL)**: Like sensory encoding in biological systems, INITIAL features characterize the "perceptual" properties of inputs that the operator will process. This enables studying how different input statistics influence downstream behavioral trajectories.
 
 **Structural Priors (ARCHITECTURE)**: Analogous to innate biases or learned schemas, ARCHITECTURE features encode the operator's intrinsic computational structure—independent of specific inputs. This supports research into how architectural inductive biases shape behavioral regimes.
 
-**Episodic Compression (SUMMARY)**: Similar to how episodic memory compresses experiences into gist representations, SUMMARY features aggregate temporal trajectories into statistical signatures. This compression is testable—can agents reconstruct or predict behaviors from compressed summaries?
+**Working Memory (TEMPORAL)**: Per-timestep TEMPORAL features mirror working memory dynamics in biological systems—maintaining rich, structured representations of ongoing processes without compression. The ~328D feature space at each timestep captures multi-modal behavioral signatures (spatial, spectral, cross-channel, temporal dynamics) that evolve online.
 
-**Working Memory (TEMPORAL)**: The distinction between SUMMARY (compressed) and TEMPORAL (sequential) mirrors the psychological distinction between long-term memory consolidation and working memory maintenance. Studying this trade-off reveals memory capacity constraints and what information is worth preserving vs. discarding.
+These analogues are not metaphorical—they provide concrete, measurable frameworks for studying memory, online prediction, and representation in a domain without the confounds of natural perception.
 
-These analogues are not metaphorical—they provide concrete, measurable frameworks for studying memory, compression, and representation in a domain without the confounds of natural perception.
+**v3.0 Change:** Removed the episodic compression analogy (SUMMARY features). The current architecture focuses on online working memory (TEMPORAL) rather than offline trajectory compression, better aligning with real-time cognitive processing.
 
 ## Feature Extraction Pipeline
 
@@ -107,23 +127,22 @@ These analogues are not metaphorical—they provide concrete, measurable framewo
 flowchart LR
     Rollout[Neural Operator<br/>Rollout Data]
     INITIAL[INITIAL Extraction<br/>42D]
-    ARCHITECTURE[ARCHITECTURE Extraction<br/>21D]
-    SUMMARY[SUMMARY Extraction<br/>420-520D]
-    TEMPORAL[TEMPORAL Extraction<br/>Variable]
+    ARCHITECTURE[ARCHITECTURE Extraction<br/>~20D from 14D params]
+    TEMPORAL[TEMPORAL Extraction<br/>~328D per-timestep]
     Concat[Feature<br/>Concatenation]
     Clean[Feature<br/>Cleaning]
     VQVAE[VQ-VAE<br/>Tokenization]
 
     Rollout --> INITIAL
     Rollout --> ARCHITECTURE
-    Rollout --> SUMMARY
     Rollout --> TEMPORAL
     INITIAL --> Concat
-    ARCHITECTURE --> Concat
-    SUMMARY --> Concat
     TEMPORAL --> Concat
     Concat --> Clean
     Clean --> VQVAE
+
+    Note[ARCHITECTURE excluded<br/>from VQ-VAE training]
+    ARCHITECTURE -.-> Note
 ```
 
 ## Feature Cleaning

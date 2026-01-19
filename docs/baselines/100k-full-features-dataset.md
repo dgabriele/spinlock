@@ -1,15 +1,15 @@
-# Dataset: 100K Full Features
+# Dataset: 100K Full Features (v3.0)
 
-**Date:** January 2026
-**File:** `datasets/100k_full_features.h5`
-**Size:** ~10 GB
-**Status:** PRODUCTION READY
+**Date:** January 2026 (Updated: 2026-01-18)
+**File:** `datasets/100k_full_features_v3.h5`
+**Size:** ~12 GB
+**Status:** PRODUCTION READY (v3.0)
 
 ---
 
 ## Executive Summary
 
-Production dataset of 100,000 neural operators with comprehensive feature extraction across three families (SUMMARY, TEMPORAL, ARCHITECTURE). Designed for VQ-VAE tokenization and Neural Operator Agent training.
+Production dataset of 100,000 neural operators with comprehensive feature extraction. **v3.0 architecture** with enhanced per-timestep TEMPORAL features (~328D) and expanded 14D parameter space. Designed for VQ-VAE tokenization and Neural Operator Agent training.
 
 | Metric | Value |
 |--------|-------|
@@ -18,35 +18,32 @@ Production dataset of 100,000 neural operators with comprehensive feature extrac
 | **Grid Size** | 64×64 |
 | **Timesteps** | 256 |
 | **Channels** | 3 |
-| **Parameter Dimensions** | 12 |
+| **Parameter Dimensions** | 14 (v3.0+) |
+
+**v3.0 Changes:**
+- Removed SUMMARY features (incompatible with online prediction)
+- Enhanced TEMPORAL features: 63D → ~328D per-timestep
+- Parameter space: 12D → 14D (added dt and alpha variation)
+- Evolution dynamics: 2 policies → ~19 unique configurations
 
 ---
 
 ## Dataset Structure
 
 ```
-datasets/100k_full_features.h5
+datasets/100k_full_features_v3.h5
 │
 ├── inputs/
 │   └── fields                           [100000, 3, 64, 64]    float32
 │
 ├── parameters/
-│   └── params                           [100000, 12]           float32
+│   └── params                           [100000, 14]           float32  (Sobol unit cube)
 │
 ├── features/
-│   ├── summary/
-│   │   ├── aggregated/
-│   │   │   ├── features                 [100000, 360]          float32
-│   │   │   └── metadata/extraction_time [100000]               float64
-│   │   └── per_trajectory/
-│   │       └── features                 [100000, 5, 120]       float32
-│   │
-│   ├── temporal/
-│   │   └── features                     [100000, 256, 63]      float32
-│   │
-│   └── architecture/
-│       └── aggregated/
-│           └── features                 [100000, 12]           float32
+│   └── temporal/
+│       ├── @version                                                     (3.0.0)
+│       ├── @feature_registry                                            (JSON)
+│       └── features                     [100000, 256, 328]     float32  (per-timestep)
 │
 └── metadata/
     ├── ic_types                         [100000]               object
@@ -55,57 +52,62 @@ datasets/100k_full_features.h5
     └── noise_regimes                    [100000]               object
 ```
 
+**v3.0 Structure Changes:**
+- `/features/summary/` → REMOVED (aggregated, per_trajectory, learned)
+- `/features/architecture/` → REMOVED (now in `/parameters/params`)
+- `/features/temporal/features`: [N, T, 63] → [N, T, 328]
+- `/parameters/params`: [N, 12] → [N, 14]
+
 ---
 
 ## Feature Families
 
-### SUMMARY (360 features)
+### TEMPORAL (~328 features × 256 timesteps)
 
-Aggregated behavioral statistics per operator, computed across all timesteps and realizations.
-
-| Category | Features | Description |
-|----------|----------|-------------|
-| Spatial | 36 | Mean, std, gradients, Laplacian, skewness, kurtosis |
-| Spectral | 36 | FFT power, dominant frequencies, spectral entropy |
-| Temporal | 36 | Autocorrelation, trend, stability metrics |
-| Cross-channel | 36 | Channel correlations, coherence |
-| Causality | 42 | Granger causality, transfer entropy |
-| Invariant drift | 180 | Multiscale drift statistics |
-| Operator sensitivity | 30 | Lipschitz estimates (NaN when disabled) |
-
-**Storage:** `features/summary/aggregated/features` [N, 360]
-
-**Per-trajectory:** `features/summary/per_trajectory/features` [N, 5, 120]
-
-### TEMPORAL (63 features × 256 timesteps)
-
-Full temporal resolution feature trajectories preserving time-series structure.
+**v3.0 Enhanced:** Per-timestep behavioral features preserving full temporal resolution. All features are online-computable (no lookahead required) for NOA predictions.
 
 | Category | Features | Description |
 |----------|----------|-------------|
-| Spatial statistics | 19 | Per-timestep spatial moments |
-| Spectral properties | 27 | Per-timestep FFT features |
-| Cross-channel | 17 | Per-timestep channel correlations |
+| **Spatial** | ~105 | Per-channel statistics, gradients, Laplacian, histograms |
+| **Spectral** | ~93 | Multi-scale FFT, power spectrum, frequency bands, spectral entropy |
+| **Cross-channel** | ~10 | Pairwise correlations, covariance eigenvalues |
+| **Temporal dynamics** | ~120 | Windowed statistics, stability metrics, phase space, autocorrelation |
 
-**Storage:** `features/temporal/features` [N, 256, 63]
+**Storage:** `features/temporal/features` [N, 256, 328]
 
-### ARCHITECTURE (12 features)
+**Key Change (v3.0):** Enhanced from 63D to ~328D by adding:
+- Multi-scale spatial features (histogram-based distributions)
+- Enhanced spectral analysis (frequency band decomposition)
+- Phase space reconstruction and stability metrics
+- Windowed temporal dynamics (velocity, acceleration)
 
-Normalized operator parameters in [0, 1] range.
+### ~~SUMMARY~~ [REMOVED in v3.0]
 
-| Parameter | Description |
-|-----------|-------------|
-| num_layers | Number of convolutional layers (2-5) |
-| base_channels | Base channel count (16-64) |
-| kernel_size | Convolution kernel size (3, 5, 7) |
-| activation | Activation function (gelu) |
-| dropout_rate | Dropout probability (0.0-0.3) |
-| noise_scale | Stochastic noise scale (log-scaled) |
-| spatial_correlation | Noise spatial correlation (0.0-0.3) |
-| update_policy | Evolution policy (residual, convex) |
-| ... | Additional architecture/evolution params |
+Aggregated trajectory-level features (360D: causality, invariant drift, operator sensitivity) were removed because they require complete trajectories and are incompatible with per-timestep online prediction.
 
-**Storage:** `features/architecture/aggregated/features` [N, 12]
+**Archived code:** `src/spinlock/features/temporal_old_v2/summary/`
+
+### ARCHITECTURE (14D parameter space → ~20D features)
+
+Operator parameters stored in `/parameters/params [N, 14]` as normalized Sobol unit cube values.
+
+**14D Parameter Space:**
+
+| Category | Parameters | Description |
+|----------|------------|-------------|
+| Architecture (5D) | num_layers, base_channels, kernel_size, activation, dropout_rate | Network architecture |
+| Stochastic (4D) | noise_type, noise_scale, noise_schedule, spatial_correlation | Stochastic forcing |
+| Operator (2D) | normalization, grid_size | Operator configuration |
+| Evolution (3D) | update_policy, dt, alpha | Integration dynamics |
+
+**v3.0 Enhancement:** Evolution parameters expanded from 1D to 3D:
+- `dt`: 10 discrete choices [0.005, 0.01, ..., 0.05] for residual policy
+- `alpha`: 9 discrete choices [0.1, 0.2, ..., 0.9] for convex policy
+- Results in **~19 unique evolution dynamics** (was 2 in v2.x)
+
+**Storage:** `parameters/params` [N, 14] (Sobol unit cube, not in `/features/`)
+
+**Note:** ARCHITECTURE features are excluded from VQ-VAE training (NOA already knows operator parameters θ).
 
 ---
 
@@ -137,10 +139,18 @@ Balanced 4-family IC design minimizing semantic bias:
 
 ### Evolution Policy Distribution
 
-| Policy | Count | Percentage |
-|--------|-------|------------|
-| residual | 75,000 | 75.0% |
-| convex | 25,000 | 25.0% |
+**v3.0 Enhanced:** Evolution dynamics now vary dt and alpha parameters, resulting in **~19 unique configurations** instead of 2.
+
+| Base Policy | Parameter Variation | Unique Configs |
+|-------------|---------------------|----------------|
+| **residual** | dt ∈ [0.005, 0.01, ..., 0.05] (10 choices) | ~10 |
+| **convex** | alpha ∈ [0.1, 0.2, ..., 0.9] (9 choices) | ~9 |
+
+**Total:** ~19 unique evolution dynamics configurations across the dataset
+
+**Distribution (approximate):**
+- ~75% residual policy with varying dt (10 different timestep sizes)
+- ~25% convex policy with varying alpha (9 different convex weights)
 
 ---
 
@@ -150,13 +160,14 @@ Balanced 4-family IC design minimizing semantic bias:
 version: "1.0"
 
 metadata:
-  name: "100k_full_features"
+  name: "100k_full_features_v3"
   description: |
-    Production 100K dataset with SUMMARY + TEMPORAL feature extraction.
+    Production 100K dataset with v3.0 enhanced TEMPORAL features (~328D per-timestep).
     64×64 grid optimal for VQ-VAE compression + NOA training.
     T=256 captures transient dynamics, M=5 for statistics.
+    14D parameter space with varying evolution dynamics (dt, alpha).
 
-# 12-dimensional parameter space (normalized to [0, 1])
+# 14-dimensional parameter space (normalized to [0, 1] Sobol cube)
 parameter_space:
   architecture:
     num_layers:
@@ -211,6 +222,14 @@ parameter_space:
       type: choice
       choices: ["residual", "convex"]
       weights: [0.75, 0.25]
+
+    dt:  # v3.0: Timestep size for residual policy
+      type: choice
+      choices: [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05]
+
+    alpha:  # v3.0: Convex weight for convex policy
+      type: choice
+      choices: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
 # Sampling configuration
 sampling:
@@ -317,31 +336,31 @@ dataset:
     compression_level: 4
     chunk_size: 32
 
-# Feature extraction
+# Feature extraction (v3.0)
 features:
   temporal:
-    enabled: true   # TEMPORAL family (per-timestep time series)
+    enabled: true   # TEMPORAL family (~328D per-timestep features)
+    version: "3.0.0"  # Enhanced feature set
 
-  summary:
-    enabled: true   # SUMMARY family (aggregated scalars)
-    extract_operator_features: false  # Disable operator sensitivity (expensive)
+  # v3.0: SUMMARY features removed (incompatible with online prediction)
 ```
 
 ---
 
 ## Usage
 
-### Load Dataset
+### Load Dataset (v3.0)
 
 ```python
 import h5py
 import numpy as np
 
-with h5py.File("datasets/100k_full_features.h5", "r") as f:
-    # Load features
-    summary = f["features/summary/aggregated/features"][:]      # [100000, 360]
-    temporal = f["features/temporal/features"][:]               # [100000, 256, 63]
-    architecture = f["features/architecture/aggregated/features"][:]  # [100000, 12]
+with h5py.File("datasets/100k_full_features_v3.h5", "r") as f:
+    # Load TEMPORAL features (primary VQ-VAE input)
+    temporal = f["features/temporal/features"][:]               # [100000, 256, 328]
+
+    # Load parameters (14D Sobol unit cube)
+    params = f["parameters/params"][:]                          # [100000, 14]
 
     # Load metadata
     ic_types = f["metadata/ic_types"][:].astype(str)
@@ -349,6 +368,11 @@ with h5py.File("datasets/100k_full_features.h5", "r") as f:
 
     # Load inputs (initial conditions)
     inputs = f["inputs/fields"][:]  # [100000, 3, 64, 64]
+
+    # Check feature registry
+    import json
+    registry = json.loads(f["features/temporal"].attrs["feature_registry"])
+    print(f"Feature categories: {list(registry.keys())}")
 ```
 
 ### Filter by IC Type
@@ -358,32 +382,43 @@ with h5py.File("datasets/100k_full_features.h5", "r") as f:
 structured_idx = np.where(ic_types == "structured")[0]
 localized_idx = np.where(ic_types == "localized")[0]
 
-# Load subset
-structured_features = summary[structured_idx]
+# Load subset of temporal features
+structured_temporal = temporal[structured_idx]  # [N_structured, 256, 328]
 ```
 
-### Access Per-Trajectory Features
+### Access Per-Timestep Features
 
 ```python
-# Per-trajectory features before aggregation
-per_traj = f["features/summary/per_trajectory/features"][:]  # [100000, 5, 120]
+# v3.0: All features are per-timestep [N, T, D]
+# Extract features at specific timesteps
+t0_features = temporal[:, 0, :]     # [100000, 328] - Initial timestep
+t_final_features = temporal[:, -1, :]  # [100000, 328] - Final timestep
 
-# Aggregate manually if needed
-mean_features = per_traj.mean(axis=1)  # [100000, 120]
-std_features = per_traj.std(axis=1)    # [100000, 120]
+# Compute temporal aggregates if needed (post-hoc)
+mean_over_time = temporal.mean(axis=1)  # [100000, 328]
+std_over_time = temporal.std(axis=1)    # [100000, 328]
 ```
 
 ---
 
 ## Known Issues
 
-### SUMMARY NaN (30 features)
+### None (v3.0)
 
-Operator sensitivity features (indices 110-119, 230-239, 350-359) are NaN because `extract_operator_features: false` in generation config. This is expected and handled by VQ-VAE training (replaced with 0).
+v3.0 datasets have no known NaN issues. All features are validated during extraction:
+- TEMPORAL features use robust statistics (NaN-safe operations)
+- Feature cleaning pipeline removes any NaN-containing features
+- All per-timestep computations handle edge cases (t=0, uniform fields, etc.)
 
-### TEMPORAL NaN (Fixed)
+### Legacy Issues (v2.x only)
 
-Skewness/kurtosis at t=0 were NaN for structured ICs (symmetric distributions). Fixed in dataset by replacing NaN with 0. Source code fix applied to `src/spinlock/features/summary/spatial.py` for future extractions.
+**v2.x datasets had:**
+- SUMMARY operator sensitivity features with NaN (when `extract_operator_features: false`)
+- TEMPORAL skewness/kurtosis NaN at t=0 for symmetric ICs
+
+**v3.0 fixes:**
+- Removed SUMMARY features entirely
+- Enhanced TEMPORAL features with robust statistics
 
 ---
 
