@@ -387,11 +387,11 @@ class NOABackbone(BaseNOABackbone):
         """
         if self.update_mode == "residual":
             # Extract base state for residual connection
-            # When token conditioning is enabled, x has extra channels
-            if self.token_conditioning:
-                # Split: base_state [B, C, H, W] and tokens [B, token_embed_dim, H, W]
+            # When conditioning is enabled, x has extra channels (params and/or tokens)
+            if self.param_conditioning or self.token_conditioning:
+                # Split: base_state [B, C, H, W] and conditioning channels
                 base_state = x[:, :self._in_channels, :, :]
-                # Operator receives full augmented input
+                # Operator receives full augmented input (base + param + token channels)
                 delta = self.operator(x)
                 # Residual update only on base state
                 return base_state + self.residual_scale * delta
