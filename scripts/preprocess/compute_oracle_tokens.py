@@ -106,7 +106,7 @@ def load_cno_replayer(config_path: str, device: torch.device) -> CNOReplayer:
 def main():
     parser = argparse.ArgumentParser(description="Precompute oracle VQ tokens for NOA training")
     parser.add_argument("--dataset", type=str, required=True, help="Path to NOA dataset HDF5")
-    parser.add_argument("--cno-config", type=str, required=True, help="CNO configuration YAML")
+    parser.add_argument("--config", type=str, required=True, help="Substrate configuration YAML")
     parser.add_argument("--vqvae-checkpoint", type=str, required=True, help="VQ-VAE checkpoint path")
     parser.add_argument("--output", type=str, required=True, help="Output HDF5 path for tokens")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size for processing")
@@ -139,9 +139,9 @@ def main():
     n_samples = min(n_samples, n_samples_total)
     print(f"  {n_samples} samples to process (out of {n_samples_total} total)")
 
-    # Load CNO replayer
-    print(f"Loading CNO replayer: {args.cno_config}")
-    replayer = load_cno_replayer(args.cno_config, device)
+    # Load substrate replayer
+    print(f"Loading substrate replayer: {args.config}")
+    replayer = load_cno_replayer(args.config, device)
 
     # Load VQ-VAE and feature extractor
     print(f"Loading VQ-VAE: {args.vqvae_checkpoint}")

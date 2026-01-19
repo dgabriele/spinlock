@@ -35,7 +35,7 @@ data:
   num_workers: 4
 
   # CNO configuration (for target trajectory generation)
-  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  config: "configs/experiments/local_100k_optimized.yaml"
 
 # Checkpointing
 checkpointing:

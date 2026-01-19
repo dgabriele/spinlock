@@ -33,7 +33,7 @@ loss:
 data:
   dataset_path: "datasets/100k_full_features.h5"
   oracle_token_path: "datasets/100k_oracle_tokens_1k.h5"  # Real oracle tokens from VQ-VAE
-  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  config: "configs/experiments/local_100k_optimized.yaml"
   val_split: 0.1
   num_workers: 4
 

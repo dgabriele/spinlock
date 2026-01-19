@@ -26,7 +26,7 @@ loss:
 
 data:
   dataset_path: "datasets/100k_full_features.h5"
-  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  config: "configs/experiments/local_100k_optimized.yaml"
   val_split: 0.1
   num_workers: 4
 

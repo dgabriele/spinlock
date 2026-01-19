@@ -379,7 +379,7 @@ def main():
     parser.add_argument('--checkpoint', type=str, required=True, help='Path to model checkpoint')
     parser.add_argument('--config', type=str, required=True, help='Path to experiment config')
     parser.add_argument('--dataset', type=str, default='datasets/100k_full_features.h5', help='Dataset path')
-    parser.add_argument('--cno-config', type=str, default='configs/experiments/local_100k_optimized.yaml', help='CNO config')
+    parser.add_argument('--substrate-config', type=str, default='configs/experiments/local_100k_optimized.yaml', help='Substrate config')
     parser.add_argument('--oracle-tokens', type=str, help='Optional oracle tokens path')
     parser.add_argument('--n-samples', type=int, default=100, help='Number of validation samples')
     parser.add_argument('--timesteps', type=int, default=32, help='Number of rollout timesteps')
@@ -397,10 +397,10 @@ def main():
     model, config, uses_tokens = load_checkpoint(args.checkpoint, args.config, device)
     print(f"  ✓ Model loaded")
 
-    # Load CNO replayer
-    print(f"\nLoading CNO replayer: {args.cno_config}")
-    replayer = CNOReplayer.from_config(args.cno_config, device=str(device))
-    print(f"  ✓ CNO replayer loaded")
+    # Load substrate replayer
+    print(f"\nLoading substrate replayer: {args.substrate_config}")
+    replayer = CNOReplayer.from_config(args.substrate_config, device=str(device))
+    print(f"  ✓ Substrate replayer loaded")
 
     # Load oracle tokens if model uses them
     oracle_tokens = None

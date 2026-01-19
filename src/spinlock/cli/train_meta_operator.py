@@ -734,22 +734,22 @@ Output:
             else:
                 print(f"  ✓ Pure physics loss (L_traj = {config['loss'].get('lambda_traj', 1.0)})")
 
-        # Create CNO replayer
-        print("Loading CNO replayer...")
-        cno_config = config["data"].get("cno_config")
+        # Create substrate replayer
+        print("Loading substrate replayer...")
+        substrate_config = config["data"].get("config")
 
-        if not cno_config:
+        if not substrate_config:
             return self.error(
-                "Data section missing CNO configuration.\n"
-                "Required field: cno_config (path to CNO config YAML)"
+                "Data section missing substrate configuration.\n"
+                "Required field: config (path to substrate config YAML)"
             )
 
         replayer = CNOReplayer.from_config(
-            config_path=cno_config,
+            config_path=substrate_config,
             device=device,
             cache_size=8,
         )
-        print(f"  ✓ CNO replayer loaded")
+        print(f"  ✓ Substrate replayer loaded")
 
         # Create dataset and dataloaders
         print("Loading dataset...")

@@ -57,7 +57,7 @@ data:
   dataset_path: "datasets/100k_full_features.h5"
   val_split: 0.1
   num_workers: 4
-  cno_config: "configs/operators/continuous_neural_operator.yaml"
+  config: "configs/operators/continuous_neural_operator.yaml"
 
 # Loss configuration
 loss:

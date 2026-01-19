@@ -940,7 +940,7 @@ loss = MSE(pred_trajectory[:, 1:], target_trajectory[:, 1:])
 data:
   dataset_path: "datasets/100k_full_features.h5"
   oracle_token_path: "datasets/100k_oracle_tokens_1k.h5"  # Real tokens from VQ-VAE
-  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  config: "configs/experiments/local_100k_optimized.yaml"  # Substrate configuration
   val_split: 0.1              # 900 train, 100 val
   num_workers: 4
 ```

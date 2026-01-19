@@ -47,11 +47,11 @@ loss:
   # Pure MSE - trajectory matching only
   mode: "mse_led"
   lambda_traj: 1.0            # Primary objective: match CNO rollouts
-  lambda_ic: 0.0              # No IC reconstruction penalty
+  lambda_ic: 0.3              # No IC reconstruction penalty
 
 data:
   dataset_path: "datasets/cno_10k_v3.h5"
-  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  config: "configs/experiments/local_100k_optimized.yaml"
   val_split: 0.1              # 9K train, 1K val
   num_workers: 4
 

@@ -94,11 +94,11 @@ Examples:
         )
 
         parser.add_argument(
-            "--cno-config",
+            "--config",
             type=Path,
             required=True,
             metavar="PATH",
-            help="Path to CNO replayer configuration YAML",
+            help="Path to substrate replayer configuration YAML",
         )
 
         parser.add_argument(
@@ -184,14 +184,14 @@ Examples:
         n_samples = min(n_samples, n_samples_total)
         print(f"  {n_samples} samples to process (out of {n_samples_total} total)")
 
-        # Load CNO replayer
-        print(f"Loading CNO replayer: {args.cno_config}")
-        if not args.cno_config.exists():
+        # Load substrate replayer
+        print(f"Loading substrate replayer: {args.config}")
+        if not args.config.exists():
             dataset.close()
-            return self.error(f"CNO config not found: {args.cno_config}")
+            return self.error(f"Substrate config not found: {args.config}")
 
         replayer = CNOReplayer.from_config(
-            config_path=str(args.cno_config),
+            config_path=str(args.config),
             device=str(device),
             cache_size=8,
         )

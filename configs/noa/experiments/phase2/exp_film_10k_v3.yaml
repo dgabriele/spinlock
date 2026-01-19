@@ -26,7 +26,7 @@ model:
   afno_blocks: 4
   param_conditioning: true    # Condition on 14D parameter vector theta
   param_dim: 14               # dt, alpha + 12 other params
-  param_embed_dim: 64         # MLP projection dimension
+  param_embed_dim: 128        # MLP projection dimension (increased for temporal conditioning)
   token_conditioning: false   # No behavioral tokens
 
   # FiLM conditioning mode (replaces concatenation)
@@ -35,8 +35,8 @@ model:
   # FiLM configuration
   film:
     enabled: true
-    embed_dim: 64             # Must match param_embed_dim
-    hidden_dim: 128           # Projection head hidden (good capacity for 14D)
+    embed_dim: 128            # Must match param_embed_dim
+    hidden_dim: 256           # Projection head hidden (increased for richer modulation)
     init_gamma: 1.0           # Identity init (gamma=1)
     init_beta: 0.0            # Identity init (beta=0)
     post_norm: true           # LayerNorm after FiLM (RECOMMENDED for T=256)
@@ -71,11 +71,11 @@ loss:
   # Pure MSE - trajectory matching only
   mode: "mse_led"
   lambda_traj: 1.0            # Primary objective: match CNO rollouts
-  lambda_ic: 0.0              # No IC reconstruction penalty
+  lambda_ic: 0.3              # No IC reconstruction penalty
 
 data:
   dataset_path: "datasets/cno_10k_v3.h5"
-  cno_config: "configs/experiments/local_100k_optimized.yaml"
+  config: "configs/experiments/local_100k_optimized.yaml"
   val_split: 0.1              # 9K train, 1K val
   num_workers: 4
 
