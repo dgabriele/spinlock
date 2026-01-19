@@ -79,12 +79,14 @@ class TruncatedBPTT(nn.Module):
     def rollout(
         self,
         ic: torch.Tensor,
+        params: Optional[torch.Tensor] = None,
         tokens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Generate trajectory with truncated BPTT.
 
         Args:
             ic: Initial condition [B, C, H, W]
+            params: Optional parameter vector θ [B, param_dim] for conditioning
             tokens: Optional token conditioning [B, num_tokens]
 
         Returns:
@@ -98,14 +100,25 @@ class TruncatedBPTT(nn.Module):
                 ic,
                 steps=self.timesteps,
                 return_all_steps=True,
+                params=params,
                 tokens=tokens,
             )
+
+        B, C, H, W = ic.shape
+
+        # Prepare parameter embeddings if model uses param conditioning
+        param_spatial = None
+        if hasattr(self.model, 'param_conditioning') and self.model.param_conditioning:
+            if params is None:
+                raise ValueError("params required when model has param_conditioning=True")
+            # Embed parameters: [B, param_dim] -> [B, param_embed_dim]
+            param_embed = self.model.param_embedding(params)
+            # Broadcast to spatial dimensions
+            param_spatial = param_embed.view(B, -1, 1, 1).expand(-1, -1, H, W)
 
         # Prepare token embeddings if model uses token conditioning
         token_spatial = None
         if hasattr(self.model, 'token_conditioning') and self.model.token_conditioning:
-            B, C, H, W = ic.shape
-
             if tokens is None:
                 # Stage 2: No tokens provided, use zero embeddings (model must self-regulate)
                 token_spatial = torch.zeros(
@@ -124,11 +137,12 @@ class TruncatedBPTT(nn.Module):
         x = ic.clone()
         with torch.no_grad():
             for _ in range(self.warmup_steps):
-                # Augment with tokens if conditioning is enabled
+                # Augment with conditioning embeddings
+                x_augmented = x
+                if param_spatial is not None:
+                    x_augmented = torch.cat([x_augmented, param_spatial], dim=1)
                 if token_spatial is not None:
-                    x_augmented = torch.cat([x, token_spatial], dim=1)
-                else:
-                    x_augmented = x
+                    x_augmented = torch.cat([x_augmented, token_spatial], dim=1)
 
                 # Single step (returns [B, out_channels, H, W])
                 x = self.model.single_step(x_augmented)
@@ -142,6 +156,7 @@ class TruncatedBPTT(nn.Module):
             warmup_state,
             steps=self.bptt_window,
             return_all_steps=True,
+            params=params,
             tokens=tokens,
         )  # [B, bptt_window+1, C, H, W]
 

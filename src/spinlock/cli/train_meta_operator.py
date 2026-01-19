@@ -1124,7 +1124,7 @@ Output:
         for batch_idx, batch in enumerate(dataloader_iter, start=batches_processed_in_epoch):
             batch_start_time = time.time()
             ic = batch["ic"].to(device)
-            params = batch["params"]
+            params = batch["params"].to(device)  # Move params to device for conditioning
             indices = batch.get("sample_idx")  # Dataset indices for this batch
             B = ic.shape[0]
 
@@ -1136,7 +1136,7 @@ Output:
                 batch_tokens = ground_truth_tokens[indices].to(device)
 
             # Generate NOA rollout (with truncated BPTT if configured)
-            pred_trajectory = noa_rollout.rollout(ic, tokens=batch_tokens)
+            pred_trajectory = noa_rollout.rollout(ic, params=params, tokens=batch_tokens)
 
             # Generate CNO targets
             # Only clear cache if memory usage > 90% (avoid unnecessary serialization)
@@ -1348,7 +1348,7 @@ Output:
                 if max_batches is not None and batch_idx >= max_batches:
                     break
                 ic = batch["ic"].to(device)
-                params = batch["params"]
+                params = batch["params"].to(device)  # Move params to device for conditioning
                 indices = batch.get("sample_idx")  # Dataset indices for this batch
                 B = ic.shape[0]
 
@@ -1360,7 +1360,7 @@ Output:
                     batch_tokens = ground_truth_tokens[indices].to(device)
 
                 # Generate NOA rollout (with truncated BPTT if configured)
-                pred_trajectory = noa_rollout.rollout(ic, tokens=batch_tokens)
+                pred_trajectory = noa_rollout.rollout(ic, params=params, tokens=batch_tokens)
 
                 # Generate CNO targets
                 target_trajectories = []

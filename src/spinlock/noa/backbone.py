@@ -71,6 +71,10 @@ class NOABackbone(BaseNOABackbone):
         use_checkpointing: bool = True,
         checkpoint_every: int = 16,
         update_mode: str = "residual",  # "residual" or "autoregressive"
+        # NEW: Parameter conditioning (operator θ)
+        param_conditioning: bool = False,
+        param_dim: int = 14,
+        param_embed_dim: int = 64,
         # NEW: Token conditioning parameters
         token_conditioning: bool = False,
         token_embed_dim: int = 64,
@@ -86,7 +90,24 @@ class NOABackbone(BaseNOABackbone):
         self.checkpoint_every = checkpoint_every
         self.update_mode = update_mode
         self.residual_scale = 0.1  # Scale down residuals initially
+        self.param_conditioning = param_conditioning
         self.token_conditioning = token_conditioning
+
+        # Initialize parameter embedding if enabled
+        if param_conditioning:
+            # MLP to embed parameter vector θ: [B, param_dim] → [B, param_embed_dim]
+            self.param_embedding = nn.Sequential(
+                nn.Linear(param_dim, 128),
+                nn.LayerNorm(128),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(128, param_embed_dim),
+                nn.LayerNorm(param_embed_dim),
+            )
+            self.param_embed_dim = param_embed_dim
+        else:
+            self.param_embedding = None
+            self.param_embed_dim = None
 
         # Initialize token embedding if enabled
         if token_conditioning:
@@ -101,13 +122,16 @@ class NOABackbone(BaseNOABackbone):
                 projection_dim=token_embed_dim,  # Final projected dimension
             )
             self.token_embed_dim = token_embed_dim  # Store for use in rollout
-
-            # Adjust operator input channels to account for token embeddings
-            operator_input_channels = in_channels + token_embed_dim
         else:
             self.token_embedding = None
             self.token_embed_dim = None
-            operator_input_channels = in_channels
+
+        # Calculate operator input channels (base + conditioning)
+        operator_input_channels = in_channels
+        if param_conditioning:
+            operator_input_channels += param_embed_dim
+        if token_conditioning:
+            operator_input_channels += token_embed_dim
 
         # Build U-AFNO operator
         self.operator = UAFNOOperator(
@@ -128,6 +152,7 @@ class NOABackbone(BaseNOABackbone):
         steps: int = 64,
         return_all_steps: bool = True,
         num_realizations: int = 1,
+        params: Optional[torch.Tensor] = None,
         tokens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Generate autoregressive trajectory from initial condition.
@@ -139,6 +164,8 @@ class NOABackbone(BaseNOABackbone):
                             If False, return only final state
             num_realizations: Number of independent realizations to generate (M)
                             With M > 1, different noise seeds create varied trajectories
+            params: Optional operator parameter vector θ [B, param_dim] for conditioning
+                   (required if param_conditioning=True)
             tokens: Optional VQ token indices [B, num_tokens] for conditioning
                    (required if token_conditioning=True)
 
@@ -150,7 +177,7 @@ class NOABackbone(BaseNOABackbone):
                 If num_realizations == 1: Final state [B, C, H, W]
                 If num_realizations > 1: Final states [B, M, C, H, W]
         """
-        return self.rollout(u0, steps, return_all_steps, num_realizations, tokens)
+        return self.rollout(u0, steps, return_all_steps, num_realizations, params, tokens)
 
     def _single_step_for_checkpoint(self, x: torch.Tensor) -> torch.Tensor:
         """Wrapper for single_step that works with torch.utils.checkpoint."""
@@ -171,6 +198,7 @@ class NOABackbone(BaseNOABackbone):
         steps: int = 64,
         return_all_steps: bool = True,
         num_realizations: int = 1,
+        params: Optional[torch.Tensor] = None,
         tokens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Generate autoregressive trajectory.
@@ -192,11 +220,21 @@ class NOABackbone(BaseNOABackbone):
             If num_realizations > 1:
                 Trajectories [B, M, T+1, C, H, W] or final states [B, M, C, H, W]
         """
-        # Validate token conditioning
+        B, C, H, W = u0.shape
+
+        # Prepare parameter embeddings if conditioning is enabled
+        if self.param_conditioning:
+            if params is None:
+                raise ValueError("params required when param_conditioning=True")
+            # Embed parameter vector: [B, param_dim] -> [B, param_embed_dim]
+            param_embed = self.param_embedding(params)
+            # Broadcast to spatial dimensions: [B, param_embed_dim] -> [B, param_embed_dim, H, W]
+            param_spatial = param_embed.view(B, -1, 1, 1).expand(-1, -1, H, W)
+        else:
+            param_spatial = None
+
         # Prepare token embeddings if conditioning is enabled
         if self.token_conditioning:
-            B, C, H, W = u0.shape
-
             if tokens is None:
                 # Stage 2: No tokens provided, use zero embeddings (model must self-regulate)
                 # This allows loading token-conditioned checkpoints for VQ-led training
@@ -215,7 +253,7 @@ class NOABackbone(BaseNOABackbone):
             token_spatial = None
 
         if num_realizations > 1:
-            return self._rollout_multi_realization(u0, steps, return_all_steps, num_realizations, token_spatial)
+            return self._rollout_multi_realization(u0, steps, return_all_steps, num_realizations, param_spatial, token_spatial)
 
         # Use checkpointing in training mode for memory efficiency
         # Note: We check self.training, not u0.requires_grad, because the model
@@ -239,11 +277,12 @@ class NOABackbone(BaseNOABackbone):
                 # We need to collect intermediate states, so run step-by-step
                 # but wrap in checkpoint for memory efficiency
                 for _ in range(block_size):
-                    # Concatenate token embeddings if conditioning
+                    # Concatenate conditioning embeddings
+                    x_augmented = x
+                    if param_spatial is not None:
+                        x_augmented = torch.cat([x_augmented, param_spatial], dim=1)
                     if token_spatial is not None:
-                        x_augmented = torch.cat([x, token_spatial], dim=1)
-                    else:
-                        x_augmented = x
+                        x_augmented = torch.cat([x_augmented, token_spatial], dim=1)
 
                     # Checkpoint each step to allow collecting intermediates
                     x = checkpoint(
@@ -256,11 +295,12 @@ class NOABackbone(BaseNOABackbone):
         else:
             # Standard rollout (inference or single-output mode)
             for t in range(steps):
-                # Concatenate token embeddings if conditioning
+                # Concatenate conditioning embeddings
+                x_augmented = x
+                if param_spatial is not None:
+                    x_augmented = torch.cat([x_augmented, param_spatial], dim=1)
                 if token_spatial is not None:
-                    x_augmented = torch.cat([x, token_spatial], dim=1)
-                else:
-                    x_augmented = x
+                    x_augmented = torch.cat([x_augmented, token_spatial], dim=1)
 
                 x = self.single_step(x_augmented)
                 if return_all_steps:
@@ -278,6 +318,7 @@ class NOABackbone(BaseNOABackbone):
         steps: int,
         return_all_steps: bool,
         num_realizations: int,
+        param_spatial: Optional[torch.Tensor] = None,
         token_spatial: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Generate multiple independent realizations from the same IC.
@@ -290,6 +331,7 @@ class NOABackbone(BaseNOABackbone):
             steps: Number of timesteps
             return_all_steps: If True, return full trajectories
             num_realizations: Number of realizations (M)
+            param_spatial: Optional pre-computed parameter embeddings [B, param_embed_dim, H, W]
             token_spatial: Optional pre-computed token embeddings [B, token_embed_dim, H, W]
 
         Returns:
@@ -308,11 +350,12 @@ class NOABackbone(BaseNOABackbone):
 
             # Standard rollout (no checkpointing for multi-realization)
             for t in range(steps):
-                # Concatenate token embeddings if conditioning
+                # Concatenate conditioning embeddings
+                x_augmented = x
+                if param_spatial is not None:
+                    x_augmented = torch.cat([x_augmented, param_spatial], dim=1)
                 if token_spatial is not None:
-                    x_augmented = torch.cat([x, token_spatial], dim=1)
-                else:
-                    x_augmented = x
+                    x_augmented = torch.cat([x_augmented, token_spatial], dim=1)
 
                 x = self.single_step(x_augmented)
                 if return_all_steps:
