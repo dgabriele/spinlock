@@ -160,9 +160,14 @@ class EpisodeRunner:
                 if extract_features_fn is not None:
                     features = extract_features_fn(u_current)
                 else:
-                    # Use simple feature extraction by default
-                    from .simple_feature_extraction import extract_features_for_vqvae
-                    features = extract_features_for_vqvae(u_current)
+                    # TODO: Integrate with NOAFeatureExtractor for per-timestep extraction
+                    # For now, extract_features_fn must be provided by caller
+                    raise NotImplementedError(
+                        "extract_features_fn must be provided. "
+                        "The deprecated simple_feature_extraction has been removed. "
+                        "Pass a function that extracts features from single timesteps "
+                        "compatible with your VQ-VAE input dimensions."
+                    )
 
                 # VQ-VAE encoding
                 vq_output = self.vqvae(features)

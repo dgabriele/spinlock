@@ -43,11 +43,11 @@ from sklearn.manifold import TSNE
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from src.spinlock.perturbations import ImpulsePerturbation, ImpulsePerturbationFactory
-from src.spinlock.noa.behavioral_encoding import BehavioralSignature, BehavioralEncoder, RegimeClassifier
-from src.spinlock.noa.episode import EpisodeRunner
-from src.spinlock.noa.early_stopping import StandardStoppingPolicy
-from src.spinlock.noa.validation_utils import (
+from spinlock.perturbations import ImpulsePerturbation, ImpulsePerturbationFactory
+from spinlock.noa.behavioral_encoding import BehavioralSignature, BehavioralEncoder, RegimeClassifier
+from spinlock.noa.episode import EpisodeRunner
+from spinlock.noa.early_stopping import StandardStoppingPolicy
+from spinlock.noa.validation_utils import (
     load_mno_checkpoint,
     load_vqvae_checkpoint,
     sample_initial_condition,

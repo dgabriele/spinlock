@@ -40,15 +40,15 @@ from collections import Counter
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from src.spinlock.perturbations import ImpulsePerturbationFactory
-from src.spinlock.noa.early_stopping import (
+from spinlock.perturbations import ImpulsePerturbationFactory
+from spinlock.noa.early_stopping import (
     StandardStoppingPolicy,
     ConvergenceStop,
     MaxStepsStop,
     CompositeEarlyStopping,
 )
-from src.spinlock.noa.episode import EpisodeRunner
-from src.spinlock.noa.validation_utils import (
+from spinlock.noa.episode import EpisodeRunner
+from spinlock.noa.validation_utils import (
     load_mno_checkpoint,
     load_vqvae_checkpoint,
     sample_initial_condition,
