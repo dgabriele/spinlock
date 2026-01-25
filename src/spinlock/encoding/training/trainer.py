@@ -53,6 +53,8 @@ class VQVAETrainer:
         # Optimization
         use_torch_compile: bool = True,
         val_every_n_epochs: int = 5,
+        gradient_clip_norm: Optional[float] = None,
+        warmup_epochs: int = 0,
         # Logging
         verbose: bool = True,
         # Metadata for checkpoint reproducibility
@@ -87,6 +89,8 @@ class VQVAETrainer:
             checkpoint_dir: Directory for checkpoints (None to disable)
             use_torch_compile: Use torch.compile() for JIT compilation
             val_every_n_epochs: Validate every N epochs
+            gradient_clip_norm: Max gradient norm for clipping (None to disable)
+            warmup_epochs: Number of linear warmup epochs (0 to disable)
             verbose: Whether to print progress
             config: Full raw training config for reproducibility
             group_indices: Category to feature indices mapping
@@ -135,6 +139,10 @@ class VQVAETrainer:
 
         # Optimizer
         self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        self.base_learning_rate = learning_rate
+        self.gradient_clip_norm = gradient_clip_norm
+        self.warmup_epochs = warmup_epochs
+        self.current_epoch = 0
 
         # Loss weights
         self.orthogonality_weight = orthogonality_weight
@@ -142,6 +150,9 @@ class VQVAETrainer:
         self.topo_weight = topo_weight
         self.topo_samples = topo_samples
         self.reference_reg_weight = reference_reg_weight
+
+        # Feature weights (for A3 feature-weighted reconstruction)
+        self.feature_weights = None  # Will be set externally if needed
 
         # Callbacks
         self.early_stopping = EarlyStopping(
@@ -255,6 +266,7 @@ class VQVAETrainer:
                 reference_reg_weight=self.reference_reg_weight,
                 reference_features=batch.get("reference_features").to(self.device) if batch.get("reference_features") is not None else None,
                 is_interpolated=batch.get("is_interpolated").to(self.device) if batch.get("is_interpolated") is not None else None,
+                feature_weights=self.feature_weights,
             )
 
             loss = losses["total"]
@@ -267,6 +279,13 @@ class VQVAETrainer:
             # Backward pass
             self.optimizer.zero_grad(set_to_none=True)  # Faster than zero_grad()
             loss.backward()
+
+            # Gradient clipping (if enabled)
+            if self.gradient_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), max_norm=self.gradient_clip_norm
+                )
+
             self.optimizer.step()
 
             total_loss += loss.item()
@@ -328,6 +347,7 @@ class VQVAETrainer:
                     reference_reg_weight=self.reference_reg_weight,
                     reference_features=batch.get("reference_features"),
                     is_interpolated=batch.get("is_interpolated"),
+                    feature_weights=self.feature_weights,
                 )
 
                 loss = losses["total"]
@@ -532,6 +552,14 @@ class VQVAETrainer:
 
         for epoch in range(1, epochs + 1):
             epoch_start = time.time()
+            self.current_epoch = epoch
+
+            # Apply warmup scheduler (if enabled)
+            if self.warmup_epochs > 0 and epoch <= self.warmup_epochs:
+                warmup_factor = epoch / self.warmup_epochs
+                current_lr = self.base_learning_rate * warmup_factor
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = current_lr
 
             # Train
             train_loss, loss_components, last_batch, last_raw_ics = self.train_epoch()
@@ -591,14 +619,18 @@ class VQVAETrainer:
                 logger.info(msg)
 
                 # Add physics consistency metrics if available (separate line for readability)
-                if "physics_mse_interpolated" in metrics or "physics_mse_exact" in metrics:
+                # Only log if actually active (any value > 0)
+                physics_mse_all = metrics.get("physics_mse_all", 0.0)
+                physics_mse_interp = metrics.get("physics_mse_interpolated", 0.0)
+                physics_mse_exact = metrics.get("physics_mse_exact", 0.0)
+                if physics_mse_all > 0 or physics_mse_interp > 0 or physics_mse_exact > 0:
                     physics_msg = "  Physics consistency: "
-                    if "physics_mse_all" in metrics:
-                        physics_msg += f"all={metrics['physics_mse_all']:.6f}"
-                    if "physics_mse_interpolated" in metrics:
-                        physics_msg += f", interp={metrics['physics_mse_interpolated']:.6f}"
-                    if "physics_mse_exact" in metrics:
-                        physics_msg += f", exact={metrics['physics_mse_exact']:.6f}"
+                    if physics_mse_all > 0:
+                        physics_msg += f"all={physics_mse_all:.6f}"
+                    if physics_mse_interp > 0:
+                        physics_msg += f", interp={physics_mse_interp:.6f}"
+                    if physics_mse_exact > 0:
+                        physics_msg += f", exact={physics_mse_exact:.6f}"
                     logger.info(physics_msg)
 
             # Callbacks

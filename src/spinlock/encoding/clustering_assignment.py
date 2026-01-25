@@ -9,7 +9,7 @@ Automatically uses GPU acceleration (CUDA) when available for faster correlation
 matrix computation.
 """
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import numpy as np
 import scipy.cluster.hierarchy as sch
 from scipy.spatial.distance import squareform
@@ -214,6 +214,7 @@ def hierarchical_clustering_assignment(
     orthogonality_target: float = 0.3,
     random_seed: int = 42,
     max_samples_for_clustering: int = 50000,
+    min_clusters: int = 2,
     max_clusters: int = 50,
     isolated_families: Optional[List[str]] = None,
     reassign_orphans: bool = False,
@@ -235,6 +236,7 @@ def hierarchical_clustering_assignment(
         orthogonality_target: Target max correlation (used for validation warning)
         random_seed: Random seed for reproducibility
         max_samples_for_clustering: Maximum samples to use for clustering
+        min_clusters: Minimum clusters to explore for auto-determination (default: 2)
         max_clusters: Maximum clusters to explore for auto-determination
         isolated_families: List of feature family names (e.g., ["architecture"]) that
             should be placed in their own dedicated categories, separate from clustering.
@@ -315,6 +317,7 @@ def hierarchical_clustering_assignment(
         num_clusters = auto_determine_num_clusters(
             clustering_features,
             method="silhouette",
+            min_clusters=min_clusters,
             max_clusters=max_clusters,
             random_seed=random_seed,
             subsample_size=subsample_size,
@@ -441,6 +444,147 @@ def hierarchical_clustering_assignment(
         )
 
     return all_assignments
+
+
+def extract_family_groups(feature_names: List[str]) -> Dict[str, List[int]]:
+    """Extract feature indices grouped by family from names.
+
+    Args:
+        feature_names: List of feature names (e.g., ["initial::initial_0", "temporal::temporal_5"])
+
+    Returns:
+        Dict mapping family name -> list of feature indices
+        Example: {"initial": [0, 1, ..., 13], "temporal": [14, 15, ..., 141]}
+
+    Note: For single-family configs without "::" prefix, returns {"default": [all_indices]}
+    """
+    family_groups = {}
+
+    for idx, name in enumerate(feature_names):
+        if "::" in name:
+            family = name.split("::")[0]
+        else:
+            family = "default"  # Fallback for single-family configs
+
+        if family not in family_groups:
+            family_groups[family] = []
+        family_groups[family].append(idx)
+
+    return family_groups
+
+
+def per_family_clustering_assignment(
+    features: np.ndarray,
+    feature_names: List[str],
+    per_family_params: Dict[str, Dict[str, Any]],
+    min_features_per_cluster: int = 3,
+    orthogonality_target: float = 0.3,
+    random_seed: int = 42,
+    max_samples_for_clustering: int = 50000,
+    isolated_families: Optional[List[str]] = None,
+    reassign_orphans: bool = False,
+) -> Dict[str, List[int]]:
+    """Cluster features per-family independently.
+
+    Args:
+        features: [N_samples, N_features] data
+        feature_names: List of feature names (with "family::" prefix for multi-family)
+        per_family_params: Dict mapping family name -> clustering params
+            Example: {
+                "initial": {"min_clusters": 2, "max_clusters": 5},
+                "temporal": {"min_clusters": 8, "max_clusters": 20}
+            }
+        min_features_per_cluster: Minimum features per cluster (applied per-family)
+        orthogonality_target: Target max correlation (used for validation)
+        random_seed: Random seed for reproducibility
+        max_samples_for_clustering: Maximum samples for clustering
+        isolated_families: Families to isolate (place in single category, skip clustering)
+        reassign_orphans: Reassign small clusters within families
+
+    Returns:
+        Dict mapping category_name -> list of feature indices
+        Example: {
+            "initial_cluster_1": [0, 2, 5],
+            "initial_cluster_2": [1, 3, 4],
+            "temporal_cluster_1": [14, 18, 22],
+            "temporal_cluster_2": [15, 16, 17, ...],
+            ...
+        }
+    """
+    # 1. Extract family groups from feature names
+    family_groups = extract_family_groups(feature_names)
+    logger.info(f"\nDetected {len(family_groups)} feature families:")
+    for family, indices in family_groups.items():
+        logger.info(f"  {family}: {len(indices)} features")
+
+    # 2. Handle isolated families (skip clustering)
+    assignments = {}
+    families_to_cluster = []
+
+    if isolated_families:
+        for family in isolated_families:
+            if family in family_groups:
+                family_indices = family_groups[family]
+                category_name = f"{family}_isolated"
+                assignments[category_name] = family_indices
+                logger.info(f"✓ {category_name}: {len(family_indices)} features (isolated)")
+            else:
+                logger.warning(f"Isolated family '{family}' not found in feature names")
+
+        # Remaining families to cluster
+        families_to_cluster = [f for f in family_groups if f not in (isolated_families or [])]
+    else:
+        families_to_cluster = list(family_groups.keys())
+
+    # 3. Cluster each family independently
+    for family in families_to_cluster:
+        family_indices = family_groups[family]
+        family_features = features[:, family_indices]
+        family_feature_names = [feature_names[i] for i in family_indices]
+
+        # Get family-specific clustering params (or use defaults)
+        family_params = per_family_params.get(family, {})
+        family_min_clusters = family_params.get("min_clusters", 2)
+        family_max_clusters = family_params.get("max_clusters", min(12, len(family_indices) // 2))
+        family_num_clusters = family_params.get("num_clusters", None)  # Explicit K
+
+        logger.info(f"\nClustering family '{family}' ({len(family_indices)} features):")
+        logger.info(f"  min_clusters: {family_min_clusters}")
+        logger.info(f"  max_clusters: {family_max_clusters}")
+        logger.info(f"  num_clusters: {family_num_clusters or 'auto'}")
+
+        # Cluster this family (reuse existing function)
+        family_assignments = hierarchical_clustering_assignment(
+            features=family_features,
+            feature_names=family_feature_names,
+            num_clusters=family_num_clusters,
+            min_features_per_cluster=min_features_per_cluster,
+            orthogonality_target=orthogonality_target,
+            random_seed=random_seed,
+            max_samples_for_clustering=max_samples_for_clustering,
+            min_clusters=family_min_clusters,
+            max_clusters=family_max_clusters,
+            isolated_families=None,  # Already handled above
+            reassign_orphans=reassign_orphans,
+        )
+
+        # 4. Map local indices → global indices and prefix category names
+        for local_cat_name, local_indices in family_assignments.items():
+            # Map from family subset indices to original feature indices
+            global_indices = [family_indices[i] for i in local_indices]
+
+            # Prefix category name with family
+            global_cat_name = f"{family}_{local_cat_name}"
+            assignments[global_cat_name] = global_indices
+
+            logger.info(f"  ✓ {global_cat_name}: {len(global_indices)} features")
+
+    # 5. Validate merged assignments
+    logger.info(f"\nPer-family clustering complete:")
+    logger.info(f"  Total categories: {len(assignments)}")
+    logger.info(f"  Total features assigned: {sum(len(indices) for indices in assignments.values())}")
+
+    return assignments
 
 
 def validate_cluster_orthogonality(

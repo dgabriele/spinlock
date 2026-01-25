@@ -18,7 +18,7 @@ Adapted from unisim.system.models.category_assignment.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import numpy as np
 
 
@@ -85,6 +85,7 @@ class DynamicCategoryAssignment(CategoryAssignment):
         min_features_per_category: int = 3,
         random_seed: int = 42,
         max_samples_for_clustering: int = 50000,
+        min_clusters: int = 2,
         max_clusters: int = 50,
         gradient_epochs: int = 500,
         gradient_lr: float = 0.01,
@@ -92,6 +93,8 @@ class DynamicCategoryAssignment(CategoryAssignment):
         device: str = "cuda",
         isolated_families: Optional[List[str]] = None,
         reassign_orphans: bool = False,
+        per_family_clustering: bool = False,
+        per_family_params: Optional[Dict[str, Dict[str, Any]]] = None,
     ):
         """Initialize dynamic category assignment.
 
@@ -102,6 +105,7 @@ class DynamicCategoryAssignment(CategoryAssignment):
             min_features_per_category: Minimum features per category (prevents empty categories)
             random_seed: Random seed for reproducibility
             max_samples_for_clustering: Maximum samples for clustering
+            min_clusters: Minimum clusters to explore for auto-determination (default: 2)
             max_clusters: Maximum clusters to explore for auto-determination
             gradient_epochs: Number of epochs for gradient optimization (default: 500)
             gradient_lr: Learning rate for gradient optimization (default: 0.01)
@@ -112,6 +116,12 @@ class DynamicCategoryAssignment(CategoryAssignment):
                 Useful for features that have fundamentally different statistical properties.
             reassign_orphans: If True, features in too-small clusters are reassigned to
                 nearest valid cluster. Guarantees 100% feature assignment (default: False).
+            per_family_clustering: If True, cluster each feature family independently
+            per_family_params: Dict mapping family name -> clustering params
+                Example: {
+                    "initial": {"min_clusters": 2, "max_clusters": 5},
+                    "temporal": {"min_clusters": 8, "max_clusters": 20}
+                }
         """
         if method not in ("clustering", "gradient", "hybrid"):
             raise ValueError(f"Unknown method: {method}. Use 'clustering', 'gradient', or 'hybrid'")
@@ -122,6 +132,7 @@ class DynamicCategoryAssignment(CategoryAssignment):
         self.min_features_per_category = min_features_per_category
         self.random_seed = random_seed
         self.max_samples_for_clustering = max_samples_for_clustering
+        self.min_clusters = min_clusters
         self.max_clusters = max_clusters
         self.gradient_epochs = gradient_epochs
         self.gradient_lr = gradient_lr
@@ -129,6 +140,8 @@ class DynamicCategoryAssignment(CategoryAssignment):
         self.device = device
         self.isolated_families = isolated_families
         self.reassign_orphans = reassign_orphans
+        self.per_family_clustering = per_family_clustering
+        self.per_family_params = per_family_params or {}
 
         # Cached assignments (computed on first call to assign_categories)
         self._assignments = None
@@ -205,8 +218,7 @@ class DynamicCategoryAssignment(CategoryAssignment):
     ) -> Dict[str, List[int]]:
         """Hierarchical clustering assignment.
 
-        Uses correlation distance (1 - |corr|) with Ward linkage.
-        Auto-determines optimal K via silhouette score if num_categories=None.
+        Dispatches to per-family or global clustering based on config.
 
         Args:
             features: [N_samples, N_features] data
@@ -215,20 +227,39 @@ class DynamicCategoryAssignment(CategoryAssignment):
         Returns:
             Dict mapping category_name -> list of feature indices
         """
-        from .clustering_assignment import hierarchical_clustering_assignment
-
-        assignments = hierarchical_clustering_assignment(
-            features=features,
-            feature_names=feature_names,
-            num_clusters=self.num_categories,
-            min_features_per_cluster=self.min_features_per_category,
-            orthogonality_target=self.orthogonality_target,
-            random_seed=self.random_seed,
-            max_samples_for_clustering=self.max_samples_for_clustering,
-            max_clusters=self.max_clusters,
-            isolated_families=self.isolated_families,
-            reassign_orphans=self.reassign_orphans,
+        from .clustering_assignment import (
+            hierarchical_clustering_assignment,
+            per_family_clustering_assignment,
         )
+
+        # Dispatch to per-family clustering if enabled
+        if self.per_family_clustering:
+            assignments = per_family_clustering_assignment(
+                features=features,
+                feature_names=feature_names,
+                per_family_params=self.per_family_params,
+                min_features_per_cluster=self.min_features_per_category,
+                orthogonality_target=self.orthogonality_target,
+                random_seed=self.random_seed,
+                max_samples_for_clustering=self.max_samples_for_clustering,
+                isolated_families=self.isolated_families,
+                reassign_orphans=self.reassign_orphans,
+            )
+        else:
+            # Existing global clustering path
+            assignments = hierarchical_clustering_assignment(
+                features=features,
+                feature_names=feature_names,
+                num_clusters=self.num_categories,
+                min_features_per_cluster=self.min_features_per_category,
+                orthogonality_target=self.orthogonality_target,
+                random_seed=self.random_seed,
+                max_samples_for_clustering=self.max_samples_for_clustering,
+                min_clusters=self.min_clusters,
+                max_clusters=self.max_clusters,
+                isolated_families=self.isolated_families,
+                reassign_orphans=self.reassign_orphans,
+            )
 
         return assignments
 

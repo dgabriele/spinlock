@@ -81,6 +81,11 @@ Examples:
       --epochs 500 \
       --batch-size 512
 
+  # Train with feature selection (pruning)
+  spinlock train-vqvae \
+      --config configs/vqvae/production.json \
+      --feature-selection datasets/cno_50k_feature_analysis.json
+
   # Dry run to validate configuration
   spinlock train-vqvae \
       --config configs/vqvae/production.json \
@@ -150,6 +155,16 @@ Output:
             type=Path,
             metavar="PATH",
             help="Override checkpoint to resume from",
+        )
+
+        # Data options
+        data_group = parser.add_argument_group("data options")
+
+        data_group.add_argument(
+            "--feature-selection",
+            type=Path,
+            metavar="PATH",
+            help="Path to feature analysis file for pruning (from analyze-features command)",
         )
 
         # Execution options
@@ -290,6 +305,8 @@ Output:
             config["device"] = args.device
         if args.no_torch_compile:
             config["training"]["use_torch_compile"] = False
+        if hasattr(args, 'feature_selection') and args.feature_selection:
+            config["feature_selection"] = str(args.feature_selection)
 
         return config
 
@@ -599,20 +616,26 @@ Output:
         }
 
         if verbose:
-            print(f"  INITIAL (14D):  mean=[{per_family_stats['initial'][0].min():.3f}, {per_family_stats['initial'][0].max():.3f}], std=[{per_family_stats['initial'][1].min():.3f}, {per_family_stats['initial'][1].max():.3f}]")
-            print(f"  SUMMARY (128D): mean=[{per_family_stats['summary'][0].min():.3f}, {per_family_stats['summary'][0].max():.3f}], std=[{per_family_stats['summary'][1].min():.3f}, {per_family_stats['summary'][1].max():.3f}]")
-            print(f"  TEMPORAL (128D): mean=[{per_family_stats['temporal'][0].min():.3f}, {per_family_stats['temporal'][0].max():.3f}], std=[{per_family_stats['temporal'][1].min():.3f}, {per_family_stats['temporal'][1].max():.3f}]")
+            for family_name, (means, stds) in per_family_stats.items():
+                if len(means) > 0 and len(stds) > 0:
+                    print(f"  {family_name.upper()} ({len(means)}D): mean=[{means.min():.3f}, {means.max():.3f}], std=[{stds.min():.3f}, {stds.max():.3f}]")
+                else:
+                    print(f"  {family_name.upper()}: No features after extraction")
 
         # Clean features (remove NaN, zero-variance, duplicates, cap outliers)
         # Check both old flat format and new feature_cleaning section
         feature_cleaning = config.get("feature_cleaning", {})
         clean_enabled = feature_cleaning.get("enabled", config.get("clean_features", True))
 
+        # CRITICAL: Control whether cleaning happens before or after category discovery
+        # Default: false (clean AFTER discovery to preserve semantic diversity)
+        pre_categorization = feature_cleaning.get("pre_categorization", False)
+
         # Initialize preprocessing metadata for checkpoint reproducibility
         feature_mask = None
         feature_cleaning_params = None
 
-        if clean_enabled:
+        if clean_enabled and pre_categorization:
             if verbose:
                 print("\nCleaning features...")
 
@@ -720,9 +743,147 @@ Output:
 
             if verbose:
                 print(f"After cleaning: {features.shape[0]} samples × {features.shape[1]} features")
-        else:
+        elif not clean_enabled:
             if verbose:
                 print("Feature cleaning disabled (clean_features=false in config)")
+        else:
+            # Cleaning deferred until after category discovery
+            print("\nFeature cleaning deferred until after categorization")
+            print("  This preserves semantic diversity for clustering")
+
+        # NEW: Redundancy-based feature pruning (correlation analysis)
+        pruning_enabled = feature_cleaning.get("enable_pruning", False)
+        pruning_analysis = None
+        pruned_mask = None
+
+        if pruning_enabled and pre_categorization:
+            if verbose:
+                print("\nAnalyzing feature redundancy for pruning...")
+
+            from datetime import datetime
+            from spinlock.features.analyzer import FeatureAnalyzer, AnalysisMetadata
+
+            # Get pruning parameters
+            pruning_corr_thresh = float(feature_cleaning.get("pruning_correlation_threshold", 0.99))
+            pruning_var_thresh = float(feature_cleaning.get("pruning_variance_threshold", 1e-8))
+            pruning_nan_thresh = float(feature_cleaning.get("pruning_nan_threshold", 0.01))
+
+            # Check for cached analysis
+            cache_enabled = feature_cleaning.get("cache_pruning_analysis", True)
+            cache_path = feature_cleaning.get("pruning_cache_path")
+
+            if cache_path is None:
+                dataset_stem = Path(config["dataset_path"]).stem
+                cache_path = Path(config["dataset_path"]).parent / f"{dataset_stem}_pruning_analysis.json"
+            else:
+                cache_path = Path(cache_path)
+
+            # Load or generate analysis
+            if cache_enabled and cache_path.exists():
+                if verbose:
+                    print(f"  Loading cached analysis from: {cache_path}")
+                import json
+                try:
+                    with open(cache_path, 'r') as f:
+                        pruning_analysis = json.load(f)
+
+                    # Verify cache is compatible
+                    cached_thresholds = pruning_analysis["metadata"]["thresholds"]
+                    if (abs(cached_thresholds["correlation"] - pruning_corr_thresh) > 1e-9 or
+                        abs(cached_thresholds["variance"] - pruning_var_thresh) > 1e-9 or
+                        abs(cached_thresholds["nan"] - pruning_nan_thresh) > 1e-9):
+                        if verbose:
+                            print("  Cache has different thresholds, re-running analysis...")
+                        pruning_analysis = None
+                except Exception as e:
+                    if verbose:
+                        print(f"  Failed to load cache: {e}")
+                        print("  Re-running analysis...")
+                    pruning_analysis = None
+
+            # Run analysis if not cached
+            if pruning_analysis is None:
+                analyzer = FeatureAnalyzer(
+                    variance_threshold=pruning_var_thresh,
+                    correlation_threshold=pruning_corr_thresh,
+                    nan_threshold=pruning_nan_thresh,
+                )
+
+                # Create metadata
+                metadata = AnalysisMetadata(
+                    dataset_path=str(config["dataset_path"]),
+                    feature_family="temporal",  # Could be detected from config
+                    analysis_timestamp=datetime.now().isoformat(),
+                    total_samples=features.shape[0],
+                    total_timesteps=None,
+                    total_features=features.shape[1],
+                    thresholds={
+                        "variance": pruning_var_thresh,
+                        "correlation": pruning_corr_thresh,
+                        "nan": pruning_nan_thresh,
+                    }
+                )
+
+                if verbose:
+                    print(f"  Running correlation analysis on {features.shape[1]} features...")
+                    print(f"    Correlation threshold: {pruning_corr_thresh}")
+                    print(f"    Variance threshold: {pruning_var_thresh}")
+                    print(f"    NaN threshold: {pruning_nan_thresh}")
+
+                pruning_analysis = analyzer.analyze(features, feature_names, metadata)
+
+                # Cache results
+                if cache_enabled:
+                    try:
+                        cache_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(cache_path, 'w') as f:
+                            json.dump(pruning_analysis, f, indent=2, default=str)
+                        if verbose:
+                            print(f"  Cached analysis to: {cache_path}")
+                    except Exception as e:
+                        if verbose:
+                            print(f"  Warning: Failed to cache analysis: {e}")
+
+            # Apply pruning
+            prune_indices = pruning_analysis["recommendations"]["prune_indices"]
+            keep_indices = pruning_analysis["recommendations"]["keep_indices"]
+
+            if len(prune_indices) > 0:
+                summary = pruning_analysis["summary"]
+                if verbose:
+                    print(f"\n  Pruning summary:")
+                    print(f"    Total features: {summary['features_analyzed']}")
+                    print(f"    Zero variance: {summary['zero_variance_features']}")
+                    print(f"    Redundant (r>{pruning_corr_thresh}): {summary['redundant_features']}")
+                    print(f"    High NaN: {summary['high_nan_features']}")
+                    print(f"    → Keeping: {summary['recommended_keep']} ({summary['compression_ratio']:.1%})")
+                    print(f"    → Pruning: {summary['recommended_prune']} ({100*(1-summary['compression_ratio']):.1%})")
+
+                # Apply pruning
+                features = features[:, keep_indices]
+
+                # Update feature names
+                if feature_names:
+                    feature_names = [feature_names[i] for i in keep_indices]
+
+                # Create pruned mask for checkpoint
+                pruned_mask = np.zeros(summary['features_analyzed'], dtype=bool)
+                pruned_mask[prune_indices] = True
+
+                # Update feature_cleaning_params for checkpoint
+                if feature_cleaning_params is None:
+                    feature_cleaning_params = {}
+                feature_cleaning_params["pruning_enabled"] = True
+                feature_cleaning_params["pruning_correlation_threshold"] = pruning_corr_thresh
+                feature_cleaning_params["pruning_variance_threshold"] = pruning_var_thresh
+                feature_cleaning_params["pruning_nan_threshold"] = pruning_nan_thresh
+                feature_cleaning_params["pruned_feature_count"] = len(prune_indices)
+
+                if verbose:
+                    print(f"  Features after pruning: {features.shape}")
+            else:
+                if verbose:
+                    print("  No features pruned (all pass thresholds)")
 
         # Auto-discover categories (if needed)
         if config.get("category_assignment") == "auto" and config.get("resume_from") is None:
@@ -742,22 +903,65 @@ Output:
 
             group_indices = self._load_category_mapping(config["category_mapping_file"])
 
-            if verbose:
-                print(f"Loaded {len(group_indices)} categories:")
-                for cat_name, indices in group_indices.items():
-                    print(f"  {cat_name}: {len(indices)} features")
+            # Log loaded structure (always show)
+            print(f"\n{'='*70}")
+            print(f"LOADED CATEGORY STRUCTURE")
+            print(f"{'='*70}")
+            print(f"Number of categories: {len(group_indices)}")
+            print(f"Total features:       {len(feature_names)}")
+
+            for cat_name, indices in sorted(group_indices.items()):
+                # Get feature names for this category
+                cat_feature_names = [feature_names[i] for i in sorted(indices)]
+
+                # Determine dominant family
+                families = {}
+                for fname in cat_feature_names:
+                    family = fname.split('::')[0] if '::' in fname else 'unknown'
+                    families[family] = families.get(family, 0) + 1
+
+                family_breakdown = ', '.join(f"{k}:{v}" for k, v in sorted(families.items()))
+
+                print(f"\n{cat_name}:")
+                print(f"  Features:  {len(indices)} (indices {min(indices)}-{max(indices)})")
+                print(f"  Families:  {family_breakdown}")
+
+            print(f"{'='*70}\n")
         elif config.get("resume_from"):
             # Load categories from checkpoint
             if verbose:
-                print("\nLoading categories from checkpoint...")
+                print(f"\nLoading categories from checkpoint: {config['resume_from']}...")
 
             checkpoint = torch.load(config["resume_from"], weights_only=False)
 
             # Load from model_config (authoritative source)
             if "model_config" in checkpoint and "group_indices" in checkpoint["model_config"]:
                 group_indices = checkpoint["model_config"]["group_indices"]
-                if verbose:
-                    print(f"Loaded {len(group_indices)} categories from model_config")
+
+                # Log loaded structure from checkpoint (always show)
+                print(f"\n{'='*70}")
+                print(f"RESUMED CATEGORY STRUCTURE")
+                print(f"{'='*70}")
+                print(f"Number of categories: {len(group_indices)}")
+                print(f"Total features:       {len(feature_names)}")
+
+                for cat_name, indices in sorted(group_indices.items()):
+                    # Get feature names for this category
+                    cat_feature_names = [feature_names[i] for i in sorted(indices)]
+
+                    # Determine dominant family
+                    families = {}
+                    for fname in cat_feature_names:
+                        family = fname.split('::')[0] if '::' in fname else 'unknown'
+                        families[family] = families.get(family, 0) + 1
+
+                    family_breakdown = ', '.join(f"{k}:{v}" for k, v in sorted(families.items()))
+
+                    print(f"\n{cat_name}:")
+                    print(f"  Features:  {len(indices)} (indices {min(indices)}-{max(indices)})")
+                    print(f"  Families:  {family_breakdown}")
+
+                print(f"{'='*70}\n")
             else:
                 return self.error(
                     "Checkpoint missing model_config['group_indices']. "
@@ -765,6 +969,108 @@ Output:
                 )
         else:
             return self.error("Must specify category_assignment='auto', category_mapping_file, or resume_from")
+
+        # Apply per-category cleaning if deferred from earlier
+        if clean_enabled and not pre_categorization:
+            print(f"\n{'='*70}")
+            print("CLEANING FEATURES PER CATEGORY")
+            print(f"{'='*70}")
+            print("This removes redundancy within each discovered category")
+            print("while preserving inter-category semantic diversity.\n")
+
+            from spinlock.encoding import FeatureProcessor
+
+            # Read cleaning parameters (same as would be used in global cleaning)
+            max_var_thresh = feature_cleaning.get("max_variance_threshold", config.get("max_variance_threshold", None))
+            if max_var_thresh is not None:
+                max_var_thresh = float(max_var_thresh)
+
+            variance_threshold = float(feature_cleaning.get("variance_threshold", config.get("variance_threshold", 1e-10)))
+            deduplicate_threshold = float(feature_cleaning.get("deduplicate_threshold", config.get("deduplicate_threshold", 0.99)))
+            use_intelligent_dedup = bool(feature_cleaning.get("use_intelligent_dedup", config.get("use_intelligent_dedup", True)))
+            outlier_method = str(feature_cleaning.get("outlier_method", config.get("outlier_method", "percentile")))
+            percentile_range = tuple(feature_cleaning.get("percentile_range", config.get("percentile_range", [0.5, 99.5])))
+            iqr_multiplier = float(feature_cleaning.get("iqr_multiplier", config.get("iqr_multiplier", 1.5)))
+            mad_threshold = float(feature_cleaning.get("mad_threshold", config.get("mad_threshold", 3.0)))
+            max_cv_threshold = float(feature_cleaning.get("max_cv_threshold", config.get("max_cv_threshold", 100.0)))
+
+            # Store for checkpoint
+            feature_cleaning_params = {
+                "variance_threshold": variance_threshold,
+                "max_variance_threshold": max_var_thresh,
+                "max_cv_threshold": max_cv_threshold,
+                "deduplicate_threshold": deduplicate_threshold,
+                "use_intelligent_dedup": use_intelligent_dedup,
+                "outlier_method": outlier_method,
+                "percentile_range": list(percentile_range),
+                "iqr_multiplier": iqr_multiplier,
+                "mad_threshold": mad_threshold,
+                "per_category_cleaning": True,
+            }
+
+            processor = FeatureProcessor(
+                variance_threshold=variance_threshold,
+                max_variance_threshold=max_var_thresh,
+                max_cv_threshold=max_cv_threshold,
+                deduplicate_threshold=deduplicate_threshold,
+                use_intelligent_dedup=use_intelligent_dedup,
+                outlier_method=outlier_method,
+                percentile_range=percentile_range,
+                iqr_multiplier=iqr_multiplier,
+                mad_threshold=mad_threshold,
+                verbose=verbose,
+            )
+
+            # Track original-to-cleaned index mapping
+            global_feature_mask = np.ones(features.shape[1], dtype=bool)
+            cleaned_features_list = []
+            cleaned_names_list = []
+            updated_group_indices = {}
+            current_cleaned_idx = 0
+
+            # Clean each category independently
+            for cat_name, cat_indices in sorted(group_indices.items()):
+                cat_indices_sorted = sorted(cat_indices)
+                cat_features = features[:, cat_indices_sorted]
+                cat_names = [feature_names[i] for i in cat_indices_sorted] if feature_names else None
+
+                print(f"\n{cat_name}:")
+                print(f"  Original: {len(cat_indices_sorted)} features")
+
+                # Clean this category's features
+                cat_cleaned, cat_mask, cat_cleaned_names = processor.clean(cat_features, cat_names)
+
+                # Update global mask
+                for local_idx, original_idx in enumerate(cat_indices_sorted):
+                    if not cat_mask[local_idx]:
+                        global_feature_mask[original_idx] = False
+
+                # Track new indices for this category
+                num_kept = cat_mask.sum()
+                updated_group_indices[cat_name] = list(range(current_cleaned_idx, current_cleaned_idx + num_kept))
+
+                print(f"  Cleaned:  {num_kept} features (removed {len(cat_indices_sorted) - num_kept})")
+
+                # Accumulate cleaned data
+                cleaned_features_list.append(cat_cleaned)
+                if cat_cleaned_names:
+                    cleaned_names_list.extend(cat_cleaned_names)
+
+                current_cleaned_idx += num_kept
+
+            # Reconstruct full feature matrix
+            features = np.hstack(cleaned_features_list)
+            feature_names = cleaned_names_list if cleaned_names_list else None
+            feature_mask = global_feature_mask
+            group_indices = updated_group_indices
+
+            print(f"\n{'='*70}")
+            print(f"CLEANING SUMMARY")
+            print(f"{'='*70}")
+            print(f"Original features: {global_feature_mask.shape[0]}")
+            print(f"Cleaned features:  {features.shape[1]} ({100 * features.shape[1] / global_feature_mask.shape[0]:.1f}%)")
+            print(f"Removed:           {global_feature_mask.shape[0] - features.shape[1]} ({100 * (1 - features.shape[1] / global_feature_mask.shape[0]):.1f}%)")
+            print(f"{'='*70}\n")
 
         # Pre-compute adaptive compression ratios if "auto" mode
         # IMPORTANT: Do this BEFORE normalization so variance information is preserved!
@@ -1398,6 +1704,7 @@ Output:
             method=method,
             orthogonality_target=config.get("orthogonality_target", 0.15),
             min_features_per_category=config.get("min_features_per_category", 3),
+            min_clusters=config.get("min_clusters", 2),
             max_clusters=config.get("max_clusters", 25),
             random_seed=config.get("random_seed", 42),
             # Gradient refinement parameters
@@ -1409,10 +1716,40 @@ Output:
             isolated_families=cat_config.get("isolated_families"),
             # Orphan reassignment - guarantee 100% feature assignment
             reassign_orphans=cat_config.get("reassign_orphans", False),
+            # Per-family clustering - cluster each family independently
+            per_family_clustering=cat_config.get("per_family_clustering", False),
+            per_family_params=cat_config.get("per_family_params", {}),
         )
 
         # Compute assignments
         group_indices = assigner.assign_categories(feature_names, normalized)
+
+        # Log discovered structure (always show, not just verbose)
+        print(f"\n{'='*70}")
+        print(f"DISCOVERED CATEGORY STRUCTURE")
+        print(f"{'='*70}")
+        print(f"Number of categories: {len(group_indices)}")
+        print(f"Total features:       {len(feature_names)}")
+
+        for cat_name, indices in sorted(group_indices.items()):
+            # Get feature names for this category
+            cat_feature_names = [feature_names[i] for i in sorted(indices)]
+
+            # Determine dominant family
+            families = {}
+            for fname in cat_feature_names:
+                family = fname.split('::')[0] if '::' in fname else 'unknown'
+                families[family] = families.get(family, 0) + 1
+
+            dominant_family = max(families, key=families.get) if families else 'unknown'
+            family_breakdown = ', '.join(f"{k}:{v}" for k, v in sorted(families.items()))
+
+            print(f"\n{cat_name}:")
+            print(f"  Features:  {len(indices)} (indices {min(indices)}-{max(indices)})")
+            print(f"  Families:  {family_breakdown}")
+            print(f"  Dominant:  {dominant_family}")
+
+        print(f"{'='*70}\n")
 
         return group_indices
 
@@ -1562,12 +1899,42 @@ Output:
         else:
             model = CategoricalHierarchicalVQVAE(vqvae_config)
 
-        if verbose:
-            total_params = sum(p.numel() for p in model.parameters())
-            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-            print(f"Model created:")
-            print(f"  Total parameters:     {total_params:,}")
-            print(f"  Trainable parameters: {trainable_params:,}")
+        # Always show model structure (not just verbose)
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Model created:")
+        print(f"  Total parameters:     {total_params:,}")
+        print(f"  Trainable parameters: {trainable_params:,}")
+
+        # Log category structure and compression details
+        print(f"\n{'='*70}")
+        print(f"MODEL ARCHITECTURE")
+        print(f"{'='*70}")
+        print(f"Number of categories: {len(vqvae_config.categories)}")
+        print(f"Total features:       {features.shape[1]}")
+        print(f"Total latent dims:    {vqvae_config.total_latent_dim}")
+        print(f"Total codebook size:  {vqvae_config.total_tokens:,} codes")
+
+        for cat_idx, cat_name in enumerate(vqvae_config.categories):
+            cat_indices = vqvae_config.group_indices[cat_name]
+            cat_levels = vqvae_config.levels[cat_name]
+
+            print(f"\n{cat_name.upper()}:")
+            print(f"  Features: {len(cat_indices)} (indices {min(cat_indices)}-{max(cat_indices)})")
+
+            # Show hierarchical structure
+            print(f"  Hierarchical VQ Levels:")
+            for level_idx, level_config in enumerate(cat_levels):
+                latent_dim = level_config['latent_dim']
+                num_tokens = level_config['num_tokens']
+
+                # Compute compression ratio
+                input_dim = len(cat_indices)
+                compression_ratio = latent_dim / input_dim
+
+                print(f"    L{level_idx}: {input_dim}D → {latent_dim}D ({num_tokens:,} codes, ratio={compression_ratio:.2f})")
+
+        print(f"{'='*70}\n")
 
         return model, vqvae_config
 
@@ -1734,6 +2101,8 @@ Output:
             checkpoint_dir=checkpoint_dir,
             use_torch_compile=config.get("use_torch_compile", True),
             val_every_n_epochs=config.get("val_every_n_epochs", 5),
+            gradient_clip_norm=config.get("gradient_clip_norm"),
+            warmup_epochs=config.get("warmup_epochs", 0),
             verbose=config.get("verbose", True),
             # Metadata for checkpoint reproducibility
             config=config,
@@ -1745,6 +2114,87 @@ Output:
             feature_mask=feature_mask,
             feature_cleaning_params=feature_cleaning_params,
         )
+
+        # A3: Feature weighting for reconstruction loss
+        feature_weighting_config = config.get("feature_weighting", {})
+        if feature_weighting_config.get("enabled", False):
+            from spinlock.encoding.feature_weighting import compute_feature_weights
+            import torch
+
+            strategy = feature_weighting_config.get("strategy", "variance_information")
+            verbose = config.get("verbose", True)
+
+            if verbose:
+                print(f"\nComputing feature weights (strategy: {strategy})...")
+
+            # Get training features from train_loader
+            # Need to get the actual reconstruction target dimensions
+            # (which may be expanded by hybrid encoders)
+            sample_batch = next(iter(train_loader))
+            sample_features = sample_batch["features"].to(config.get("device", "cuda"))
+            sample_raw_ics = sample_batch.get("raw_ics")
+            if sample_raw_ics is not None:
+                sample_raw_ics = sample_raw_ics.to(config.get("device", "cuda"))
+
+            # Get model output to see actual reconstruction dimension
+            with torch.no_grad():
+                if sample_raw_ics is not None:
+                    sample_output = model(sample_features, raw_ics=sample_raw_ics)
+                else:
+                    sample_output = model(sample_features)
+
+            # Use input_features if available (hybrid mode), otherwise use features
+            if "input_features" in sample_output:
+                recon_dim = sample_output["input_features"].shape[1]
+                # Get expanded features for weight computation
+                all_train_features = []
+                for batch in train_loader:
+                    features = batch["features"].to(config.get("device", "cuda"))
+                    raw_ics = batch.get("raw_ics")
+                    if raw_ics is not None:
+                        raw_ics = raw_ics.to(config.get("device", "cuda"))
+                    with torch.no_grad():
+                        if raw_ics is not None:
+                            outputs = model(features, raw_ics=raw_ics)
+                        else:
+                            outputs = model(features)
+                        expanded_features = outputs["input_features"]
+                        all_train_features.append(expanded_features.cpu().numpy())
+                    if len(all_train_features) >= 10:  # Use first ~5000 samples
+                        break
+            else:
+                recon_dim = sample_features.shape[1]
+                # Use regular features
+                all_train_features = []
+                for batch in train_loader:
+                    features = batch["features"]
+                    all_train_features.append(features.cpu().numpy())
+                    if len(all_train_features) >= 10:
+                        break
+
+            train_features_np = np.concatenate(all_train_features, axis=0)
+
+            if verbose:
+                print(f"Computing weights for {recon_dim}D reconstruction target...")
+
+            # Compute weights
+            weights_np = compute_feature_weights(
+                train_features_np,
+                strategy=strategy,
+                normalize=True,
+            )
+
+            # Convert to torch and move to device
+            feature_weights = torch.from_numpy(weights_np).float().to(config.get("device", "cuda"))
+
+            # Set in trainer
+            trainer.feature_weights = feature_weights
+
+            if verbose:
+                print(f"Feature weights computed: min={weights_np.min():.3f}, "
+                      f"max={weights_np.max():.3f}, mean={weights_np.mean():.3f}")
+                print(f"High-importance features: {(weights_np > 1.5).sum()}/{len(weights_np)}")
+                print(f"Low-importance features: {(weights_np < 0.5).sum()}/{len(weights_np)}")
 
         return trainer
 
