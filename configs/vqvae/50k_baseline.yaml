@@ -52,7 +52,7 @@ model:
   commitment_cost: 0.05         # LOWERED from 0.25 to reduce encoder commitment to existing codes
   use_ema: true
   decay: 0.99
-  dropout: 0.1
+  dropout: 0.3                  # INCREASED from 0.1 to force using backup codes
 
   # Auxiliary loss weights
   orthogonality_weight: 0.1
