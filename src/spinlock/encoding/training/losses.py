@@ -309,15 +309,17 @@ def entropy_regularization_loss(outputs: Dict[str, Any], device: str = "cuda") -
     Encourages uniform distribution across codebook entries by maximizing
     the entropy of code usage. Higher entropy = better utilization.
 
-    Formula: H = -sum(p_i * log(p_i))
-    Loss: -H (minimize negative entropy = maximize entropy)
+    Formula:
+        H = -sum(p_i * log(p_i))  (actual entropy)
+        H_max = log(K)             (maximum possible entropy for K codes)
+        Loss = H_max - H           (distance from uniform, always positive)
 
     Args:
         outputs: Model outputs with 'encodings' key containing one-hot code assignments
         device: Device for tensor creation (default: "cuda")
 
     Returns:
-        Entropy regularization loss (negative entropy averaged across quantizers)
+        Entropy regularization loss (positive, 0 = perfect uniform usage)
     """
     if "encodings" not in outputs or not outputs["encodings"]:
         return torch.tensor(0.0, device=device)
@@ -334,15 +336,17 @@ def entropy_regularization_loss(outputs: Dict[str, Any], device: str = "cuda") -
         # encodings: [batch, K] one-hot vectors
         # avg_probs: [K] probability of each code being used
         avg_probs = encodings.mean(0)  # Average over batch dimension
+        K = encodings.shape[-1]  # Number of codebook entries
 
-        # Compute entropy: H = -sum(p * log(p))
-        # Add epsilon for numerical stability
+        # Compute actual entropy: H = -sum(p * log(p))
         epsilon = 1e-10
-        entropy = -torch.sum(avg_probs * torch.log(avg_probs + epsilon))
+        actual_entropy = -torch.sum(avg_probs * torch.log(avg_probs + epsilon))
 
-        # Maximize entropy by minimizing negative entropy
-        # Negative because we want to add this to the loss (gradient descent minimizes)
-        entropy_loss = -entropy
+        # Maximum possible entropy (uniform distribution): H_max = log(K)
+        max_entropy = torch.log(torch.tensor(K, dtype=torch.float32, device=device))
+
+        # Loss = distance from maximum entropy (positive, 0 = perfect)
+        entropy_loss = max_entropy - actual_entropy
         entropy_losses.append(entropy_loss)
 
     # Average across all quantizers
@@ -389,7 +393,7 @@ def compute_total_loss(
             - topo_pre: Pre-quantization topographic similarity (correlation)
             - topo_post: Post-quantization topographic similarity (correlation)
             - reference_regularization: Reference feature regularization loss
-            - entropy: Entropy regularization loss (encourages uniform codebook usage)
+            - entropy: Entropy regularization loss (positive, 0 = perfect uniform usage)
     """
     # 1. Reconstruction loss (with optional feature weighting)
     recon_loss = reconstruction_loss(outputs, targets, feature_weights=feature_weights)
