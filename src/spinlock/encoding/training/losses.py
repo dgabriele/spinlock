@@ -303,7 +303,7 @@ def reference_regularization_loss(
     return loss
 
 
-def entropy_regularization_loss(outputs: Dict[str, Any]) -> torch.Tensor:
+def entropy_regularization_loss(outputs: Dict[str, Any], device: str = "cuda") -> torch.Tensor:
     """Compute entropy regularization loss to encourage uniform codebook usage.
 
     Encourages uniform distribution across codebook entries by maximizing
@@ -314,14 +314,19 @@ def entropy_regularization_loss(outputs: Dict[str, Any]) -> torch.Tensor:
 
     Args:
         outputs: Model outputs with 'encodings' key containing one-hot code assignments
+        device: Device for tensor creation (default: "cuda")
 
     Returns:
         Entropy regularization loss (negative entropy averaged across quantizers)
     """
     if "encodings" not in outputs or not outputs["encodings"]:
-        return torch.tensor(0.0)
+        return torch.tensor(0.0, device=device)
 
     encodings_list = outputs["encodings"]  # List of [batch, K] one-hot encodings
+
+    if len(encodings_list) == 0:
+        return torch.tensor(0.0, device=device)
+
     entropy_losses = []
 
     for encodings in encodings_list:
@@ -412,7 +417,7 @@ def compute_total_loss(
 
     # 7. Entropy regularization loss (optional)
     if entropy_weight > 0:
-        ent_loss = entropy_regularization_loss(outputs)
+        ent_loss = entropy_regularization_loss(outputs, device=targets["features"].device)
     else:
         # Skip computation if disabled (weight = 0)
         ent_loss = torch.tensor(0.0, device=targets["features"].device)

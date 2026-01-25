@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from .vector_quantizer import VectorQuantizer
 from .grouped_feature_extractor import GroupedFeatureExtractor
 from .categorical_projector import CategoricalProjector
+from .residual_decoder import MultiLayerResidualDecoder, AttentionDecoder
 from .latent_dim_defaults import (
     fill_missing_latent_dims,
     compute_default_latent_dims,
@@ -49,6 +50,12 @@ class CategoricalVQVAEConfig:
         group_indices: Dict mapping category -> feature indices
         group_embedding_dim: Embedding dimension for each category
         group_hidden_dim: Hidden dimension for category MLPs
+        decoder_hidden_dim: Hidden dimension for shared decoder
+        partial_decoder_hidden_dim: Hidden dimension for partial decoders
+        use_residual_decoder: Whether to use multi-layer residual decoder (A2)
+        use_attention_decoder: Whether to use attention-based decoder (A2)
+        attention_heads: Number of attention heads for attention decoder
+        residual_decoder_hidden_dims: Hidden dimensions for residual decoder layers
         levels: Per-category level configs (category_name -> list of level dicts)
                 Each level can specify num_tokens and/or latent_dim
                 If omitted, they are auto-computed using compression_ratios
@@ -68,6 +75,12 @@ class CategoricalVQVAEConfig:
     group_indices: Dict[str, List[int]]
     group_embedding_dim: int = 64
     group_hidden_dim: int = 128
+    decoder_hidden_dim: int = 256  # Shared decoder hidden dimension
+    partial_decoder_hidden_dim: int = 128  # Partial decoder hidden dimension
+    use_residual_decoder: bool = False  # Use multi-layer residual decoder
+    use_attention_decoder: bool = False  # Use attention-based decoder
+    attention_heads: int = 8  # Number of attention heads (if use_attention_decoder=True)
+    residual_decoder_hidden_dims: Optional[List[int]] = None  # Hidden dims for residual decoder
     levels: Optional[Dict[str, List[Dict]]] = None  # Per-category levels
     commitment_cost: float = 0.25
     orthogonality_weight: float = 0.1
@@ -276,24 +289,55 @@ class CategoricalHierarchicalVQVAE(nn.Module):
                 )
 
         # Shared decoder (concat all quantized vectors → input reconstruction)
-        self.shared_decoder = nn.Sequential(
-            nn.Linear(config.total_latent_dim, 256),
-            nn.ReLU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(256, config.input_dim),
-        )
+        # Choose decoder architecture based on config
+        use_residual = getattr(config, "use_residual_decoder", False)
+        use_attention = getattr(config, "use_attention_decoder", False)
+
+        if use_attention:
+            # A2: Attention-based decoder
+            attention_heads = getattr(config, "attention_heads", 8)
+            decoder_hidden = getattr(config, "decoder_hidden_dim", 768)
+            self.shared_decoder = AttentionDecoder(
+                latent_dim=config.total_latent_dim,
+                input_dim=config.input_dim,
+                hidden_dim=decoder_hidden,
+                num_heads=attention_heads,
+                dropout=config.dropout,
+            )
+        elif use_residual:
+            # A2: Multi-layer residual decoder
+            hidden_dims = getattr(config, "residual_decoder_hidden_dims", None)
+            if hidden_dims is None:
+                # Default: [512, 768, 512]
+                hidden_dims = [512, 768, 512]
+            self.shared_decoder = MultiLayerResidualDecoder(
+                latent_dim=config.total_latent_dim,
+                input_dim=config.input_dim,
+                hidden_dims=hidden_dims,
+                dropout=config.dropout,
+            )
+        else:
+            # A1: Simple 2-layer decoder
+            decoder_hidden = getattr(config, "decoder_hidden_dim", 256)
+            self.shared_decoder = nn.Sequential(
+                nn.Linear(config.total_latent_dim, decoder_hidden),
+                nn.ReLU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(decoder_hidden, config.input_dim),
+            )
 
         # Partial decoders (each latent vector → input reconstruction)
         # For informativeness loss
+        partial_decoder_hidden = getattr(config, "partial_decoder_hidden_dim", 128)  # Default 128
         self.partial_decoders = nn.ModuleList()
         for category in config.categories:
             cat_levels = config.get_category_levels(category)
             for level_config in cat_levels:
                 self.partial_decoders.append(
                     nn.Sequential(
-                        nn.Linear(level_config["latent_dim"], 128),
+                        nn.Linear(level_config["latent_dim"], partial_decoder_hidden),
                         nn.ReLU(),
-                        nn.Linear(128, config.input_dim),
+                        nn.Linear(partial_decoder_hidden, config.input_dim),
                     )
                 )
 
@@ -321,7 +365,7 @@ class CategoricalHierarchicalVQVAE(nn.Module):
 
     def quantize(
         self, z_list: List[torch.Tensor]
-    ) -> Tuple[List[torch.Tensor], torch.Tensor, Dict[str, torch.Tensor]]:
+    ) -> Tuple[List[torch.Tensor], torch.Tensor, Dict[str, torch.Tensor], List[torch.Tensor]]:
         """Quantize all N×L latent vectors.
 
         Args:
@@ -332,15 +376,18 @@ class CategoricalHierarchicalVQVAE(nn.Module):
                 - z_q_list: List of N×L quantized vectors
                 - tokens: Token indices [batch, N×L]
                 - losses: Dictionary of VQ losses
+                - encodings_list: List of one-hot encodings for entropy regularization
         """
         z_q_list = []
         token_list = []
+        encodings_list = []
         vq_loss_total = 0.0
 
         for z, vq_layer in zip(z_list, self.vq_layers):
             # Quantize
             z_q, encodings, losses = vq_layer(z)
             z_q_list.append(z_q)
+            encodings_list.append(encodings)
 
             # Extract token indices
             tokens = torch.argmax(encodings, dim=-1)  # [batch]
@@ -354,7 +401,7 @@ class CategoricalHierarchicalVQVAE(nn.Module):
 
         losses = {"vq_loss": vq_loss_total}
 
-        return z_q_list, tokens, losses
+        return z_q_list, tokens, losses, encodings_list
 
     def decode_shared(self, z_q_list: List[torch.Tensor]) -> torch.Tensor:
         """Decode from all quantized vectors using shared decoder.
@@ -485,12 +532,13 @@ class CategoricalHierarchicalVQVAE(nn.Module):
                 - latents: List of PRE-quantization latent vectors
                 - quantized: List of POST-quantization code embeddings
                 - tokens: Token indices [batch, N×L]
+                - encodings: List of one-hot encodings for entropy regularization
         """
         # Encode to N×L latent vectors
         z_list = self.encode(x)
 
         # Quantize
-        z_q_list, tokens, vq_losses = self.quantize(z_list)
+        z_q_list, tokens, vq_losses, encodings_list = self.quantize(z_list)
 
         # Decode (shared)
         x_recon = self.decode_shared(z_q_list)
@@ -506,6 +554,7 @@ class CategoricalHierarchicalVQVAE(nn.Module):
             "latents": z_list,  # PRE-quantization (continuous)
             "quantized": z_q_list,  # POST-quantization (discrete code embeddings)
             "tokens": tokens,
+            "encodings": encodings_list,  # One-hot encodings for entropy regularization
         }
 
     def get_tokens(self, x: torch.Tensor) -> torch.Tensor:
@@ -519,7 +568,7 @@ class CategoricalHierarchicalVQVAE(nn.Module):
         """
         with torch.no_grad():
             z_list = self.encode(x)
-            _, tokens, _ = self.quantize(z_list)
+            _, tokens, _, _ = self.quantize(z_list)
 
         return tokens
 

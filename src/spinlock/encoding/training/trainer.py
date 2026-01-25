@@ -552,6 +552,12 @@ class VQVAETrainer:
             logger.info(f"Validation samples: {len(self.val_loader.dataset)}")
             logger.info(f"Device: {self.device}")
             logger.info(f"Validation frequency: every {self.val_every_n_epochs} epochs")
+            logger.info(f"\nLoss weights:")
+            logger.info(f"  Orthogonality: {self.orthogonality_weight}")
+            logger.info(f"  Informativeness: {self.informativeness_weight}")
+            logger.info(f"  Topographic: {self.topo_weight}")
+            logger.info(f"  Reference regularization: {self.reference_reg_weight}")
+            logger.info(f"  Entropy regularization: {self.entropy_weight} {'(ACTIVE)' if self.entropy_weight > 0 else '(disabled)'}")
 
         start_time = time.time()
         last_val_loss = None
@@ -621,6 +627,11 @@ class VQVAETrainer:
                 ref_reg = loss_components.get("reference_regularization", 0.0)
                 if ref_reg > 0:
                     msg += f", ref_reg={ref_reg:.6f}"
+
+                # Add entropy regularization loss if active
+                entropy_loss = loss_components.get("entropy", 0.0)
+                if entropy_loss > 0 or (self.entropy_weight > 0 and entropy_loss != 0.0):
+                    msg += f", entropy={entropy_loss:.6f}"
 
                 logger.info(msg)
 
