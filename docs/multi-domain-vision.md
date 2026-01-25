@@ -99,10 +99,10 @@ Each physics family receives optimal treatment:
 
 **2. Independent Tokenization**
 
-Each MNO gets its own VQ-VAE trained exclusively on that domain's distribution:
-- **VQ-VAE-RD**: Trained on 100K+ reaction-diffusion trajectories from MNO-RD
-- **VQ-VAE-Fluids**: Trained on 100K+ fluid dynamics trajectories from MNO-Fluids
-- **VQ-VAE-Waves**: Trained on 100K+ wave equation trajectories from MNO-Waves
+Each domain gets its own VQ-VAE trained on CNO ground truth:
+- **VQ-VAE-RD**: Trained on CNO reaction-diffusion features (50K+ samples)
+- **VQ-VAE-Fluids**: Trained on CNO fluid dynamics features (50K+ samples)
+- **VQ-VAE-Waves**: Trained on CNO wave equation features (50K+ samples)
 
 **Why independent rather than shared tokenization?**
 - Tests whether categories emerge naturally across domains (the key experiment)
@@ -360,11 +360,10 @@ The *behavioral pattern* may align:
 
 **Completed:**
 - ✅ Reaction-diffusion domain fully implemented
-  - MNO-RD trained to L_traj < 1.0 (Stage 1)
-  - 100K+ diverse feature set generated (Stage 2)
-  - VQ-VAE-RD trained with 10 categories, 47% utilization (Stage 3)
-- ✅ Independent optimization architecture validated
-- ✅ Stage 1-3 pipeline proven effective
+  - VQ-VAE-RD trained on CNO features (50K samples, 8 categories, 99.4% quality)
+  - MNO-RD training in progress on CNO trajectories (10K samples, target: L_traj < 1.0)
+- ✅ CNO-trained architecture validated
+- ✅ Independent component training pipeline proven effective
 
 **Current Capabilities:**
 - Single-domain learned physics engine (reaction-diffusion)

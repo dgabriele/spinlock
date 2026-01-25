@@ -1,286 +1,444 @@
-# NOA Architecture: Two Paradigms of Learning
+# NOA Architecture: CNO-Trained Components
 
-## Vision: NOA as Creative Observer
+## Overview
 
-The Neural Operator Agent (NOA) is fundamentally a **creative observer** of dynamical systems, embedded within the continuous flow of physical change yet equipped to interpret and articulate that change through a symbolic lens.
+The NOA (Neural Operator Agent) architecture consists of two independently-trained components that compose for downstream exploration and reasoning:
 
-Rather than merely simulating trajectories with rigid fidelity to ground-truth rollouts, NOA generates its own "ideas" of evolution—distinct pathways that may diverge from observed reality but remain **coherent and meaningful** when translated into the discrete behavioral tokens of the VQ-VAE vocabulary.
+1. **VQ-VAE Tokenizer**: Discrete behavioral vocabulary (trained on CNO ground truth)
+2. **MNO World Model**: High-fidelity physics simulator (trained on CNO ground truth)
 
-This vision enables two distinct training paradigms:
+Both components train on the same CNO dataset independently, then compose for NOA cognitive capabilities.
 
-| Paradigm | Philosophy | Primary Loss |
-|----------|------------|--------------|
-| **MSE-led** | "Replicate ground truth exactly" | L_traj (trajectory MSE) |
-| **VQ-led** | "Be expressible in symbolic vocabulary" | L_recon (VQ reconstruction) |
+## Design Philosophy
+
+### Key Architectural Principle
+
+**Both VQ-VAE and MNO train independently on CNO ground truth, then compose for NOA.**
+
+- **VQ-VAE**: Learns discrete symbolic representation from CNO behavioral features
+- **MNO**: Learns continuous physics simulation from CNO trajectories
+- **NOA**: Uses MNO for exploration + VQ-VAE for symbolic reasoning
+
+### Why CNO-Trained Instead of MNO-Generated?
+
+The original 3-stage approach (train MNO → generate MNO features → train VQ on MNO) had the philosophy of "train tokenizer on simulator's distribution." The new approach trains both on ground truth CNO data.
+
+**Advantages:**
+
+1. **Simplicity**: Two independent training pipelines instead of sequential dependency
+2. **Modularity**: Each component can be validated independently against CNO
+3. **Efficiency**: No need to generate 100K+ MNO rollouts before training VQ-VAE
+4. **Parallelism**: VQ-VAE and MNO can be trained simultaneously
+5. **Validation**: If MNO achieves high fidelity (L_traj < 1.0), its outputs should be distributionally similar to CNO
+
+**Assumption:**
+
+If MNO achieves physics fidelity with L_traj < 1.0 (RMSE less than typical field variation), then MNO rollouts are distributionally similar enough to CNO that a CNO-trained VQ-VAE will reconstruct MNO outputs with comparable quality.
+
+**Post-Training Validation:**
+
+After training both components, verify that VQ-VAE reconstruction quality on MNO outputs remains high (~0.006 L_recon).
 
 ---
 
-## Paradigm 1: MSE-Led Training (Physics First)
+## Component 1: VQ-VAE Tokenizer
 
-**Philosophy:** Match CNO ground-truth trajectories as closely as possible.
+### Purpose
+
+Provide a discrete behavioral vocabulary for symbolic reasoning over PDE dynamics.
+
+### Training Data
+
+**Input**: CNO ground truth features from `cno_50k_v3_1.h5`
+- 50K samples with v3.1 enhanced features
+- INITIAL features (16 dims): IC statistics, parameter encoding
+- SUMMARY features (18 dims): Global trajectory statistics
+- TEMPORAL features (variable): Per-timestep spatiotemporal snapshots
+
+### Architecture
+
+**3-Level Hierarchical VQ-VAE:**
 
 ```
-Loss = λ_traj × L_traj + λ_commit × L_commit + λ_latent × L_latent
-       ═══════════════
-          PRIMARY
+Level 1 (INITIAL):  16 dims → Encoder → z_init  → Quantize → 8 tokens
+Level 2 (SUMMARY):  18 dims → Encoder → z_summ  → Quantize → 8 tokens
+Level 3 (TEMPORAL): T×d dims → Encoder → z_temp → Quantize → 6 tokens (variable per family)
+
+Total: ~22 tokens per trajectory
 ```
 
-### Loss Components
+**Codebook Configuration:**
+- Adaptive compression ratios per feature family
+- Per-family clustering for category discovery
+- Entropy regularization for balanced utilization
+- Residual vector quantization within families
 
-| Loss | Description | Default λ |
-|------|-------------|-----------|
-| **L_traj** (PRIMARY) | MSE between NOA and CNO trajectories | 1.0 |
-| L_commit | VQ commitment (manifold adherence) | 0.5 |
-| L_latent | NOA-VQ latent alignment | 0.1 |
-
-### When to Use MSE-Led
-
-- **Early-stage training** to establish physics grounding
-- When **exact trajectory matching** is critical
-- **Benchmarking** against CNO baselines
-- Physics fidelity is the primary metric
-
-### Code Example
+### Training Objective
 
 ```python
-from spinlock.noa.losses import MSELedLoss
+L_total = L_recon + β_commit * L_commit + β_entropy * L_entropy
 
-loss_fn = MSELedLoss(
-    lambda_traj=1.0,      # Primary: trajectory matching
-    lambda_commit=0.5,    # Auxiliary: VQ commitment
-    lambda_latent=0.1,    # Auxiliary: latent alignment
-    vqvae_alignment=alignment,
-)
+L_recon = MSE(features_reconstructed, features_original)
+L_commit = MSE(z_encoder, sg(z_quantized))  # Encoder commitment
+L_entropy = -H(codebook_usage)  # Utilization entropy
 ```
 
-### CLI Usage
+**No physics loss** - VQ-VAE never sees raw PDE trajectories, only extracted features.
 
-```bash
-poetry run python scripts/dev/train_noa_unified.py \
-    --loss-mode mse_led \
-    --lambda-traj 1.0 --lambda-commit 0.5 --lambda-latent 0.1
-```
+### Production Baseline (50K CNO)
 
----
+**Status**: ✅ Complete
 
-## Paradigm 2: VQ-Led Training (Creative Observer)
+**Results:**
+- 8 discovered categories (emergent behavioral clustering)
+- L_recon = 0.006 (99.4% reconstruction quality)
+- ~22 tokens per trajectory (adaptive per family)
+- High codebook utilization (entropy-regularized)
 
-**Philosophy:** Generate outputs that are meaningful in the VQ-VAE vocabulary, even if they diverge from ground truth.
+**Config**: `configs/vqvae/50k_baseline.yaml`
+**Checkpoint**: `checkpoints/vqvae/50k_baseline/vqvae_best.pt`
 
-```
-Loss = λ_recon × L_recon + λ_commit × L_commit + λ_traj × L_traj
-       ════════════════
-          PRIMARY
-```
-
-### Loss Components
-
-| Loss | Description | Default λ |
-|------|-------------|-----------|
-| **L_recon** (PRIMARY) | VQ reconstruction quality | 1.0 |
-| **L_commit** | VQ commitment (embedding sharpness) | 0.5 |
-| L_traj | Trajectory MSE (physics regularizer) | 0.3 |
-
-### The Surprise Principle
-
-In vq-led training, deviations from ground truth become **opportunities for discovery**:
-
-| Traditional View | Creative Observer View |
-|-----------------|----------------------|
-| High MSE = bad model | High MSE = novel perspective |
-| Match CNO exactly | Generate valid symbolic sequences |
-| Penalize deviation | Embrace meaningful divergence |
-
-A "wrong" rollout by traditional metrics (high L_traj) could represent a **novel perspective** on dynamics—much like how different neural activation patterns in human brains converge on shared concepts despite varying implementations.
-
-### When to Use VQ-Led
-
-- After **physics grounding is established** (not for cold start)
-- When **symbolic interpretation** matters more than exact matching
-- Training for **downstream reasoning** with tokens
-- Encouraging **"creative" exploration** of dynamics
-- When VQ token quality is the primary metric
-
-### Code Example
+### Usage in NOA
 
 ```python
-from spinlock.noa.losses import VQLedLoss
+# Tokenize a trajectory (from MNO or CNO)
+features = extract_features(u_trajectory, params)
+tokens, z_quantized = vqvae.encode(features)
 
-loss_fn = VQLedLoss(
-    lambda_recon=1.0,     # Primary: VQ reconstruction
-    lambda_commit=0.5,    # Primary: commitment sharpness
-    lambda_traj=0.3,      # Auxiliary: physics regularizer
-    vqvae_alignment=alignment,
-)
-```
-
-### CLI Usage
-
-```bash
-poetry run python scripts/dev/train_noa_unified.py \
-    --loss-mode vq_led \
-    --lambda-recon 1.0 --lambda-commit 0.5 --lambda-traj 0.3
+# Reconstruct (validate tokenization quality)
+features_recon = vqvae.decode(z_quantized)
+L_recon = mse(features, features_recon)
 ```
 
 ---
 
-## Architecture Details
+## Component 2: MNO World Model
 
-### U-AFNO Backbone
+### Purpose
 
-```
-Input: θ (parameters) + u₀ (initial condition)
-  ↓
-U-AFNO Backbone (spectral mixing + U-Net skip connections)
-  ↓
-Autoregressive Rollout: u₀ → u₁ → u₂ → ... → uₜ
-  ↓
-Feature Extraction (INITIAL + SUMMARY + TEMPORAL)
-  ↓
-VQ-VAE Encoding → Quantization → Tokens
-  ↓
-Loss Computation (mode-dependent)
-```
+Provide a sparse high-accuracy physics simulator for NOA perturbation-driven exploration.
 
-### Abstract Base Classes
+### Training Data
 
-The architecture uses OOP abstractions for modularity:
+**Input**: CNO ground truth trajectories from `cno_50k_v3_1.h5`
+- 10K samples (stratified subset)
+- Full spatiotemporal fields: u(x,t) ∈ ℝ^(128×128×256)
+- Conditioned on (θ, u0): PDE parameters + initial conditions
+
+### Architecture
+
+**U-AFNO with FiLM Conditioning:**
+- 227M parameters
+- Multi-scale attention in Fourier space
+- FiLM (Feature-wise Linear Modulation) for parameter conditioning
+- Truncated BPTT: 256 timesteps, 32-step windows
+
+### Training Objective
 
 ```python
-# Abstract backbone interface
-class BaseNOABackbone(nn.Module, ABC):
-    @abstractmethod
-    def single_step(self, x: torch.Tensor) -> torch.Tensor:
-        """Single timestep prediction."""
-        pass
+L_total = L_traj + λ_ic * L_ic
 
-    @abstractmethod
-    def get_intermediate_features(self, x, extract_from="bottleneck"):
-        """Extract features for alignment losses."""
-        pass
-
-# Abstract loss interface
-class BaseNOALoss(nn.Module, ABC):
-    @abstractmethod
-    def compute(self, pred, target, ic, noa) -> LossOutput:
-        """Compute all loss components."""
-        pass
-
-    @property
-    @abstractmethod
-    def leading_loss_name(self) -> str:
-        """Name of primary loss term."""
-        pass
+L_traj = MSE(u_pred, u_true)  # Trajectory rollout loss
+L_ic = MSE(u_pred[t=0], u0)   # Initial condition reconstruction
 ```
 
-### LossOutput Dataclass
+**Pure physics loss** - no VQ constraints, no token conditioning during training.
 
-Standardized output format for all loss functions:
+**Target**: L_traj < 1.0 (RMSE less than typical field variation ≈ 2.0)
+
+### Production Baseline (10K CNO)
+
+**Status**: 🔄 In progress
+
+**Config**: `configs/noa/10k_baseline.yaml`
+
+**Training Command:**
+```bash
+spinlock train-meta-operator \
+    --config configs/noa/10k_baseline.yaml \
+    --verbose
+```
+
+### Usage in NOA
+
+**MNO serves as a "world model" for exploration:**
+
+1. **Perturbation-driven exploration**: Sample (θ, u0) near known regions
+2. **Cheap simulation**: MNO generates rollout u(x,t)
+3. **Hypothesis generation**: "What if we perturb damping coefficient?"
+4. **Validation**: Compare MNO output to CNO in explored regions
 
 ```python
-@dataclass
-class LossOutput:
-    total: torch.Tensor              # For backprop
-    components: Dict[str, Tensor]    # Individual losses
-    metrics: Dict[str, float]        # For logging (detached)
+# Generate MNO rollout for exploration
+theta_perturbed = theta_known + delta_theta
+u_mno = mno.rollout(theta_perturbed, u0, timesteps=256)
+
+# Tokenize for symbolic reasoning
+tokens = vqvae.encode(extract_features(u_mno, theta_perturbed))
+
+# Track surprisal (how different from known behaviors)
+surprisal = compute_surprisal(tokens, known_token_distribution)
 ```
 
 ---
 
-## Hyperparameter Guidelines
+## Integration: NOA Cognitive Architecture
 
-### Default Weights by Mode
+### Workflow
 
-| Mode | λ_traj | λ_recon | λ_commit | λ_latent |
-|------|--------|---------|----------|----------|
-| MSE-led | 1.0 | N/A | 0.5 | 0.1-0.5 |
-| VQ-led | 0.3 | 1.0 | 0.5 | N/A |
+```
+1. MNO generates (θ, u0) rollouts via perturbation
+   ↓
+2. Extract features from MNO outputs
+   ↓
+3. Tokenize with CNO-trained VQ-VAE
+   ↓
+4. Reason over token sequences (symbolic layer)
+   ↓
+5. Track surprisal → refine exploration
+   ↓
+6. Validate with CNO in high-uncertainty regions
+```
 
-### λ_traj in VQ-Led
+### MNO + VQ-VAE Composition
 
-The default λ_traj=0.3 in vq-led mode provides **enough physics regularization** to prevent complete drift while allowing symbolic creativity:
+**MNO provides:**
+- Continuous physics simulation (cheap, sparse, high-accuracy)
+- Perturbation-driven exploration
+- Hypothesis generation
 
-- **0.1-0.2:** Very creative, may drift far from physics
-- **0.3:** Balanced (recommended starting point)
-- **0.5:** More conservative, closer to physics
-- **1.0:** Essentially MSE-led behavior
+**VQ-VAE provides:**
+- Discrete symbolic representation
+- Behavioral category discovery
+- Communication/reasoning language
 
-### Tuning Recommendations
+**CNO provides:**
+- Ground truth validation
+- Surprisal calibration
+- Refinement targets
 
-1. **Start with MSE-led** for initial physics grounding
-2. **Switch to vq-led** after L_traj stabilizes
-3. **Monitor both metrics** even when not optimizing for them
-4. **VQ reconstruction quality** is the key indicator for vq-led
+### Exploration Strategy
+
+**Phase 1: Broad Exploration (MNO-driven)**
+- Sample (θ, u0) from unexplored parameter space
+- Generate MNO rollouts
+- Tokenize and cluster behaviors
+- Identify high-surprisal regions
+
+**Phase 2: Targeted Validation (CNO-driven)**
+- Run CNO in high-surprisal regions
+- Compare CNO vs MNO outputs
+- Update MNO if systematic errors found
+- Refine token distribution
+
+**Phase 3: Symbolic Reasoning (VQ-driven)**
+- Analyze token transition patterns
+- Discover behavioral rules
+- Communicate findings in discrete language
 
 ---
 
-## Training Pipeline
+## Validation
 
-### Two-Phase Curriculum (Recommended)
+### Post-Training Validation Plan
 
-**Phase 1: Physics Grounding (MSE-led)**
-```bash
-poetry run python scripts/dev/train_noa_unified.py \
-    --loss-mode mse_led \
-    --epochs 5 --lambda-traj 1.0
-```
+After training both VQ-VAE (on CNO) and MNO (on CNO), verify that the CNO-trained tokenizer works well on MNO outputs.
 
-**Phase 2: Creative Exploration (VQ-led)**
-```bash
-poetry run python scripts/dev/train_noa_unified.py \
-    --loss-mode vq_led \
-    --resume checkpoints/noa/mse_led_best.pt \
-    --epochs 5 --lambda-recon 1.0 --lambda-traj 0.3
-```
-
-### Truncated BPTT
-
-For long sequences (T > 32), use truncated backpropagation:
+#### Step 1: Generate MNO Rollouts
 
 ```bash
---timesteps 256 --bptt-window 32
+# Generate 1K MNO rollouts from validation set
+spinlock generate-mno-features \
+    --mno-checkpoint checkpoints/mno/10k_baseline/meta_operator_best.pt \
+    --config configs/noa/10k_baseline.yaml \
+    --output datasets/mno_validation_1k.h5 \
+    --n-samples 1000
 ```
 
-This limits gradient flow to the last 32 steps while supervising the full trajectory.
+#### Step 2: Tokenize with CNO-Trained VQ-VAE
+
+```python
+# Load CNO-trained VQ-VAE
+vqvae = load_vqvae("checkpoints/vqvae/50k_baseline/vqvae_best.pt")
+
+# Load MNO-generated features
+mno_features = load_features("datasets/mno_validation_1k.h5")
+
+# Tokenize and reconstruct
+tokens, z_q = vqvae.encode(mno_features)
+recon_features = vqvae.decode(z_q)
+
+# Compute reconstruction error
+L_recon_mno = mse(mno_features, recon_features)
+print(f"VQ reconstruction on MNO outputs: {L_recon_mno:.6f}")
+```
+
+**Success Criterion:** L_recon_mno ≈ 0.006 (comparable to CNO baseline)
+
+#### Step 3: Compare MNO vs CNO Trajectories
+
+```python
+# Load CNO ground truth for same (θ, u0) samples
+cno_features = load_features("datasets/cno_validation_1k.h5")
+
+# Compare physics fidelity
+L_traj = mse(mno_trajectories, cno_trajectories)
+print(f"MNO physics fidelity: {L_traj:.4f}")
+
+# Compare feature distributions
+kl_div = compute_kl_divergence(mno_features, cno_features)
+print(f"Feature distribution KL divergence: {kl_div:.4f}")
+```
+
+**Success Criteria:**
+- L_traj < 1.0 (high physics fidelity)
+- KL divergence < 0.1 (similar feature distributions)
+
+#### Step 4: Token Distribution Analysis
+
+```python
+# Tokenize both CNO and MNO features
+cno_tokens = vqvae.encode(cno_features)[0]
+mno_tokens = vqvae.encode(mno_features)[0]
+
+# Compare token usage distributions
+cno_token_hist = compute_token_histogram(cno_tokens)
+mno_token_hist = compute_token_histogram(mno_tokens)
+
+# Visualize
+plot_token_distributions(cno_token_hist, mno_token_hist)
+```
+
+**Success Criterion:** Similar token usage patterns (high overlap in discovered categories)
 
 ---
 
-## Config Files
+## Training Recipes
 
-Pre-configured YAML files for both modes:
+### VQ-VAE Training (CNO)
 
 ```bash
-# MSE-led baseline
-configs/noa/mse_led_baseline.yaml
+# 50K CNO baseline (production)
+spinlock train-vqvae \
+    --config configs/vqvae/50k_baseline.yaml \
+    --verbose
 
-# VQ-led creative
-configs/noa/vq_led_creative.yaml
+# Expected results:
+# - Training time: ~8 hours on V100
+# - Final L_recon: 0.006
+# - Categories discovered: 8
+# - Tokens per sample: ~22
+```
+
+### MNO Training (CNO)
+
+```bash
+# 10K CNO baseline (production)
+spinlock train-meta-operator \
+    --config configs/noa/10k_baseline.yaml \
+    --verbose
+
+# Expected results:
+# - Training time: ~24 hours on V100
+# - Final L_traj: < 1.0 (target)
+# - Parameters: 227M
+```
+
+### Parallel Training (Recommended)
+
+Since VQ-VAE and MNO are independent, train them in parallel to save time:
+
+```bash
+# Terminal 1: VQ-VAE
+spinlock train-vqvae --config configs/vqvae/50k_baseline.yaml --verbose
+
+# Terminal 2: MNO
+spinlock train-meta-operator --config configs/noa/10k_baseline.yaml --verbose
 ```
 
 ---
 
-## Comparison: What Each Mode Optimizes
+## Comparison to Old 3-Stage Approach
 
-### MSE-Led
+### OLD: Sequential 3-Stage Pipeline
 
-✅ Trajectory accuracy (low MSE)
-✅ Physics fidelity
-✅ CNO baseline matching
-❌ May produce trajectories that don't tokenize well
+```
+Stage 1: Train MNO on CNO (L_traj only)
+         ↓
+Stage 2: Generate 100K+ MNO rollouts + features
+         ↓
+Stage 3: Train VQ-VAE on MNO distribution
+```
 
-### VQ-Led
+**Philosophy:** "Train tokenizer on simulator's distribution"
 
-✅ VQ reconstruction quality
-✅ Token sequence coherence
-✅ Symbolic expressibility
-❌ May deviate from physics ground truth
+**Issues:**
+- Sequential dependency (VQ-VAE waits for MNO + feature generation)
+- Need to generate 100K+ MNO rollouts before VQ training
+- More complex pipeline with extra dataset generation step
+
+### NEW: Independent CNO Training
+
+```
+Component 1: Train VQ-VAE on CNO features
+Component 2: Train MNO on CNO trajectories
+             ↓
+      (Train in parallel)
+             ↓
+   Validate composition post-training
+```
+
+**Philosophy:** "Train both on ground truth, validate composition"
+
+**Advantages:**
+- Parallel training (faster iteration)
+- Simpler pipeline (no intermediate dataset generation)
+- Modular validation (each component tested independently)
+- Same end result (if MNO achieves high fidelity)
+
+---
+
+## Future Extensions
+
+### Cross-Domain Transfer
+
+Train per-domain on CNO ground truth:
+- Domain A: VQ-VAE_A + MNO_A (both CNO-trained)
+- Domain B: VQ-VAE_B + MNO_B (both CNO-trained)
+
+Then test token transfer:
+- Can VQ-VAE_A tokenize MNO_B outputs?
+- Are discovered categories domain-specific or universal?
+
+### Hybrid Exploration
+
+- Use MNO for cheap exploration (high throughput)
+- Use CNO for validation (high accuracy)
+- Adaptively decide when to invoke expensive CNO based on surprisal
+
+### Online Learning
+
+- Start with frozen CNO-trained components
+- Fine-tune VQ-VAE on MNO outputs if distribution shift detected
+- Fine-tune MNO on CNO corrections in high-error regions
+
+---
+
+## Key Takeaways
+
+1. **Two Independent Components**: VQ-VAE and MNO both train on CNO ground truth
+2. **MNO as World Model**: Not a feature generator, but a sparse high-accuracy simulator
+3. **VQ-VAE as Symbolic Layer**: CNO-trained discrete representation used for reasoning
+4. **Composition Over Coupling**: Independent training + post-training validation
+5. **Assumption**: High-fidelity MNO (L_traj < 1.0) → similar distribution to CNO
+6. **Validation**: Verify VQ reconstruction quality on MNO outputs post-training
 
 ---
 
 ## References
 
-- **NOA Backbone:** `src/spinlock/noa/backbone.py`
-- **Abstract Bases:** `src/spinlock/noa/base_backbone.py`, `src/spinlock/noa/base_loss.py`
-- **Loss Functions:** `src/spinlock/noa/losses/`
-- **Training Script:** `scripts/dev/train_noa_unified.py`
-- **VQ-VAE Alignment:** `src/spinlock/noa/vqvae_alignment.py`
+- Production VQ-VAE baseline: `docs/baselines/50k-vqvae-baseline.md`
+- MNO training paradigms: `docs/noa-training-paradigms.md`
+- Feature extraction: `docs/features/feature-catalog.md`
+- Training guide: `docs/noa-training-guide.md`
+- NOA roadmap: `docs/noa-roadmap.md`

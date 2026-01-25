@@ -55,11 +55,11 @@ Like a language model trained on text corpora, the MNO learns to generate contin
 
 The NOA architecture layers symbolic reasoning capabilities atop the MNO physics engine. While the MNO executes continuous spatiotemporal dynamics, the NOA operates over discrete behavioral tokens extracted via VQ-VAE encoding. This dual-system architecture enables fast symbolic screening (token-based categorical reasoning) and precise verification (MNO trajectory execution). The NOA uses the MNO as its "mental simulator" for exploring hypothetical perturbations, building episodic memories of dynamical patterns, and developing curiosity signals from prediction error.
 
-**Current implementation achieves this through independent optimization:**
-- **Stage 1:** Train MNO on 100K+ diverse CNO trajectories (pure MSE physics loss)
-- **Stage 2:** Generate large-scale MNO rollouts, extract behavioral features
-- **Stage 3:** Train 3-level VQ-VAE on MNO's learned distribution (on 10+ discovered behavioral categories)
-- **Result:** MNO physics engine + VQ-VAE tokenizer → foundation for NOA cognitive capabilities
+**Current implementation achieves this through CNO-trained components:**
+- **Component 1:** Train VQ-VAE on CNO ground truth (50K samples) → discrete behavioral tokens (8 categories, 99.4% quality)
+- **Component 2:** Train MNO on CNO ground truth (10K samples) → high-fidelity physics simulator (target: L_traj < 1.0)
+- **Integration:** MNO serves as sparse world model for NOA perturbation-driven exploration, using CNO-trained VQ tokens for symbolic reasoning
+- **Result:** Independent CNO-trained components (VQ-VAE + MNO) compose for NOA cognitive capabilities
 
 **Research directions:** Autonomous systems that explore their own behavioral manifolds through perturbation-response loops, build episodic memories of dynamical patterns, develop curiosity signals from prediction error, and discover universal computational structures through self-directed experimentation.
 
@@ -124,28 +124,29 @@ Why "meta"? It operates one level above individual operators, learning the relat
 - U-AFNO backbone (226M parameters) with pure MSE training
 - Trains the **MNO**: pure physics simulator (no agency, no reasoning)
 - Later phases build **NOA** (Neural Operator Agent) on top of MNO + tokens
-- **Three-Stage Independent Optimization**:
+- **Two Independent Components (CNO-trained)**:
 
-  | Stage | Component | Objective | Output |
-  |-------|-----------|-----------|--------|
-  | **1: High Fidelity Physics Baseline** | MNO backbone | L_traj only (pure MSE) | Trained MNO (L_traj < 1.0) |
-  | **2: Feature Generation** | Trained MNO | Generate 100K+ rollouts | Large-scale MNO features |
-  | **3: Tokenization** | VQ-VAE | L_recon + L_commit | VQ-VAE aligned to MNO |
+  | Component | Input | Objective | Output |
+  |-----------|-------|-----------|--------|
+  | **VQ-VAE Tokenizer** | CNO ground truth (50K) | L_recon + L_commit | Discrete behavioral vocabulary (8 categories) |
+  | **MNO World Model** | CNO ground truth (10K) | L_traj only (pure MSE) | High-fidelity physics simulator (L_traj < 1.0) |
 
-- **Philosophy**: Train tokenizer on simulator's distribution (VQ-VAE adapts to MNO, not vice versa). This avoids competing gradients that plague joint optimization.
-- **Stage 1 (High Fidelity Physics)**: Pure MSE training achieves optimal physics accuracy (L_traj < 1.0) without VQ interference. No token conditioning, no VQ constraints—single objective optimization. Output: trained MNO.
-- **Stage 2**: Generate massive MNO rollout dataset with inline feature extraction (100K+ samples)
-- **Stage 3**: Train VQ-VAE on MNO's distribution - guaranteed alignment by construction
+- **Philosophy**: Train both components on ground truth CNO data independently, then compose for NOA.
+- **VQ-VAE**: Trained on CNO features → discrete symbolic representation (99.4% reconstruction quality)
+- **MNO**: Trained on CNO trajectories → sparse high-accuracy world model for exploration
+- **Assumption**: If MNO achieves L_traj < 1.0, its outputs are distributionally similar to CNO
+- **Validation**: Verify VQ reconstruction quality on MNO outputs post-training
 - **Truncated BPTT**: Long-horizon training (256-step rollouts, 32-step backprop window)
-- **Training flow**: Stage 1 (MNO) → Stage 2 (features) → Stage 3 (VQ-VAE) → Foundation for NOA agent
+- **Training flow**: VQ-VAE (on CNO) + MNO (on CNO) → Foundation for NOA agent
 
-**Three-Stage Rationale**: This architecture eliminates the fundamental tension between physics accuracy and VQ quality. In two-stage curriculum approaches, joint optimization creates competing gradients where improving one objective degrades the other, resulting in equilibrium plateaus (neither optimal). Independent optimization achieves:
-1. **Optimal physics**: Stage 1 pure MSE trains optimal MNO (L_traj < 1.0) without VQ interference
-2. **Optimal tokenization**: Stage 3 VQ-VAE adapts to MNO's distribution, achieving L_recon < 0.05
-3. **Massive scale**: 100K+ MNO samples vs 1K CNO samples improves VQ-VAE training quality
-4. **Architectural simplicity**: No token conditioning, no loss balancing, no coupled debugging
+**Two-Component Rationale**: Training both components independently on CNO ground truth provides:
+1. **Simplicity**: No sequential dependency (VQ-VAE doesn't wait for MNO)
+2. **Modularity**: Each component validated independently on CNO
+3. **Efficiency**: No need to generate 100K+ MNO rollouts for VQ training
+4. **Parallelism**: VQ-VAE and MNO can be trained simultaneously
+5. **Validation**: If MNO achieves L_traj < 1.0, CNO-trained VQ should work on MNO outputs
 
-See [Independent Optimization Guide](docs/noa-vqvae-independent.md) for complete implementation details and [Two-Stage Curriculum (Deprecated)](docs/two-stage-curriculum-architecture.md) for empirical analysis of competing gradient issues.
+See [CNO-Trained Architecture](docs/noa-architecture.md) for complete implementation details and [Two-Stage Curriculum (Deprecated)](docs/two-stage-curriculum-architecture.md) for the old approach.
 
 ---
 ### Future Extensions
@@ -174,20 +175,19 @@ See [Independent Optimization Guide](docs/noa-vqvae-independent.md) for complete
 
 **Complete Training Workflow:**
 ```bash
-# Stage 1: Train NOA with pure MSE (no VQ constraints)
-spinlock train-meta-operator \
-    --config configs/noa/experiments/phase2/exp_pure_mse.yaml
-
-# Stage 2: Generate large-scale NOA rollout features
-spinlock generate-noa-features \
-    --noa-checkpoint checkpoints/noa/pure_mse_baseline/meta_operator_best.pt \
-    --config configs/noa/experiments/phase2/exp_pure_mse.yaml \
-    --output datasets/noa_features_100k.h5 \
-    --n-samples 100000
-
-# Stage 3: Train VQ-VAE on NOA's distribution
+# Component 1: Train VQ-VAE on CNO ground truth
 spinlock train-vqvae \
-    --config configs/vqvae/noa_distribution_100k.yaml
+    --config configs/vqvae/50k_baseline.yaml \
+    --verbose
+
+# Component 2: Train MNO on CNO ground truth
+spinlock train-meta-operator \
+    --config configs/noa/10k_baseline.yaml \
+    --verbose
+
+# Validation: Verify VQ reconstruction on MNO outputs (post-training)
+# Generate MNO rollouts and tokenize with CNO-trained VQ-VAE
+# Check reconstruction error remains ~0.006
 ```
 
 **Configuration:** Edit YAML configs to adjust:
@@ -196,7 +196,7 @@ spinlock train-vqvae \
 - Feature generation (`n_samples` for NOA rollouts)
 - BPTT parameters (`timesteps`, `bptt_window`)
 
-See [docs/architecture.md](docs/architecture.md) for system overview and [docs/noa-vqvae-independent.md](docs/noa-vqvae-independent.md) for complete training guide. For the deprecated two-stage curriculum approach, see [docs/two-stage-curriculum-architecture.md](docs/two-stage-curriculum-architecture.md).
+See [docs/architecture.md](docs/architecture.md) for system overview and [docs/noa-architecture.md](docs/noa-architecture.md) for CNO-trained architecture guide. For the old 3-stage approach, see [docs/noa-vqvae-independent.md](docs/noa-vqvae-independent.md) (deprecated). For the two-stage curriculum approach, see [docs/two-stage-curriculum-architecture.md](docs/two-stage-curriculum-architecture.md) (deprecated).
 
 ---
 
@@ -210,80 +210,74 @@ flowchart TB
     Sampling --> CNOs[CNO Operators]
     CNOs --> Rollouts[Rollout Execution]
     Rollouts --> Extract[Feature Extraction]
-    Extract --> CNOData[CNO Dataset]
+    Extract --> CNOData[CNO Dataset<br/>Ground Truth]
 
-    CNOData --> Stage1[Stage 1:<br/>High Fidelity<br/>Physics Baseline]
-    Stage1 --> MNOModel[Trained<br/>MNO Model<br/>L_traj < 1.0]
+    CNOData --> VQTrain[VQ-VAE Training<br/>on CNO Features]
+    VQTrain --> VQVAEModel[VQ-VAE<br/>Tokenizer<br/>8 categories, 99.4% quality]
 
-    MNOModel --> Stage2[Stage 2:<br/>Generate Features<br/>100K+ Samples]
-    Stage2 --> MNOFeatures[MNO Distribution<br/>Dataset]
+    CNOData --> MNOTrain[MNO Training<br/>on CNO Trajectories]
+    MNOTrain --> MNOModel[MNO<br/>World Model<br/>L_traj < 1.0]
 
-    MNOFeatures --> Stage3[Stage 3:<br/>Independent VQ<br/>Training]
-    Stage3 --> VQVAEModel[VQ-VAE<br/>Aligned to MNO]
-
-    MNOModel -.-> Deployment[Deployment]
-    VQVAEModel -.-> Deployment
+    VQVAEModel -.-> Deployment[NOA Deployment]
+    MNOModel -.-> Deployment
 
     classDef phase0 fill:#b0bec5,stroke:#455a64,stroke-width:2px,color:#000
-    classDef stage1 fill:#c8e6c9,stroke:#4caf50,stroke-width:2px,color:#000
-    classDef stage2 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#000
-    classDef stage3 fill:#e1bee7,stroke:#7b1fa2,stroke-width:2px,color:#000
+    classDef vqvae fill:#e1bee7,stroke:#7b1fa2,stroke-width:2px,color:#000
+    classDef mno fill:#c8e6c9,stroke:#4caf50,stroke-width:2px,color:#000
     classDef deployment fill:#b3e5fc,stroke:#0277bd,stroke-width:2px,color:#000
 
     class Config,Sampling,CNOs,Rollouts,Extract,CNOData phase0
-    class Stage1,MNOModel stage1
-    class Stage2,MNOFeatures stage2
-    class Stage3,VQVAEModel stage3
+    class VQTrain,VQVAEModel vqvae
+    class MNOTrain,MNOModel mno
     class Deployment deployment
 ```
 
 ### Pipeline Overview
 
-**Stage 0: Foundation - CNO Dataset Generation** (blue-grey)
+**Phase 0: Foundation - CNO Dataset Generation** (blue-grey)
 1. Stratified parameter sampling via Sobol sequences (provably optimal space-filling)
 2. CNO operator construction and stochastic rollout execution (256 steps)
 3. Multi-modal feature extraction (INITIAL, SUMMARY, TEMPORAL)
-4. CNO dataset establishing ground truth physics (1K samples for Stage 1 training)
+4. CNO dataset establishing ground truth physics (50K samples for VQ-VAE, 10K for MNO)
 
-**Stage 1: High Fidelity Physics Baseline** (green)
-- Train **MNO** (Meta-Neural Operator) with **pure MSE loss** - no VQ constraints, no token conditioning, single objective
-- Architecture: U-AFNO backbone (226M params) with Truncated BPTT (256-step rollouts, 32-step window)
-- Input: (θ, u₀) from CNO dataset
-- Loss: L_traj only (MSE vs CNO trajectories)
-- Target: L_traj < 1.0 (RMSE < field variation, research-grade physics accuracy)
-- Output: Trained MNO ready for feature generation
+**Component 1: VQ-VAE Tokenizer Training** (purple)
+- Train VQ-VAE on CNO ground truth features (50K samples)
+- Loss: L_recon + L_commit (no physics loss)
+- Auto-category discovery via per-family clustering
+- Target: L_recon < 0.05 (achieved 0.006 in 50K baseline)
+- Output: Frozen discrete tokenizer (8 categories, 22 tokens/sample)
 
-**Stage 2: MNO Feature Generation** (yellow)
-- **Independent sampling**: Generate 100K+ rollouts from trained MNO (10-100× larger than CNO dataset)
-- Sample diverse (θ, u₀) from same parameter space as Stage 0
-- Extract features inline with GPU-optimized pipeline (99.99% storage savings vs full trajectories)
-- **Key**: Features represent MNO's actual distribution, not CNO's
-- Output: Large-scale MNO feature dataset (~1 GB for 100K samples)
+**Component 2: MNO World Model Training** (green)
+- Train MNO on CNO ground truth trajectories (10K samples)
+- Loss: L_traj + L_ic (pure MSE, no VQ constraints)
+- Architecture: U-AFNO with FiLM conditioning (227M params)
+- Target: L_traj < 1.0 (RMSE < field variation)
+- Output: High-fidelity physics simulator for NOA exploration
 
-**Stage 3: Independent VQ Tokenization** (purple)
-- Train VQ-VAE on MNO's distribution using standard VQ-VAE training pipeline (proven, simple)
-- Loss: L_recon + L_commit (no physics loss, no competing objectives)
-- **Alignment by construction**: VQ-VAE learns to compress what MNO actually produces
-- Target: L_recon < 0.05 (better than CNO baseline of 0.067 due to distribution match)
-- Output: VQ-VAE optimized for MNO's behavioral manifold, ready for NOA agent (Phase 2+)
+**Integration: NOA Deployment** (blue)
+- MNO generates rollouts via perturbation-driven exploration
+- VQ-VAE tokenizes MNO outputs → discrete sequences
+- NOA reasons over tokens (symbolic layer)
+- CNO available for validation and surprisal-driven refinement
 
-**Three-Stage Rationale**: This architecture eliminates the fundamental tension between physics accuracy and VQ quality. In two-stage curriculum approaches, joint optimization creates competing gradients where improving one objective degrades the other, resulting in equilibrium plateaus (neither optimal). Independent optimization achieves:
-1. **Optimal physics**: Stage 1 pure MSE trains optimal MNO (L_traj < 1.0) without VQ interference
-2. **Optimal tokenization**: Stage 3 VQ-VAE adapts to MNO's distribution, achieving L_recon < 0.05
-3. **Massive scale**: 100K+ MNO samples vs 1K CNO samples improves VQ-VAE training quality
-4. **Architectural simplicity**: No token conditioning, no loss balancing, no coupled debugging
+**Two-Component Rationale**: Training both components independently on CNO ground truth provides:
+1. **Simplicity**: No sequential dependency (VQ-VAE doesn't wait for MNO)
+2. **Modularity**: Each component validated independently on CNO
+3. **Efficiency**: No need to generate 100K+ MNO rollouts for VQ training
+4. **Parallelism**: VQ-VAE and MNO can be trained simultaneously
+5. **Validation**: If MNO achieves L_traj < 1.0, CNO-trained VQ should work on MNO outputs
 
-See [Independent Optimization Guide](docs/noa-vqvae-independent.md) for complete implementation details and [Two-Stage Curriculum (Deprecated)](docs/two-stage-curriculum-architecture.md) for empirical analysis of competing gradient issues.
+See [CNO-Trained Architecture](docs/noa-architecture.md) for complete implementation details.
 
 ### Key Components
 
 - **Stratified Sampling**: Sobol sequences with Owen scrambling for uniform parameter space coverage
-- **Multi-Modal Features**: INITIAL (42D), ARCHITECTURE (21D), SUMMARY (420-520D), TEMPORAL (variable)
+- **Multi-Modal Features**: INITIAL (16D), SUMMARY (18D), TEMPORAL (variable)
 - **VQ-VAE Tokenization**: Automatic category discovery, hierarchical 3-level encoding, adaptive compression
-- **Independent Optimization**: Three-stage pipeline (pure physics → feature generation → VQ-VAE training)
-- **CLI Commands**: `spinlock generate`, `spinlock train-meta-operator`, `spinlock generate-noa-features`, `spinlock train-vqvae`
+- **CNO-Trained Components**: VQ-VAE and MNO both train independently on CNO ground truth
+- **CLI Commands**: `spinlock generate`, `spinlock train-meta-operator`, `spinlock train-vqvae`
 
-See [docs/architecture.md](docs/architecture.md) for comprehensive system design and implementation details.
+See [docs/architecture.md](docs/architecture.md) for comprehensive system design and [docs/noa-architecture.md](docs/noa-architecture.md) for CNO-trained components.
 
 ---
 

@@ -1,8 +1,20 @@
 # Independent Optimization Architecture: MNO + VQ-VAE
 
-**Date:** 2026-01-11
+> **⚠️ DEPRECATION NOTICE**
+>
+> **This document describes the old 3-stage approach** where MNO is trained first, then generates features for VQ-VAE training.
+>
+> **Current architecture (2026-01-25):** Both VQ-VAE and MNO train independently on CNO ground truth data.
+>
+> **See:** [CNO-Trained Architecture](noa-architecture.md) for the current approach.
+>
+> **This document is preserved for historical reference.**
+
+---
+
+**Date:** 2026-01-11 (Deprecated: 2026-01-25)
 **Branch:** `noa-vqvae-independent`
-**Philosophy:** Train tokenizer on simulator's distribution
+**Philosophy:** Train tokenizer on simulator's distribution (OLD)
 
 ---
 

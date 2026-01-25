@@ -2,23 +2,24 @@
 
 Complete guide for training Neural Operator Agents (NOA) with various training approaches.
 
-## 🎯 Recommended Approach (2026-01-11)
+## 🎯 Recommended Approach (2026-01-25)
 
-**For new projects, use the [Independent Optimization Architecture](noa-vqvae-independent.md):**
-- ✅ Simpler: Pure MSE training (no VQ constraints during NOA training)
-- ✅ Better physics: L_traj < 1.0 achievable
-- ✅ Better tokenization: VQ-VAE trained on NOA's actual distribution
-- ✅ More scalable: Generate 100K+ samples from trained NOA
+**For new projects, use the [CNO-Trained Architecture](noa-architecture.md):**
+- ✅ Simpler: Two independent training pipelines (no sequential dependency)
+- ✅ Modular: Each component validated independently on CNO ground truth
+- ✅ Efficient: No need to generate 100K+ MNO rollouts for VQ training
+- ✅ Parallel: VQ-VAE and MNO can be trained simultaneously
 - ✅ Easier to debug: Components trained independently
 
 **Summary:**
-1. Train NOA with pure MSE → optimal physics
-2. Generate features from NOA → large-scale dataset
-3. Train VQ-VAE on NOA features → optimal tokenization
+1. Train VQ-VAE on CNO ground truth features → discrete symbolic representation
+2. Train MNO on CNO ground truth trajectories → high-fidelity physics simulator
+3. Post-training validation → verify VQ reconstruction on MNO outputs
 
-## Alternative Approaches
+## Alternative Approaches (Deprecated)
 
-This guide documents alternative training approaches:
+This guide documents old training approaches:
+- **3-stage sequential** (deprecated): Train MNO → generate MNO features → train VQ-VAE on MNO distribution. See [Independent Optimization (Deprecated)](noa-vqvae-independent.md) for details.
 - **Two-stage curriculum** (deprecated): Stage 1 with token conditioning + Stage 2 VQ-led fine-tuning. See [Two-Stage Curriculum Architecture](two-stage-curriculum-architecture.md) for details and lessons learned.
 - **Simultaneous training** (below): VQ-VAE alignment during NOA training. More complex, lower quality.
 
@@ -710,22 +711,22 @@ Complete one domain fully before adding others:
 
 ### Per-Domain Training
 
-Each domain follows independent Stage 1-3:
+Each domain follows independent CNO-trained components:
 
-**Stage 1: Pure Physics MNO**
+**Component 1: Domain VQ-VAE**
+- Train on CNO ground truth features for the domain
+- Discover domain-specific categories via per-family clustering
+- Target: L_recon < 0.05 (achieved 0.006 in RD baseline)
+
+**Component 2: Domain MNO**
 - Architecture: Domain-appropriate (U-AFNO for parabolic, variants for others)
-- Loss: Pure MSE against CNO ground truth
+- Loss: Pure MSE against CNO ground truth (L_traj + L_ic)
 - Target: L_traj < 1.0
 
-**Stage 2: Feature Generation**
-- Sample diverse (θ, u₀) from domain parameter space
-- Generate 100K+ MNO rollouts
-- Extract domain-appropriate features
-
-**Stage 3: Domain VQ-VAE**
-- Train on MNO's distribution
-- Discover domain-specific categories
-- Target: L_recon < 0.05, utilization > 40%
+**Post-Training Validation**
+- Generate MNO rollouts from domain parameter space
+- Verify VQ reconstruction quality on MNO outputs
+- Compare MNO vs CNO feature distributions
 
 ### Cross-Domain Analysis
 

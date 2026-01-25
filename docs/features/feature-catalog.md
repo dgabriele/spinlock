@@ -451,30 +451,32 @@ Hand-crafted features providing interpretable, domain-driven characterization.
 
 ---
 
-## Usage in NOA Pipeline (v3.0)
+## Usage in NOA Pipeline (v3.1 - CNO-Trained)
 
-### Stage 1: MNO Training (Pure MSE)
-- **INITIAL features**: Not used (MNO trains on raw IC grids)
-- **TEMPORAL features**: Not used
+### Component 1: VQ-VAE Training (CNO Features)
+- Train hierarchical VQ-VAE on CNO ground truth features (50K samples)
+- **INITIAL** (16D), **SUMMARY** (18D), **TEMPORAL** (variable) from CNO
+- Per-family clustering for category discovery
+- **v3.1**: Enhanced features with improved temporal encoding
+- Output: Frozen discrete tokenizer (8 categories, ~22 tokens/sample)
 
-### Stage 2: Feature Generation
-- Extract **INITIAL** and **TEMPORAL** from 100K+ MNO rollouts
-- Inline GPU-optimized extraction (no trajectory storage)
-- **v3.0**: Enhanced TEMPORAL features (~328D per-timestep)
-- Output: ~2 GB compressed HDF5 dataset (larger due to enhanced features)
+### Component 2: MNO Training (CNO Trajectories)
+- Train U-AFNO on CNO ground truth trajectories (10K samples)
+- Pure MSE physics loss (L_traj + L_ic)
+- No feature extraction during training (operates on raw fields)
+- Output: High-fidelity physics simulator (target: L_traj < 1.0)
 
-### Stage 3: VQ-VAE Training
-- Train hierarchical VQ-VAE on MNO's feature distribution
-- **INITIAL** + **TEMPORAL** jointly encoded
-- **ARCHITECTURE** features excluded (NOA already conditions on θ)
-- Discover behavioral categories through compression
-- **v3.0**: Per-timestep encoding for online operation
+### Integration: NOA Deployment
+- MNO generates rollouts via perturbation-driven exploration
+- Extract features from MNO outputs (same pipeline as CNO)
+- Tokenize with CNO-trained VQ-VAE
+- NOA reasons over token sequences (symbolic layer)
+- **v3.1**: All features computable without trajectory lookahead
 
-### Phase 2+: NOA Agent
-- **INITIAL**: Encode IC characteristics for state representation
-- **TEMPORAL**: Per-timestep working memory for online prediction
-- Discrete VQ tokens enable online symbolic reasoning
-- **v3.0**: All features computable without trajectory lookahead
+### Post-Training Validation
+- Verify VQ reconstruction quality on MNO outputs (~0.006 L_recon)
+- Compare MNO vs CNO feature distributions (KL divergence < 0.1)
+- Analyze token usage similarity
 
 ---
 

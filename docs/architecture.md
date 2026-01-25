@@ -4,7 +4,7 @@
 
 This document describes the complete pipeline for training meta-neural operators (MNO) that learn universal dynamics from diverse operator datasets, followed by autonomous operation under perturbations for curiosity-driven behavioral discovery. The system combines:
 
-1. **Foundation (Phase 0-1):** Stratified dataset generation, multi-modal feature extraction, hierarchical VQ-VAE encoding, and three-stage independent optimization where MNO trains purely for physics accuracy, then generates features for VQ-VAE training that adapts to MNO's distribution.
+1. **Foundation (Phase 0-1):** Stratified dataset generation, multi-modal feature extraction, hierarchical VQ-VAE encoding, and CNO-trained components where VQ-VAE and MNO train independently on CNO ground truth, then compose for NOA.
 
 2. **Autonomous Operation (Phase 2-5):** Perturbation framework, episodic memory, token-based curiosity signals, and symbolic discovery that enable self-directed exploration of MNO's behavioral manifold without parameter conditioning.
 
@@ -18,31 +18,26 @@ flowchart TB
     Sampling --> CNOs[CNO Operators]
     CNOs --> Rollouts[Rollout Execution]
     Rollouts --> Extract[Feature Extraction]
-    Extract --> CNOData[CNO Dataset]
+    Extract --> CNOData[CNO Dataset<br/>Ground Truth]
 
-    CNOData --> Stage1[Stage 1:<br/>Pure MSE<br/>Training]
-    Stage1 --> MNOCheckpoint[Trained MNO<br/>Checkpoint]
+    CNOData --> VQTrain[VQ-VAE Training<br/>on CNO Features]
+    VQTrain --> VQVAEModel[VQ-VAE<br/>Tokenizer<br/>8 categories, 99.4% quality]
 
-    MNOCheckpoint --> Stage2[Stage 2:<br/>Feature<br/>Generation]
-    Stage2 --> MNOFeatures[Large-Scale<br/>MNO Features]
+    CNOData --> MNOTrain[MNO Training<br/>on CNO Trajectories]
+    MNOTrain --> MNOModel[MNO<br/>World Model<br/>L_traj < 1.0]
 
-    MNOFeatures --> Stage3[Stage 3:<br/>VQ-VAE<br/>Training]
-    Stage3 --> VQVAEModel[VQ-VAE<br/>Aligned to MNO]
-
-    MNOCheckpoint --> Final[Deployment]
-    VQVAEModel --> Final
+    VQVAEModel -.-> Deployment[NOA Deployment]
+    MNOModel -.-> Deployment
 
     classDef phase0 fill:#b0bec5,stroke:#455a64,stroke-width:2px,color:#000
-    classDef stage1 fill:#c8e6c9,stroke:#4caf50,stroke-width:2px,color:#000
-    classDef stage2 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#000
-    classDef stage3 fill:#e1bee7,stroke:#7b1fa2,stroke-width:2px,color:#000
+    classDef vqvae fill:#e1bee7,stroke:#7b1fa2,stroke-width:2px,color:#000
+    classDef mno fill:#c8e6c9,stroke:#4caf50,stroke-width:2px,color:#000
     classDef deployment fill:#b3e5fc,stroke:#0277bd,stroke-width:2px,color:#000
 
     class Config,Sampling,CNOs,Rollouts,Extract,CNOData phase0
-    class Stage1,MNOCheckpoint stage1
-    class Stage2,MNOFeatures stage2
-    class Stage3,VQVAEModel stage3
-    class Final deployment
+    class VQTrain,VQVAEModel vqvae
+    class MNOTrain,MNOModel mno
+    class Deployment deployment
 ```
 
 ### Autonomous Operation Pipeline (Phase 2-5)
@@ -87,13 +82,13 @@ flowchart TB
 flowchart TB
     subgraph Domain1[Reaction-Diffusion Domain]
         Config1[RD Config] --> CNO1[RD CNO Dataset]
-        CNO1 --> MNO1[Stage 1-3:<br/>MNO-RD +<br/>VQ-VAE-RD]
+        CNO1 --> MNO1[CNO-Trained:<br/>MNO-RD +<br/>VQ-VAE-RD]
         MNO1 --> Tokens1[RD Token<br/>Vocabulary]
     end
 
     subgraph Domain2[Fluid Dynamics Domain]
         Config2[Fluids Config] --> CNO2[Fluids CNO Dataset]
-        CNO2 --> MNO2[Stage 1-3:<br/>MNO-Fluids +<br/>VQ-VAE-Fluids]
+        CNO2 --> MNO2[CNO-Trained:<br/>MNO-Fluids +<br/>VQ-VAE-Fluids]
         MNO2 --> Tokens2[Fluids Token<br/>Vocabulary]
     end
 
@@ -128,30 +123,28 @@ flowchart TB
 - Stratified parameter sampling (Sobol sequences with Owen scrambling)
 - CNO operator construction from sampled parameters
 - Stochastic rollout execution with multiple realizations
-
-**Feature Learning**
 - Multi-modal feature extraction (INITIAL, SUMMARY, TEMPORAL)
-- Automatic feature cleaning and category discovery
-- Hierarchical VQ-VAE training for behavioral tokenization
+- Output: CNO ground truth dataset (50K samples for VQ-VAE, 10K for MNO)
 
-**Stage 1: Pure Physics Training**
-- Train MNO backbone with pure MSE loss against CNO ground truth
-- No token conditioning, no VQ-VAE involvement
-- Loss: MSE(MNO_rollout, CNO_rollout)
-- Target: L_traj < 1.0 (excellent physics accuracy)
-- Output: Trained physics simulator
+**Component 1: VQ-VAE Tokenizer Training**
+- Train VQ-VAE on CNO ground truth features (50K samples)
+- Loss: L_recon + L_commit (no physics loss)
+- Auto-category discovery via per-family clustering
+- Target: L_recon < 0.05 (achieved 0.006 in 50K baseline)
+- Output: Frozen discrete tokenizer (8 categories, 22 tokens/sample)
 
-**Stage 2: Feature Generation**
-- Load trained MNO checkpoint from Stage 1
-- Generate 100K+ diverse rollouts from parameter space
-- Extract features inline (GPU-optimized, no trajectory storage)
-- Output: Large-scale feature dataset from MNO's distribution
+**Component 2: MNO World Model Training**
+- Train MNO on CNO ground truth trajectories (10K samples)
+- Loss: L_traj + L_ic (pure MSE, no VQ constraints)
+- Architecture: U-AFNO with FiLM conditioning (227M params)
+- Target: L_traj < 1.0 (RMSE < field variation)
+- Output: High-fidelity physics simulator for NOA exploration
 
-**Stage 3: VQ-VAE Training on MNO**
-- Train VQ-VAE on MNO-generated features (not CNO)
-- Standard VQ-VAE training: L_recon + L_commit
-- Alignment by construction (VQ learns MNO's structure)
-- Output: Discrete tokenization of MNO's behavior space
+**Integration: NOA Deployment**
+- MNO generates rollouts via perturbation-driven exploration
+- VQ-VAE tokenizes MNO outputs → discrete sequences
+- NOA reasons over tokens (symbolic layer)
+- CNO available for validation and surprisal-driven refinement
 
 **Phase 2-5: Autonomous Operation (Planned)**
 
@@ -223,9 +216,9 @@ Each physics family receives specialized treatment:
 
 **Per-Domain Pipeline:**
 1. **CNO Dataset**: Domain-specific operators (RD, Navier-Stokes, wave equations)
-2. **MNO Training**: Architecture optimized for domain (U-AFNO for parabolic, variants for hyperbolic)
-3. **Feature Extraction**: Domain-specific features capturing relevant physics
-4. **VQ-VAE Tokenization**: Trained on MNO's distribution, discovers domain categories
+2. **VQ-VAE Training**: Trained on CNO ground truth features, discovers domain categories
+3. **MNO Training**: Architecture optimized for domain (U-AFNO for parabolic, variants for hyperbolic)
+4. **Post-Training Validation**: Verify VQ reconstruction on MNO outputs
 
 **Why Independence:**
 - Optimal performance: Each MNO uses architecture suited to its physics
@@ -255,7 +248,7 @@ Train VQ-VAE independently on reaction-diffusion and fluid dynamics. Compare dis
 
 **Implemented:**
 - Reaction-diffusion domain (MNO + VQ-VAE)
-- Single-domain independent optimization (Stage 1-3)
+- Single-domain CNO-trained components (VQ-VAE + MNO)
 
 **Research Objectives:**
 - Train second domain (2D Navier-Stokes)
@@ -386,51 +379,50 @@ The MNO is a **pure physics simulator trained via independent optimization**. It
 | `src/spinlock/cli/train_meta_operator.py` | MNO training CLI command |
 | `src/spinlock/cli/generate_noa_features.py` | MNO feature generation CLI command |
 
-**Three-Stage Independent Optimization:**
+**CNO-Trained Components:**
 
-**Stage 1: Pure Physics Training**
+**Component 1: VQ-VAE Tokenizer Training**
 ```bash
-# Train MNO with pure MSE loss (no token conditioning)
-poetry run spinlock train-meta-operator \
-  --config configs/noa/experiments/phase2/exp_pure_mse.yaml
+# Train VQ-VAE on CNO ground truth features
+poetry run spinlock train-vqvae \
+  --config configs/vqvae/50k_baseline.yaml \
+  --verbose
 
-Training Loss: L = L_traj (pure physics)
+Training Loss: L = L_recon + L_commit
+- Standard VQ-VAE training (no physics loss)
+- Learns to tokenize CNO ground truth features
+- Auto-category discovery via per-family clustering
+- Target: L_recon < 0.05 (achieved 0.006 in 50K baseline)
+- Output: Frozen discrete tokenizer (8 categories, 22 tokens/sample)
+```
+
+**Component 2: MNO World Model Training**
+```bash
+# Train MNO on CNO ground truth trajectories
+poetry run spinlock train-meta-operator \
+  --config configs/noa/10k_baseline.yaml \
+  --verbose
+
+Training Loss: L = L_traj + L_ic (pure physics)
 - Single objective: minimize trajectory MSE vs CNO
 - No VQ-VAE involvement, no competing gradients
 - Truncated BPTT: 256-step rollouts, 32-step windows
 - Target: L_traj < 1.0 (RMSE < field variation)
-- Output: Trained MNO checkpoint
+- Output: High-fidelity physics simulator
 ```
 
-**Stage 2: Generate MNO Features**
+**Post-Training Validation**
 ```bash
-# Generate 100K features from trained MNO
-poetry run spinlock generate-noa-features \
-  --noa-checkpoint checkpoints/noa/pure_mse_baseline/meta_operator_best.pt \
-  --output datasets/mno_features_100k.h5 \
-  --n-samples 100000 \
-  --batch-size 16
+# Verify VQ reconstruction quality on MNO outputs
+# Generate MNO rollouts and tokenize with CNO-trained VQ-VAE
+# Check reconstruction error remains ~0.006
 
 Process:
-1. Load trained MNO checkpoint
-2. Sample diverse (θ, u₀) from parameter space
-3. Generate rollouts (fast, no gradients)
-4. Extract features inline (INITIAL, SUMMARY, TEMPORAL)
-5. Save features only (99% space savings vs full trajectories)
-```
-
-**Stage 3: VQ-VAE Training**
-```bash
-# Train VQ-VAE on MNO's distribution
-poetry run spinlock train-vqvae \
-  --config configs/vqvae/mno_distribution_100k.yaml
-
-Training Loss: L = L_recon + L_commit
-- Standard VQ-VAE training (no physics loss)
-- Learns to tokenize MNO's actual outputs
-- Alignment by construction (VQ adapts to MNO)
-- Target: L_recon < 0.05 (better than CNO baseline)
-- Output: VQ-VAE ready for NOA agent (Phase 2+)
+1. Generate MNO rollouts from validation set
+2. Extract features from MNO outputs
+3. Tokenize with CNO-trained VQ-VAE
+4. Measure L_recon on MNO features (should be ~0.006)
+5. Verify token distribution similarity to CNO
 ```
 
 **Why U-AFNO?**
@@ -439,13 +431,13 @@ Training Loss: L = L_recon + L_commit
 - **Self-consistent:** Enables emergent self-modeling and law discovery in the same function space
 - **Efficient:** Global receptive field via FFT-based mixing
 
-See [Independent Optimization Architecture](noa-vqvae-independent.md) for complete training guide and [NOA Architecture](noa-architecture.md) for architectural details.
+See [CNO-Trained Architecture](noa-architecture.md) for complete training guide. For the old 3-stage approach, see [Independent Optimization (Deprecated)](noa-vqvae-independent.md).
 
 ---
 
 ## Autonomous Operation Architecture (Phase 2-5)
 
-After Phase 1 (MNO training complete, VQ-VAE trained on MNO distribution), the system transitions from **parameter-conditioned supervised learning** to **autonomous perturbation-driven operation**. The MNO becomes a learned dynamical system that evolves under perturbations, with the VQ-VAE providing behavioral tokenization for episodic memory and curiosity-driven exploration.
+After Phase 1 (MNO and VQ-VAE trained on CNO ground truth), the system transitions from **parameter-conditioned supervised learning** to **autonomous perturbation-driven operation**. The MNO becomes a learned dynamical system that evolves under perturbations, with the VQ-VAE providing behavioral tokenization for episodic memory and curiosity-driven exploration.
 
 ### Phase 2: Perturbation Framework & Behavioral Validation
 
@@ -1018,9 +1010,11 @@ Loss = λ_traj × L_traj + λ_commit × L_commit + λ_latent × L_latent
 
 **Key Finding:** Two-stage curriculum achieved `L_recon = 0.067` (better than VQ-VAE's `0.120` on CNO), indicating the operator learned VQ-optimized dynamics at the cost of physics accuracy. The competing objectives prevented both from reaching their optimal values.
 
-### The Solution: Train Tokenizer on Simulator's Distribution
+### Old Approach: Train Tokenizer on Simulator's Distribution (Deprecated)
 
-**Core Philosophy Shift:**
+> **Note:** This describes the old 3-stage sequential approach. The current approach trains both VQ-VAE and MNO on CNO ground truth independently. See [CNO-Trained Architecture](noa-architecture.md).
+
+**Core Philosophy Shift (OLD):**
 
 Instead of forcing MNO to produce VQ-compatible outputs, train VQ-VAE to tokenize whatever MNO naturally produces after physics-optimal training.
 

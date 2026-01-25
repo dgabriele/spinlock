@@ -97,9 +97,9 @@ This document provides a rigorous methodology for testing the computational univ
 
 For each physics domain D:
 1. Generate CNO dataset of operators in domain D
-2. Train MNO_D on domain D (pure MSE, Stage 1)
-3. Generate 100K+ diverse features from MNO_D (Stage 2)
-4. Train VQ-VAE_D on MNO_D distribution (Stage 3)
+2. Train VQ-VAE_D on CNO_D ground truth features
+3. Train MNO_D on CNO_D ground truth trajectories
+4. Post-training validation: Verify VQ reconstruction on MNO outputs
 5. Extract codebook embeddings and category assignments
 
 **Phase 2: Vocabulary Alignment Analysis**
