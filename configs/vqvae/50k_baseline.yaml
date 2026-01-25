@@ -49,7 +49,7 @@ model:
 
   # VQ-VAE hyperparameters
   uniform_codebook_init: true
-  commitment_cost: 0.25         # LOWERED from 0.35 for better utilization
+  commitment_cost: 0.05         # LOWERED from 0.25 to reduce encoder commitment to existing codes
   use_ema: true
   decay: 0.99
   dropout: 0.1
