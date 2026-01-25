@@ -113,7 +113,7 @@ training:
   informativeness_weight: 0.1
   topo_weight: 0.3
   topo_samples: 1024
-  entropy_weight: 0.5  # Entropy regularization for uniform codebook usage (increased from 0.1)
+  entropy_weight: 0.1  # Entropy regularization for uniform codebook usage (reduced from 0.5 to avoid negative losses)
 
   # Checkpointing
   save_every: 25
