@@ -17,6 +17,7 @@ from .visualize import VisualizeCommand
 from .visualize_initial_types import VisualizeInitialTypesCommand
 from .visualize_vqvae import VisualizeVQVAECommand
 from .extract_features import ExtractFeaturesCommand
+from .analyze_features import AnalyzeFeaturesCommand
 from .train_vqvae import TrainVQVAECommand
 from .train_meta_operator import TrainMetaOperatorCommand
 from .compute_ground_truth_tokens import ComputeGroundTruthTokensCommand
@@ -33,6 +34,7 @@ __all__ = [
     "VisualizeInitialTypesCommand",
     "VisualizeVQVAECommand",
     "ExtractFeaturesCommand",
+    "AnalyzeFeaturesCommand",
     "TrainVQVAECommand",
     "TrainMetaOperatorCommand",
     "ComputeGroundTruthTokensCommand",
@@ -86,6 +88,7 @@ For more help on a specific command:
         VisualizeInitialTypesCommand(),
         VisualizeVQVAECommand(),
         ExtractFeaturesCommand(),
+        AnalyzeFeaturesCommand(),
         TrainVQVAECommand(),
         TrainMetaOperatorCommand(),
         ComputeGroundTruthTokensCommand(),

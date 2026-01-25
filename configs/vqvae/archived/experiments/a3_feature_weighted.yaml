@@ -1,0 +1,143 @@
+# Checkpoint A3: Feature-Weighted Reconstruction
+# Strategy: Weight reconstruction loss by feature importance
+# Target: Achieve L_recon < 0.010 by focusing on high-value features
+#
+# Key insight: Not all features are equally important. Weight reconstruction
+# loss by variance × information entropy to focus on features that matter most.
+
+# Dataset
+dataset_path: "datasets/cno_50k_v3_1.h5"
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 14
+      cnn_embedding_dim: 28
+      encode_manual: false
+      in_channels: 1
+
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      embedding_dim: 128
+      architecture: "resnet1d_3"
+
+# VQ-VAE Architecture - Use baseline capacity (proven to work)
+model:
+  group_embedding_dim: 512
+  group_hidden_dim: 1024
+
+  # Explicit hierarchical levels - baseline size
+  levels:
+    - latent_dim: 128
+      num_tokens: 4096
+    - latent_dim: 64
+      num_tokens: 2048
+    - latent_dim: 32
+      num_tokens: 1024
+
+  # VQ-VAE hyperparameters - baseline
+  uniform_codebook_init: true
+  commitment_cost: 0.25
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  # Auxiliary loss weights - baseline
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.12
+
+# Feature Cleaning - DISABLED to match baseline
+# feature_cleaning:
+#   enabled: true
+#   variance_threshold: 1e-8
+#   deduplicate_threshold: 0.99
+#   use_intelligent_dedup: true
+#   outlier_method: "percentile"
+#   percentile_range: [0.5, 99.5]
+
+# A3: Feature Weighting
+feature_weighting:
+  enabled: true
+  strategy: "variance_information"  # Weight by variance × information entropy
+  # Strategies available:
+  # - "variance": Weight by feature variance only
+  # - "information": Weight by feature entropy only
+  # - "variance_information": Geometric mean of both (recommended)
+  # - "uniform": No weighting (baseline)
+
+# Training
+training:
+  batch_size: 512
+  learning_rate: 0.001
+  num_epochs: 550
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 0
+
+  # Category discovery (auto mode)
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+  max_clusters: 25
+
+  # Category assignment configuration
+  category_assignment_config:
+    method: "clustering"
+    isolated_families: []
+    reassign_orphans: true
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+
+  # Loss weights - baseline (feature weighting handles reconstruction priority)
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.3
+  topo_samples: 1024
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/experiments/a3_feature_weighted"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets - DISABLED
+  dead_code_reset_interval: 0
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# A3 Strategy:
+# - Use baseline architecture (proven to achieve L_recon=0.015)
+# - Add feature importance weighting to reconstruction loss
+# - High-variance, high-entropy features get more weight
+# - Should improve from 0.015 → 0.010 by focusing on important features
+#
+# Expected outcome:
+# - Features with high variance/entropy: 2-3× weight
+# - Features with low variance/entropy: 0.5× weight
+# - Overall: Better reconstruction of features that matter most

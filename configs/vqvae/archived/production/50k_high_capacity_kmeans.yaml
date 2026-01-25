@@ -1,0 +1,117 @@
+# High-Capacity VQ-VAE with K-Means Init (50K CNO Dataset)
+# Hybrid approach: Keep winning high-capacity settings, only add k-means init
+# - High-capacity baseline: val_loss=0.067, util=18%
+# - Only change: uniform_codebook_init: true → false (k-means)
+# - Target: val_loss < 0.067 with better utilization
+
+# Dataset
+dataset_path: "datasets/cno_50k_v3_1.h5"
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 14
+      cnn_embedding_dim: 28
+      encode_manual: false
+      in_channels: 1
+
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      embedding_dim: 128
+      architecture: "resnet1d_3"
+
+# VQ-VAE Architecture - HIGH CAPACITY
+model:
+  group_embedding_dim: 512      # DOUBLED from 256
+  group_hidden_dim: 1024        # DOUBLED from 512
+
+  # Explicit hierarchical levels with large codebooks
+  levels:
+    - latent_dim: 128           # Fine-grained details
+      num_tokens: 4096
+    - latent_dim: 64            # Medium details
+      num_tokens: 2048
+    - latent_dim: 32            # Coarse structure
+      num_tokens: 1024
+
+  # VQ-VAE hyperparameters - ONLY K-MEANS CHANGED
+  uniform_codebook_init: false  # CHANGED: K-means init (was true)
+  commitment_cost: 0.25         # SAME as high-capacity
+  use_ema: true
+  decay: 0.99                   # SAME as high-capacity
+  dropout: 0.1
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.12
+
+# Training
+training:
+  batch_size: 512               # SAME as high-capacity
+  learning_rate: 0.001          # SAME as high-capacity
+  num_epochs: 550
+  optimizer: "adam"
+  scheduler: null               # SAME as high-capacity (no scheduler)
+  warmup_epochs: 0              # SAME as high-capacity
+
+  # Category discovery (auto mode)
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+  max_clusters: 25
+
+  # Category assignment configuration
+  category_assignment_config:
+    method: "clustering"
+    isolated_families: []
+    reassign_orphans: true
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+
+  # Loss weights - SAME as high-capacity
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.3
+  topo_samples: 1024
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/production/50k_high_capacity_kmeans"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets - DISABLED (same as high-capacity)
+  dead_code_reset_interval: 0
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Hypothesis:
+# K-means initialization provides better starting codebook centers
+# Without changing loss balance, this should maintain reconstruction quality
+# while potentially improving utilization beyond 18%

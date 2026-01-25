@@ -1,0 +1,113 @@
+# Production Training: TEMPORAL ONLY (50K CNO Dataset)
+# Based on 100k_full_features.yaml but using only TEMPORAL features (already extracted)
+# Training VQ-VAE on ground truth CNO rollouts for stable token space
+
+# Dataset
+dataset_path: "datasets/cno_50k_v3_1.h5"
+# No max_samples limit - use full 50K dataset
+
+# Feature Families - TEMPORAL ONLY (already extracted in dataset)
+families:
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      embedding_dim: 128
+      architecture: "resnet1d_3"
+
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 256
+  group_hidden_dim: 512
+
+  # Hierarchical levels (empty for autoscaling)
+  levels: []
+
+  # Adaptive compression ratios
+  compression_ratios: "auto"
+  auto_compression_strategy: "balanced"
+
+  # VQ-VAE hyperparameters
+  uniform_codebook_init: true
+  commitment_cost: 0.35
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.12
+
+# Training
+training:
+  batch_size: 1024
+  learning_rate: 0.001
+  num_epochs: 550
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 0
+
+  # Category discovery (auto mode)
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+  max_clusters: 25
+
+  # Category assignment configuration
+  category_assignment_config:
+    method: "clustering"
+    isolated_families: []
+    reassign_orphans: true
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.3
+  topo_samples: 1024
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/production/50k_temporal_only_v2"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets - DISABLED
+  dead_code_reset_interval: 0
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Expected Performance:
+# - Dataset: 50K CNO samples with TEMPORAL features only (already extracted)
+#   - TEMPORAL: 256×345D (v3.1 enhanced features)
+# - After encoding:
+#   - TEMPORAL: 256×345D → 128D (temporal CNN encoder)
+# - Training time: ~4-8 hours (550 epochs, batch_size=1024)
+# - Training on CNO temporal features provides stable ground truth token space
+# - Target metrics:
+#   - Reconstruction quality: >0.94
+#   - Codebook utilization: >90%
+#   - Topographic similarity (post): >0.90

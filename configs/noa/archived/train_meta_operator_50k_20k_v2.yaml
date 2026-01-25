@@ -1,0 +1,79 @@
+# FiLM Modulation Training on 50K v3.1 CNO Dataset (20K samples) - v2
+# Larger model + longer warmup for 2x more data
+#
+# Changes from v1:
+# - Increased base_channels: 32 -> 48 (~2x parameters)
+# - Longer warmup: 2500 -> 5000 steps (1 epoch instead of 0.5)
+# - Lower initial LR: 1e-4 -> 5e-5 for stability
+# - Total params: ~320M (vs 145M)
+
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 48              # INCREASED: 32 -> 48 for 2x capacity
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  param_conditioning: true
+  param_dim: 14
+  param_embed_dim: 128
+  token_conditioning: false
+
+  conditioning_mode: "film"
+
+  film:
+    enabled: true
+    embed_dim: 128
+    hidden_dim: 256
+    init_gamma: 1.0
+    init_beta: 0.0
+    post_norm: true
+
+    modulate_encoder: true
+    modulate_decoder: true
+    encoder_levels: null
+    decoder_levels: null
+
+    modulate_afno_post: false
+    afno_blocks: null
+
+training:
+  n_samples: 20000
+  sampling_strategy: "sequential"
+  batch_size: 4
+  epochs: 50
+  learning_rate: 5.0e-5          # DECREASED: 1e-4 -> 5e-5 for stability
+  warmup_steps: 5000             # DOUBLED: 2500 -> 5000 (1 full epoch)
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  timesteps: 256
+  bptt_window: 32
+
+  early_stopping_patience: 10    # Increased patience for larger model
+
+loss:
+  mode: "mse_led"
+  lambda_traj: 1.0
+  lambda_ic: 0.3
+
+data:
+  dataset_path: "datasets/cno_50k_v3_1.h5"
+  config: "configs/experiments/cno_50k_v3_1.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/noa/film_50k_20k_v2"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42
+
+# Expected improvements:
+# - ~320M parameters (2.2x larger than v1)
+# - Longer warmup prevents early instability
+# - Lower LR improves training stability
+# - Should match or exceed 10K performance (val_loss < 0.7 by epoch 3)

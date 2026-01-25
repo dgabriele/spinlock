@@ -1,0 +1,150 @@
+# Checkpoint A2: Deep Residual Architecture
+# CORRECTED TARGET: 0.015 (baseline) → 0.010 (1.5× improvement needed)
+# Note: A1 actually hurt pure reconstruction (0.015→0.017) despite better composite loss
+# A2 Strategy: Residual decoder + MASSIVE reconstruction weight
+# Changes from baseline:
+# - Multi-layer residual decoder (4 layers: latent→512→768→512→input)
+# - 25% increased embedding capacity (512→640, 1024→1280)
+# - Even larger codebooks for deeper representation
+# - Adaptive per-category compression
+
+# Dataset
+dataset_path: "datasets/cno_50k_v3_1.h5"
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 14
+      cnn_embedding_dim: 28
+      encode_manual: false
+      in_channels: 1
+
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      embedding_dim: 128
+      architecture: "resnet1d_3"
+
+# VQ-VAE Architecture - A2 DEEP RESIDUAL
+model:
+  group_embedding_dim: 640          # +25% from A1 (512→640)
+  group_hidden_dim: 1280            # +25% from A1 (1024→1280)
+
+  # A2: Use multi-layer residual decoder
+  use_residual_decoder: true
+  residual_decoder_hidden_dims: [512, 768, 512]  # 4-layer architecture
+
+  # Optional: Can also try attention decoder instead
+  # use_attention_decoder: false
+  # attention_heads: 8
+  # decoder_hidden_dim: 768
+
+  # Explicit hierarchical levels with larger codebooks
+  levels:
+    - latent_dim: 96                # L0: Same as A1
+      num_tokens: 8192              # +33% from A1 (6144→8192)
+    - latent_dim: 64                # L1: Same as A1
+      num_tokens: 4096              # +33% from A1 (3072→4096)
+    - latent_dim: 48                # L2: Same as A1
+      num_tokens: 2048              # +33% from A1 (1536→2048)
+
+  # VQ-VAE hyperparameters
+  uniform_codebook_init: true
+  commitment_cost: 0.20             # Same as A1
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  # Auxiliary loss weights - same as A1
+  orthogonality_weight: 0.08
+  informativeness_weight: 0.08
+
+# Feature Cleaning - DISABLED to match baseline (can re-enable later)
+# feature_cleaning:
+#   enabled: true
+#   variance_threshold: 1e-8
+#   deduplicate_threshold: 0.99
+#   use_intelligent_dedup: true
+#   outlier_method: "percentile"
+#   percentile_range: [0.5, 99.5]
+
+# Training
+training:
+  batch_size: 384                   # Reduced from 512 due to larger model
+  learning_rate: 0.0007             # Slightly lower than A1
+  num_epochs: 450                   # More epochs for deeper network
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 20                 # Longer warmup for deeper network
+
+  # Category discovery (auto mode)
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+  max_clusters: 25
+
+  # Category assignment configuration
+  category_assignment_config:
+    method: "clustering"
+    isolated_families: []
+    reassign_orphans: true
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+
+  # Loss weights - FOCUS ON PURE RECONSTRUCTION
+  reconstruction_weight: 5.0        # MASSIVELY increased (focus on recon)
+  vq_weight: 0.5                    # Further reduced
+  orthogonality_weight: 0.05        # Further reduced
+  informativeness_weight: 0.05      # Further reduced
+  topo_weight: 0.15                 # Further reduced
+  topo_samples: 1024
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/experiments/a2_deep_residual"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.005   # Tighter threshold
+
+  # Dead code resets - DISABLED
+  dead_code_reset_interval: 0
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+  # Gradient clipping for stability
+  gradient_clip_norm: 1.0
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# A2 Validation Criteria:
+# - Target L_recon: 0.010-0.013 (quality: 0.987-0.990)
+# - Rollback if val_loss > 0.055 @ epoch 250
+# - Expected utilization: 25-35%
+# - Training time: ~10-12 hours
+#
+# A2 Improvements over A1:
+# - Residual decoder with skip connections (prevents gradient vanishing)
+# - 25% more model capacity (640/1280 vs 512/1024)
+# - 33% larger codebooks (14,336 vs 10,752 total codes)
+# - Deeper architecture allows more expressive latent space
+# - Expected to achieve final 0.010-0.013 reconstruction loss

@@ -155,6 +155,10 @@ class SpectralFeatureExtractor:
         if include_all or (config is not None and config.include_spectral_flatness):
             features['spectral_flatness'] = self._compute_spectral_flatness(power)
 
+        # Spectral entropy (NEW)
+        if include_all or (config is not None and getattr(config, 'include_spectral_entropy', False)):
+            features['spectral_entropy'] = self._compute_spectral_entropy(power)
+
         # Spectral rolloff
         if include_all or (config is not None and config.include_spectral_rolloff):
             features['spectral_rolloff'] = self._compute_spectral_rolloff(power)
@@ -416,6 +420,32 @@ class SpectralFeatureExtractor:
         flatness = geometric_mean / arithmetic_mean
 
         return flatness
+
+    def _compute_spectral_entropy(self, power: torch.Tensor) -> torch.Tensor:
+        """
+        Compute spectral entropy (Shannon entropy of normalized PSD).
+
+        Measures spectral complexity: high entropy = noise-like, low entropy = tonal.
+        Complements spectral flatness with information-theoretic perspective.
+
+        Args:
+            power: FFT power spectrum [NT, C, H, W//2+1]
+
+        Returns:
+            [NT, C] spectral entropy values
+        """
+        # Flatten spatial dimensions
+        power_flat = power.flatten(start_dim=2)  # [NT, C, H*W]
+
+        # Normalize to probability distribution
+        eps = 1e-10
+        power_sum = power_flat.sum(dim=2, keepdim=True) + eps
+        psd_norm = power_flat / power_sum  # [NT, C, H*W]
+
+        # Shannon entropy: H = -sum(p * log(p))
+        spectral_entropy = -(psd_norm * torch.log(psd_norm + eps)).sum(dim=2)  # [NT, C]
+
+        return spectral_entropy
 
     def _compute_spectral_rolloff(
         self,

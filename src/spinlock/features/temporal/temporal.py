@@ -1,7 +1,16 @@
-"""Enhanced Temporal Feature Extractor (v3.0).
+"""Enhanced Temporal Feature Extractor (v3.1).
 
-Extracts 130D per-timestep temporal features using windowed history.
+Extracts per-timestep temporal features using windowed history.
 All features are online-computable from current state + fixed-size buffer.
+
+Version 3.1 additions:
+- Temporal skewness/kurtosis (captures asymmetry and tail behavior)
+- Multi-lag autocorrelation (temporal memory at lags 2,5,10,20)
+- Sample entropy proxy (regularity/predictability measure)
+- Enstrophy (vorticity/turbulence indicator)
+- Divergence proxy (field expansion/contraction)
+
+Use get_feature_dimensions() to query actual dimension counts dynamically.
 """
 
 import torch
@@ -11,16 +20,16 @@ from typing import Optional, Tuple
 import numpy as np
 
 class TemporalFeatureExtractor:
-    """Extract enhanced temporal dynamics features (130D per-timestep).
+    """Extract enhanced temporal dynamics features per timestep.
 
     Five sub-components:
-    1. Instantaneous Dynamics (22D) - Derivatives and rates
-    2. Local Temporal (28D) - Short-window statistics
-    3. Local Stability (24D) - Stability metrics
-    4. Phase Space Geometry (26D) - Trajectory geometry
-    5. Multi-scale Temporal (30D) - Multi-window aggregations
+    1. Instantaneous Dynamics - Derivatives, rates, enstrophy, divergence
+    2. Local Temporal - Statistics, skewness, kurtosis, multi-lag autocorr
+    3. Local Stability - Stability metrics, sample entropy
+    4. Phase Space Geometry - Trajectory geometry
+    5. Multi-scale Temporal - Multi-window aggregations
 
-    All features use windowed history (5-50 timesteps) for online computation.
+    All features use windowed history for online computation.
 
     Args:
         device: Torch device
@@ -53,24 +62,60 @@ class TemporalFeatureExtractor:
         self.history_buffer.clear()
         self.derivative_buffer.clear()
 
+    def get_feature_dimensions(self) -> dict:
+        """Get actual feature dimensions for each component.
+
+        Returns:
+            Dictionary mapping component names to their dimensions
+        """
+        # Reset to clear any existing history with different batch size
+        self.reset()
+
+        # Extract features from a dummy input to get actual dimensions
+        dummy = torch.zeros(1, 3, 64, 64, device=self.device)
+
+        # Feed enough history
+        for _ in range(max(self.long_window, 10)):
+            _ = self.extract(dummy)
+
+        # Now extract and measure
+        inst = self._extract_instantaneous(dummy)
+        local = self._extract_local_temporal(dummy)
+        stab = self._extract_local_stability(dummy)
+        phase = self._extract_phase_space(dummy)
+        multi = self._extract_multiscale(dummy)
+
+        # Reset again to clear dummy data
+        self.reset()
+
+        return {
+            'instantaneous': inst.shape[1],
+            'local_temporal': local.shape[1],
+            'local_stability': stab.shape[1],
+            'phase_space': phase.shape[1],
+            'multiscale': multi.shape[1],
+            'total': sum([inst.shape[1], local.shape[1], stab.shape[1],
+                         phase.shape[1], multi.shape[1]])
+        }
+
     def extract(self, u: torch.Tensor) -> torch.Tensor:
-        """Extract 130D enhanced temporal features.
+        """Extract enhanced temporal features.
 
         Args:
             u: State tensor [B, C, H, W]
 
         Returns:
-            features: [B, 130] temporal features
+            features: [B, D] temporal features where D depends on configuration
         """
         # Update history
         self.history_buffer.append(u.detach().cpu())
 
         # Extract each component
-        inst = self._extract_instantaneous(u)      # [B, 22]
-        local = self._extract_local_temporal(u)    # [B, 28]
-        stab = self._extract_local_stability(u)    # [B, 24]
-        phase = self._extract_phase_space(u)       # [B, 26]
-        multi = self._extract_multiscale(u)        # [B, 30]
+        inst = self._extract_instantaneous(u)
+        local = self._extract_local_temporal(u)
+        stab = self._extract_local_stability(u)
+        phase = self._extract_phase_space(u)
+        multi = self._extract_multiscale(u)
 
         # Defensive dimension checks
         features_list = [inst, local, stab, phase, multi]
@@ -79,22 +124,23 @@ class TemporalFeatureExtractor:
             for f in features_list
         ]
 
-        return torch.cat(features_list, dim=-1)    # [B, 130]
+        return torch.cat(features_list, dim=-1)
 
     def _extract_instantaneous(self, u: torch.Tensor) -> torch.Tensor:
-        """Extract instantaneous dynamics features (22D).
+        """Extract instantaneous dynamics features.
 
         Features:
         - Time derivatives (first/second order)
         - Rate of change metrics
-        - Energy flux
-        - Momentum
+        - Energy flux and momentum
+        - Enstrophy (vorticity proxy)
+        - Divergence proxy
 
         Args:
             u: [B, C, H, W]
 
         Returns:
-            [B, 22] instantaneous features
+            [B, D] instantaneous features
         """
         B, C, H, W = u.shape
         features = []
@@ -153,26 +199,40 @@ class TemporalFeatureExtractor:
         energy_per_ch = torch.norm(u, p=2, dim=(2, 3))  # [B, C]
         features.append(energy_per_ch)
 
+        # 7. Enstrophy (vorticity proxy) (NEW: 1D)
+        # For scalar fields, use gradient magnitude squared as proxy
+        # Enstrophy measures the intensity of small-scale vorticity/turbulence
+        vorticity_proxy = (u_x ** 2).mean(dim=(2, 3)) + (u_y ** 2).mean(dim=(2, 3))  # [B, C]
+        enstrophy = vorticity_proxy.mean(dim=1, keepdim=True)  # [B, 1]
+        features.append(enstrophy)
+
+        # 8. Divergence proxy (NEW: 1D)
+        # For 2D fields, approximate divergence as sum of spatial gradients
+        # Measures expansion/contraction of the field
+        divergence = (u_x.abs().mean(dim=(2, 3)) + u_y.abs().mean(dim=(2, 3))).mean(dim=1, keepdim=True)  # [B, 1]
+        features.append(divergence)
+
         # Flatten and concatenate
         features = [f.reshape(B, -1) for f in features]
-        result = torch.cat(features, dim=-1)  # Should be ~22D
+        result = torch.cat(features, dim=-1)  # Should be ~24D
 
         return result
 
     def _extract_local_temporal(self, u: torch.Tensor) -> torch.Tensor:
-        """Extract local temporal statistics (28D).
+        """Extract local temporal statistics.
 
         Features:
-        - Short-window mean/std
-        - Min/max values
-        - Temporal variance
-        - Rate statistics
+        - Short-window mean/std/variance
+        - Min/max/range values
+        - Temporal skewness/kurtosis
+        - Autocorrelation (single and multi-lag)
+        - Trend estimation
 
         Args:
             u: [B, C, H, W]
 
         Returns:
-            [B, 28] local temporal features
+            [B, D] local temporal features
         """
         B, C, H, W = u.shape
         features = []
@@ -202,6 +262,21 @@ class TemporalFeatureExtractor:
             temp_var_norm = torch.norm(temp_var, p=2, dim=(2, 3))  # [B, C]
             features.append(temp_var_norm)
 
+            # 3b. Temporal skewness per channel (NEW: C = 3D)
+            # Skewness = E[(X - μ)³] / σ³
+            eps = 1e-8
+            centered = history - temp_mean.unsqueeze(0)  # [T, B, C, H, W]
+            temp_std_full = history.std(dim=0)  # [B, C, H, W]
+            temp_skew = ((centered ** 3).mean(dim=0)) / (temp_std_full ** 3 + eps)  # [B, C, H, W]
+            temp_skew_norm = torch.norm(temp_skew, p=2, dim=(2, 3))  # [B, C]
+            features.append(temp_skew_norm)
+
+            # 3c. Temporal kurtosis per channel (NEW: C = 3D)
+            # Kurtosis = E[(X - μ)⁴] / σ⁴
+            temp_kurt = ((centered ** 4).mean(dim=0)) / (temp_std_full ** 4 + eps)  # [B, C, H, W]
+            temp_kurt_norm = torch.norm(temp_kurt, p=2, dim=(2, 3))  # [B, C]
+            features.append(temp_kurt_norm)
+
             # 4. Min/max across time (C*2 = 6D)
             temp_min, _ = torch.min(torch.norm(history, p=2, dim=(3, 4)), dim=0)  # [B, C]
             temp_max, _ = torch.max(torch.norm(history, p=2, dim=(3, 4)), dim=0)  # [B, C]
@@ -224,20 +299,48 @@ class TemporalFeatureExtractor:
             else:
                 features.append(torch.zeros(B, C, device=u.device))
 
+            # 7b. Multi-lag autocorrelation (NEW: 5D)
+            # Compute autocorrelations at lags 2, 5, 10, 20, and their mean
+            lags = [2, 5, 10, 20]
+            for lag in lags:
+                if window > lag:
+                    autocorr_lag = self._compute_autocorr(history, lag=lag)  # [B, C]
+                    # Take mean across channels for global measure
+                    features.append(autocorr_lag.mean(dim=1, keepdim=True))  # [B, 1]
+                else:
+                    features.append(torch.zeros(B, 1, device=u.device))
+
+            # Add mean of all multi-lag autocorrelations
+            if window > 2:
+                all_lags = [self._compute_autocorr(history, lag=lag).mean(dim=1, keepdim=True)
+                           for lag in [1, 2, 5, 10, 20] if window > lag]
+                if all_lags:
+                    mean_autocorr = torch.stack(all_lags, dim=0).mean(dim=0)  # [B, 1]
+                    features.append(mean_autocorr)
+                else:
+                    features.append(torch.zeros(B, 1, device=u.device))
+            else:
+                features.append(torch.zeros(B, 1, device=u.device))
+
             # 8. Trend (linear fit slope) (C = 3D)
             trend = self._compute_trend(history)  # [B, C]
             features.append(trend)
 
         else:
-            # Not enough history - use zeros (28D total)
+            # Not enough history - use zeros (39D total)
             features.append(torch.zeros(B, C, device=u.device))  # mean
             features.append(torch.zeros(B, C, device=u.device))  # std
             features.append(torch.zeros(B, C, device=u.device))  # var
+            features.append(torch.zeros(B, C, device=u.device))  # skew (NEW)
+            features.append(torch.zeros(B, C, device=u.device))  # kurt (NEW)
             features.append(torch.zeros(B, C, device=u.device))  # min
             features.append(torch.zeros(B, C, device=u.device))  # max
             features.append(torch.zeros(B, C, device=u.device))  # range
             features.append(torch.zeros(B, C, device=u.device))  # mad
             features.append(torch.zeros(B, C, device=u.device))  # autocorr
+            # Multi-lag autocorrelations (5D: lags 2, 5, 10, 20, mean)
+            for _ in range(5):
+                features.append(torch.zeros(B, 1, device=u.device))
             features.append(torch.zeros(B, C, device=u.device))  # trend
 
         # Flatten and concatenate
@@ -247,18 +350,20 @@ class TemporalFeatureExtractor:
         return result
 
     def _extract_local_stability(self, u: torch.Tensor) -> torch.Tensor:
-        """Extract local stability metrics (24D).
+        """Extract local stability metrics.
 
         Features:
-        - Lyapunov-like metrics
-        - Divergence indicators
+        - Lyapunov-like exponents
+        - Divergence and contraction rates
         - Perturbation sensitivity
+        - Sample entropy proxy
+        - Recurrence and entropy proxies
 
         Args:
             u: [B, C, H, W]
 
         Returns:
-            [B, 24] stability features
+            [B, D] stability features
         """
         B, C, H, W = u.shape
         features = []
@@ -321,10 +426,21 @@ class TemporalFeatureExtractor:
             margin = torch.abs(lyap)
             features.append(margin)
 
+            # 9. Sample entropy proxy (NEW: 1D)
+            # Simplified: standard deviation of consecutive differences
+            # Measures regularity/predictability of the time series
+            consecutive_diffs = torch.stack([
+                torch.norm(history[i] - history[i+1], p=2, dim=(2, 3))
+                for i in range(window - 1)
+            ], dim=0)  # [window-1, B, C]
+            sample_entropy = consecutive_diffs.std(dim=0).mean(dim=1, keepdim=True)  # [B, 1]
+            features.append(sample_entropy)
+
         else:
-            # Not enough history - 24D zeros
+            # Not enough history - 25D zeros
             for _ in range(8):
                 features.append(torch.zeros(B, C, device=u.device))
+            features.append(torch.zeros(B, 1, device=u.device))  # sample entropy
 
         # Flatten and concatenate
         features = [f.reshape(B, -1) for f in features]
@@ -504,17 +620,18 @@ class TemporalFeatureExtractor:
 
     # Helper methods
 
-    def _compute_autocorr(self, history: torch.Tensor) -> torch.Tensor:
-        """Compute lag-1 autocorrelation.
+    def _compute_autocorr(self, history: torch.Tensor, lag: int = 1) -> torch.Tensor:
+        """Compute autocorrelation at specified lag.
 
         Args:
             history: [T, B, C, H, W]
+            lag: Time lag for autocorrelation (default: 1)
 
         Returns:
             [B, C] autocorrelation coefficients
         """
         T, B, C, H, W = history.shape
-        if T < 3:
+        if T < lag + 2:
             return torch.zeros(B, C, device=history.device)
 
         # Flatten spatial dimensions
@@ -526,8 +643,8 @@ class TemporalFeatureExtractor:
         # Center
         centered = hist_flat - mean  # [T, B, C, H*W]
 
-        # Compute lag-1 correlation
-        corr = (centered[:-1] * centered[1:]).sum(dim=(0, 3))  # [B, C]
+        # Compute lag-k correlation
+        corr = (centered[:-lag] * centered[lag:]).sum(dim=(0, 3))  # [B, C]
         var = (centered ** 2).sum(dim=(0, 3))  # [B, C]
 
         autocorr = corr / (var + 1e-8)

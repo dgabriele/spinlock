@@ -1,0 +1,134 @@
+# Checkpoint A1: Moderate Scaling
+# Target: 0.067 → 0.025-0.030 (2-3× improvement)
+# Changes:
+# - 3× decoder capacity (256 → 768, 128 → 384)
+# - Reduced L0 compression (0.5 → 0.75)
+# - 50% larger codebooks (4096→6144, 2048→3072, 1024→1536)
+# - Rebalanced losses (prioritize reconstruction)
+
+# Dataset
+dataset_path: "datasets/cno_50k_v3_1.h5"
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 14
+      cnn_embedding_dim: 28
+      encode_manual: false
+      in_channels: 1
+
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      embedding_dim: 128
+      architecture: "resnet1d_3"
+
+# VQ-VAE Architecture - A1 MODERATE SCALING
+model:
+  group_embedding_dim: 512
+  group_hidden_dim: 1024
+  decoder_hidden_dim: 768           # NEW: 3× capacity (was 256)
+  partial_decoder_hidden_dim: 384   # NEW: 3× capacity (was 128)
+
+  # Explicit hierarchical levels with 50% larger codebooks
+  levels:
+    - latent_dim: 96                # L0: Reduced compression (was 0.5× → now 0.75×)
+      num_tokens: 6144              # +50% capacity (was 4096)
+    - latent_dim: 64                # L1: Maintain ratio
+      num_tokens: 3072              # +50% capacity (was 2048)
+    - latent_dim: 48                # L2: Slightly increased
+      num_tokens: 1536              # +50% capacity (was 1024)
+
+  # VQ-VAE hyperparameters
+  uniform_codebook_init: true
+  commitment_cost: 0.20             # Proven best value from prior experiments
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  # Auxiliary loss weights - rebalanced for less competition
+  orthogonality_weight: 0.08        # Reduced from 0.1
+  informativeness_weight: 0.08      # Reduced from 0.1
+
+# Feature Cleaning - DISABLED to match baseline (can re-enable later)
+# feature_cleaning:
+#   enabled: true
+#   variance_threshold: 1e-8
+#   deduplicate_threshold: 0.99       # Conservative pruning
+#   use_intelligent_dedup: true       # Keep most informative from correlated pairs
+#   outlier_method: "percentile"      # Adaptive percentile clipping
+#   percentile_range: [0.5, 99.5]     # Clip 0.5% from each tail
+
+# Training
+training:
+  batch_size: 512                   # May need reduction if OOM occurs
+  learning_rate: 0.0008             # Slightly lower than baseline
+  num_epochs: 400                   # A1 target epochs
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 15                 # NEW: Linear warmup for stability
+
+  # Category discovery (auto mode)
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+  max_clusters: 25
+
+  # Category assignment configuration
+  category_assignment_config:
+    method: "clustering"
+    isolated_families: []
+    reassign_orphans: true
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+
+  # Loss weights - REBALANCED for reconstruction priority
+  reconstruction_weight: 2.5        # INCREASED from 1.0
+  vq_weight: 0.7                    # REDUCED from 1.0
+  orthogonality_weight: 0.08        # REDUCED from 0.1
+  informativeness_weight: 0.08      # REDUCED from 0.1
+  topo_weight: 0.25                 # REDUCED from 0.3
+  topo_samples: 1024
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/experiments/a1_moderate_scaling"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets - DISABLED (as per baseline)
+  dead_code_reset_interval: 0
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+  # NEW: Gradient clipping for stability
+  gradient_clip_norm: 1.0
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# A1 Validation Criteria:
+# - Target val_loss: 0.025-0.030 @ epoch 400
+# - Rollback if val_loss > 0.045 @ epoch 200
+# - Expected utilization: 25-35%
+# - Training time: ~8 hours

@@ -1,6 +1,7 @@
-"""Temporal Feature Configuration (v3.0).
+"""Temporal Feature Configuration (v3.1).
 
 Configuration classes for per-timestep-only feature extraction.
+Updated with enhanced temporal and spectral features.
 """
 
 from dataclasses import dataclass, field
@@ -45,7 +46,10 @@ class CrossChannelConfig:
 
 @dataclass
 class TemporalConfig:
-    """Configuration for enhanced temporal dynamics (130D).
+    """Configuration for enhanced temporal dynamics (145D).
+
+    v3.1 additions: skewness, kurtosis, multi-lag autocorrelation,
+    sample entropy, enstrophy, divergence (+15D from v3.0)
 
     Attributes:
         enabled: Whether temporal features are enabled
@@ -87,15 +91,19 @@ class MultiscaleConfig:
 
 @dataclass
 class TemporalFeatureConfig:
-    """Complete per-timestep feature configuration (v3.0).
+    """Complete per-timestep feature configuration (v3.1).
 
     This replaces the v2.x SummaryConfig with a focus on per-timestep-only features.
 
-    Total dimensions: ~328D per timestep
-    - Spatial: ~105D
-    - Spectral: ~93D
-    - Cross-channel: ~10D
-    - Enhanced temporal: ~120D
+    Total dimensions: ~209D per timestep (v3.1 orchestrator default):
+    - Spatial: 24D (per-channel statistics)
+    - Spectral: 28D (frequency domain + entropy)
+    - Cross-channel: 12D (channel interactions)
+    - Enhanced temporal: 145D (windowed dynamics + skewness/kurtosis/
+                                 multi-lag autocorr/sample entropy/
+                                 enstrophy/divergence)
+
+    Note: Higher dimension configs (e.g., 328D) available via config flags.
 
     Attributes:
         spatial: Spatial feature configuration
@@ -119,7 +127,7 @@ class TemporalFeatureConfig:
     cross_channel: CrossChannelConfig = field(default_factory=CrossChannelConfig)
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
     per_channel: bool = True
-    version: str = "3.0.0"
+    version: str = "3.1.0"
 
     # v2.x legacy stubs (removed features)
     structural: StructuralConfig = field(default_factory=StructuralConfig)

@@ -1,0 +1,140 @@
+# Production Training: INITIAL + TEMPORAL (50K CNO Dataset)
+# Based on 100k_full_features.yaml but SUMMARY features removed
+# Training VQ-VAE on ground truth CNO rollouts for stable token space
+
+# Dataset
+dataset_path: "datasets/cno_50k_v3_1.h5"
+# No max_samples limit - use full 50K dataset
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      # Hybrid INITIAL encoder: manual features (14D) + CNN trained end-to-end (28D)
+      manual_dim: 14
+      cnn_embedding_dim: 28
+      encode_manual: false  # Pass manual features through directly
+      in_channels: 1
+    # INITIAL features: 14D manual + 28D CNN (end-to-end) = 42D total
+    # Manual: spatial stats, spectral, entropy, morphological
+    # CNN: InitialCNNEncoder trained jointly with VQ-VAE via backprop
+
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      embedding_dim: 128
+      architecture: "resnet1d_3"
+
+  # SUMMARY excluded per user request
+  # ARCHITECTURE excluded: NOA already knows operator parameters (θ)
+
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 256
+  group_hidden_dim: 512
+
+  # Hierarchical levels (empty for autoscaling)
+  levels: []
+
+  # Adaptive compression ratios (NEW)
+  # Set to "auto" to compute ratios based on feature characteristics
+  # (variance, dimensionality, information content, correlation)
+  compression_ratios: "auto"
+  auto_compression_strategy: "balanced"  # Options: "variance", "dimensionality", "information", "balanced"
+
+  # VQ-VAE hyperparameters
+  uniform_codebook_init: true  # All levels start with L0's size, dead code resets prune naturally
+  commitment_cost: 0.35  # Increased to encourage codebook usage
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.12
+
+# Training
+training:
+  batch_size: 1024  # Increased from 512 for better GPU utilization
+  learning_rate: 0.001
+  num_epochs: 550  # Extended for INITIAL+TEMPORAL training
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 0
+
+  # Category discovery (auto mode)
+  category_assignment: "auto"
+  num_categories_auto: null  # Auto-determine via silhouette score
+  orthogonality_target: 0.15
+  min_features_per_category: 3  # Allow smaller clusters for more granular categories
+  max_clusters: 25
+
+  # Category assignment configuration
+  # Supports: 'clustering' (fast), 'gradient' (optimal), 'hybrid' (recommended)
+  category_assignment_config:
+    method: "clustering"  # Pure clustering - better for reconstruction
+    # No isolated families needed - INITIAL, TEMPORAL are both behavioral statistics
+    isolated_families: []
+    # Orphan reassignment - guarantee 100% feature assignment
+    reassign_orphans: true  # Reassign features from too-small clusters to nearest cluster
+    # Gradient refinement parameters (only used when method='gradient' or 'hybrid')
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1  # For datasets > 10K: use 10K + this fraction of excess
+    device: "cuda"  # GPU-first, falls back to CPU if unavailable
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.3
+  topo_samples: 1024  # Increased from 512 for more topographic signal
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/production/50k_temporal_only"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets - DISABLED for small codebooks with uniform init
+  # With ~24 codes/level, "dead" codes = natural capacity discovery, not waste
+  # EMA updates + commitment loss prevent true collapse
+  dead_code_reset_interval: 0  # 0 = disabled
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Expected Performance:
+# - Dataset: 50K CNO samples with 2 feature families (SUMMARY excluded)
+#   - INITIAL: 14D manual (in dataset) + 28D CNN (end-to-end from raw ICs)
+#   - TEMPORAL: 256×345D (v3.1 enhanced features)
+# - After encoding:
+#   - INITIAL: 14D manual + 28D CNN = 42D (hybrid encoder)
+#   - TEMPORAL: 256×345D → 128D (temporal CNN encoder)
+#   - Total: 42 + 128 = 170D
+# - Training time: ~4-8 hours (550 epochs, batch_size=1024)
+# - Note: CNN is trained end-to-end with VQ-VAE via backprop (not pre-extracted)
+# - Note: Training on CNO rollouts provides stable ground truth token space
+# - Target metrics:
+#   - Reconstruction quality: >0.94
+#   - Codebook utilization: >90%
+#   - Topographic similarity (post): >0.90

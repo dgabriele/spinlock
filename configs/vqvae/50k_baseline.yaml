@@ -74,10 +74,10 @@ feature_cleaning:
 training:
   batch_size: 512               # Reduced from 1024 for larger model
   learning_rate: 0.001
-  num_epochs: 500
+  num_epochs: 700
   optimizer: "adam"
   scheduler: null
-  warmup_epochs: 0
+  warmup_epochs: 100
 
   # Category discovery (auto mode)
   category_assignment: "auto"
@@ -113,7 +113,7 @@ training:
   informativeness_weight: 0.1
   topo_weight: 0.3
   topo_samples: 1024
-  entropy_weight: 0.1  # Entropy regularization for uniform codebook usage (reduced from 0.5 to avoid negative losses)
+  entropy_weight: 0.0  # Entropy regularization for uniform codebook usage 
 
   # Checkpointing
   save_every: 25

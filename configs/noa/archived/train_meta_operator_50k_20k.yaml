@@ -1,0 +1,92 @@
+# FiLM Modulation Training on 50K v3.1 CNO Dataset (20K samples)
+# Based on exp_film_10k_v3.yaml, scaled to 20K samples from new 50K dataset
+#
+# This config uses Feature-wise Linear Modulation (FiLM) instead of
+# concatenation-based parameter conditioning. FiLM applies learned
+# affine transformations (gamma * features + beta) at each layer,
+# enabling fine-grained theta-conditioned control.
+#
+# Dataset details:
+# - 50,000 CNO operators with v3.1 enhanced TEMPORAL features (~345D)
+# - Using 20K samples (2x the 10K training)
+# - 14D parameter space (includes dt and alpha variation)
+# - 3 realizations per operator, single channel, 64x64 grid, 256 timesteps
+# - NO trajectory storage (generated on-the-fly by CNOReplayer)
+
+model:
+  spatial_dim: 64
+  in_channels: 1              # Single channel per realization
+  out_channels: 1             # Single channel output
+  base_channels: 32           # Reasonable size for 20k dataset
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  param_conditioning: true    # Condition on 14D parameter vector theta
+  param_dim: 14               # dt, alpha + 12 other params
+  param_embed_dim: 128        # MLP projection dimension (increased for temporal conditioning)
+  token_conditioning: false   # No behavioral tokens
+
+  # FiLM conditioning mode (replaces concatenation)
+  conditioning_mode: "film"   # "concat" | "film" | "both"
+
+  # FiLM configuration
+  film:
+    enabled: true
+    embed_dim: 128            # Must match param_embed_dim
+    hidden_dim: 256           # Projection head hidden (increased for richer modulation)
+    init_gamma: 1.0           # Identity init (gamma=1)
+    init_beta: 0.0            # Identity init (beta=0)
+    post_norm: true           # LayerNorm after FiLM (RECOMMENDED for T=256)
+
+    # SPATIAL modulation (DEFAULT - safe for T=256 rollouts)
+    modulate_encoder: true    # Apply FiLM to encoder conv outputs
+    modulate_decoder: true    # Apply FiLM to decoder conv outputs
+    encoder_levels: null      # null = all levels [0,1,2]
+    decoder_levels: null      # null = all levels [0,1,2]
+
+    # SPECTRAL modulation (USE WITH CAUTION)
+    modulate_afno_post: false # POST-spectral only, default OFF
+    afno_blocks: null         # Which AFNO blocks if enabled
+
+training:
+  n_samples: 20000            # Using 20K from the new 50K dataset (was 10K)
+  sampling_strategy: "sequential"  # Sequential preserves Sobol properties
+  batch_size: 4               # Balance memory and efficiency (same as 10K)
+  epochs: 50                  # Train to convergence
+  learning_rate: 1.0e-4       # Standard learning rate
+  warmup_steps: 2500          # ~10% of total steps for warmup
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  # Truncated BPTT for memory efficiency
+  timesteps: 256              # Match CNO dataset (256 timesteps)
+  bptt_window: 32             # Backprop window
+
+  early_stopping_patience: 5
+
+loss:
+  # Pure MSE - trajectory matching only
+  mode: "mse_led"
+  lambda_traj: 1.0            # Primary objective: match CNO rollouts
+  lambda_ic: 0.3              # IC reconstruction penalty
+
+data:
+  dataset_path: "datasets/cno_50k_v3_1.h5"
+  config: "configs/experiments/cno_50k_v3_1.yaml"
+  val_split: 0.1              # 18K train, 2K val
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/noa/film_50k_20k"
+  save_every: 5               # Save every 5 epochs
+  keep_best: true             # Keep best checkpoint
+
+device: "cuda"
+seed: 42
+
+# Expected performance:
+# - 2x more data than 10K training (20K vs 10K)
+# - Parameter overhead: ~5-7% (FiLM generator parameters)
+# - Per-batch time: ~30-40% faster than concat mode
+# - Training time: ~2-3 hours per epoch on GPU
+# - Target val_loss: < 1.0 after convergence (potentially better due to more data)

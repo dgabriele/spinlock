@@ -1,7 +1,13 @@
-"""Temporal Feature Orchestrator (v3.0).
+"""Temporal Feature Orchestrator (v3.1).
 
 Per-timestep-only feature extraction for online perturbation-based NOA.
-Extracts 193D features per timestep from trajectory data.
+
+v3.1 additions:
+- Temporal: skewness, kurtosis, multi-lag autocorrelation, sample entropy,
+  enstrophy, divergence
+- Spectral: Shannon entropy
+
+Use get_feature_dimensions() to query actual dimension counts dynamically.
 """
 
 import torch
@@ -17,16 +23,20 @@ from spinlock.features.temporal.temporal import TemporalFeatureExtractor
 
 
 class TemporalFeatureOrchestrator(FeatureExtractorBase):
-    """Per-timestep-only feature orchestrator (v3.0).
+    """Per-timestep-only feature orchestrator (v3.1).
 
-    Extracts 193D features per timestep:
-    - Spatial: 24D (per-channel statistics)
-    - Spectral: 27D (frequency domain features)
-    - Cross-channel: 12D (channel interactions)
-    - Enhanced temporal: 130D (windowed dynamics)
+    Extracts per-timestep features from four components:
+    - Spatial (per-channel statistics)
+    - Spectral (frequency domain + entropy)
+    - Cross-channel (channel interactions)
+    - Enhanced temporal (windowed dynamics, skewness, kurtosis,
+                        multi-lag autocorr, sample entropy,
+                        enstrophy, divergence)
 
     This replaces the v2.x SummaryExtractor by focusing exclusively on
     per-timestep features that are computable online.
+
+    Use get_feature_dimensions() to query actual dimension counts.
 
     Args:
         device: Torch device for computation
@@ -35,7 +45,8 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
     Example:
         >>> orchestrator = TemporalFeatureOrchestrator(device=torch.device('cuda'))
         >>> trajectories = torch.randn(100, 10, 256, 3, 128, 128)  # [N, M, T, C, H, W]
-        >>> features = orchestrator.extract_per_timestep(trajectories)  # [100, 256, 193]
+        >>> features = orchestrator.extract_per_timestep(trajectories)
+        >>> print(f"Feature dimensions: {features.shape}")  # [100, 256, D]
     """
 
     def __init__(self, device: torch.device, config: Optional[Any] = None):
@@ -72,7 +83,7 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
             )
 
     def extract_per_timestep(self, trajectories: torch.Tensor) -> torch.Tensor:
-        """Extract per-timestep features (v3.0 ONLY method).
+        """Extract per-timestep features (v3.1 method).
 
         Args:
             trajectories: [N, M, T, C, H, W] trajectory tensor
@@ -83,7 +94,7 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 H, W: spatial dimensions
 
         Returns:
-            features: [N, T, 193] per-timestep features
+            features: [N, T, 209] per-timestep features
 
         Note:
             The realization dimension M is averaged out before extraction,

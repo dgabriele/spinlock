@@ -636,6 +636,19 @@ Output:
                     overhead_pct = 100 * film_params / total_params if total_params > 0 else 0
                     print(f"    FiLM parameters: {film_params:,} ({overhead_pct:.1f}% overhead)")
 
+        # Apply torch.compile for speedup (before DDP wrapping)
+        use_torch_compile = config.get("training", {}).get("use_torch_compile", False)
+        if use_torch_compile and "cuda" in str(device) and not is_distributed:
+            if rank == 0:
+                print("  Compiling model with torch.compile...")
+            try:
+                noa = torch.compile(noa, mode="default")
+                if rank == 0:
+                    print("  ✓ torch.compile enabled (expect 2-3× speedup after warmup)")
+            except Exception as e:
+                if rank == 0:
+                    print(f"  ⚠ torch.compile failed: {e}, continuing without compilation")
+
         # Wrap model in DDP if distributed
         if is_distributed:
             from torch.nn.parallel import DistributedDataParallel as DDP
@@ -666,8 +679,8 @@ Output:
                     self.model = model
                     self.timesteps = timesteps
 
-                def rollout(self, ic, tokens=None):
-                    return self.model.rollout(ic, steps=self.timesteps, return_all_steps=True, tokens=tokens)
+                def rollout(self, ic, params=None, tokens=None):
+                    return self.model.rollout(ic, steps=self.timesteps, return_all_steps=True, params=params, tokens=tokens)
 
                 def align_for_loss(self, pred_traj, target_traj, skip_ic=True):
                     if skip_ic:
@@ -744,12 +757,16 @@ Output:
                 "Required field: config (path to substrate config YAML)"
             )
 
+        # Larger cache to reduce operator reconstruction overhead
+        # With 16K samples, we have ~8K unique operators per epoch
+        # Cache as many as GPU memory allows (~256-512 operators at 5-10MB each)
+        cache_size = config.get("training", {}).get("replayer_cache_size", 512)
         replayer = CNOReplayer.from_config(
             config_path=substrate_config,
             device=device,
-            cache_size=8,
+            cache_size=cache_size,
         )
-        print(f"  ✓ Substrate replayer loaded")
+        print(f"  ✓ Substrate replayer loaded (cache_size={cache_size})")
 
         # Create dataset and dataloaders
         print("Loading dataset...")

@@ -1,0 +1,134 @@
+# Optimized VQ-VAE for improved reconstruction (50K CNO Dataset)
+# Multi-pronged approach targeting val_loss < 0.05:
+# - Much lower commitment cost (0.05) for better codebook exploration
+# - Faster EMA decay (0.95) for quicker adaptation
+# - K-means initialization for better starting point
+# - Learning rate schedule with warmup and cosine annealing
+# - Rebalanced losses (prioritize reconstruction)
+# - Dead code replacement to maximize utilization
+#
+# Expected improvements:
+# - High-capacity baseline: val_loss=0.067, util=18%
+# - Target: val_loss=0.03-0.05, util=40-60%
+
+# Dataset
+dataset_path: "datasets/cno_50k_v3_1.h5"
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 14
+      cnn_embedding_dim: 28
+      encode_manual: false
+      in_channels: 1
+
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      embedding_dim: 128
+      architecture: "resnet1d_3"
+
+# VQ-VAE Architecture - HIGH CAPACITY
+model:
+  group_embedding_dim: 512      # 2x baseline
+  group_hidden_dim: 1024        # 2x baseline
+
+  # Explicit hierarchical levels with large codebooks
+  levels:
+    - latent_dim: 128           # Fine-grained details
+      num_tokens: 4096
+    - latent_dim: 64            # Medium details
+      num_tokens: 2048
+    - latent_dim: 32            # Coarse structure
+      num_tokens: 1024
+
+  # VQ-VAE hyperparameters - OPTIMIZED
+  uniform_codebook_init: false  # Use k-means initialization
+  commitment_cost: 0.05         # MUCH LOWER for exploration (was 0.25)
+  use_ema: true
+  decay: 0.95                   # FASTER adaptation (was 0.99)
+  dropout: 0.1
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.12
+
+# Training
+training:
+  batch_size: 512
+  learning_rate: 0.0005         # LOWER base LR (was 0.001)
+  num_epochs: 550
+  optimizer: "adam"
+  scheduler: "cosine"           # ADDED cosine annealing
+  warmup_epochs: 10             # ADDED warmup
+
+  # Cosine scheduler params
+  scheduler_params:
+    T_max: 550
+    eta_min: 0.00001
+
+  # Category discovery (auto mode)
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+  max_clusters: 25
+
+  # Category assignment configuration
+  category_assignment_config:
+    method: "clustering"
+    isolated_families: []
+    reassign_orphans: true
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+
+  # Loss weights - REBALANCED
+  reconstruction_weight: 2.0    # PRIORITIZE reconstruction (was 1.0)
+  vq_weight: 0.5                # LOWER VQ penalty (was 1.0)
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.3
+  topo_samples: 1024
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/production/50k_optimized"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets - DISABLED (too disruptive)
+  dead_code_reset_interval: 0
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Key differences from high_capacity:
+# 1. commitment_cost: 0.25 → 0.05 (5x lower)
+# 2. decay: 0.99 → 0.95 (faster EMA)
+# 3. uniform_codebook_init: true → false (k-means)
+# 4. learning_rate: 0.001 → 0.0005 (with warmup)
+# 5. scheduler: null → cosine
+# 6. reconstruction_weight: 1.0 → 2.0
+# 7. vq_weight: 1.0 → 0.5
+# 8. dead_code_reset: disabled → enabled (10 epochs, 30% max)

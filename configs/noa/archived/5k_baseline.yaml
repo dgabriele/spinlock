@@ -1,0 +1,82 @@
+# Baseline MNO Training on 50K v3.1 CNO Dataset (5K samples)
+#
+# Based on proven 10K v3 architecture:
+# - base_channels: 40 (227M params)
+# - FiLM conditioning for parameter modulation
+# - MSE-LED loss (trajectory + initial condition)
+# - BPTT with 32-step windows for memory efficiency
+#
+# Training on 5K samples for faster iteration and validation
+# of architecture before scaling to larger datasets.
+
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 40              # 227M parameters
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  param_conditioning: true
+  param_dim: 14
+  param_embed_dim: 128
+  token_conditioning: false
+
+  conditioning_mode: "film"
+
+  film:
+    enabled: true
+    embed_dim: 128
+    hidden_dim: 256
+    init_gamma: 1.0
+    init_beta: 0.0
+    post_norm: true
+
+    modulate_encoder: true
+    modulate_decoder: true
+    encoder_levels: null
+    decoder_levels: null
+
+    modulate_afno_post: false
+    afno_blocks: null
+
+training:
+  n_samples: 5000                # 5K samples for baseline
+  sampling_strategy: "sequential"
+  batch_size: 2
+  gradient_accumulation_steps: 2  # Effective batch size: 4
+  epochs: 10                      # 10 epochs for baseline validation
+  learning_rate: 5.0e-5
+  warmup_steps: 1250              # 1 epoch warmup (5000 samples / 4 effective batch)
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  timesteps: 256
+  bptt_window: 32                 # Memory-efficient backprop through time
+
+  early_stopping_patience: 10
+
+loss:
+  mode: "mse_led"
+  lambda_traj: 1.0
+  lambda_ic: 0.3
+
+data:
+  dataset_path: "datasets/cno_50k_v3_1.h5"
+  config: "configs/experiments/cno_50k_v3_1.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/noa/5k_baseline"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42
+
+# Expected performance:
+# - 227M parameters (same proven architecture as 10K)
+# - ~2250 batches/epoch (half of 10K)
+# - ~6 hours/epoch on GPU
+# - Baseline for validating architecture before larger-scale training

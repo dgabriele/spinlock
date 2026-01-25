@@ -1,0 +1,123 @@
+# High-Capacity VQ-VAE for 0.01 val_loss target (50K CNO Dataset)
+# Targeting much lower reconstruction loss via:
+# - 2x model capacity (512/1024 vs 256/512)
+# - Larger explicit codebooks (4096/2048/1024 tokens)
+# - Lower commitment cost (0.25 vs 0.35) for better utilization
+# - Manual compression ratios for less aggressive compression
+
+# Dataset
+dataset_path: "datasets/cno_50k_v3_1.h5"
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 14
+      cnn_embedding_dim: 28
+      encode_manual: false
+      in_channels: 1
+
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      embedding_dim: 128
+      architecture: "resnet1d_3"
+
+# VQ-VAE Architecture - HIGH CAPACITY
+model:
+  group_embedding_dim: 512      # DOUBLED from 256
+  group_hidden_dim: 1024        # DOUBLED from 512
+
+  # Explicit hierarchical levels with large codebooks
+  levels:
+    - latent_dim: 128           # Fine-grained details
+      num_tokens: 4096
+    - latent_dim: 64            # Medium details
+      num_tokens: 2048
+    - latent_dim: 32            # Coarse structure
+      num_tokens: 1024
+
+  # compression_ratios not needed when levels are explicit
+  # Levels already define the architecture
+
+  # VQ-VAE hyperparameters
+  uniform_codebook_init: true
+  commitment_cost: 0.25         # LOWERED from 0.35 for better utilization
+  use_ema: true
+  decay: 0.99
+  dropout: 0.1
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.12
+
+# Training
+training:
+  batch_size: 512               # Reduced from 1024 for larger model
+  learning_rate: 0.001
+  num_epochs: 550
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 0
+
+  # Category discovery (auto mode)
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+  max_clusters: 25
+
+  # Category assignment configuration
+  category_assignment_config:
+    method: "clustering"
+    isolated_families: []
+    reassign_orphans: true
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.3
+  topo_samples: 1024
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/production/50k_high_capacity"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets - DISABLED
+  dead_code_reset_interval: 0
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Expected improvements over baseline:
+# - Baseline: val_loss=0.08, util=15%, quality=0.976
+# - Target: val_loss=0.01, util=40-60%, quality=0.99+
+# - Model size: ~4x larger (7M params for fine level alone)
+# - Training time: ~2x slower per epoch due to model size
+# - Total codebook: 7168 codes (vs ~hundreds in auto mode)

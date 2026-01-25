@@ -1,11 +1,12 @@
 """Shared feature preprocessing for VQ-VAE and NOA pipelines.
 
-This module provides consistent feature cleaning (NaN removal, masking) for both:
+This module provides consistent feature cleaning (NaN removal, pruning, masking) for both:
 - VQ-VAE training on pre-computed dataset features
 - NOA training with on-the-fly feature extraction
 
-The FeaturePreprocessor detects 100% NaN features in a dataset and provides
-a consistent API for filtering them from both ground-truth and predicted features.
+The FeaturePreprocessor detects 100% NaN features in a dataset and optionally applies
+feature pruning based on analysis results, providing a consistent API for filtering
+features from both ground-truth and predicted features.
 
 Dataset NaN Features (100k_full_features.h5):
 - summary/per_trajectory: indices 110-119 (operator_sensitivity) are 100% NaN
@@ -31,15 +32,18 @@ class FeaturePreprocessor:
 
     Handles:
     - NaN feature detection and masking
+    - Feature pruning based on analysis results
     - Feature index mapping (raw → clean)
     - Consistent feature ordering across pipelines
 
     The preprocessor is initialized from a dataset file and can then be used
     to clean features from that dataset or from newly-extracted features.
+    Optionally supports feature pruning from analyze-features results.
 
     Attributes:
         nan_masks: Dict mapping family names to boolean arrays of NaN positions
         feature_counts: Dict mapping family names to total feature counts
+        pruned_masks: Dict mapping family names to boolean arrays of pruned positions
         _valid_indices: Dict mapping family names to arrays of valid indices
     """
 
@@ -47,23 +51,35 @@ class FeaturePreprocessor:
         self,
         nan_masks: Dict[str, np.ndarray],
         feature_counts: Dict[str, int],
+        pruned_masks: Optional[Dict[str, np.ndarray]] = None,
     ):
-        """Initialize preprocessor with pre-computed NaN masks.
+        """Initialize preprocessor with pre-computed NaN and pruning masks.
 
         Args:
             nan_masks: Dict mapping family name to boolean array where True = NaN
             feature_counts: Dict mapping family name to total feature count
+            pruned_masks: Dict mapping family name to boolean array where True = pruned
         """
         self.nan_masks = nan_masks
         self.feature_counts = feature_counts
+        self.pruned_masks = pruned_masks or {}
         self._valid_indices = self._compute_valid_indices()
 
     def _compute_valid_indices(self) -> Dict[str, np.ndarray]:
-        """Compute indices of valid (non-NaN) features for each family."""
-        return {
-            family: np.where(~mask)[0]
-            for family, mask in self.nan_masks.items()
-        }
+        """Compute indices of valid (non-NaN, non-pruned) features for each family."""
+        valid_indices = {}
+        for family, nan_mask in self.nan_masks.items():
+            # Start with NaN mask
+            combined_mask = nan_mask.copy()
+
+            # Also exclude pruned features if available
+            if family in self.pruned_masks:
+                combined_mask = combined_mask | self.pruned_masks[family]
+
+            # Valid indices are where combined mask is False
+            valid_indices[family] = np.where(~combined_mask)[0]
+
+        return valid_indices
 
     def clean_features(
         self,
@@ -143,11 +159,19 @@ class FeaturePreprocessor:
         """
         info = {}
         for family in self.nan_masks.keys():
+            pruned_count = 0
+            pruned_indices = []
+            if family in self.pruned_masks:
+                pruned_count = int(np.sum(self.pruned_masks[family]))
+                pruned_indices = np.where(self.pruned_masks[family])[0].tolist()
+
             info[family] = {
                 'total': self.feature_counts.get(family, 0),
                 'valid': self.get_valid_count(family),
                 'nan': self.get_nan_count(family),
                 'nan_indices': self.get_nan_indices(family),
+                'pruned': pruned_count,
+                'pruned_indices': pruned_indices,
             }
         return info
 
@@ -231,6 +255,94 @@ class FeaturePreprocessor:
             for family, count in feature_counts.items()
         }
         return cls(nan_masks, feature_counts)
+
+    @classmethod
+    def from_analysis_result(cls, analysis_path: str) -> 'FeaturePreprocessor':
+        """Create preprocessor from feature analysis results.
+
+        Loads pruning recommendations from analyze-features output JSON.
+        Does not include NaN masks - only pruning masks.
+
+        Args:
+            analysis_path: Path to analyze-features output JSON
+
+        Returns:
+            FeaturePreprocessor with pruning masks configured
+        """
+        import json
+
+        path = Path(analysis_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Analysis file not found: {path}")
+
+        with open(path, "r") as f:
+            analysis = json.load(f)
+
+        # Extract metadata
+        feature_family = analysis["metadata"]["feature_family"]
+        total_features = analysis["metadata"]["total_features"]
+        prune_indices = analysis["recommendations"]["prune_indices"]
+
+        # Create boolean pruning mask
+        prune_mask = np.zeros(total_features, dtype=bool)
+        prune_mask[prune_indices] = True
+
+        # Create empty NaN masks (no NaN filtering)
+        nan_masks = {feature_family: np.zeros(total_features, dtype=bool)}
+        feature_counts = {feature_family: total_features}
+
+        return cls(
+            nan_masks=nan_masks,
+            feature_counts=feature_counts,
+            pruned_masks={feature_family: prune_mask}
+        )
+
+    @classmethod
+    def from_dataset_and_analysis(
+        cls,
+        dataset_path: str,
+        analysis_path: Optional[str] = None
+    ) -> 'FeaturePreprocessor':
+        """Create preprocessor with both NaN and pruning masks.
+
+        Combines NaN detection from dataset with optional pruning from analysis.
+
+        Args:
+            dataset_path: Path to HDF5 dataset
+            analysis_path: Optional path to analysis results
+
+        Returns:
+            FeaturePreprocessor with both NaN and pruning configured
+        """
+        import json
+
+        # Load NaN masks from dataset (existing functionality)
+        preprocessor = cls.from_dataset(dataset_path)
+
+        # Add pruning masks if analysis provided
+        if analysis_path:
+            path = Path(analysis_path)
+            if not path.exists():
+                raise FileNotFoundError(f"Analysis file not found: {path}")
+
+            with open(path, "r") as f:
+                analysis = json.load(f)
+
+            feature_family = analysis["metadata"]["feature_family"]
+            total_features = analysis["metadata"]["total_features"]
+            prune_indices = analysis["recommendations"]["prune_indices"]
+
+            # Create boolean pruning mask
+            prune_mask = np.zeros(total_features, dtype=bool)
+            prune_mask[prune_indices] = True
+
+            # Add to preprocessor
+            preprocessor.pruned_masks[feature_family] = prune_mask
+
+            # Recompute valid indices with pruning included
+            preprocessor._valid_indices = preprocessor._compute_valid_indices()
+
+        return preprocessor
 
     def __repr__(self) -> str:
         families = list(self.nan_masks.keys())
