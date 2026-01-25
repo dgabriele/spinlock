@@ -15,18 +15,38 @@ import torch.nn.functional as F
 from typing import Dict, Any, Optional
 
 
-def reconstruction_loss(outputs: Dict[str, Any], targets: Dict[str, torch.Tensor]):
-    """Compute reconstruction loss.
+def reconstruction_loss(
+    outputs: Dict[str, Any],
+    targets: Dict[str, torch.Tensor],
+    feature_weights: Optional[torch.Tensor] = None,
+):
+    """Compute reconstruction loss with optional per-feature weighting.
 
     Args:
         outputs: Model outputs with 'reconstruction' dict containing 'features'
         targets: Target dict with 'features'
+        feature_weights: Optional per-feature importance weights [D]
+                        If None, uses uniform weighting (standard MSE)
 
     Returns:
-        Reconstruction loss (MSE)
+        Reconstruction loss (weighted MSE)
     """
     reconstruction = outputs["reconstruction"]
-    loss = F.mse_loss(reconstruction["features"], targets["features"])
+    recon_features = reconstruction["features"]  # [batch, D]
+    target_features = targets["features"]  # [batch, D]
+
+    # Compute squared errors
+    squared_errors = (recon_features - target_features) ** 2  # [batch, D]
+
+    if feature_weights is not None:
+        # Apply per-feature weights
+        # feature_weights: [D] -> [1, D] for broadcasting
+        weighted_errors = squared_errors * feature_weights.unsqueeze(0)  # [batch, D]
+        loss = weighted_errors.mean()
+    else:
+        # Uniform weighting (standard MSE)
+        loss = squared_errors.mean()
+
     return loss
 
 
@@ -283,6 +303,47 @@ def reference_regularization_loss(
     return loss
 
 
+def entropy_regularization_loss(outputs: Dict[str, Any]) -> torch.Tensor:
+    """Compute entropy regularization loss to encourage uniform codebook usage.
+
+    Encourages uniform distribution across codebook entries by maximizing
+    the entropy of code usage. Higher entropy = better utilization.
+
+    Formula: H = -sum(p_i * log(p_i))
+    Loss: -H (minimize negative entropy = maximize entropy)
+
+    Args:
+        outputs: Model outputs with 'encodings' key containing one-hot code assignments
+
+    Returns:
+        Entropy regularization loss (negative entropy averaged across quantizers)
+    """
+    if "encodings" not in outputs or not outputs["encodings"]:
+        return torch.tensor(0.0)
+
+    encodings_list = outputs["encodings"]  # List of [batch, K] one-hot encodings
+    entropy_losses = []
+
+    for encodings in encodings_list:
+        # Compute code usage distribution across batch
+        # encodings: [batch, K] one-hot vectors
+        # avg_probs: [K] probability of each code being used
+        avg_probs = encodings.mean(0)  # Average over batch dimension
+
+        # Compute entropy: H = -sum(p * log(p))
+        # Add epsilon for numerical stability
+        epsilon = 1e-10
+        entropy = -torch.sum(avg_probs * torch.log(avg_probs + epsilon))
+
+        # Maximize entropy by minimizing negative entropy
+        # Negative because we want to add this to the loss (gradient descent minimizes)
+        entropy_loss = -entropy
+        entropy_losses.append(entropy_loss)
+
+    # Average across all quantizers
+    return torch.stack(entropy_losses).mean()
+
+
 def compute_total_loss(
     outputs: Dict[str, Any],
     targets: Dict[str, torch.Tensor],
@@ -294,6 +355,8 @@ def compute_total_loss(
     reference_reg_weight: float = 0.0,
     reference_features: Optional[torch.Tensor] = None,
     is_interpolated: Optional[torch.Tensor] = None,
+    feature_weights: Optional[torch.Tensor] = None,
+    entropy_weight: float = 0.0,
 ) -> Dict[str, torch.Tensor]:
     """Compute total loss with all components.
 
@@ -311,15 +374,20 @@ def compute_total_loss(
                            If None, regularization disabled
         is_interpolated: Boolean mask [B] for interpolated samples
                         If None, regularization applied to all samples
+        feature_weights: Optional per-feature importance weights [D]
+                        If None, uses uniform weighting (standard MSE)
+        entropy_weight: Weight for entropy regularization (encourages uniform codebook usage)
+                       0.0 = disabled (default). Recommended: 0.01-0.1
 
     Returns:
         Dict with 'total' and individual loss components including:
             - topo_pre: Pre-quantization topographic similarity (correlation)
             - topo_post: Post-quantization topographic similarity (correlation)
             - reference_regularization: Reference feature regularization loss
+            - entropy: Entropy regularization loss (encourages uniform codebook usage)
     """
-    # 1. Reconstruction loss
-    recon_loss = reconstruction_loss(outputs, targets)
+    # 1. Reconstruction loss (with optional feature weighting)
+    recon_loss = reconstruction_loss(outputs, targets, feature_weights=feature_weights)
 
     # 2. VQ losses (commitment + codebook, already computed in forward pass)
     vq_loss = sum(outputs["vq_losses"])
@@ -342,6 +410,13 @@ def compute_total_loss(
         # Skip computation if disabled (weight = 0) or no reference features
         ref_reg_loss = torch.tensor(0.0, device=targets["features"].device)
 
+    # 7. Entropy regularization loss (optional)
+    if entropy_weight > 0:
+        ent_loss = entropy_regularization_loss(outputs)
+    else:
+        # Skip computation if disabled (weight = 0)
+        ent_loss = torch.tensor(0.0, device=targets["features"].device)
+
     # Total loss
     total = (
         recon_loss
@@ -350,6 +425,7 @@ def compute_total_loss(
         + informativeness_weight * info_loss
         + topo_weight * topo_loss
         + reference_reg_weight * ref_reg_loss
+        + entropy_weight * ent_loss
     )
 
     return {
@@ -362,4 +438,5 @@ def compute_total_loss(
         "topo_pre": topo_metrics["topo_pre"],  # Pre-quantization correlation
         "topo_post": topo_metrics["topo_post"],  # Post-quantization correlation
         "reference_regularization": ref_reg_loss,  # Reference feature regularization
+        "entropy": ent_loss,  # Entropy regularization (uniform codebook usage)
     }

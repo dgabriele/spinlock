@@ -42,6 +42,7 @@ class VQVAETrainer:
         topo_weight: float = 0.02,
         topo_samples: int = 64,
         reference_reg_weight: float = 0.0,
+        entropy_weight: float = 0.0,
         # Callbacks
         early_stopping_patience: int = 100,
         early_stopping_min_delta: float = 0.01,
@@ -80,6 +81,7 @@ class VQVAETrainer:
             topo_weight: Weight for topographic loss
             topo_samples: Number of samples for topographic loss
             reference_reg_weight: Weight for reference feature regularization (0.0 = disabled)
+            entropy_weight: Weight for entropy regularization to encourage uniform codebook usage (0.0 = disabled)
             early_stopping_patience: Patience for early stopping
             early_stopping_min_delta: Min delta for early stopping
             dead_code_reset_interval: Interval for dead code reset (0 to disable, only for legacy mode)
@@ -150,6 +152,7 @@ class VQVAETrainer:
         self.topo_weight = topo_weight
         self.topo_samples = topo_samples
         self.reference_reg_weight = reference_reg_weight
+        self.entropy_weight = entropy_weight
 
         # Feature weights (for A3 feature-weighted reconstruction)
         self.feature_weights = None  # Will be set externally if needed
@@ -224,6 +227,7 @@ class VQVAETrainer:
             "informativeness": 0.0,
             "topographic": 0.0,
             "reference_regularization": 0.0,
+            "entropy": 0.0,
         }
 
         for batch in self.train_loader:
@@ -267,6 +271,7 @@ class VQVAETrainer:
                 reference_features=batch.get("reference_features").to(self.device) if batch.get("reference_features") is not None else None,
                 is_interpolated=batch.get("is_interpolated").to(self.device) if batch.get("is_interpolated") is not None else None,
                 feature_weights=self.feature_weights,
+                entropy_weight=self.entropy_weight,
             )
 
             loss = losses["total"]
@@ -348,6 +353,7 @@ class VQVAETrainer:
                     reference_features=batch.get("reference_features"),
                     is_interpolated=batch.get("is_interpolated"),
                     feature_weights=self.feature_weights,
+                    entropy_weight=self.entropy_weight,
                 )
 
                 loss = losses["total"]

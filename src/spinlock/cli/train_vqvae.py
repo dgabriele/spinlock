@@ -2081,6 +2081,9 @@ Output:
         ref_reg_enabled = ref_reg_config.get("enabled", False)
         ref_reg_weight = ref_reg_config.get("weight", 0.0) if ref_reg_enabled else 0.0
 
+        # Entropy regularization for uniform codebook usage
+        entropy_weight = config.get("entropy_weight", 0.0)
+
         trainer = VQVAETrainer(
             model=model,
             train_loader=train_loader,
@@ -2092,6 +2095,7 @@ Output:
             topo_weight=config.get("topo_weight", 0.02),
             topo_samples=config.get("topo_samples", 64),
             reference_reg_weight=ref_reg_weight,
+            entropy_weight=entropy_weight,
             early_stopping_patience=config.get("early_stopping_patience", 100),
             early_stopping_min_delta=config.get("early_stopping_min_delta", 0.01),
             dead_code_reset_interval=config.get("dead_code_reset_interval", 100),
