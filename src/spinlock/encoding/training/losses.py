@@ -98,8 +98,8 @@ def orthogonality_loss(model, max_samples: int = 64):
                 # Zero out the diagonal element
                 sim_chunk[local_idx, global_idx] = 0.0
 
-            # Accumulate squared off-diagonal similarities
-            ortho_sum += (sim_chunk**2).sum().item()
+            # Accumulate squared absolute similarities (penalize both positive and negative)
+            ortho_sum += torch.abs(sim_chunk).pow(2).sum().item()
             count += sim_chunk.numel() - (end_i - i)  # Total minus diagonal
 
             # Free memory
