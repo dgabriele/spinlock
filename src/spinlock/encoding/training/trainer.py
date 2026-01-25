@@ -613,10 +613,10 @@ class VQVAETrainer:
                 else:
                     msg += f", val_loss={last_val_loss:.6f} (cached)"
 
-                # Add utilization and quality to log
+                # Add utilization and reconstruction loss to log
                 util = metrics.get("utilization", 0.0)
-                quality = metrics.get("quality", 0.0)
-                msg += f", util={util:.1%}, quality={quality:.4f}"
+                recon_error = metrics.get("reconstruction_error", 0.0)
+                msg += f", util={util:.1%}, L_recon={recon_error:.6f}"
 
                 # Add topographic similarity metrics
                 topo_pre = metrics.get("topo_pre", 0.0)
