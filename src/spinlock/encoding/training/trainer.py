@@ -635,6 +635,17 @@ class VQVAETrainer:
 
                 logger.info(msg)
 
+                # Log detailed loss components (second line for readability)
+                components_msg = "  Loss components: "
+                components_msg += f"L_recon={loss_components.get('reconstruction', 0.0):.6f}, "
+                components_msg += f"L_vq={loss_components.get('vq', 0.0):.6f}, "
+                components_msg += f"L_ortho={loss_components.get('orthogonality', 0.0):.6f}, "
+                components_msg += f"L_info={loss_components.get('informativeness', 0.0):.6f}, "
+                components_msg += f"L_topo={loss_components.get('topographic', 0.0):.6f}"
+                if entropy_loss != 0.0:
+                    components_msg += f", L_entropy={entropy_loss:.6f}"
+                logger.info(components_msg)
+
                 # Add physics consistency metrics if available (separate line for readability)
                 # Only log if actually active (any value > 0)
                 physics_mse_all = metrics.get("physics_mse_all", 0.0)
