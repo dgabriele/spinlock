@@ -331,37 +331,39 @@ The term **categories** for the top-level groupings produced by orthogonality-we
 
 **Long-term vision:** These categories are seeds of an emergent "language of computation" that NOA may use for reasoning and discovery—the first step in turning continuous physics into symbolic thought.
 
-📖 **See also:** [docs/baselines/100k-full-features-vqvae.md](docs/baselines/100k-full-features-vqvae.md) for the full terminology discussion.
+📖 **See also:** [docs/baselines/50k-vqvae-baseline.md](docs/baselines/50k-vqvae-baseline.md) for the full terminology discussion and current production baseline.
 
-### Production Baseline: 100K Full Features
+### Production Baseline: 50K v3.1 with Per-Family Clustering
 
-Our production model achieves **98.4% quality** with **43.9% codebook utilization** on 100,000 operators:
+Our current baseline achieves **97.3% reconstruction quality** with **20.5% codebook utilization** on 50,000 CNO samples:
 
 | Metric | Value |
 |--------|-------|
-| Val Loss | **0.115** |
-| Reconstruction Quality | **0.984** (98.4%) |
-| Reconstruction Error | **0.016** |
-| Input Features | ~200 (after cleaning from 298 encoded) |
-| Categories Discovered | **10** (auto-discovered via clustering) |
-| Hierarchical Levels | 3 (coarse → medium → fine) |
-| Total Codebooks | 30 (10 categories × 3 levels) |
-| Codebook Utilization | **43.9%** |
-| Topographic Similarity | **0.997** (post-quantization) |
+| Val Loss | **0.049** |
+| Reconstruction Error | **0.027** (97.3% quality) |
+| Codebook Utilization | **20.5%** (98/477 codes) |
+| Topographic Similarity (Post) | **1.000** (perfect) |
+| Topographic Similarity (Pre) | **0.986** (excellent) |
+| Input Features | 142 (14 initial + 128 temporal v3.1) |
+| Categories Discovered | **8** (per-family clustering) |
+| Hierarchical Levels | 2 (initial) or 3 (temporal) per category |
+| Total Tokens/Sample | **22** (4 initial + 18 temporal) |
+| Combinatorial Capacity | **~2.2 billion** distinct sequences |
 
 **Key design choices:**
-- **Adaptive compression ratios**: Per-category ratios computed from feature characteristics (variance, dimensionality, information, correlation)
-- **Hybrid INITIAL encoder** with end-to-end CNN training (14D manual + 28D learned)
-- **Pure clustering** for category discovery with orphan reassignment (100% feature assignment)
-- **Higher commitment cost** (0.35) for improved codebook utilization
-- **Correlation > variance**: Clustering prioritizes correlation patterns over variance scale
+- **Per-family clustering**: Initial and temporal features clustered independently to discover semantic subcategories within each family (2 initial + 6 temporal categories)
+- **Enhanced v3.1 temporal features**: Spectral analysis, local dynamics, wavelet transforms (128D)
+- **Adaptive compression ratios**: Auto-determined per category using balanced strategy
+- **Entropy regularization**: Encourages uniform codebook usage (reformulated as positive loss: log(K) - entropy)
+- **Low commitment cost** (0.05): Allows encoder exploration of full codebook
+- **High dropout** (0.3): Robustness and forces backup code usage
 
 ### Visualization Dashboards
 
 ```bash
 # Generate all three dashboards
 poetry run spinlock visualize-vqvae \
-    --checkpoint checkpoints/production/100k_with_initial/ \
+    --checkpoint checkpoints/vqvae/50k_baseline/ \
     --output visualizations/ \
     --type all
 ```
@@ -372,7 +374,7 @@ poetry run spinlock visualize-vqvae \
 | **Topological** | t-SNE codebook embeddings, inter-codebook similarity |
 | **Semantic** | Feature→category mapping, category sizes, correlation |
 
-📖 **Detailed documentation:** [docs/baselines/100k-full-features-vqvae.md](docs/baselines/100k-full-features-vqvae.md)
+📖 **Detailed documentation:** [docs/baselines/50k-vqvae-baseline.md](docs/baselines/50k-vqvae-baseline.md)
 
 ---
 
@@ -492,8 +494,9 @@ For detailed installation instructions, platform-specific guides, and troublesho
 - [**Feature Families**](docs/features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL feature definitions and extraction
 - [**HDF5 Layout**](docs/features/hdf5-layout.md) - Dataset schema reference for VQ-VAE pipeline
 - [**Baselines**](docs/baselines/README.md) - Production datasets and VQ-VAE tokenizers
+  - [50K VQ-VAE Baseline](docs/baselines/50k-vqvae-baseline.md) - **CURRENT:** Per-family clustering tokenizer (val_loss: 0.049, L_recon: 0.027, utilization: 20.5%, topo: 1.000)
   - [100K Dataset](docs/baselines/100k-full-features-dataset.md) - 100K operators with INITIAL+SUMMARY+TEMPORAL+ARCHITECTURE features
-  - [100K VQ-VAE](docs/baselines/100k-full-features-vqvae.md) - Tokenizer (val_loss: 0.172, quality: 0.95, utilization: 67%)
+  - [100K VQ-VAE](docs/baselines/100k-full-features-vqvae.md) - Prior baseline tokenizer (val_loss: 0.172, quality: 0.95, utilization: 67%)
 - [**Getting Started**](docs/getting-started.md) - Tutorials and end-to-end examples
 - [**Installation**](docs/installation.md) - Platform-specific installation guides
 
