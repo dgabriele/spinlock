@@ -1,0 +1,85 @@
+# Baseline MNO Training on 50K v3.1 CNO Dataset (10K samples)
+#
+# Based on proven 10K v3 architecture:
+# - base_channels: 40 (227M params)
+# - FiLM conditioning for parameter modulation
+# - MSE-LED loss (trajectory + initial condition)
+# - BPTT with 32-step windows for memory efficiency
+#
+# Training on 10K samples for baseline MNO → VQ-VAE pipeline.
+
+model:
+  spatial_dim: 64
+  in_channels: 1
+  out_channels: 1
+  base_channels: 40              # 227M parameters
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  param_conditioning: true
+  param_dim: 14
+  param_embed_dim: 128
+  token_conditioning: false
+
+  conditioning_mode: "film"
+
+  film:
+    enabled: true
+    embed_dim: 128
+    hidden_dim: 256
+    init_gamma: 1.0
+    init_beta: 0.0
+    post_norm: true
+
+    modulate_encoder: true
+    modulate_decoder: true
+    encoder_levels: null
+    decoder_levels: null
+
+    modulate_afno_post: false
+    afno_blocks: null
+
+training:
+  n_samples: 10240               # 2^10 × 10 samples (clean batch division)
+  sampling_strategy: "sequential"
+  batch_size: 2
+  gradient_accumulation_steps: 4  # Effective batch size: 8
+  epochs: 5                       # 5 epochs for baseline evaluation
+  learning_rate: 1.0e-4
+  warmup_steps: 1280              # 1 epoch warmup (10240 / 8 effective batch)
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  timesteps: 256
+  bptt_window: 32                 # Memory-efficient backprop through time
+
+  use_torch_compile: false        # Disabled: BPTT + small batch size + FiLM don't benefit
+  replayer_cache_size: 16         # Cache CNO operators (conservative for memory)
+
+  early_stopping_patience: 10
+
+loss:
+  mode: "mse_led"
+  lambda_traj: 1.0
+  lambda_ic: 0.3
+
+data:
+  dataset_path: "datasets/cno_50k_v3_1.h5"
+  config: "configs/experiments/cno_50k_v3_1.yaml"
+  val_split: 0.1
+  num_workers: 8
+
+checkpointing:
+  save_dir: "checkpoints/noa/10k_baseline"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42
+
+# Expected performance:
+# - 227M parameters (proven architecture)
+# - ~1152 batches/epoch (9216 train samples / 8 effective batch)
+# - Effective batch size: 8 (2×4 gradient accumulation)
+# - LR: 1e-4 (scaled from 5e-5 for larger batch)
+# - Target: L_traj < 1.0 (RMSE < field variation)
