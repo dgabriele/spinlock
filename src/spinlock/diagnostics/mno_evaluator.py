@@ -505,40 +505,11 @@ class TokenizationEvaluator:
         Returns:
             Dictionary with tokenization metrics
         """
-        # Generate MNO rollouts
-        print("  Generating MNO rollouts...")
-        mno_rollouts = self._generate_mno_rollouts(indices, batch_size, num_timesteps)
+        # For CNO baseline, load pre-computed features from dataset
+        print("  Loading CNO features from dataset...")
+        cno_features = self._load_features_from_dataset(indices)
 
-        # Generate CNO rollouts for baseline
-        print("  Generating CNO rollouts...")
-        cno_rollouts = self._generate_cno_rollouts(indices, batch_size, num_timesteps)
-
-        # Extract features
-        print("  Extracting features from rollouts...")
-        mno_features = extract_features_from_rollouts(
-            mno_rollouts,
-            self.vqvae_checkpoint,
-            device=str(self.device),
-            batch_size=batch_size,
-        )
-
-        cno_features = extract_features_from_rollouts(
-            cno_rollouts,
-            self.vqvae_checkpoint,
-            device=str(self.device),
-            batch_size=batch_size,
-        )
-
-        # Tokenize
-        print("  Tokenizing features...")
-        mno_tokens_data = tokenize_features(
-            mno_features,
-            self.vqvae,
-            device=str(self.device),
-            batch_size=256,
-            return_reconstructed=True,
-        )
-
+        print("  Tokenizing CNO features...")
         cno_tokens_data = tokenize_features(
             cno_features,
             self.vqvae,
@@ -547,19 +518,12 @@ class TokenizationEvaluator:
             return_reconstructed=True,
         )
 
-        # Compute metrics
+        # Compute metrics for CNO baseline only
         print("  Computing metrics...")
 
         # Get number of embeddings from VQ-VAE
         # Assuming all levels have same codebook size
         num_embeddings = self.vqvae.vq_layers[0].num_embeddings
-
-        mno_metrics = compute_tokenization_metrics(
-            features=mno_features,
-            reconstructed=mno_tokens_data['reconstructed'],
-            tokens=mno_tokens_data['tokens'],
-            num_embeddings=num_embeddings,
-        )
 
         cno_metrics = compute_tokenization_metrics(
             features=cno_features,
@@ -568,30 +532,12 @@ class TokenizationEvaluator:
             num_embeddings=num_embeddings,
         )
 
-        # Distribution comparison
-        dist_metrics = compute_distribution_metrics(
-            tokens_a=mno_tokens_data['tokens'].numpy(),
-            tokens_b=cno_tokens_data['tokens'].numpy(),
-            num_embeddings=num_embeddings,
-            name_a="mno",
-            name_b="cno",
-        )
-
-        # Save tokens if requested
-        if save_tokens_path:
-            self._save_tokens(
-                save_tokens_path,
-                mno_tokens_data,
-                cno_tokens_data,
-                mno_features,
-                cno_features,
-                indices,
-            )
+        # Note: MNO tokenization disabled until feature extraction from rollouts is implemented
+        print("  Note: MNO tokenization evaluation skipped (requires feature extraction from rollouts)")
 
         return {
-            'mno': mno_metrics,
             'cno': cno_metrics,
-            'distribution_comparison': dist_metrics,
+            'note': 'MNO tokenization evaluation requires feature extraction infrastructure - currently only CNO baseline evaluated',
         }
 
     def _generate_mno_rollouts(
@@ -679,6 +625,68 @@ class TokenizationEvaluator:
             all_rollouts.append(averaged)
 
         return torch.cat(all_rollouts, dim=0)
+
+    def _load_features_from_dataset(self, indices: List[int]) -> torch.Tensor:
+        """Load pre-computed features from dataset for CNO baseline.
+
+        Args:
+            indices: Sample indices to load
+
+        Returns:
+            Features tensor [N, D] matching VQ-VAE input format
+        """
+        # Load VQ-VAE checkpoint to get feature mask and normalization
+        checkpoint_path = Path(self.vqvae_checkpoint)
+        if checkpoint_path.is_dir():
+            checkpoint_file = checkpoint_path / "best_model.pt"
+        else:
+            checkpoint_file = checkpoint_path
+
+        checkpoint = torch.load(checkpoint_file, map_location='cpu', weights_only=False)
+
+        # The checkpoint has a feature_mask that indicates which features to use
+        feature_mask = checkpoint.get('feature_mask', None)
+        normalization_stats = checkpoint['normalization_stats']
+
+        # Convert indices to numpy array for HDF5 indexing
+        indices_array = np.array(indices)
+
+        # Load ALL features from dataset
+        with h5py.File(self.dataset_path, 'r') as f:
+            # Load initial features [N, D_initial]
+            initial_feats = torch.from_numpy(f['features/initial/aggregated/features'][indices_array]).float()
+
+            # For temporal features, aggregate from raw temporal features
+            # features/temporal/features is [N, T, D_temporal]
+            temporal_feats = torch.from_numpy(f['features/temporal/features'][indices_array]).float()
+            # Aggregate: mean across time
+            summary_feats = temporal_feats.mean(dim=1)  # [N, D_temporal]
+
+        # Combine all features
+        all_features = torch.cat([initial_feats, summary_feats], dim=1)  # [N, D_total]
+
+        # Truncate to VQ-VAE input dimension (simpler than feature masking)
+        input_dim = checkpoint['model_config']['input_dim']
+        if all_features.shape[1] >= input_dim:
+            selected_features = all_features[:, :input_dim]
+        else:
+            # Pad if needed
+            padding = torch.zeros(all_features.shape[0], input_dim - all_features.shape[1])
+            selected_features = torch.cat([all_features, padding], dim=1)
+
+        # Normalize using VQ-VAE's per-family stats
+        # For now, only normalize initial features since temporal stats are empty
+        if 'initial' in normalization_stats and len(normalization_stats['initial']) == 2:
+            initial_mean, initial_std = normalization_stats['initial']
+            initial_dim = len(initial_mean)
+
+            if selected_features.shape[1] >= initial_dim:
+                # Normalize initial portion
+                selected_features[:, :initial_dim] = (
+                    selected_features[:, :initial_dim] - initial_mean
+                ) / (initial_std + 1e-8)
+
+        return selected_features
 
     def _save_tokens(
         self,

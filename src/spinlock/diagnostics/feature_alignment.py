@@ -27,8 +27,8 @@ def extract_features_from_rollouts(
 ) -> torch.Tensor:
     """Extract features from rollouts matching VQ-VAE training format.
 
-    This function uses the AlignedFeatureExtractor to ensure that features
-    are extracted and normalized identically to VQ-VAE training.
+    For the 50K baseline VQ-VAE which uses initial + temporal features,
+    this function extracts spatial statistics and temporal dynamics features.
 
     Args:
         rollouts: Rollouts tensor [N, T+1, C, H, W]
@@ -40,27 +40,66 @@ def extract_features_from_rollouts(
         features: Extracted and normalized features [N, D]
                  where D matches VQ-VAE input dimension
     """
-    # Load feature extractor from VQ-VAE checkpoint
-    extractor = AlignedFeatureExtractor.from_checkpoint(
-        checkpoint_path=str(vqvae_checkpoint_path),
-        device=device,
-    )
-    extractor.eval()
+    from spinlock.features.extractors.initial import extract_all_initial_features
+    from spinlock.features.extractors.temporal import extract_all_temporal_features
+
+    # Load VQ-VAE checkpoint to get feature names and normalization
+    checkpoint_path = Path(vqvae_checkpoint_path)
+    if checkpoint_path.is_dir():
+        checkpoint_file = checkpoint_path / "best_model.pt"
+    else:
+        checkpoint_file = checkpoint_path
+
+    checkpoint = torch.load(checkpoint_file, map_location='cpu', weights_only=False)
+    feature_names = checkpoint['feature_names']
+    normalization_stats = checkpoint['normalization_stats']
 
     N = rollouts.shape[0]
     feature_list = []
 
-    # Process in batches to manage memory
+    # Process in batches
     with torch.no_grad():
         for batch_start in range(0, N, batch_size):
             batch_end = min(batch_start + batch_size, N)
-            batch_rollouts = rollouts[batch_start:batch_end].to(device)
+            batch_rollouts = rollouts[batch_start:batch_end]  # [B, T+1, C, H, W]
 
-            # Extract features
-            # extractor expects [B, T, C, H, W] and returns [B, D]
-            features, _ = extractor(batch_rollouts)
+            batch_features = []
 
-            feature_list.append(features.cpu())
+            for i in range(batch_rollouts.shape[0]):
+                rollout = batch_rollouts[i]  # [T+1, C, H, W]
+
+                # Extract initial features (from IC at t=0)
+                ic = rollout[0].cpu().numpy()  # [C, H, W]
+                initial_feats = extract_all_initial_features(ic)
+
+                # Extract temporal features (from full rollout)
+                rollout_np = rollout.cpu().numpy()  # [T+1, C, H, W]
+                temporal_feats = extract_all_temporal_features(rollout_np)
+
+                # Combine features in the order they appear in feature_names
+                all_feats = {**initial_feats, **temporal_feats}
+
+                # Select only the features used by VQ-VAE
+                selected_feats = []
+                for name in feature_names:
+                    if name in all_feats:
+                        selected_feats.append(all_feats[name])
+                    else:
+                        # Feature not found, use 0.0
+                        print(f"Warning: Feature {name} not found, using 0.0")
+                        selected_feats.append(0.0)
+
+                batch_features.append(selected_feats)
+
+            # Stack batch features
+            batch_tensor = torch.tensor(batch_features, dtype=torch.float32)
+
+            # Normalize using VQ-VAE's stats
+            mean = torch.tensor(normalization_stats['mean'], dtype=torch.float32)
+            std = torch.tensor(normalization_stats['std'], dtype=torch.float32)
+            batch_tensor = (batch_tensor - mean) / (std + 1e-8)
+
+            feature_list.append(batch_tensor)
 
     # Concatenate all batches
     all_features = torch.cat(feature_list, dim=0)

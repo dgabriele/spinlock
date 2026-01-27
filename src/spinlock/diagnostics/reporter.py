@@ -106,14 +106,14 @@ class DiagnosticReporter:
 
     def generate_tokenization_csv(
         self,
-        mno_metrics: Dict[str, Any],
+        mno_metrics: Optional[Dict[str, Any]],
         cno_metrics: Dict[str, Any],
         split_name: str = "default",
     ) -> Path:
         """Generate CSV file with tokenization metrics.
 
         Args:
-            mno_metrics: MNO tokenization metrics
+            mno_metrics: MNO tokenization metrics (optional, can be None)
             cno_metrics: CNO tokenization metrics
             split_name: Name of the split
 
@@ -129,15 +129,16 @@ class DiagnosticReporter:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
 
-            # MNO row
-            writer.writerow({
-                'split': split_name,
-                'source': 'mno',
-                'reconstruction_mse': mno_metrics.get('reconstruction_mse', 0.0),
-                'perplexity': mno_metrics.get('perplexity', 0.0),
-                'token_entropy': mno_metrics.get('token_entropy', 0.0),
-                'unique_tokens': mno_metrics.get('unique_tokens', 0),
-            })
+            # MNO row (if available)
+            if mno_metrics is not None:
+                writer.writerow({
+                    'split': split_name,
+                    'source': 'mno',
+                    'reconstruction_mse': mno_metrics.get('reconstruction_mse', 0.0),
+                    'perplexity': mno_metrics.get('perplexity', 0.0),
+                    'token_entropy': mno_metrics.get('token_entropy', 0.0),
+                    'unique_tokens': mno_metrics.get('unique_tokens', 0),
+                })
 
             # CNO row
             writer.writerow({

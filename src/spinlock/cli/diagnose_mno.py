@@ -350,21 +350,28 @@ to detect overfitting and assess generalization.
 
             # Generate CSV
             reporter.generate_tokenization_csv(
-                split_results['mno'],
+                split_results.get('mno'),
                 split_results['cno'],
                 split_name,
             )
 
             # Print summary
             print(f"\nSummary for {split_name}:")
-            print(f"  MNO reconstruction MSE: {split_results['mno']['reconstruction_mse']:.6f}")
+            if 'mno' in split_results:
+                print(f"  MNO reconstruction MSE: {split_results['mno']['reconstruction_mse']:.6f}")
+                print(f"  MNO perplexity: {split_results['mno']['perplexity']:.2f}")
             print(f"  CNO reconstruction MSE: {split_results['cno']['reconstruction_mse']:.6f}")
-            print(f"  MNO perplexity: {split_results['mno']['perplexity']:.2f}")
-            print(f"  KL divergence (MNO→CNO): "
-                  f"{split_results['distribution_comparison'].get('kl_mno_to_cno', 0.0):.6f}")
+            print(f"  CNO perplexity: {split_results['cno']['perplexity']:.2f}")
 
-            # Generate visualization if requested
-            if args.visualize:
+            if 'distribution_comparison' in split_results:
+                print(f"  KL divergence (MNO→CNO): "
+                      f"{split_results['distribution_comparison'].get('kl_mno_to_cno', 0.0):.6f}")
+
+            if 'note' in split_results:
+                print(f"  Note: {split_results['note']}")
+
+            # Generate visualization if requested (only if we have MNO results)
+            if args.visualize and 'mno' in split_results and 'distribution_comparison' in split_results:
                 viz_path = output_dir / f"tokenization_quality_{split_name}.png"
                 plot_tokenization_quality(
                     split_results['mno'],
