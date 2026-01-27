@@ -1,0 +1,222 @@
+version: "1.0"
+
+metadata:
+  name: "cno_50k_v3_1"
+  description: |
+    50K CNO dataset with v3.1 enhanced temporal features.
+    Exact duplicate of local_100k_optimized config but with 50K samples.
+    64×64 grid optimal for VQ-VAE compression + NOA training.
+    T=256 captures transient dynamics, M=3 for statistics.
+  author: "Spinlock Team"
+  created: "2026-01-20"
+  purpose: |
+    50,000 operators × 3 realizations = 150,000 total samples
+    Expected time: ~3-4s/operator = 1.7-2.3 days
+    Grid: 64×64 (4× faster than 128×128, better VQ-VAE compression)
+    Memory: M=3 fits in 8GB GPU with desktop running (~4GB free)
+
+    Features: Fast v1.0 + v2.0 + Multiscale (v2.1) + v3.1 enhancements
+    v3.1 adds: Skewness/kurtosis, multi-lag autocorr, sample entropy, enstrophy, divergence, spectral entropy
+
+# 14-dimensional parameter space (architecture: 5, stochastic: 4, operator: 2, evolution: 3)
+parameter_space:
+  architecture:
+    num_layers:
+      type: integer
+      bounds: [2, 5]
+      description: "Number of convolutional layers"
+
+    base_channels:
+      type: integer
+      bounds: [16, 64]
+      description: "Base number of channels"
+
+    kernel_size:
+      type: choice
+      choices: [3, 5, 7]
+      description: "Kernel size for convolutions"
+
+    activation:
+      type: choice
+      choices: ["gelu"]
+      description: "Activation function"
+
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Dropout probability"
+
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian"]
+      description: "Stochastic noise distribution"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.00001, 1.0]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+    noise_schedule:
+      type: choice
+      choices: ["constant"]
+      description: "Temporal noise schedule"
+
+    spatial_correlation:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Spatial correlation length for noise"
+
+  operator:
+    normalization:
+      type: choice
+      choices: ["instance"]
+      description: "Feature normalization"
+
+    grid_size:
+      type: choice
+      choices: [64]
+      description: "Spatial grid resolution (64×64 optimal for VQ-VAE compression)"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["residual", "convex"]
+      weights: [0.75, 0.25]
+      description: "Temporal update policy"
+
+    dt:
+      type: choice
+      choices: [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05]
+      description: "Integration step size for residual policy"
+
+    alpha:
+      type: choice
+      choices: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+      description: "Mixing parameter for convex policy (persistence of previous state)"
+
+# Sampling configuration for 50K samples
+sampling:
+  strategy: "sobol_stratified"
+
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 5
+    min_samples_per_stratum: 10
+
+  validation:
+    check_discrepancy: true
+    check_correlation: true
+
+  total_samples: 50000  # 50K operators
+  batch_size: 8  # Increased for better GPU utilization (50000 / 8 = 6250 batches)
+
+# Simulation configuration
+simulation:
+  device: "cuda"
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
+
+  input_generation:
+    method: "sampled"
+
+    # Equal weighting: 25% per IC family
+    ic_type_weights:
+      # Gaussian noise family (25% total, 5 variance levels)
+      gaussian_random_field_v0: 0.05   # variance=0.25
+      gaussian_random_field_v1: 0.05   # variance=0.5
+      gaussian_random_field_v2: 0.05   # variance=1.0
+      gaussian_random_field_v3: 0.05   # variance=2.0
+      gaussian_random_field_v4: 0.05   # variance=4.0
+
+      # Band-limited noise family (25% total, 3 bands)
+      multiscale_grf_low: 0.0833
+      multiscale_grf_mid: 0.0833
+      multiscale_grf_high: 0.0834
+
+      # Sinusoid family (25%)
+      structured: 0.25
+
+      # Localized blob family (25%)
+      localized: 0.25
+
+    # Gaussian noise configurations
+    gaussian_random_field_v0:
+      length_scale: 0.05
+      variance: 0.25
+
+    gaussian_random_field_v1:
+      length_scale: 0.05
+      variance: 0.5
+
+    gaussian_random_field_v2:
+      length_scale: 0.05
+      variance: 1.0
+
+    gaussian_random_field_v3:
+      length_scale: 0.05
+      variance: 2.0
+
+    gaussian_random_field_v4:
+      length_scale: 0.05
+      variance: 4.0
+
+    # Band-limited noise configurations
+    multiscale_grf_low:
+      scales: [0.30, 0.35, 0.40]
+      variance: 1.0
+
+    multiscale_grf_mid:
+      scales: [0.08, 0.10, 0.12]
+      variance: 1.0
+
+    multiscale_grf_high:
+      scales: [0.02, 0.025, 0.03]
+      variance: 1.0
+
+    # Sinusoid configurations
+    structured:
+      num_modes: 1
+      wavelength_range: [8.0, 64.0]
+      amplitude_range: [0.5, 2.0]
+
+    # Localized blob configurations
+    localized:
+      num_blobs: 5
+      min_width: 5.0
+      max_width: 15.0
+
+  num_realizations: 3  # 3 realizations for statistics (reduced for speed)
+  num_timesteps: 256  # Power of 2 for GPU efficiency, captures transient dynamics
+
+# Dataset output configuration
+dataset:
+  output_path: "datasets/cno_50k_v3_1.h5"
+
+  storage:
+    compression: "lzf"  # Much faster than gzip (12x), minimal size increase
+    compression_level: 4  # Not used by lzf, but kept for compatibility
+    chunk_size: 8  # Match batch_size for optimal HDF5 performance
+    store_trajectories: false  # Feature-only mode (saves space)
+
+# Feature extraction configuration
+# Two distinct feature families (see docs/features/README.md):
+# - TEMPORAL: Per-timestep time series features [N, T, D] - preserves temporal resolution
+# - SUMMARY: Aggregated scalar features [N, D] - compressed behavioral descriptors
+features:
+  temporal:
+    enabled: true   # Enable TEMPORAL family (per-timestep time series with v3.1 enhancements)
+  summary:
+    enabled: true   # Enable SUMMARY family (aggregated scalars)
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "structured"

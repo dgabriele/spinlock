@@ -1,12 +1,12 @@
-# Baseline MNO Training on 50K v3.1 CNO Dataset (10K samples)
+# Baseline MNO Training on 50K v3.1 CNO Dataset (16K samples)
 #
-# Architecture:
+# Based on proven 10K v3 architecture:
 # - base_channels: 40 (227M params)
 # - FiLM conditioning for parameter modulation
 # - MSE-LED loss (trajectory + initial condition)
 # - BPTT with 32-step windows for memory efficiency
 #
-# Training on 10K samples for baseline MNO → VQ-VAE pipeline.
+# Training on 16K samples (2^14) to evaluate scaling from 10K.
 
 model:
   spatial_dim: 64
@@ -40,13 +40,13 @@ model:
     afno_blocks: null
 
 training:
-  n_samples: 10240               # 2^10 × 10 samples (clean batch division)
+  n_samples: 16384               # 2^14 samples
   sampling_strategy: "sequential"
   batch_size: 2
-  gradient_accumulation_steps: 4  # Effective batch size: 8
+  gradient_accumulation_steps: 2  # Effective batch size: 4
   epochs: 5                       # 5 epochs for baseline evaluation
-  learning_rate: 1.0e-4
-  warmup_steps: 1280              # 1 epoch warmup (10240 / 8 effective batch)
+  learning_rate: 5.0e-5
+  warmup_steps: 4096              # 1 epoch warmup (16384 / 4 effective batch)
   weight_decay: 1.0e-4
   clip_grad: 1.0
 
@@ -67,10 +67,10 @@ data:
   dataset_path: "datasets/cno_50k_v3_1.h5"
   config: "configs/experiments/cno_50k_v3_1.yaml"
   val_split: 0.1
-  num_workers: 8
+  num_workers: 8                  # Increased from 4 (conservative for memory)
 
 checkpointing:
-  save_dir: "checkpoints/noa/10k_baseline"
+  save_dir: "checkpoints/noa/16k_baseline"
   save_every: 5
   keep_best: true
 
@@ -78,8 +78,6 @@ device: "cuda"
 seed: 42
 
 # Expected performance:
-# - 227M parameters (58% larger than film_10k_v3's 144M)
-# - ~1152 batches/epoch (9216 train samples / 8 effective batch)
-# - Effective batch size: 8 (2×4 gradient accumulation)
-# - LR: 1e-4
-# - Target: L_traj < 1.0 (establishing baseline on new 50K v3.1 dataset)
+# - 227M parameters (same proven architecture as 10K)
+# - ~3686 batches/epoch (1.64× more than 10K)
+# - Target: improve upon 10K performance (val_loss=0.619 by epoch 3)
