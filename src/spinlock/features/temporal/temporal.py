@@ -171,7 +171,13 @@ class TemporalFeatureExtractor:
 
             # Mean and std across channels
             features.append(dt_norm.mean(dim=1, keepdim=True))
-            features.append(dt_norm.std(dim=1, keepdim=True))
+            # For C=1, std across channels is undefined (0 degrees of freedom)
+            # Use unbiased=False to avoid warning, or return zeros for C=1
+            if dt_norm.shape[1] > 1:
+                features.append(dt_norm.std(dim=1, keepdim=True))
+            else:
+                # Single channel: std is zero (no variation across channels)
+                features.append(torch.zeros(B, 1, device=u.device))
 
             # Store for second derivative
             self.derivative_buffer.append(dt_u.detach().cpu())
