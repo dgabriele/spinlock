@@ -22,6 +22,7 @@ from .train_vqvae import TrainVQVAECommand
 from .train_meta_operator import TrainMetaOperatorCommand
 from .compute_ground_truth_tokens import ComputeGroundTruthTokensCommand
 from .generate_noa_features import GenerateNOAFeaturesCommand
+from .diagnose_mno import DiagnoseMNOCommand
 
 __all__ = [
     "CLICommand",
@@ -39,6 +40,7 @@ __all__ = [
     "TrainMetaOperatorCommand",
     "ComputeGroundTruthTokensCommand",
     "GenerateNOAFeaturesCommand",
+    "DiagnoseMNOCommand",
     "main",
 ]
 
@@ -92,6 +94,7 @@ For more help on a specific command:
         TrainVQVAECommand(),
         TrainMetaOperatorCommand(),
         ComputeGroundTruthTokensCommand(),
+        DiagnoseMNOCommand(),
     ]
 
     for command in commands:

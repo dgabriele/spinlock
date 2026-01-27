@@ -40,7 +40,11 @@ def load_mno_checkpoint(checkpoint_path: str, device: str = "cuda") -> NOABackbo
     if "model_config" in checkpoint:
         config = checkpoint["model_config"]
     elif "config" in checkpoint:
-        config = checkpoint["config"]
+        # Handle nested config structure (config.model contains model params)
+        if isinstance(checkpoint["config"], dict) and "model" in checkpoint["config"]:
+            config = checkpoint["config"]["model"]
+        else:
+            config = checkpoint["config"]
     else:
         # Default config for reaction-diffusion
         print("Warning: No config found in checkpoint, using defaults")
@@ -53,6 +57,10 @@ def load_mno_checkpoint(checkpoint_path: str, device: str = "cuda") -> NOABackbo
             "afno_blocks": 4,
             "dropout": 0.1,
         }
+
+    # Rename 'film' to 'film_config' if present (NOABackbone expects 'film_config')
+    if "film" in config:
+        config["film_config"] = config.pop("film")
 
     # Create model
     mno = NOABackbone(**config)
