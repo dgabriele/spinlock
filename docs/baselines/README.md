@@ -1,8 +1,8 @@
 # Baselines
 
-Production datasets and VQ-VAE tokenizers for Neural Operator Agent research.
+Production datasets, VQ-VAE tokenizers, and MNO world models for Neural Operator Agent research.
 
-**Last Updated:** 2026-01-18 (v3.0)
+**Last Updated:** 2026-01-27 (v3.1)
 
 ## Available Baselines
 
@@ -11,31 +11,47 @@ Production datasets and VQ-VAE tokenizers for Neural Operator Agent research.
 | Dataset | Samples | Features | Size | Status |
 |---------|---------|----------|------|--------|
 | [**100K Full Features v3.0**](100k-full-features-dataset.md) | 100,000 | TEMPORAL (~328D) | ~12 GB | PRODUCTION |
+| **CNO 50K v3.1** | 50,000 | TEMPORAL (~328D) | ~6 GB | PRODUCTION |
 
-**v3.0 Changes:** SUMMARY features removed, TEMPORAL enhanced from 63D → ~328D per-timestep, parameter space 12D → 14D
+**v3.1 Changes:** Enhanced temporal features, 14D parameter space, Sobol sampling for prefix-optimality
 
 ### VQ-VAE Tokenizers
 
 | Tokenizer | Dataset | Val Loss | Quality | Utilization | Categories | Status |
 |-----------|---------|----------|---------|-------------|------------|--------|
 | [**100K Full Features**](100k-full-features-vqvae.md) | 100k_full_features.h5 | **0.169** | 0.957 | 71.7% | 14 | PRODUCTION |
+| [**50K CNO Baseline**](50k-vqvae-baseline.md) | cno_50k_v3_1.h5 | **0.067** | 0.985 | 20.5% | 8 | PRODUCTION |
 
-## Recommended Baseline
+### MNO World Models
 
-**100K Full Features** is the recommended baseline for:
-- NOA agent training (Phase 1+)
+| Model | Dataset | Samples | Val L_traj | Val Loss | Parameters | Status |
+|-------|---------|---------|------------|----------|------------|--------|
+| [**10K CNO Baseline**](10k-mno-baseline.md) | cno_50k_v3_1.h5 | 10,240 | **0.5343** | 0.641 | 227M | PRODUCTION |
+
+## Recommended Baselines
+
+### For NOA Integration (Phase 1)
+
+**CNO-Trained Components** (50K VQ-VAE + 10K MNO):
+- VQ-VAE: [50K CNO Baseline](50k-vqvae-baseline.md) (8 categories, 99.4% quality)
+- MNO: [10K CNO Baseline](10k-mno-baseline.md) (L_traj=0.53, 227M params)
+- **Status**: ✅ Both production ready, ready for NOA experimentation
+- **Use case**: Perturbation-driven exploration with symbolic reasoning
+
+### For Large-Scale Analysis
+
+**100K Full Features** for:
 - Behavioral token analysis
 - Transfer learning experiments
-- Production deployments
+- Cross-domain vocabulary alignment
 
 ### Quick Reference
 
-| Component | Path |
-|-----------|------|
-| Dataset | `datasets/100k_full_features.h5` |
-| Checkpoint | `checkpoints/production/100k_full_features/` |
-| Dataset Config | [100k-full-features-dataset.md](100k-full-features-dataset.md) |
-| VQ-VAE Config | [100k-full-features-vqvae.md](100k-full-features-vqvae.md) |
+| Component | Dataset | Checkpoint | Config |
+|-----------|---------|------------|--------|
+| **VQ-VAE (50K)** | `datasets/cno_50k_v3_1.h5` | `checkpoints/vqvae/50k_baseline/` | [50k-vqvae-baseline.md](50k-vqvae-baseline.md) |
+| **MNO (10K)** | `datasets/cno_50k_v3_1.h5` | `checkpoints/noa/10k_baseline/` | [10k-mno-baseline.md](10k-mno-baseline.md) |
+| **VQ-VAE (100K)** | `datasets/100k_full_features.h5` | `checkpoints/production/100k_full_features/` | [100k-full-features-vqvae.md](100k-full-features-vqvae.md) |
 
 ### Feature Summary (v3.0)
 

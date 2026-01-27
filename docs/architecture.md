@@ -137,8 +137,9 @@ flowchart TB
 - Train MNO on CNO ground truth trajectories (10K samples)
 - Loss: L_traj + L_ic (pure MSE, no VQ constraints)
 - Architecture: U-AFNO with FiLM conditioning (227M params)
-- Target: L_traj < 1.0 (RMSE < field variation)
+- **Achieved**: L_traj = 0.5343 (target <1.0 ✓), val_loss = 0.641 (epoch 2)
 - Output: High-fidelity physics simulator for NOA exploration
+- See: [10K MNO Baseline](baselines/10k-mno-baseline.md)
 
 **Integration: NOA Deployment**
 - MNO generates rollouts via perturbation-driven exploration
@@ -407,8 +408,9 @@ Training Loss: L = L_traj + L_ic (pure physics)
 - Single objective: minimize trajectory MSE vs CNO
 - No VQ-VAE involvement, no competing gradients
 - Truncated BPTT: 256-step rollouts, 32-step windows
-- Target: L_traj < 1.0 (RMSE < field variation)
-- Output: High-fidelity physics simulator
+- **Achieved**: L_traj = 0.5343 (target <1.0 ✓), val_loss = 0.641 (epoch 2)
+- Output: High-fidelity physics simulator (227M params)
+- See: [10K MNO Baseline](baselines/10k-mno-baseline.md)
 ```
 
 **Post-Training Validation**

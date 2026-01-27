@@ -57,7 +57,7 @@ The NOA architecture layers symbolic reasoning capabilities atop the MNO physics
 
 **Current implementation achieves this through CNO-trained components:**
 - **Component 1:** Train VQ-VAE on CNO ground truth (50K samples) → discrete behavioral tokens (8 categories, 99.4% quality)
-- **Component 2:** Train MNO on CNO ground truth (10K samples) → high-fidelity physics simulator (target: L_traj < 1.0)
+- **Component 2:** Train MNO on CNO ground truth (10K samples) → high-fidelity physics simulator (L_traj=0.53, target <1.0 ✓)
 - **Integration:** MNO serves as sparse world model for NOA perturbation-driven exploration, using CNO-trained VQ tokens for symbolic reasoning
 - **Result:** Independent CNO-trained components (VQ-VAE + MNO) compose for NOA cognitive capabilities
 
@@ -128,8 +128,8 @@ Why "meta"? It operates one level above individual operators, learning the relat
 
   | Component | Input | Objective | Output |
   |-----------|-------|-----------|--------|
-  | **VQ-VAE Tokenizer** | CNO ground truth (50K) | L_recon + L_commit | Discrete behavioral vocabulary (8 categories) |
-  | **MNO World Model** | CNO ground truth (10K) | L_traj only (pure MSE) | High-fidelity physics simulator (L_traj < 1.0) |
+  | **VQ-VAE Tokenizer** | CNO ground truth (50K) | L_recon + L_commit | Discrete behavioral vocabulary (8 categories, 99.4% quality) |
+  | **MNO World Model** | CNO ground truth (10K) | L_traj only (pure MSE) | High-fidelity physics simulator (227M params, L_traj=0.53) |
 
 - **Philosophy**: Train both components on ground truth CNO data independently, then compose for NOA.
 - **VQ-VAE**: Trained on CNO features → discrete symbolic representation (99.4% reconstruction quality)
@@ -251,8 +251,9 @@ flowchart TB
 - Train MNO on CNO ground truth trajectories (10K samples)
 - Loss: L_traj + L_ic (pure MSE, no VQ constraints)
 - Architecture: U-AFNO with FiLM conditioning (227M params)
-- Target: L_traj < 1.0 (RMSE < field variation)
+- **Achieved**: L_traj = 0.5343 (target <1.0 ✓), val_loss = 0.641 (epoch 2)
 - Output: High-fidelity physics simulator for NOA exploration
+- See: [10K MNO Baseline](docs/baselines/10k-mno-baseline.md)
 
 **Integration: NOA Deployment** (blue)
 - MNO generates rollouts via perturbation-driven exploration
@@ -265,7 +266,12 @@ flowchart TB
 2. **Modularity**: Each component validated independently on CNO
 3. **Efficiency**: No need to generate 100K+ MNO rollouts for VQ training
 4. **Parallelism**: VQ-VAE and MNO can be trained simultaneously
-5. **Validation**: If MNO achieves L_traj < 1.0, CNO-trained VQ should work on MNO outputs
+5. **Validation**: MNO achieved L_traj=0.53 < 1.0 ✓, CNO-trained VQ should work on MNO outputs
+
+**Current Status:**
+- ✅ VQ-VAE: Production ready ([50K baseline](docs/baselines/50k-vqvae-baseline.md), 99.4% quality, 8 categories)
+- ✅ MNO: Production ready ([10K baseline](docs/baselines/10k-mno-baseline.md), L_traj=0.53, 227M params)
+- 🔄 NOA Integration: Ready for experimentation
 
 See [CNO-Trained Architecture](docs/noa-architecture.md) for complete implementation details.
 
