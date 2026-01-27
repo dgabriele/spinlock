@@ -471,6 +471,11 @@ class TemporalFeaturesConfig(BaseModel):
         default=True,
         description="Extract per-timestep time series features. Disable for SUMMARY-only mode."
     )
+    channel_indices: Optional[list[int]] = Field(
+        default=None,
+        description="Select specific channels for feature extraction (e.g., [0] for density-only). "
+                    "Use this to ensure MNO/CNO compatibility by extracting from density channel only."
+    )
 
 
 class LearnedFeaturesConfig(BaseModel):
@@ -560,6 +565,11 @@ class SummaryFeaturesConfig(BaseModel):
     learned: LearnedFeaturesConfig = Field(
         default_factory=LearnedFeaturesConfig,
         description="Configuration for learned feature extraction from neural operator latents (U-AFNO or CNN)."
+    )
+    channel_indices: Optional[list[int]] = Field(
+        default=None,
+        description="Select specific channels for feature extraction (e.g., [0] for density-only). "
+                    "Use this to ensure MNO/CNO compatibility."
     )
 
 

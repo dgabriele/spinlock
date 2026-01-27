@@ -128,6 +128,7 @@ class TemporalFeatureConfig:
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
     per_channel: bool = True
     version: str = "3.1.0"
+    channel_indices: Optional[list] = None  # Select specific channels for feature extraction (e.g., [0] for density-only)
 
     # v2.x legacy stubs (removed features)
     structural: StructuralConfig = field(default_factory=StructuralConfig)
@@ -153,9 +154,11 @@ class TemporalFeatureConfig:
         Returns:
             TemporalFeatureConfig instance
         """
-        # For now, just use defaults
-        # Can be extended to map schema config fields if needed
-        return cls()
+        # Extract channel_indices if present
+        channel_indices = getattr(schema_config, 'channel_indices', None)
+
+        # For now, use defaults with optional channel_indices override
+        return cls(channel_indices=channel_indices)
 
     def get_total_dims(self) -> int:
         """Get total feature dimensions.

@@ -23,8 +23,6 @@ from spinlock.diagnostics.metrics import (
     compute_distribution_metrics,
 )
 from spinlock.diagnostics.feature_alignment import (
-    extract_features_from_rollouts,
-    load_vqvae_for_tokenization,
     tokenize_features,
     get_token_distribution,
 )
@@ -66,8 +64,6 @@ class MNODiagnosticEvaluator:
         # Models (loaded on demand)
         self.mno: Optional[NOABackbone] = None
         self.cno_replayer: Optional[CNOReplayer] = None
-        self.vqvae: Optional[nn.Module] = None
-        self.vqvae_metadata: Optional[Dict] = None
 
         # Dataset info
         self.dataset_size: Optional[int] = None
@@ -87,12 +83,8 @@ class MNODiagnosticEvaluator:
                 device=str(self.device),
             )
 
-        if self.vqvae is None:
-            print("Loading VQ-VAE...")
-            self.vqvae, self.vqvae_metadata = load_vqvae_for_tokenization(
-                self.vqvae_checkpoint,
-                device=str(self.device),
-            )
+        # VQ-VAE loading is now handled by VQVAEAlignmentLoss in tokenization
+        # No need to load it here anymore
 
     def _load_dataset_info(self):
         """Load dataset metadata."""
@@ -216,7 +208,6 @@ class MNODiagnosticEvaluator:
         evaluator = TokenizationEvaluator(
             mno=self.mno,
             cno_replayer=self.cno_replayer,
-            vqvae=self.vqvae,
             vqvae_checkpoint=self.vqvae_checkpoint,
             dataset_path=self.dataset_path,
             device=self.device,
@@ -438,6 +429,11 @@ class PhysicsFidelityEvaluator:
 
             # Average over realizations
             averaged = rollout.mean(dim=1)  # [1, T+1, C, H, W]
+
+            # Extract first channel only (MNO only predicts channel 0)
+            if averaged.shape[2] > 1:
+                averaged = averaged[:, :, :1]  # [1, T+1, 1, H, W]
+
             all_rollouts.append(averaged)
 
         return torch.cat(all_rollouts, dim=0)  # [B, T+1, C, H, W]
@@ -465,7 +461,6 @@ class TokenizationEvaluator:
         self,
         mno: NOABackbone,
         cno_replayer: CNOReplayer,
-        vqvae: nn.Module,
         vqvae_checkpoint: Path,
         dataset_path: Path,
         device: torch.device,
@@ -475,14 +470,12 @@ class TokenizationEvaluator:
         Args:
             mno: Loaded MNO model
             cno_replayer: CNO replayer
-            vqvae: Loaded VQ-VAE model
             vqvae_checkpoint: Path to VQ-VAE checkpoint
             dataset_path: Path to dataset
             device: Computation device
         """
         self.mno = mno
         self.cno_replayer = cno_replayer
-        self.vqvae = vqvae
         self.vqvae_checkpoint = vqvae_checkpoint
         self.dataset_path = dataset_path
         self.device = device
@@ -505,51 +498,88 @@ class TokenizationEvaluator:
         Returns:
             Dictionary with tokenization metrics
         """
-        # For CNO baseline, load pre-computed features from dataset
-        print("  Loading CNO features from dataset...")
-        cno_features = self._load_features_from_dataset(indices)
+        # Step 1: Generate MNO rollouts
+        print("  Generating MNO rollouts...")
+        mno_rollouts, mno_ics = self._generate_rollouts_with_ics(
+            indices, batch_size, num_timesteps, use_mno=True
+        )
 
-        print("  Tokenizing CNO features...")
-        cno_tokens_data = tokenize_features(
-            cno_features,
-            self.vqvae,
+        # Step 2: Generate CNO rollouts
+        print("  Generating CNO rollouts...")
+        cno_rollouts, cno_ics = self._generate_rollouts_with_ics(
+            indices, batch_size, num_timesteps, use_mno=False
+        )
+
+        # Step 3: Tokenize MNO rollouts
+        print("  Tokenizing MNO rollouts...")
+        mno_metrics = tokenize_features(
+            rollouts=mno_rollouts,
+            ics=mno_ics,
+            vqvae_checkpoint_path=self.vqvae_checkpoint,
             device=str(self.device),
-            batch_size=256,
-            return_reconstructed=True,
         )
 
-        # Compute metrics for CNO baseline only
-        print("  Computing metrics...")
-
-        # Get number of embeddings from VQ-VAE
-        # Assuming all levels have same codebook size
-        num_embeddings = self.vqvae.vq_layers[0].num_embeddings
-
-        cno_metrics = compute_tokenization_metrics(
-            features=cno_features,
-            reconstructed=cno_tokens_data['reconstructed'],
-            tokens=cno_tokens_data['tokens'],
-            num_embeddings=num_embeddings,
+        # Step 4: Tokenize CNO rollouts
+        print("  Tokenizing CNO rollouts...")
+        cno_metrics = tokenize_features(
+            rollouts=cno_rollouts,
+            ics=cno_ics,
+            vqvae_checkpoint_path=self.vqvae_checkpoint,
+            device=str(self.device),
         )
 
-        # Note: MNO tokenization disabled until feature extraction from rollouts is implemented
-        print("  Note: MNO tokenization evaluation skipped (requires feature extraction from rollouts)")
+        # Step 5: Compute distribution comparisons
+        print("  Computing distribution metrics...")
+        distribution_metrics = self._compute_distribution_comparisons(
+            mno_metrics['tokens'],
+            cno_metrics['tokens'],
+        )
+
+        # Save tokens if requested
+        if save_tokens_path:
+            self._save_tokens(
+                save_tokens_path,
+                mno_metrics,
+                cno_metrics,
+                indices,
+            )
 
         return {
-            'cno': cno_metrics,
-            'note': 'MNO tokenization evaluation requires feature extraction infrastructure - currently only CNO baseline evaluated',
+            'mno': {
+                'reconstruction_mse': mno_metrics['reconstruction_mse'],
+                'perplexity': mno_metrics.get('perplexity', 0.0),
+                'per_category_mse': mno_metrics.get('per_category_mse', {}),
+            },
+            'cno': {
+                'reconstruction_mse': cno_metrics['reconstruction_mse'],
+                'perplexity': cno_metrics.get('perplexity', 0.0),
+                'per_category_mse': cno_metrics.get('per_category_mse', {}),
+            },
+            'distribution_comparison': distribution_metrics,
         }
 
-    def _generate_mno_rollouts(
+    def _generate_rollouts_with_ics(
         self,
         indices: List[int],
         batch_size: int,
         num_timesteps: int,
-    ) -> torch.Tensor:
-        """Generate MNO rollouts for given indices."""
+        use_mno: bool,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Generate rollouts with initial conditions.
+
+        Args:
+            indices: Sample indices to evaluate
+            batch_size: Batch size
+            num_timesteps: Number of timesteps
+            use_mno: If True, use MNO; if False, use CNO
+
+        Returns:
+            Tuple of (rollouts [N, T+1, C, H, W], ics [N, C, H, W])
+        """
         num_samples = len(indices)
         num_batches = (num_samples + batch_size - 1) // batch_size
         all_rollouts = []
+        all_ics = []
 
         with torch.no_grad():
             for batch_idx in range(num_batches):
@@ -572,129 +602,101 @@ class TokenizationEvaluator:
                     else:
                         raise KeyError("Could not find parameters in dataset")
 
-                ics = ics.to(self.device)
-                params = params.to(self.device)
+                if use_mno:
+                    # Generate MNO rollout
+                    ics_dev = ics.to(self.device)
+                    params_dev = params.to(self.device)
 
-                # Use MNO's rollout method which handles param conditioning
-                rollout = self.mno.rollout(
-                    u0=ics,
-                    steps=num_timesteps,
-                    return_all_steps=True,
-                    params=params,
-                )  # [B, T+1, C, H, W]
+                    rollout = self.mno.rollout(
+                        u0=ics_dev,
+                        steps=num_timesteps,
+                        return_all_steps=True,
+                        params=params_dev,
+                    )  # [B, T+1, C, H, W]
 
-                all_rollouts.append(rollout.cpu())
+                    all_rollouts.append(rollout.cpu())
+                else:
+                    # Generate CNO rollouts (averaged over realizations)
+                    for i in range(len(batch_indices)):
+                        rollout = self.cno_replayer.rollout(
+                            params_vector=params[i].cpu().numpy(),
+                            ic=ics[i],
+                            timesteps=num_timesteps,
+                            num_realizations=3,
+                            return_all_steps=True,
+                        )  # [1, M, T+1, C, H, W]
 
-        return torch.cat(all_rollouts, dim=0)
+                        # Average over realizations
+                        averaged = rollout.mean(dim=1)  # [1, T+1, C, H, W]
 
-    def _generate_cno_rollouts(
+                        # Extract first channel only (MNO only predicts channel 0)
+                        if averaged.shape[2] > 1:
+                            averaged = averaged[:, :, :1]  # [1, T+1, 1, H, W]
+
+                        all_rollouts.append(averaged)
+
+                all_ics.append(ics)
+
+        rollouts = torch.cat(all_rollouts, dim=0)
+        ics = torch.cat(all_ics, dim=0)
+
+        return rollouts, ics
+
+    def _compute_distribution_comparisons(
         self,
-        indices: List[int],
-        batch_size: int,
-        num_timesteps: int,
-    ) -> torch.Tensor:
-        """Generate CNO rollouts for given indices."""
-        num_samples = len(indices)
-        all_rollouts = []
-
-        with h5py.File(self.dataset_path, 'r') as f:
-            ics = torch.from_numpy(f['inputs/fields'][indices]).float()
-            # Extract first channel only if multi-channel
-            if ics.shape[1] > 1:
-                ics = ics[:, :1]  # [N, 1, H, W]
-
-            # Try both parameter paths (different dataset versions)
-            if 'inputs/sobol_parameters' in f:
-                params = torch.from_numpy(f['inputs/sobol_parameters'][indices]).float()
-            elif 'parameters/params' in f:
-                params = torch.from_numpy(f['parameters/params'][indices]).float()
-            else:
-                raise KeyError("Could not find parameters in dataset")
-
-        for i in range(num_samples):
-            rollout = self.cno_replayer.rollout(
-                params_vector=params[i].cpu().numpy(),
-                ic=ics[i],
-                timesteps=num_timesteps,
-                num_realizations=3,
-                return_all_steps=True,
-            )  # [1, M, T+1, C, H, W]
-
-            # Average over realizations
-            averaged = rollout.mean(dim=1)  # [1, T+1, C, H, W]
-            all_rollouts.append(averaged)
-
-        return torch.cat(all_rollouts, dim=0)
-
-    def _load_features_from_dataset(self, indices: List[int]) -> torch.Tensor:
-        """Load pre-computed features from dataset for CNO baseline.
+        mno_tokens: torch.Tensor,
+        cno_tokens: torch.Tensor,
+    ) -> Dict[str, float]:
+        """Compute distribution comparison metrics between MNO and CNO tokens.
 
         Args:
-            indices: Sample indices to load
+            mno_tokens: MNO tokens [N, num_categories, num_levels]
+            cno_tokens: CNO tokens [N, num_categories, num_levels]
 
         Returns:
-            Features tensor [N, D] matching VQ-VAE input format
+            Dictionary with KL divergence and other distribution metrics
         """
-        # Load VQ-VAE checkpoint to get feature mask and normalization
-        checkpoint_path = Path(self.vqvae_checkpoint)
-        if checkpoint_path.is_dir():
-            checkpoint_file = checkpoint_path / "best_model.pt"
-        else:
-            checkpoint_file = checkpoint_path
+        from scipy.stats import entropy
 
-        checkpoint = torch.load(checkpoint_file, map_location='cpu', weights_only=False)
+        # Flatten tokens to compute overall distribution
+        mno_flat = mno_tokens.flatten().cpu().numpy()
+        cno_flat = cno_tokens.flatten().cpu().numpy()
 
-        # The checkpoint has a feature_mask that indicates which features to use
-        feature_mask = checkpoint.get('feature_mask', None)
-        normalization_stats = checkpoint['normalization_stats']
+        # Get unique tokens and compute histograms
+        all_tokens = np.concatenate([mno_flat, cno_flat])
+        num_embeddings = int(all_tokens.max()) + 1
 
-        # Convert indices to numpy array for HDF5 indexing
-        indices_array = np.array(indices)
+        mno_hist = np.bincount(mno_flat, minlength=num_embeddings).astype(float)
+        cno_hist = np.bincount(cno_flat, minlength=num_embeddings).astype(float)
 
-        # Load ALL features from dataset
-        with h5py.File(self.dataset_path, 'r') as f:
-            # Load initial features [N, D_initial]
-            initial_feats = torch.from_numpy(f['features/initial/aggregated/features'][indices_array]).float()
+        # Normalize to probability distributions
+        mno_dist = mno_hist / mno_hist.sum()
+        cno_dist = cno_hist / cno_hist.sum()
 
-            # For temporal features, aggregate from raw temporal features
-            # features/temporal/features is [N, T, D_temporal]
-            temporal_feats = torch.from_numpy(f['features/temporal/features'][indices_array]).float()
-            # Aggregate: mean across time
-            summary_feats = temporal_feats.mean(dim=1)  # [N, D_temporal]
+        # Add small epsilon to avoid log(0) and renormalize
+        eps = 1e-10
+        mno_dist = mno_dist + eps
+        cno_dist = cno_dist + eps
+        mno_dist = mno_dist / mno_dist.sum()
+        cno_dist = cno_dist / cno_dist.sum()
 
-        # Combine all features
-        all_features = torch.cat([initial_feats, summary_feats], dim=1)  # [N, D_total]
+        # Compute KL divergence (MNO || CNO)
+        kl_divergence = float(entropy(mno_dist, cno_dist))
 
-        # Truncate to VQ-VAE input dimension (simpler than feature masking)
-        input_dim = checkpoint['model_config']['input_dim']
-        if all_features.shape[1] >= input_dim:
-            selected_features = all_features[:, :input_dim]
-        else:
-            # Pad if needed
-            padding = torch.zeros(all_features.shape[0], input_dim - all_features.shape[1])
-            selected_features = torch.cat([all_features, padding], dim=1)
+        # Compute JS divergence (symmetric)
+        m_dist = 0.5 * (mno_dist + cno_dist)
+        js_divergence = 0.5 * entropy(mno_dist, m_dist) + 0.5 * entropy(cno_dist, m_dist)
 
-        # Normalize using VQ-VAE's per-family stats
-        # For now, only normalize initial features since temporal stats are empty
-        if 'initial' in normalization_stats and len(normalization_stats['initial']) == 2:
-            initial_mean, initial_std = normalization_stats['initial']
-            initial_dim = len(initial_mean)
-
-            if selected_features.shape[1] >= initial_dim:
-                # Normalize initial portion
-                selected_features[:, :initial_dim] = (
-                    selected_features[:, :initial_dim] - initial_mean
-                ) / (initial_std + 1e-8)
-
-        return selected_features
+        return {
+            'kl_divergence': kl_divergence,
+            'js_divergence': float(js_divergence),
+        }
 
     def _save_tokens(
         self,
         save_path: Path,
-        mno_tokens_data: Dict,
-        cno_tokens_data: Dict,
-        mno_features: torch.Tensor,
-        cno_features: torch.Tensor,
+        mno_metrics: Dict,
+        cno_metrics: Dict,
         indices: List[int],
     ):
         """Save tokens and features to HDF5 file."""
@@ -702,14 +704,12 @@ class TokenizationEvaluator:
 
         with h5py.File(save_path, 'w') as f:
             # MNO data
-            f.create_dataset('mno_tokens', data=mno_tokens_data['tokens'].numpy(), compression='gzip')
-            f.create_dataset('mno_features', data=mno_features.numpy(), compression='gzip')
-            f.create_dataset('mno_reconstructed', data=mno_tokens_data['reconstructed'].numpy(), compression='gzip')
+            f.create_dataset('mno_tokens', data=mno_metrics['tokens'].cpu().numpy(), compression='gzip')
+            f.create_dataset('mno_reconstructed', data=mno_metrics['reconstructed_features'].cpu().numpy(), compression='gzip')
 
             # CNO data
-            f.create_dataset('cno_tokens', data=cno_tokens_data['tokens'].numpy(), compression='gzip')
-            f.create_dataset('cno_features', data=cno_features.numpy(), compression='gzip')
-            f.create_dataset('cno_reconstructed', data=cno_tokens_data['reconstructed'].numpy(), compression='gzip')
+            f.create_dataset('cno_tokens', data=cno_metrics['tokens'].cpu().numpy(), compression='gzip')
+            f.create_dataset('cno_reconstructed', data=cno_metrics['reconstructed_features'].cpu().numpy(), compression='gzip')
 
             # Metadata
             f.create_dataset('sample_indices', data=np.array(indices))

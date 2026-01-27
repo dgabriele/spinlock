@@ -102,6 +102,12 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
         """
         N, M, T, C, H, W = trajectories.shape
 
+        # Apply channel selection if configured (e.g., density-only for MNO/CNO compatibility)
+        if self.config is not None and hasattr(self.config, 'channel_indices') and self.config.channel_indices is not None:
+            # Select only specified channels (e.g., [0] for density-only)
+            trajectories = trajectories[:, :, :, self.config.channel_indices, :, :]
+            C = len(self.config.channel_indices)
+
         # Average across realizations: [N, M, T, C, H, W] → [N, T, C, H, W]
         fields = trajectories.mean(dim=1)
 
@@ -148,7 +154,10 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
         if isinstance(cross_result, dict):
             cross_features = []
             for key in sorted(cross_result.keys()):
-                feat = cross_result[key]  # [N, T, C] or [N, T]
+                feat = cross_result[key]  # [N, T, C], [N, M, T], or [N, T]
+                # Handle [N, M, T] from cross-channel extractor (squeeze M if M=1)
+                if feat.dim() == 3 and feat.shape[1] == 1:
+                    feat = feat.squeeze(1)  # [N, 1, T] → [N, T]
                 if feat.dim() == 3:
                     cross_features.append(feat)
                 elif feat.dim() == 2:

@@ -1,0 +1,145 @@
+# VQ-VAE Configuration (20K CNO Density-Only Dataset)
+#
+# Training VQ-VAE on density-only features (C=1) for MNO/CNO compatibility.
+# Based on 50k_baseline.yaml but optimized for 20K samples.
+#
+# Key differences from baseline:
+# - Dataset: 20K density-only samples (131D features)
+# - Compatible with both MNO and CNO rollouts
+# - Smaller dataset allows for faster iteration
+#
+# Expected performance:
+# - Similar reconstruction quality to 50K baseline
+# - 131D input (vs 345D for full 3-channel)
+# - Compatible tokenization for MNO and CNO
+
+# Dataset
+dataset_path: "datasets/cno_20k_density_only.h5"
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 14
+      cnn_embedding_dim: 28
+      encode_manual: false
+      in_channels: 1
+
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      embedding_dim: 128
+      architecture: "resnet1d_3"
+
+# VQ-VAE Architecture - HIGH CAPACITY
+model:
+  group_embedding_dim: 512      # DOUBLED from 256
+  group_hidden_dim: 1024        # DOUBLED from 512
+
+  # Adaptive compression ratios
+  compression_ratios: "auto"
+  auto_compression_strategy: "balanced"
+
+  # Levels already define the architecture
+  levels: []
+
+  # VQ-VAE hyperparameters
+  uniform_codebook_init: true
+  commitment_cost: 0.05
+  use_ema: true
+  decay: 0.99
+  dropout: 0.3
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.12
+
+# Feature Cleaning
+feature_cleaning:
+  enabled: true
+  pre_categorization: false  # Clean per-category AFTER discovery
+  variance_threshold: 1e-10
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
+  outlier_method: "percentile"
+  percentile_range: [0.5, 99.5]
+
+# Training
+training:
+  batch_size: 512
+  learning_rate: 0.001
+  num_epochs: 700
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 100
+
+  # Category discovery (auto mode)
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+
+  # Category assignment configuration
+  category_assignment_config:
+    method: "clustering"
+    isolated_families: []
+    reassign_orphans: true
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+
+    # Per-family clustering - cluster each family independently
+    per_family_clustering: true
+    per_family_params:
+      initial:
+        min_clusters: 2
+        max_clusters: 5
+      temporal:
+        min_clusters: 2
+        max_clusters: 20
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.3
+  topo_samples: 1024
+  entropy_weight: 0.1
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/20k_density_only"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets - DISABLED
+  dead_code_reset_interval: 0
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Expected Benefits:
+# - Fair MNO vs CNO comparison (both use 131D density-only features)
+# - No cross-channel features → no NaN issues on single-channel data
+# - Compatible VQ-VAE for both MNO and CNO rollouts
+# - Enables valid tokenization quality diagnostics

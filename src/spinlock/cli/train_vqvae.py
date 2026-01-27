@@ -1605,6 +1605,16 @@ Output:
         else:
             features = all_features[0]
 
+        # Apply feature exclusion if specified
+        # This is useful for excluding features that are not computable on all data types
+        # (e.g., cross-channel features that require multiple channels)
+        exclude_features = config.get("exclude_features")
+        if exclude_features:
+            verbose = config.get("verbose", False)
+            features, all_feature_names = self._apply_feature_exclusion(
+                features, all_feature_names, exclude_features, verbose=verbose
+            )
+
         # Load reference features and interpolation mask for regularization (optional)
         reference_features = None
         is_interpolated = None
@@ -1650,6 +1660,73 @@ Output:
                     print(f"  Loaded raw SUMMARY features for reference regularization: {raw_summary.shape}")
 
         return features, all_feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated, raw_summary
+
+    def _apply_feature_exclusion(
+        self,
+        features: np.ndarray,
+        feature_names: List[str],
+        patterns: List[str],
+        verbose: bool = False,
+    ) -> tuple:
+        """
+        Exclude features matching the given patterns.
+
+        Supports wildcard patterns (e.g., "cross_channel_*") and exact matches.
+        This is useful for excluding features that are not computable on all data types
+        (e.g., cross-channel features that require C > 1).
+
+        Args:
+            features: Feature array [N, D]
+            feature_names: List of feature names
+            patterns: List of patterns to exclude (supports * wildcards)
+            verbose: Whether to print excluded feature names
+
+        Returns:
+            Tuple of (filtered_features, filtered_feature_names)
+        """
+        import re
+
+        original_dim = features.shape[1]
+        mask = np.ones(len(feature_names), dtype=bool)
+        excluded_names = []
+
+        for pattern in patterns:
+            if '*' in pattern:
+                # Wildcard matching: convert glob pattern to regex
+                # Escape special regex chars except *, then convert * to .*
+                regex_pattern = pattern.replace('*', '.*')
+                regex = re.compile(f'^{regex_pattern}$')
+
+                for i, name in enumerate(feature_names):
+                    if regex.match(name) and mask[i]:
+                        mask[i] = False
+                        excluded_names.append(name)
+            else:
+                # Exact matching
+                for i, name in enumerate(feature_names):
+                    if name == pattern and mask[i]:
+                        mask[i] = False
+                        excluded_names.append(name)
+
+        # Apply mask to features and names
+        filtered_features = features[:, mask]
+        filtered_names = [n for n, keep in zip(feature_names, mask) if keep]
+
+        # Report exclusions
+        if excluded_names:
+            print(f"\n{'='*70}")
+            print(f"FEATURE EXCLUSION")
+            print(f"{'='*70}")
+            print(f"Excluded {len(excluded_names)} features ({original_dim}D → {filtered_features.shape[1]}D)")
+            print(f"Exclusion patterns: {patterns}")
+
+            if verbose:
+                print(f"\nExcluded features:")
+                for name in sorted(excluded_names):
+                    print(f"  - {name}")
+            print(f"{'='*70}\n")
+
+        return filtered_features, filtered_names
 
     def _load_category_mapping(self, mapping_file: Path) -> Dict[str, list]:
         """Load category mapping from JSON file."""

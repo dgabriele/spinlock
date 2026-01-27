@@ -84,6 +84,11 @@ class FeatureExtractionConfig(BaseModel):
     device: Literal["cuda", "cpu"] = "cuda"
     overwrite: bool = False  # Whether to overwrite existing features
     max_samples: Optional[int] = Field(default=None, ge=1)  # Limit number of samples (None=all)
+    channel_indices: Optional[list[int]] = Field(
+        default=None,
+        description="Select specific channels to extract features from (None=all channels). "
+                    "Use [0] for density-only to ensure MNO/CNO compatibility."
+    )
 
     # Processing options
     num_workers: int = Field(default=4, ge=1)  # For parallel batch processing

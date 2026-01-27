@@ -99,6 +99,8 @@ class FeatureExtractor:
             print(f"Output dataset: {output_path}")
             print(f"Device:         {self.device}")
             print(f"Batch size:     {self.config.batch_size}")
+            if self.config.channel_indices is not None:
+                print(f"Channel filter: {self.config.channel_indices} (density-only mode)")
             print(f"TEMPORAL:       {'ENABLED' if self.temporal_enabled else 'DISABLED'}")
             print(f"SUMMARY:        ENABLED")
             print()
@@ -300,6 +302,13 @@ class FeatureExtractor:
                 pass
             else:
                 raise ValueError(f"Unexpected rollout shape: {rollouts.shape}")
+
+            # Apply channel selection if specified
+            # This allows extracting features from a subset of channels
+            # e.g., channel_indices=[0] for density-only (MNO/CNO compatibility)
+            if self.config.channel_indices is not None:
+                # Get channel dimension index (axis 3 in [B, M, T, C, H, W])
+                rollouts = rollouts[:, :, :, self.config.channel_indices, :, :]
 
         return rollouts
 

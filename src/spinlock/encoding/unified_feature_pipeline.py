@@ -94,6 +94,11 @@ class FamilyFeatureExtractor(nn.Module, ABC):
             return features
 
         mean, std = self.normalization_stats
+
+        # Handle empty normalization stats (skip normalization)
+        if mean.numel() == 0 or std.numel() == 0:
+            return features
+
         # Ensure stats are on same device as features
         mean = mean.to(features.device)
         std = std.to(features.device)
@@ -292,14 +297,14 @@ class UnifiedFeaturePipeline(nn.Module):
     def __init__(
         self,
         initial_extractor: InitialFeatureExtractor,
-        summary_extractor: SummaryFeatureExtractor,
+        summary_extractor: Optional[SummaryFeatureExtractor],
         temporal_extractor: TemporalFeatureExtractor,
     ):
         """Initialize unified feature pipeline.
 
         Args:
             initial_extractor: INITIAL family extractor
-            summary_extractor: SUMMARY family extractor
+            summary_extractor: SUMMARY family extractor (optional, can be None for 2-family checkpoints)
             temporal_extractor: TEMPORAL family extractor
         """
         super().__init__()
@@ -309,8 +314,11 @@ class UnifiedFeaturePipeline(nn.Module):
 
     @property
     def feature_dim(self) -> int:
-        """Total feature dimension: 14 + 128 + 128 = 270D."""
-        return 270
+        """Total feature dimension: 14 + 128 + 128 = 270D (3-family) or 14 + 128 = 142D (2-family)."""
+        if self.summary is not None:
+            return 270  # 3-family: initial + summary + temporal
+        else:
+            return 142  # 2-family: initial + temporal
 
     def forward(
         self,
@@ -326,30 +334,41 @@ class UnifiedFeaturePipeline(nn.Module):
             normalize: Whether to apply normalization
 
         Returns:
-            Features [B, 270D] = 14D + 128D + 128D
+            Features [B, 270D] = 14D + 128D + 128D (3-family)
+            OR [B, 142D] = 14D + 128D (2-family, no summary)
         """
         # Extract per-family raw features
         initial_raw = self.initial.extract_raw(trajectory, ic)      # [B, 14]
-        summary_raw = self.summary.extract_raw(trajectory, ic)      # [B, 360]
         temporal_raw = self.temporal.extract_raw(trajectory, ic)    # [B, T, 63]
 
         # Encode per-family (INITIAL has no encoder, returns identity)
         initial_encoded = self.initial.encode(initial_raw)          # [B, 14]
-        summary_encoded = self.summary.encode(summary_raw)          # [B, 128]
         temporal_encoded = self.temporal.encode(temporal_raw)       # [B, 128]
 
         # Normalize per-family (optional)
         if normalize:
             initial_norm = self.initial.normalize(initial_encoded)
-            summary_norm = self.summary.normalize(summary_encoded)
             temporal_norm = self.temporal.normalize(temporal_encoded)
         else:
             initial_norm = initial_encoded
-            summary_norm = summary_encoded
             temporal_norm = temporal_encoded
 
-        # Concatenate: [B, 14] + [B, 128] + [B, 128] = [B, 270]
-        features = torch.cat([initial_norm, summary_norm, temporal_norm], dim=1)
+        # Handle summary family (optional for 2-family checkpoints)
+        if self.summary is not None:
+            summary_raw = self.summary.extract_raw(trajectory, ic)      # [B, 360]
+            summary_encoded = self.summary.encode(summary_raw)          # [B, 128]
+
+            if normalize:
+                summary_norm = self.summary.normalize(summary_encoded)
+            else:
+                summary_norm = summary_encoded
+
+            # Concatenate: [B, 14] + [B, 128] + [B, 128] = [B, 270]
+            features = torch.cat([initial_norm, summary_norm, temporal_norm], dim=1)
+        else:
+            # 2-family: [B, 14] + [B, 128] = [B, 142]
+            features = torch.cat([initial_norm, temporal_norm], dim=1)
+
         return features
 
     def compute_normalization_stats(self, features_list: List[torch.Tensor]):
@@ -412,19 +431,25 @@ class UnifiedFeaturePipeline(nn.Module):
         """
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-        # Load encoders from checkpoint
-        summary_encoder = cls._load_encoder(checkpoint, 'summary', device)
+        # Load encoders from checkpoint (summary is optional for 2-family checkpoints)
+        families = checkpoint['config']['families']
+
+        summary_encoder = None
+        if 'summary' in families:
+            summary_encoder = cls._load_encoder(checkpoint, 'summary', device)
+
         temporal_encoder = cls._load_encoder(checkpoint, 'temporal', device)
 
         # Create extractors
         initial = InitialFeatureExtractor(device=device)
-        summary = SummaryFeatureExtractor(summary_encoder, device=device)
+        summary = SummaryFeatureExtractor(summary_encoder, device=device) if summary_encoder else None
         temporal = TemporalFeatureExtractor(temporal_encoder, device=device)
 
         # Load normalization stats
         norm_stats = checkpoint.get('normalization_stats', {})
         initial.normalization_stats = cls._load_family_stats(norm_stats, 'initial', device)
-        summary.normalization_stats = cls._load_family_stats(norm_stats, 'summary', device)
+        if summary:
+            summary.normalization_stats = cls._load_family_stats(norm_stats, 'summary', device)
         temporal.normalization_stats = cls._load_family_stats(norm_stats, 'temporal', device)
 
         pipeline = cls(initial, summary, temporal)

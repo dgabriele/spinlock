@@ -145,6 +145,15 @@ Examples:
         )
 
         exec_group.add_argument(
+            "--channel-indices",
+            type=int,
+            nargs='+',
+            metavar="IDX",
+            help="Extract features from specific channels only (e.g., --channel-indices 0 for density-only). "
+                 "Use this to ensure MNO/CNO compatibility by extracting from density channel only.",
+        )
+
+        exec_group.add_argument(
             "--device",
             type=str,
             default="cuda",
@@ -265,6 +274,10 @@ Examples:
         # Subsetting
         if args.max_samples:
             config.max_samples = args.max_samples
+
+        # Channel selection
+        if hasattr(args, 'channel_indices') and args.channel_indices:
+            config.channel_indices = args.channel_indices
 
         return config
 
