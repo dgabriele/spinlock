@@ -1,0 +1,163 @@
+# VQ-VAE Configuration (50K CNO Dataset - No Cross-Channel Features)
+#
+# Based on 50k_baseline.yaml, but excludes cross-channel features to enable
+# fair comparison between MNO (1-channel) and CNO (3-channel) rollouts.
+#
+# Cross-channel features (correlation eigenvalues, pairwise correlations,
+# cross-spectral coherence, mutual information, etc.) require C ≥ 2 and
+# return NaN for single-channel data. Excluding them ensures:
+#
+# 1. All features are computable on both MNO and CNO rollouts
+# 2. Fair tokenization quality comparison (no NaN features)
+# 3. Consistent feature dimensions across evaluations
+#
+# Architecture and hyperparameters match 50k_baseline.yaml for comparability.
+
+# Dataset
+dataset_path: "datasets/cno_50k_v3_1.h5"
+
+# Feature Exclusion - NEW
+# Exclude all cross-channel features that require C > 1
+exclude_features:
+  - "temporal::cross_channel_*"        # All cross-channel correlation features
+  - "temporal::cross_spectral_*"       # Cross-spectral coherence features
+  - "temporal::channel_correlation_*"  # Channel correlation trajectory
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 14
+      cnn_embedding_dim: 28
+      encode_manual: false
+      in_channels: 1
+
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      embedding_dim: 128
+      architecture: "resnet1d_3"
+
+# VQ-VAE Architecture - HIGH CAPACITY
+model:
+  group_embedding_dim: 512      # DOUBLED from 256
+  group_hidden_dim: 1024        # DOUBLED from 512
+
+  # Adaptive compression ratios
+  # Set to "auto" to compute ratios based on feature characteristics
+  # (variance, dimensionality, information content, correlation)
+  compression_ratios: "auto"
+  auto_compression_strategy: "balanced"  # Options: "variance", "dimensionality", "information", "balanced"
+
+  # Levels already define the architecture
+  levels: []
+
+  # VQ-VAE hyperparameters
+  uniform_codebook_init: true
+  commitment_cost: 0.05         # LOWERED from 0.25 to reduce encoder commitment to existing codes
+  use_ema: true
+  decay: 0.99
+  dropout: 0.3                  # INCREASED from 0.1 to force using backup codes
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.12
+
+# Feature Cleaning
+# CRITICAL: pre_categorization=false preserves semantic diversity for clustering
+# This allows auto-discovery to find 10-20 behavioral categories instead of just 2
+feature_cleaning:
+  enabled: true
+  pre_categorization: false  # Clean per-category AFTER discovery (default)
+  variance_threshold: 1e-10
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
+  outlier_method: "percentile"
+  percentile_range: [0.5, 99.5]
+
+# Training
+training:
+  batch_size: 512               # Reduced from 1024 for larger model
+  learning_rate: 0.001
+  num_epochs: 700
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 100
+
+  # Category discovery (auto mode)
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+
+  # Category assignment configuration
+  category_assignment_config:
+    method: "clustering"
+    isolated_families: []
+    reassign_orphans: true
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+
+    # Per-family clustering - cluster each family independently
+    per_family_clustering: true
+    per_family_params:
+      initial:
+        min_clusters: 2
+        max_clusters: 5
+        # num_clusters: 3  # Optional: explicit K instead of auto
+      temporal:
+        min_clusters: 2
+        max_clusters: 20
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.3
+  topo_samples: 1024
+  entropy_weight: 0.1  # Entropy regularization for uniform codebook usage
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/50k_no_cross_channel"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets - DISABLED
+  dead_code_reset_interval: 0
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Expected Changes from Baseline:
+# - Input dimension: ~370D → ~351D (excluding ~19 cross-channel features)
+# - Temporal features: 328D → ~309D raw features (still encoded to 128D)
+# - Reconstruction quality: Should be comparable or better (no NaN noise)
+# - Training time: Slightly faster (fewer input features)
+# - Model size: Unchanged (same encoding dimensions)
+#
+# Benefits:
+# - Fair MNO vs CNO comparison (both use same computable feature set)
+# - No NaN features in MNO tokenization evaluation
+# - Valid tokenization quality metrics for diagnostics
