@@ -55,6 +55,15 @@ model:
   orthogonality_weight: 0.1
   informativeness_weight: 0.12
 
+# Feature Cleaning - CRITICAL for density-only with NaN features
+feature_cleaning:
+  enabled: true
+  pre_categorization: true  # Clean BEFORE clustering (removes NaN→0 features)
+  variance_threshold: 1e-10  # Remove zero-variance features (NaN→0 columns)
+  deduplicate_threshold: 1.0  # Disable deduplication (1.0 = no dedup)
+  outlier_method: "percentile"
+  percentile_range: [0.0, 100.0]  # No outlier capping (preserve all values)
+
 # Training
 training:
   batch_size: 512
