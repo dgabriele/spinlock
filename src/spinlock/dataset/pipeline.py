@@ -631,6 +631,9 @@ class DatasetGenerationPipeline:
         # Stage 2-4: Generate dataset in batches
         self._generate_dataset_batches(parameters, validation_metrics)
 
+        # Stage 5: Extract INITIAL features from raw ICs
+        self._extract_initial_features()
+
         # Final statistics
         self.stats["total_time"] = time.time() - start_time
         self._print_final_statistics()
@@ -1915,6 +1918,83 @@ class DatasetGenerationPipeline:
             grid_sizes=metadata["grid_sizes"],
             noise_regimes=metadata["noise_regimes"],
         )
+
+    def _extract_initial_features(self) -> None:
+        """
+        Extract INITIAL (manual) features from raw ICs.
+
+        Loads raw ICs from /inputs/fields and extracts 14D manual features:
+        - Spatial (4): cluster count, largest cluster fraction, autocorrelation, centroid distance
+        - Spectral (3): dominant frequency, spectral centroid, power law exponent
+        - Information (4): entropy, local entropy variance, LZ complexity, predictability
+        - Statistical (3): skewness, kurtosis, value range
+
+        Stores at /features/initial/aggregated/features for VQ-VAE training.
+        """
+        import h5py
+        from ..features.initial import InitialManualExtractor
+
+        print("\n" + "=" * 60)
+        print("EXTRACTING INITIAL FEATURES")
+        print("=" * 60)
+
+        dataset_path = self.config.dataset.output_path
+
+        try:
+            with h5py.File(dataset_path, 'a') as f:
+                # Load raw ICs
+                if 'inputs/fields' not in f:
+                    print("⚠️  Warning: No raw ICs found at /inputs/fields")
+                    print("   Skipping INITIAL feature extraction")
+                    return
+
+                ics = f['inputs/fields'][:]  # [N, M, H, W]
+                N, M, H, W = ics.shape
+                print(f"  Raw ICs shape: {ics.shape}")
+
+                # Take first realization [N, 1, H, W]
+                ics_first = torch.from_numpy(ics[:, 0:1]).float()  # [N, 1, H, W]
+                # Add channel dim → [N, M=1, C=1, H, W]
+                ics_first = ics_first.unsqueeze(2)  # [N, 1, 1, H, W]
+
+                # Extract features in batches (CPU extraction - no GPU needed)
+                print("  Extracting manual features (14D)...")
+                extractor = InitialManualExtractor(device='cpu')
+
+                batch_size = 100
+                features_list = []
+                for i in range(0, len(ics_first), batch_size):
+                    batch = ics_first[i:i+batch_size]  # [B, 1, 1, H, W]
+                    batch_features = extractor.extract_all(batch)  # [B, 14]
+                    features_list.append(batch_features)
+
+                features = torch.cat(features_list, dim=0)  # [N, 1, 14]
+                # Remove realization dimension (M=1)
+                features = features.squeeze(1)  # [N, 14]
+
+                print(f"  Extracted features shape: {features.shape}")
+
+                # Store in dataset
+                if 'features/initial' in f:
+                    print("  Overwriting existing INITIAL features...")
+                    del f['features/initial']
+
+                init_group = f.create_group('features/initial')
+                agg_group = init_group.create_group('aggregated')
+                agg_group.create_dataset(
+                    'features',
+                    data=features.cpu().numpy(),
+                    compression='gzip',
+                    compression_opts=4
+                )
+
+                print(f"  ✓ Stored at /features/initial/aggregated/features")
+                print("=" * 60)
+
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to extract INITIAL features: {e}")
+            print("   VQ-VAE training may fail. Run manually:")
+            print(f"   poetry run python scripts/extract_initial_manual_features.py {dataset_path}")
 
     def _print_final_statistics(self) -> None:
         """Print final generation statistics."""
