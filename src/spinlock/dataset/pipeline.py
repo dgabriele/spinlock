@@ -1944,6 +1944,16 @@ class DatasetGenerationPipeline:
         # For now, store temporarily and write sequentially
         # This is a limitation we'll need to address
 
+        # Expand inputs to match realization dimension
+        # batch_inputs: [B, C, H, W] -> [B, M, C, H, W]
+        # Each operator uses the same input for all M realizations
+        if len(batch_inputs.shape) == 4:
+            # Add realization dimension and repeat
+            num_realizations = batch_outputs.shape[1]  # Get M from outputs
+            batch_inputs = batch_inputs.unsqueeze(1).expand(
+                -1, num_realizations, -1, -1, -1
+            )  # [B, C, H, W] -> [B, 1, C, H, W] -> [B, M, C, H, W]
+
         # Workaround: Write batch sequentially (assumes group-by-grid processes in order)
         self._storage_backend.write_batch(
             parameters=param_batch,
