@@ -32,6 +32,7 @@ from .mlp import MLPEncoder
 from .initial_cnn import InitialCNNEncoder
 from .initial_hybrid import InitialHybridEncoder
 from .temporal_cnn import TemporalCNNEncoder
+from .temporal_mean import TemporalMeanEncoder
 
 
 # Encoder Registry
@@ -46,6 +47,8 @@ _ENCODER_REGISTRY: Dict[str, Type[BaseEncoder]] = {
     "InitialHybridEncoder": InitialHybridEncoder,
     "td_cnn": TemporalCNNEncoder,
     "TemporalCNNEncoder": TemporalCNNEncoder,
+    "temporal_mean": TemporalMeanEncoder,
+    "TemporalMeanEncoder": TemporalMeanEncoder,
 }
 
 
@@ -90,6 +93,7 @@ __all__ = [
     "MLPEncoder",
     "InitialCNNEncoder",
     "TemporalCNNEncoder",
+    "TemporalMeanEncoder",
     "register_encoder",
     "get_encoder",
 ]
