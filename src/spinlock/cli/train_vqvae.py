@@ -1543,6 +1543,23 @@ Output:
                     family_features = np.nan_to_num(family_features, nan=0.0)
                     print(f"  {feature_family}: Replaced {nan_count} NaN values with 0")
 
+                    # CRITICAL: Remove zero-variance features (from NaN→0 replacement) BEFORE encoding
+                    # These corrupt the encoder and clustering if not removed
+                    if len(family_features.shape) == 3:  # [N, T, D]
+                        stds = family_features.std(axis=(0, 1))  # Compute std across samples and time
+                        zero_var_mask = stds > 1e-10  # Keep features with std > threshold
+                        zero_var_count = (~zero_var_mask).sum()
+                        if zero_var_count > 0:
+                            family_features = family_features[:, :, zero_var_mask]
+                            print(f"  {feature_family}: Removed {zero_var_count} zero-variance features (from NaN→0)")
+                    elif len(family_features.shape) == 2:  # [N, D]
+                        stds = family_features.std(axis=0)
+                        zero_var_mask = stds > 1e-10
+                        zero_var_count = (~zero_var_mask).sum()
+                        if zero_var_count > 0:
+                            family_features = family_features[:, zero_var_mask]
+                            print(f"  {feature_family}: Removed {zero_var_count} zero-variance features (from NaN→0)")
+
                 # Apply per-family encoder if configured
                 encoder_params = family_config.get("encoder_params", {})
 
