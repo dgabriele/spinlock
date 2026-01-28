@@ -52,13 +52,20 @@ def extract_initial_features(fields: np.ndarray) -> tuple[np.ndarray, list[str]]
     Extract INITIAL features from input fields.
 
     Args:
-        fields: (N, C, H, W) array of initial condition grids
+        fields: (N, M, C, H, W) or (N, C, H, W) array of initial condition grids
 
     Returns:
         features: (N, D) array of initial condition features
         feature_names: List of feature names
     """
-    N, C, H, W = fields.shape
+    # Handle both [N, M, C, H, W] and [N, C, H, W] shapes
+    if len(fields.shape) == 5:
+        # [N, M, C, H, W] - take first realization (all M are identical inputs)
+        N, M, C, H, W = fields.shape
+        fields = fields[:, 0, :, :, :]  # [N, C, H, W]
+    else:
+        # [N, C, H, W] - use as is
+        N, C, H, W = fields.shape
     features_list = []
     feature_names = []
 
