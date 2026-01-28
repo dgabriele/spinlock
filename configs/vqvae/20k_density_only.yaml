@@ -55,16 +55,6 @@ model:
   orthogonality_weight: 0.1
   informativeness_weight: 0.12
 
-# Feature Cleaning
-feature_cleaning:
-  enabled: true
-  pre_categorization: false  # Clean per-category AFTER discovery
-  variance_threshold: 1e-10
-  deduplicate_threshold: 0.99
-  use_intelligent_dedup: true
-  outlier_method: "percentile"
-  percentile_range: [0.5, 99.5]
-
 # Training
 training:
   batch_size: 512
@@ -74,11 +64,12 @@ training:
   scheduler: null
   warmup_epochs: 100
 
-  # Category discovery (auto mode)
+  # Category discovery (auto mode) - MATCHES 50K CONFIG
   category_assignment: "auto"
   num_categories_auto: null
   orthogonality_target: 0.15
   min_features_per_category: 3
+  max_clusters: 25  # Global max clusters (like 50K baseline)
 
   # Category assignment configuration
   category_assignment_config:
@@ -89,16 +80,6 @@ training:
     gradient_lr: 0.01
     subsample_excess_fraction: 0.1
     device: "cuda"
-
-    # Per-family clustering - cluster each family independently
-    per_family_clustering: true
-    per_family_params:
-      initial:
-        min_clusters: 2
-        max_clusters: 5
-      temporal:
-        min_clusters: 2
-        max_clusters: 20
 
   # Loss weights
   reconstruction_weight: 1.0
