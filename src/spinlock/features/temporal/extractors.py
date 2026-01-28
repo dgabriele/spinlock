@@ -149,24 +149,30 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
         if spectral.dim() > 2:
             spectral = spectral.flatten(start_dim=2)
 
-        # Extract cross-channel features (12D)
-        cross_result = self.cross_channel_extractor.extract(fields)
-        if isinstance(cross_result, dict):
-            cross_features = []
-            for key in sorted(cross_result.keys()):
-                feat = cross_result[key]  # [N, T, C], [N, M, T], or [N, T]
-                # Handle [N, M, T] from cross-channel extractor (squeeze M if M=1)
-                if feat.dim() == 3 and feat.shape[1] == 1:
-                    feat = feat.squeeze(1)  # [N, 1, T] → [N, T]
-                if feat.dim() == 3:
-                    cross_features.append(feat)
-                elif feat.dim() == 2:
-                    cross_features.append(feat.unsqueeze(-1))
-            cross = torch.cat(cross_features, dim=-1) if cross_features else torch.zeros(N, T, 12, device=self.device)
+        # Extract cross-channel features (12D) - SKIP if C=1 (single channel)
+        # Cross-channel features require C >= 2 and will be NaN for single-channel data
+        if C == 1:
+            # Single channel: skip cross-channel extraction (produces NaN features)
+            cross = torch.zeros(N, T, 0, device=self.device)  # 0D placeholder
         else:
-            cross = cross_result
-        if cross.dim() > 2:
-            cross = cross.flatten(start_dim=2)
+            # Multi-channel: extract cross-channel features
+            cross_result = self.cross_channel_extractor.extract(fields)
+            if isinstance(cross_result, dict):
+                cross_features = []
+                for key in sorted(cross_result.keys()):
+                    feat = cross_result[key]  # [N, T, C], [N, M, T], or [N, T]
+                    # Handle [N, M, T] from cross-channel extractor (squeeze M if M=1)
+                    if feat.dim() == 3 and feat.shape[1] == 1:
+                        feat = feat.squeeze(1)  # [N, 1, T] → [N, T]
+                    if feat.dim() == 3:
+                        cross_features.append(feat)
+                    elif feat.dim() == 2:
+                        cross_features.append(feat.unsqueeze(-1))
+                cross = torch.cat(cross_features, dim=-1) if cross_features else torch.zeros(N, T, 12, device=self.device)
+            else:
+                cross = cross_result
+            if cross.dim() > 2:
+                cross = cross.flatten(start_dim=2)
 
         # Extract enhanced temporal features (130D)
         # Process timestep by timestep to maintain history
