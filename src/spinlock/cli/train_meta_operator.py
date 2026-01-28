@@ -611,11 +611,54 @@ Output:
             rank = 0
             world_size = 1
 
+        # Auto-detect channel count from dataset metadata
+        if rank == 0:
+            print("Detecting channel count from dataset...")
+
+        import h5py
+        with h5py.File(config["data"]["dataset_path"], "r") as f:
+            # Read from explicit metadata (preferred)
+            if "metadata" in f and "num_channels" in f["metadata"].attrs:
+                num_channels = int(f["metadata"].attrs["num_channels"])
+            else:
+                # Fallback: infer from IC shape
+                # IC shape can be:
+                # - [N, M, H, W] for single-channel (NOAStateDataset adds C=1 with unsqueeze)
+                # - [N, M, C, H, W] for multi-channel (explicit channel dimension)
+                ic_shape = f["inputs/fields"].shape
+                if len(ic_shape) == 4:
+                    # [N, M, H, W] - single channel (added by dataset loader)
+                    num_channels = 1
+                elif len(ic_shape) == 5:
+                    # [N, M, C, H, W] - explicit channel dimension
+                    num_channels = ic_shape[2]
+                else:
+                    raise ValueError(
+                        f"Unexpected inputs/fields shape: {ic_shape}. "
+                        f"Expected [N, M, H, W] or [N, M, C, H, W]"
+                    )
+
+        if rank == 0:
+            print(f"  ✓ Detected {num_channels} channels from dataset")
+            if num_channels == 1:
+                print("    (density-only)")
+            elif num_channels == 3:
+                print("    (density + velocity)")
+            else:
+                print(f"    (custom {num_channels}-channel configuration)")
+
         # Create model
         print("Creating NOA backbone..." if rank == 0 else "")
 
         # Prepare model config
         model_config = dict(config["model"])
+
+        # Override channel counts with dataset values
+        model_config["in_channels"] = num_channels
+        model_config["out_channels"] = num_channels
+
+        if rank == 0:
+            print(f"  Using in_channels={num_channels}, out_channels={num_channels} (from dataset)")
 
         # Transform 'film' section to 'film_config' for NOABackbone constructor
         if "film" in model_config:

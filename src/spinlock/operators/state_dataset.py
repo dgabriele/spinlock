@@ -115,8 +115,10 @@ class NOAStateDataset(Dataset):
 
             # Load ICs using selected indices
             # Note: Fancy indexing with sorted indices is cache-friendly
+            # Dataset shape: [N, M, H, W] - always single channel (density only)
+            # Select one realization and add channel dimension
             inputs = f["inputs/fields"][indices, realization_idx, :, :]
-            self.ics = torch.from_numpy(inputs).float().unsqueeze(1)  # Add channel dim
+            self.ics = torch.from_numpy(inputs).float().unsqueeze(1)  # [N', H, W] -> [N', 1, H, W]
 
             # Load Sobol parameter vectors for CNO replay
             self.params = torch.from_numpy(f["parameters/params"][indices]).float()

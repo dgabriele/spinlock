@@ -150,7 +150,8 @@ class HDF5DatasetWriter:
         meta.attrs["creation_date"] = datetime.now().isoformat()
         meta.attrs["version"] = "1.0"
         meta.attrs["grid_size"] = self.grid_size
-        meta.attrs["num_realizations"] = self.num_realizations
+        meta.attrs["num_channels"] = self.input_channels  # Physical channel count (C)
+        meta.attrs["num_realizations"] = self.num_realizations  # Stochastic realizations (M)
         meta.attrs["num_parameter_sets"] = self.num_parameter_sets
         meta.attrs["track_ic_metadata"] = self.track_ic_metadata
 

@@ -373,7 +373,9 @@ class DatasetGenerationPipeline:
         # Fixed dimensions for MVP (homogeneous operators)
         # Future: Extract from parameter space for heterogeneous support
         grid_size = 64
-        num_channels = 3
+
+        # Read num_channels from config, default to 3 for backwards compatibility
+        num_channels = getattr(self.config, 'num_channels', 3)
 
         return InputFieldGenerator(
             grid_size=grid_size, num_channels=num_channels, device=self.device
@@ -551,8 +553,9 @@ class DatasetGenerationPipeline:
         print(f"\nPre-compiling {len(unique_signatures)} architecture templates...")
 
         # Fixed I/O channels (MVP constraint: homogeneous channel count)
-        fixed_input_channels = 3
-        fixed_output_channels = 3
+        # Read from config, default to 3 for backwards compatibility
+        fixed_input_channels = getattr(self.config, 'num_channels', 3)
+        fixed_output_channels = getattr(self.config, 'num_channels', 3)
 
         # Build and compile one template per signature
         for sig, param_dict in param_by_sig.items():
@@ -958,6 +961,12 @@ class DatasetGenerationPipeline:
                             group_processed += actual_batch_size
                             pbar.update(actual_batch_size)
 
+                            # Save intermediate checkpoints every 10K samples
+                            total_generated = self.stats["samples_generated"]
+                            checkpoint_interval = 10000
+                            if total_generated % checkpoint_interval == 0 and total_generated > 0:
+                                self._save_checkpoint(total_generated)
+
                             # Periodic garbage collection and cache clear (every 20 batches)
                             if group_processed % (20 * current_batch_size) == 0:
                                 gc.collect()
@@ -1039,6 +1048,31 @@ class DatasetGenerationPipeline:
         # Only train U-AFNO operators
         return self.config.simulation.operator_type == "u_afno"
 
+    def _save_checkpoint(self, num_samples: int) -> None:
+        """
+        Save intermediate checkpoint of the dataset.
+
+        Args:
+            num_samples: Number of samples generated so far
+        """
+        import shutil
+        from pathlib import Path
+
+        source_path = Path(self.config.dataset.output_path)
+        checkpoint_path = source_path.parent / f"{source_path.stem}_{num_samples}k{source_path.suffix}"
+
+        try:
+            # Flush storage backend to ensure all data is written
+            if hasattr(self._storage_backend, 'file') and self._storage_backend.file:
+                self._storage_backend.file.flush()
+
+            # Copy the HDF5 file
+            print(f"\n  💾 Saving checkpoint: {checkpoint_path.name}")
+            shutil.copy2(source_path, checkpoint_path)
+            print(f"  ✓ Checkpoint saved ({num_samples:,} samples)")
+        except Exception as e:
+            print(f"  ⚠️  Failed to save checkpoint: {e}")
+
     def _train_operators_batch(
         self,
         operators: list[NeuralOperator],
@@ -1105,8 +1139,9 @@ class DatasetGenerationPipeline:
         operators = []
 
         # Fixed dimensions (MVP constraint: homogeneous operators)
-        fixed_input_channels = 3
-        fixed_output_channels = 3
+        # Read from config, default to 3 for backwards compatibility
+        fixed_input_channels = getattr(self.config, 'num_channels', 3)
+        fixed_output_channels = getattr(self.config, 'num_channels', 3)
         fixed_grid_size = 64
 
         for params in param_batch:
@@ -1540,8 +1575,9 @@ class DatasetGenerationPipeline:
             # Legacy synchronous building
             operators = []
 
-        fixed_input_channels = 3
-        fixed_output_channels = 3
+        # Read from config, default to 3 for backwards compatibility
+        fixed_input_channels = getattr(self.config, 'num_channels', 3)
+        fixed_output_channels = getattr(self.config, 'num_channels', 3)
 
         if pre_built_operators is None:
             # Synchronous operator building (legacy path)
