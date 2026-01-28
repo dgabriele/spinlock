@@ -1,20 +1,19 @@
-# VQ-VAE Configuration (20K CNO Density-Only Dataset)
+# Aggressive VQ-VAE Configuration (50K CNO Dataset, C=3)
 #
-# Training VQ-VAE on density-only features (C=1) for MNO/CNO compatibility.
-# Based on 50k_baseline.yaml but optimized for 20K samples.
+# Maximum GPU/memory utilization for fastest training
 #
-# Key differences from baseline:
-# - Dataset: 20K density-only samples (131D features)
-# - Compatible with both MNO and CNO rollouts
-# - Smaller dataset allows for faster iteration
+# Optimizations vs baseline:
+# - Batch size: +100% (1024 vs 512) for 2x fewer batches
+# - Model capacity: Same as baseline (512/1024) to preserve compute for batch size
+# - Validation: Every 10 epochs to reduce overhead
 #
 # Expected performance:
-# - Similar reconstruction quality to 50K baseline
-# - 131D input (vs 345D for full 3-channel)
-# - Compatible tokenization for MNO and CNO
+# - Training time: ~5 hours (vs 10 hours baseline)
+# - GPU utilization: 90-100%
+# - Memory utilization: 85-95%
 
 # Dataset
-dataset_path: "datasets/cno_20k_density_only.h5"
+dataset_path: "datasets/cno_50k_3channel_dev.h5"
 
 # Feature Families
 families:
@@ -24,29 +23,28 @@ families:
       manual_dim: 14
       cnn_embedding_dim: 28
       encode_manual: false
-      in_channels: 1
+      in_channels: 3
 
   temporal:
     encoder: TemporalCNNEncoder
     encoder_params:
-      embedding_dim: 64  # Reduced from 128 for proper compression (1.78:1)
+      embedding_dim: 128
       architecture: "resnet1d_3"
 
-# VQ-VAE Architecture - HIGH CAPACITY
+# VQ-VAE Architecture - HIGH CAPACITY (same as baseline)
 model:
-  group_embedding_dim: 512      # DOUBLED from 256
-  group_hidden_dim: 1024        # DOUBLED from 512
+  group_embedding_dim: 512      # Keep baseline to maximize batch size
+  group_hidden_dim: 1024        # Keep baseline to maximize batch size
 
   # Adaptive compression ratios
   compression_ratios: "auto"
   auto_compression_strategy: "balanced"
 
-  # Levels already define the architecture
   levels: []
 
   # VQ-VAE hyperparameters
   uniform_codebook_init: true
-  commitment_cost: 0.05
+  commitment_cost: 0.15
   use_ema: true
   decay: 0.99
   dropout: 0.3
@@ -55,11 +53,10 @@ model:
   orthogonality_weight: 0.1
   informativeness_weight: 0.12
 
-# Feature Cleaning - MATCHES 50k_baseline
-# CRITICAL: pre_categorization=false preserves semantic diversity for clustering
+# Feature Cleaning
 feature_cleaning:
   enabled: true
-  pre_categorization: false  # Clean per-category AFTER discovery (like 50k_baseline)
+  pre_categorization: false
   variance_threshold: 1e-10
   deduplicate_threshold: 0.99
   use_intelligent_dedup: true
@@ -68,14 +65,14 @@ feature_cleaning:
 
 # Training
 training:
-  batch_size: 512
+  batch_size: 1024              # +100% from 512 (AGGRESSIVE)
   learning_rate: 0.001
   num_epochs: 700
   optimizer: "adam"
   scheduler: null
   warmup_epochs: 100
 
-  # Category discovery (auto mode) - MATCHES 50k_baseline
+  # Category discovery
   category_assignment: "auto"
   num_categories_auto: null
   orthogonality_target: 0.15
@@ -91,7 +88,6 @@ training:
     subsample_excess_fraction: 0.1
     device: "cuda"
 
-    # Per-family clustering - cluster each family independently (CRITICAL!)
     per_family_clustering: true
     per_family_params:
       initial:
@@ -104,15 +100,15 @@ training:
   # Loss weights
   reconstruction_weight: 1.0
   vq_weight: 1.0
-  orthogonality_weight: 0.1
-  informativeness_weight: 0.1
+  orthogonality_weight: 0.11
+  informativeness_weight: 0.12
   topo_weight: 0.3
   topo_samples: 1024
   entropy_weight: 0.1
 
   # Checkpointing
   save_every: 25
-  checkpoint_dir: "checkpoints/vqvae/20k_density_only"
+  checkpoint_dir: "checkpoints/vqvae/50k_aggressive"
 
   # Callbacks
   early_stopping_patience: 100
@@ -123,8 +119,8 @@ training:
   dead_code_threshold: 5.0
   dead_code_max_reset_fraction: 0.0
 
-  # Validation
-  val_every_n_epochs: 5
+  # Validation - OPTIMIZED
+  val_every_n_epochs: 10
 
   # Performance
   use_torch_compile: true
@@ -139,8 +135,8 @@ logging:
 # Random seed
 random_seed: 42
 
-# Expected Benefits:
-# - Fair MNO vs CNO comparison (both use 131D density-only features)
-# - No cross-channel features → no NaN issues on single-channel data
-# - Compatible VQ-VAE for both MNO and CNO rollouts
-# - Enables valid tokenization quality diagnostics
+# Expected Performance:
+# - Training time: ~5 hours (44 batches/epoch vs 88 baseline)
+# - 50% speedup from doubled batch size
+# - GPU utilization: 90-100%
+# - Memory utilization: 85-95%

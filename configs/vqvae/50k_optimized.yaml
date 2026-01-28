@@ -1,0 +1,156 @@
+# Optimized VQ-VAE Configuration (50K CNO Dataset, C=3)
+#
+# Balanced optimization for speed + quality with higher GPU/memory utilization
+#
+# Optimizations vs baseline (50k_baseline.yaml):
+# - Model capacity: +25% (640/1280 vs 512/1024) for C=3 complexity
+# - Batch size: +50% (768 vs 512) for 35% faster training
+# - Validation: Every 10 epochs (vs 5) to reduce overhead
+#
+# Expected performance:
+# - Training time: ~7 hours (vs 10 hours baseline)
+# - Quality: Better than baseline (more capacity for cross-channel features)
+# - GPU utilization: 85-95% (vs 55%)
+# - Memory utilization: 75-85% (vs 50%)
+
+# Dataset
+dataset_path: "datasets/cno_50k_3channel_dev.h5"
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 14
+      cnn_embedding_dim: 28
+      encode_manual: false
+      in_channels: 3
+
+  temporal:
+    encoder: TemporalCNNEncoder
+    encoder_params:
+      embedding_dim: 128
+      architecture: "resnet1d_3"
+
+# VQ-VAE Architecture - OPTIMIZED HIGH CAPACITY
+model:
+  group_embedding_dim: 640      # +25% from 512 (baseline)
+  group_hidden_dim: 1280        # +25% from 1024 (baseline)
+
+  # Adaptive compression ratios
+  # Set to "auto" to compute ratios based on feature characteristics
+  # (variance, dimensionality, information content, correlation)
+  compression_ratios: "auto"
+  auto_compression_strategy: "balanced"  # Options: "variance", "dimensionality", "information", "balanced"
+
+  # Levels already define the architecture
+  levels: []
+
+  # VQ-VAE hyperparameters
+  uniform_codebook_init: true
+  commitment_cost: 0.05         # LOWERED from 0.25 to reduce encoder commitment to existing codes
+  use_ema: true
+  decay: 0.99
+  dropout: 0.3                  # INCREASED from 0.1 to force using backup codes
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.12
+
+# Feature Cleaning
+# CRITICAL: pre_categorization=false preserves semantic diversity for clustering
+# This allows auto-discovery to find 10-20 behavioral categories instead of just 2
+feature_cleaning:
+  enabled: true
+  pre_categorization: false  # Clean per-category AFTER discovery (default)
+  variance_threshold: 1e-10
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
+  outlier_method: "percentile"
+  percentile_range: [0.5, 99.5]
+
+# Training
+training:
+  batch_size: 768               # +50% from 512 for higher GPU utilization
+  learning_rate: 0.001
+  num_epochs: 700
+  optimizer: "adam"
+  scheduler: null
+  warmup_epochs: 100
+
+  # Category discovery (auto mode)
+  category_assignment: "auto"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+
+  # Category assignment configuration
+  category_assignment_config:
+    method: "clustering"
+    isolated_families: []
+    reassign_orphans: true
+    gradient_epochs: 500
+    gradient_lr: 0.01
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+
+    # Per-family clustering - cluster each family independently
+    per_family_clustering: true
+    per_family_params:
+      initial:
+        min_clusters: 2
+        max_clusters: 5
+      temporal:
+        min_clusters: 2
+        max_clusters: 20
+
+  # Loss weights
+  reconstruction_weight: 1.0
+  vq_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.3
+  topo_samples: 1024
+  entropy_weight: 0.1  # Entropy regularization for uniform codebook usage
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/50k_optimized"
+
+  # Callbacks
+  early_stopping_patience: 100
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets - DISABLED
+  dead_code_reset_interval: 0
+  dead_code_threshold: 5.0
+  dead_code_max_reset_fraction: 0.0
+
+  # Validation - OPTIMIZED: Reduced frequency to save time
+  val_every_n_epochs: 10        # Reduced from 5 (less overhead)
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Expected Performance (based on optimizations):
+# - Training time: ~7 hours (59 batches/epoch vs 88 baseline)
+# - L_recon: Target ~0.010-0.015 (better than baseline with +25% capacity)
+# - Codebook utilization: Target 20-25%
+# - GPU utilization: 85-95% (vs 55% baseline)
+# - Memory utilization: 75-85% (vs 50% baseline)
+#
+# Benefits vs baseline:
+# - 35% faster training (fewer batches/epoch)
+# - Better capacity for C=3 cross-channel feature complexity
+# - Higher GPU/memory utilization (better hardware efficiency)
+# - Less validation overhead (every 10 epochs vs 5)

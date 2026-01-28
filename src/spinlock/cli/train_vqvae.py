@@ -583,6 +583,30 @@ Output:
         # reference_features and is_interpolated are for reference feature regularization (optional)
         features, feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated, raw_summary = self._load_features(config)
 
+        # Check for incomplete datasets (allocated but not fully generated)
+        # Detect samples that are all zeros (ungenerated)
+        non_zero_mask = np.any(features != 0, axis=1)
+        actual_samples = non_zero_mask.sum()
+        allocated_samples = len(features)
+
+        if actual_samples < allocated_samples:
+            if verbose:
+                print(f"\n⚠️  Incomplete dataset detected:")
+                print(f"   Allocated: {allocated_samples} samples")
+                print(f"   Generated: {actual_samples} samples")
+                print(f"   Truncating to valid samples only\n")
+
+            # Truncate all data to valid samples
+            features = features[non_zero_mask]
+            if raw_ics is not None:
+                raw_ics = raw_ics[non_zero_mask]
+            if reference_features is not None:
+                reference_features = reference_features[non_zero_mask]
+            if is_interpolated is not None:
+                is_interpolated = is_interpolated[non_zero_mask]
+            if raw_summary is not None:
+                raw_summary = raw_summary[non_zero_mask]
+
         # Store reference features, interpolation mask, and raw SUMMARY as instance variables for data loaders
         self._reference_features = reference_features
         self._is_interpolated = is_interpolated

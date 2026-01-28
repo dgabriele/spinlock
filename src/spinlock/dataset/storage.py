@@ -189,9 +189,9 @@ class HDF5DatasetWriter:
         inputs_group = self.file.create_group("inputs")
         inputs_group.create_dataset(
             "fields",
-            shape=(self.num_parameter_sets, self.input_channels, self.grid_size, self.grid_size),
+            shape=(self.num_parameter_sets, self.num_realizations, self.input_channels, self.grid_size, self.grid_size),
             dtype=np.float32,
-            chunks=(self.chunk_size, self.input_channels, self.grid_size, self.grid_size),
+            chunks=(self.chunk_size, self.num_realizations, self.input_channels, self.grid_size, self.grid_size),
             compression=self.compression,
             compression_opts=self.compression_opts,
         )
