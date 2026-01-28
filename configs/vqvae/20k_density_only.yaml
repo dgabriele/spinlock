@@ -55,14 +55,16 @@ model:
   orthogonality_weight: 0.1
   informativeness_weight: 0.12
 
-# Feature Cleaning - CRITICAL for density-only with NaN features
+# Feature Cleaning - MATCHES 50k_baseline
+# CRITICAL: pre_categorization=false preserves semantic diversity for clustering
 feature_cleaning:
   enabled: true
-  pre_categorization: true  # Clean BEFORE clustering (removes NaN→0 features)
-  variance_threshold: 1e-10  # Remove zero-variance features (NaN→0 columns)
-  deduplicate_threshold: 1.0  # Disable deduplication (1.0 = no dedup)
+  pre_categorization: false  # Clean per-category AFTER discovery (like 50k_baseline)
+  variance_threshold: 1e-10
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
   outlier_method: "percentile"
-  percentile_range: [0.0, 100.0]  # No outlier capping (preserve all values)
+  percentile_range: [0.5, 99.5]
 
 # Training
 training:
@@ -73,12 +75,11 @@ training:
   scheduler: null
   warmup_epochs: 100
 
-  # Category discovery (auto mode) - MATCHES 50K CONFIG
+  # Category discovery (auto mode) - MATCHES 50k_baseline
   category_assignment: "auto"
   num_categories_auto: null
   orthogonality_target: 0.15
   min_features_per_category: 3
-  max_clusters: 25  # Global max clusters (like 50K baseline)
 
   # Category assignment configuration
   category_assignment_config:
@@ -89,6 +90,16 @@ training:
     gradient_lr: 0.01
     subsample_excess_fraction: 0.1
     device: "cuda"
+
+    # Per-family clustering - cluster each family independently (CRITICAL!)
+    per_family_clustering: true
+    per_family_params:
+      initial:
+        min_clusters: 2
+        max_clusters: 5
+      temporal:
+        min_clusters: 2
+        max_clusters: 20
 
   # Loss weights
   reconstruction_weight: 1.0
