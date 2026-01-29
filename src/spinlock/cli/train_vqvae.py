@@ -618,33 +618,48 @@ Output:
                 print(f"  Hybrid INITIAL: {initial_info['manual_dim']}D manual + {initial_info['cnn_dim']}D CNN (end-to-end)")
 
         # Compute per-family normalization stats for meta-operator training
-        # Features at this point are already encoded: 14D (INITIAL) + 128D (SUMMARY) + 128D (TEMPORAL)
+        # Dynamically determine family slices based on actual loaded families
         # These stats will be saved to checkpoint for UnifiedFeaturePipeline
         if verbose:
             print("\nComputing per-family normalization statistics...")
 
         import torch
-        per_family_stats = {
-            'initial': (
-                torch.from_numpy(features[:, :14].mean(axis=0)).float(),
-                torch.from_numpy(features[:, :14].std(axis=0)).float()
-            ),
-            'summary': (
-                torch.from_numpy(features[:, 14:142].mean(axis=0)).float(),
-                torch.from_numpy(features[:, 14:142].std(axis=0)).float()
-            ),
-            'temporal': (
-                torch.from_numpy(features[:, 142:270].mean(axis=0)).float(),
-                torch.from_numpy(features[:, 142:270].std(axis=0)).float()
-            ),
-        }
+        per_family_stats = {}
 
-        if verbose:
-            for family_name, (means, stds) in per_family_stats.items():
-                if len(means) > 0 and len(stds) > 0:
-                    print(f"  {family_name.upper()} ({len(means)}D): mean=[{means.min():.3f}, {means.max():.3f}], std=[{stds.min():.3f}, {stds.max():.3f}]")
+        # Build family slices dynamically from feature_names
+        # feature_names have format "family::feature_name" or just "feature_name"
+        family_slices = {}
+        current_idx = 0
+
+        for i, name in enumerate(feature_names):
+            if '::' in name:
+                family = name.split('::')[0]
+            else:
+                # Infer family from position (fallback for non-prefixed names)
+                # This shouldn't happen with current code but handle gracefully
+                if current_idx == 0:
+                    family = 'initial'
                 else:
-                    print(f"  {family_name.upper()}: No features after extraction")
+                    family = 'temporal'
+
+            if family not in family_slices:
+                family_slices[family] = {'start': i, 'end': i + 1}
+            else:
+                family_slices[family]['end'] = i + 1
+
+        # Compute stats for each family
+        for family, slice_info in family_slices.items():
+            start, end = slice_info['start'], slice_info['end']
+            family_features = features[:, start:end]
+
+            per_family_stats[family] = (
+                torch.from_numpy(family_features.mean(axis=0)).float(),
+                torch.from_numpy(family_features.std(axis=0)).float()
+            )
+
+            if verbose:
+                means, stds = per_family_stats[family]
+                print(f"  {family.upper()} ({len(means)}D): mean=[{means.min():.3f}, {means.max():.3f}], std=[{stds.min():.3f}, {stds.max():.3f}]")
 
         # Clean features (remove NaN, zero-variance, duplicates, cap outliers)
         # Check both old flat format and new feature_cleaning section
