@@ -1643,6 +1643,7 @@ Output:
 
                 # Apply per-family encoder if configured
                 encoder_params = family_config.get("encoder_params", {})
+                encoder = None  # Track encoder for pyramid detection below
 
                 if encoder_name and encoder_name not in ["identity", "IdentityEncoder"]:
                     # Get input dimension for encoder
@@ -1681,8 +1682,26 @@ Output:
 
                 # Generate feature names
                 if len(family_features.shape) == 2:
-                    output_dim = family_features.shape[1]
-                    family_names = [f"{feature_family}_{i}" for i in range(output_dim)]
+                    # Pyramid encoder: split concatenated output into per-level families
+                    if encoder is not None and hasattr(encoder, 'output_dims_per_level'):
+                        dims = encoder.output_dims_per_level
+                        offset = 0
+                        for level_idx, level_dim in enumerate(dims):
+                            level_features = family_features[:, offset:offset + level_dim]
+                            level_family = f"{feature_family}_p{level_idx}"
+                            level_names = [
+                                f"{level_family}::{level_family}_{i}"
+                                for i in range(level_dim)
+                            ]
+                            all_features.append(level_features)
+                            all_feature_names.extend(level_names)
+                            offset += level_dim
+                        print(f"  {feature_family}: Split into {len(dims)} pyramid levels: "
+                              f"{[f'{feature_family}_p{i} ({d}D)' for i, d in enumerate(dims)]}")
+                        continue  # Skip normal feature name generation
+                    else:
+                        output_dim = family_features.shape[1]
+                        family_names = [f"{feature_family}_{i}" for i in range(output_dim)]
                 else:
                     # Should not happen after encoder, but handle gracefully
                     raise ValueError(
