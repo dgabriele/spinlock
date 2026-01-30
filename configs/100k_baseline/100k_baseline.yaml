@@ -2,72 +2,130 @@ version: "1.0"
 
 metadata:
   name: "100k_baseline"
-  description: "CNO with 100k operators and per-channel independent IC generation for VQ-VAE category discovery"
-  author: "spinlock"
+  description: |
+    100K CNO baseline dataset with 3 physical channels and per-channel independent IC generation.
+    Proper multi-channel structure: [N, M, C, H, W] where C=3.
+    Based on cno_50k_3channel settings with enhanced per-channel IC diversity.
+  author: "Spinlock Team"
   created: "2026-01-30"
+  purpose: |
+    100,000 operators × 3 realizations, each with 3 channels (density + velocity)
+    Grid: 64×64 (optimal for VQ-VAE compression)
+    Features extracted from all 3 channels with proper cross-channel features
+    Dataset structure: [N, M, C, H, W] = [100000, 3, 3, 64, 64]
+    Per-channel ICs for maximum behavioral diversity
 
+# CRITICAL: Explicit channel specification
+num_channels: 3  # density + velocity_x + velocity_y
+
+# 14-dimensional parameter space (architecture: 5, stochastic: 4, operator: 2, evolution: 3)
 parameter_space:
   architecture:
     num_layers:
-      type: "integer"
-      bounds: [2, 6]
+      type: integer
+      bounds: [2, 5]
       description: "Number of convolutional layers"
 
-    channels_per_layer:
-      type: "integer"
-      bounds: [16, 128]
-      description: "Number of channels per layer"
+    base_channels:
+      type: integer
+      bounds: [16, 64]
+      description: "Base number of channels"
 
     kernel_size:
-      type: "choice"
+      type: choice
       choices: [3, 5, 7]
-      description: "Convolution kernel size"
+      description: "Kernel size for convolutions"
 
-  stochastic:
-    dropout_rate:
-      type: "continuous"
-      bounds: [0.0, 0.4]
-      description: "Dropout probability"
-
-    weight_decay:
-      type: "continuous"
-      bounds: [0.0, 0.01]
-      log_scale: true
-      description: "L2 regularization"
-
-  operator:
     activation:
-      type: "choice"
-      choices: ["relu", "gelu", "tanh", "silu"]
+      type: choice
+      choices: ["gelu"]
       description: "Activation function"
 
-    normalization:
-      type: "choice"
-      choices: ["none", "batch", "layer"]
-      description: "Normalization type"
+    dropout_rate:
+      type: continuous
+      bounds: [0.0, 0.3]
+      description: "Dropout probability"
 
-  evolution:
-    num_timesteps:
-      type: "integer"
-      bounds: [1, 10]
-      description: "Number of evolution timesteps"
+  stochastic:
+    noise_type:
+      type: choice
+      choices: ["gaussian"]
+      description: "Stochastic noise distribution"
+
+    noise_scale:
+      type: continuous
+      bounds: [0.00001, 1.0]
+      log_scale: true
+      description: "Scale of stochastic perturbations"
+
+    noise_schedule:
+      type: choice
+      choices: ["constant"]
+      description: "Temporal noise schedule"
 
     spatial_correlation:
-      type: "continuous"
+      type: continuous
       bounds: [0.0, 0.3]
-      description: "Spatial correlation strength"
+      description: "Spatial correlation length for noise"
 
+  operator:
+    normalization:
+      type: choice
+      choices: ["instance"]
+      description: "Feature normalization"
+
+    grid_size:
+      type: choice
+      choices: [64]
+      description: "Spatial grid resolution (64×64 optimal for VQ-VAE compression)"
+
+  evolution:
+    update_policy:
+      type: choice
+      choices: ["residual", "convex"]
+      weights: [0.75, 0.25]
+      description: "Temporal update policy"
+
+    dt:
+      type: choice
+      choices: [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05]
+      description: "Integration step size for residual policy"
+
+    alpha:
+      type: choice
+      choices: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+      description: "Mixing parameter for convex policy (persistence of previous state)"
+
+# Sampling configuration for 100K samples
 sampling:
-  total_samples: 100000
-  batch_size: 1000
+  strategy: "sobol_stratified"
 
+  sobol:
+    scramble: true
+    seed: 42
+
+  stratification:
+    method: "adaptive"
+    num_strata_per_dim: 5
+    min_samples_per_stratum: 10
+
+  validation:
+    check_discrepancy: true
+    check_correlation: true
+
+  total_samples: 100000  # 100K operators
+  batch_size: 8  # Increased for better GPU utilization
+
+# Simulation configuration
 simulation:
   device: "cuda"
-  num_realizations: 10
-  num_timesteps: 1
+
+  parallelism:
+    strategy: "data_parallel"
+    devices: "auto"
 
   input_generation:
-    method: "per_channel"  # Per-channel independent IC generation
+    method: "per_channel"  # NEW: Per-channel independent IC generation
     num_samples_per_operator: 1
     spatial_size: "from_operator"
 
@@ -135,29 +193,28 @@ simulation:
           min_width: 5.0
           max_width: 15.0
 
-  performance:
-    compile: false
-    partition_by_architecture: true
-    warmup_templates: false
-    channel_bucket_size: 16
-    compile_mode: "reduce-overhead"
+  num_realizations: 3  # 3 realizations for statistics
+  num_timesteps: 256  # Power of 2 for GPU efficiency, captures transient dynamics
 
+# Dataset output configuration
 dataset:
   output_path: "datasets/100k_baseline.h5"
+
   storage:
-    backend: "hdf5"
-    compression: "gzip"
-    compression_level: 4
-    chunk_size: 1000
-    store_trajectories: false
+    compression: "lzf"  # Much faster than gzip (12x), minimal size increase
+    compression_level: 4  # Not used by lzf, but kept for compatibility
+    chunk_size: 8  # Match batch_size for optimal HDF5 performance
+    store_trajectories: false  # Feature-only mode (saves space)
 
+# Feature extraction configuration
+# Features will be extracted from all 3 channels with proper cross-channel features
 features:
+  initial:
+    enabled: true   # Enable INITIAL family (IC characteristics)
   temporal:
-    enabled: false
-  summary:
-    enabled: false
+    enabled: true   # Enable TEMPORAL family (per-timestep time series with v3.1 enhancements)
 
+# Logging configuration
 logging:
   level: "INFO"
   format: "structured"
-  output: "stdout"
