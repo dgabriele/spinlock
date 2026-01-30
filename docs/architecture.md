@@ -201,6 +201,32 @@ Four complementary feature families:
 - [Feature Families](features/README.md) - Overview and philosophy
 - [Feature Reference](features/feature-reference.md) - Detailed formulas and interpretations
 
+#### Temporal Pyramid Architecture
+
+The TEMPORAL family uses a multi-resolution pyramid encoder:
+
+```
+Raw features: [N, T, 345]
+                 │
+     ┌───────────┼───────────┬───────────┐
+     ▼           ▼           ▼           ▼
+  P0: T/1    P1: T/2    P2: T/4    P3: T/8
+ (32D out)  (64D out)  (96D out) (128D out)
+     │           │           │           │
+     └───────────┴───────────┴───────────┘
+                     │
+              Concatenate → 320D
+                     │
+         Per-level clustering discovers
+         temporal_p0, temporal_p1, temporal_p2, temporal_p3
+```
+
+**Shared backbone**: All pyramid levels pass through the same ResNet-1D CNN (shared weights), then diverge via per-level projection heads. This enables the network to learn universal temporal pattern detectors that fire differently at different resolutions.
+
+**Per-level clustering**: Each pyramid scale becomes an independent feature family. Clustering discovers different numbers of categories at each scale (e.g., P0: 3 categories, P3: 8 categories), reflecting that fast/slow dynamics have different intrinsic complexity.
+
+See [Temporal Pyramid Documentation](vqvae/temporal-pyramid.md) for complete details.
+
 ---
 
 ## Multi-Domain Architecture

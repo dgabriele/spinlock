@@ -38,6 +38,18 @@ encoder = get_encoder('ICCNNEncoder', embedding_dim=28)
    - Use for: INITIAL spatial grids [B, 1, 128, 128]
    - Params: `embedding_dim`, `in_channels`, `architecture`
 
+4. **PyramidTemporalEncoder** (`pyramid_temporal.py`): Multi-resolution temporal CNN
+   - Use for: TEMPORAL per-timestep sequences requiring multi-scale analysis
+   - Architecture: Shared ResNet-1D backbone + per-level projection heads
+   - Params: `level_dims`, `downsample_factors`, `architecture`
+   - Output: Concatenated multi-scale embeddings (e.g., 320D = 32+64+96+128)
+   - **Key feature**: `output_dims_per_level` attribute enables per-level family splitting
+
+5. **TemporalCNNEncoder** (`temporal_cnn.py`): Single-scale temporal CNN
+   - Use for: TEMPORAL sequences when single resolution sufficient
+   - Params: `embedding_dim`, `architecture`
+   - Output: Single embedding vector (e.g., 128D)
+
 ### Config Structure
 
 **YAML format:**
@@ -60,6 +72,13 @@ families:
     encoder: ICCNNEncoder
     encoder_params:
       embedding_dim: 64
+
+  temporal:
+    encoder: PyramidTemporalEncoder
+    encoder_params:
+      level_dims: [32, 64, 96, 128]       # Per-level output dimensions
+      downsample_factors: [1, 2, 4, 8]    # Temporal downsampling factors
+      architecture: "resnet1d_3"            # Shared backbone architecture
 ```
 
 **Python (dataclass):**

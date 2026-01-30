@@ -99,6 +99,39 @@ random_seed: 42
 
 See `default.yaml` for complete template with all options documented.
 
+### Temporal Pyramid Encoder
+
+For multi-resolution temporal analysis:
+
+```yaml
+families:
+  temporal:
+    encoder: PyramidTemporalEncoder
+    encoder_params:
+      level_dims: [32, 64, 96, 128]       # Output dims per pyramid level
+      downsample_factors: [1, 2, 4, 8]    # Temporal downsampling factors
+      architecture: "resnet1d_3"            # Shared backbone
+
+training:
+  category_assignment_config:
+    per_family_clustering: true
+    per_family_params:
+      temporal_p0:  # Finest resolution
+        min_clusters: 2
+        max_clusters: 10
+      temporal_p1:
+        min_clusters: 2
+        max_clusters: 10
+      temporal_p2:
+        min_clusters: 2
+        max_clusters: 15
+      temporal_p3:  # Coarsest resolution
+        min_clusters: 2
+        max_clusters: 20
+```
+
+This configuration produces 4 temporal families (temporal_p0 through temporal_p3) that cluster independently, allowing different behavioral categories to emerge at different temporal scales.
+
 ## Available Configurations
 
 ### Validation Configs

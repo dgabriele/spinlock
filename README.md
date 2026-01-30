@@ -333,6 +333,23 @@ The term **categories** for the top-level groupings produced by orthogonality-we
 
 📖 **See also:** [docs/baselines/50k-vqvae-baseline.md](docs/baselines/50k-vqvae-baseline.md) for the full terminology discussion and current production baseline.
 
+### Hierarchical Architecture
+
+The VQ-VAE uses **dual hierarchy**:
+
+1. **Spatial hierarchy**: 3-level coarse→fine VQ quantization per category (L0→L1→L2)
+2. **Temporal hierarchy**: 4-scale pyramid encoder (P0: full resolution → P3: eighth resolution)
+
+The temporal pyramid disentangles dynamics across scales:
+- **P0 (32D)**: Fast dynamics, high-frequency fluctuations
+- **P1 (64D)**: Medium-scale patterns
+- **P2 (96D)**: Slow dynamics
+- **P3 (128D)**: Global trends, low-frequency structure
+
+Each pyramid level becomes a feature family for independent clustering, allowing different behavioral categories to emerge at different temporal scales.
+
+📖 **See also:** [docs/vqvae/temporal-pyramid.md](docs/vqvae/temporal-pyramid.md) for complete temporal pyramid documentation.
+
 ### Production Baseline: 50K v3.1 with Per-Family Clustering
 
 Our current baseline achieves **97.3% reconstruction quality** with **20.5% codebook utilization** on 50,000 CNO samples:
