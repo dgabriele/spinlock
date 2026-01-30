@@ -3,17 +3,17 @@ version: "1.0"
 metadata:
   name: "100k_baseline"
   description: |
-    100K CNO baseline dataset with 3 physical channels and per-channel independent IC generation.
+    100K CNO dataset with 3 physical channels (density + velocity) and per-channel independent IC generation.
     Proper multi-channel structure: [N, M, C, H, W] where C=3.
-    Based on cno_50k_3channel settings with enhanced per-channel IC diversity.
+    Based on cno_50k_3channel with per-channel IC diversity.
   author: "Spinlock Team"
   created: "2026-01-30"
   purpose: |
     100,000 operators × 3 realizations, each with 3 channels (density + velocity)
+    Expected time: ~8-10 days
     Grid: 64×64 (optimal for VQ-VAE compression)
     Features extracted from all 3 channels with proper cross-channel features
     Dataset structure: [N, M, C, H, W] = [100000, 3, 3, 64, 64]
-    Per-channel ICs for maximum behavioral diversity
 
 # CRITICAL: Explicit channel specification
 num_channels: 3  # density + velocity_x + velocity_y
@@ -114,7 +114,7 @@ sampling:
     check_correlation: true
 
   total_samples: 100000  # 100K operators
-  batch_size: 8  # Increased for better GPU utilization
+  batch_size: 8  # Increased for better GPU utilization (100000 / 8 = 12500 batches)
 
 # Simulation configuration
 simulation:
@@ -126,8 +126,6 @@ simulation:
 
   input_generation:
     method: "per_channel"  # NEW: Per-channel independent IC generation
-    num_samples_per_operator: 1
-    spatial_size: "from_operator"
 
     # Per-channel configurations for maximum diversity
     channel_configs:
@@ -157,9 +155,8 @@ simulation:
 
       channel_1:  # Velocity field - structured and random patterns
         ic_type_weights:
-          structured: 0.4
-          gaussian_random_field: 0.3
-          composite: 0.3
+          structured: 0.5
+          gaussian_random_field: 0.5
 
         structured:
           num_structures: 4
@@ -169,15 +166,10 @@ simulation:
           length_scale: 0.1
           variance: 1.0
 
-        composite:
-          pattern: "waves"
-          noise_level: 0.1
-          grf_length_scale: 0.05
-
       channel_2:  # Auxiliary field - coarse and multi-scale
         ic_type_weights:
-          gaussian_random_field: 0.4
-          multiscale_grf: 0.4
+          gaussian_random_field: 0.5
+          multiscale_grf: 0.3
           localized: 0.2
 
         gaussian_random_field:
