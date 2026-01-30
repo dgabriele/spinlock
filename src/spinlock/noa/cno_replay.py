@@ -52,6 +52,7 @@ class CNOReplayer:
     def __init__(
         self,
         parameter_space: Dict[str, Dict[str, Any]],
+        num_channels: int = 1,
         device: str = "cuda",
         cache_size: int = 8,
     ):
@@ -59,10 +60,12 @@ class CNOReplayer:
 
         Args:
             parameter_space: Full parameter space config (architecture, stochastic, operator, evolution)
+            num_channels: Number of input/output channels for CNO operators
             device: Computation device
             cache_size: Number of operators to cache (0 to disable)
         """
         self.parameter_space = parameter_space
+        self.num_channels = num_channels
         self.device = torch.device(device)
         self.builder = OperatorBuilder()
 
@@ -108,8 +111,8 @@ class CNOReplayer:
         # Reconstruct nested structure for build_simple_cnn
         # and add default values it expects
         params = {
-            "input_channels": 1,  # Always 1 for our datasets
-            "output_channels": 1,
+            "input_channels": self.num_channels,
+            "output_channels": self.num_channels,
         }
 
         for flat_name, value in flat_mapped.items():
@@ -314,8 +317,12 @@ class CNOReplayer:
         if "parameter_space" not in config:
             raise ValueError(f"Config missing 'parameter_space': {config_path}")
 
+        # Read number of channels from config (default to 1 for backward compatibility)
+        num_channels = config.get("num_channels", 1)
+
         return cls(
             parameter_space=config["parameter_space"],
+            num_channels=num_channels,
             device=device,
             cache_size=cache_size,
         )

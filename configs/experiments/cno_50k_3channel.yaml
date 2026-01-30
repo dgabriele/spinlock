@@ -3,20 +3,20 @@ version: "1.0"
 metadata:
   name: "cno_50k_3channel"
   description: |
-    50K CNO dataset with 3 physical channels (density + velocity).
+    50K CNO dataset with 3 channels.
     Proper multi-channel structure: [N, M, C, H, W] where C=3.
     Based on cno_50k_v3_1 but with explicit 3-channel operators.
   author: "Spinlock Team"
   created: "2026-01-28"
   purpose: |
-    50,000 operators × 3 realizations, each with 3 channels (density + velocity)
+    50,000 operators × 3 realizations, each with 3 channels
     Expected time: ~4-5s/operator = 2-3 days
     Grid: 64×64 (optimal for VQ-VAE compression)
     Features extracted from all 3 channels with proper cross-channel features
     Dataset structure: [N, M, C, H, W] = [50000, 3, 3, 64, 64]
 
 # CRITICAL: Explicit channel specification
-num_channels: 3  # density + velocity_x + velocity_y
+num_channels: 3  # 3 independent field channels
 
 # 14-dimensional parameter space (architecture: 5, stochastic: 4, operator: 2, evolution: 3)
 parameter_space:

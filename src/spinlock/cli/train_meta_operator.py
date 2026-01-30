@@ -641,11 +641,11 @@ Output:
         if rank == 0:
             print(f"  ✓ Detected {num_channels} channels from dataset")
             if num_channels == 1:
-                print("    (density-only)")
+                print("    (single-channel)")
             elif num_channels == 3:
-                print("    (density + velocity)")
+                print("    (3-channel)")
             else:
-                print(f"    (custom {num_channels}-channel configuration)")
+                print(f"    ({num_channels}-channel configuration)")
 
         # Create model
         print("Creating NOA backbone..." if rank == 0 else "")
@@ -1231,7 +1231,7 @@ Output:
                 try:
                     target_traj = replayer.rollout(
                         params_vector=params[b].cpu().numpy(),  # Move to CPU for CNOReplayer
-                        ic=ic[b:b+1],
+                        ic=ic[b:b+1],  # [1, C, H, W] - all channels
                         timesteps=timesteps,
                         num_realizations=1,
                         return_all_steps=True,
@@ -1448,7 +1448,7 @@ Output:
                     try:
                         target_traj = replayer.rollout(
                             params_vector=params[b].cpu().numpy(),  # Move to CPU for CNOReplayer
-                            ic=ic[b:b+1],
+                            ic=ic[b:b+1],  # [1, C, H, W] - all channels
                             timesteps=timesteps,
                             num_realizations=1,
                             return_all_steps=True,

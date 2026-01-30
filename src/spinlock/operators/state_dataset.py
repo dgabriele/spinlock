@@ -17,6 +17,12 @@ import h5py
 class NOAStateDataset(Dataset):
     """Dataset that loads ICs and parameter vectors for CNO replay.
 
+    Loads from HDF5 datasets with shape [N, M, C, H, W]:
+    - N: number of samples (operators)
+    - M: number of realizations per sample
+    - C: number of channels (read from metadata/num_channels)
+    - H, W: spatial dimensions
+
     Provides:
     - ic: Initial condition [C, H, W]
     - params: Sobol parameter vector [d,] for CNO reconstruction
@@ -115,15 +121,34 @@ class NOAStateDataset(Dataset):
 
             # Load ICs using selected indices
             # Note: Fancy indexing with sorted indices is cache-friendly
-            # Dataset shape: [N, M, H, W] - always single channel (density only)
-            # Select one realization and add channel dimension
-            inputs = f["inputs/fields"][indices, realization_idx, :, :]
-            self.ics = torch.from_numpy(inputs).float().unsqueeze(1)  # [N', H, W] -> [N', 1, H, W]
+            # New standard: Dataset has shape [N, M, C, H, W] with explicit channel dimension
+            # Select one realization - result is [N', C, H, W]
+            inputs = f["inputs/fields"][indices, realization_idx, :, :, :]
 
             # Load Sobol parameter vectors for CNO replay
-            self.params = torch.from_numpy(f["parameters/params"][indices]).float()
+            params = f["parameters/params"][indices]
 
-        self.n_samples = n
+            # Check how many samples are actually populated (non-zero)
+            # This handles cases where HDF5 file is pre-allocated but only partially filled
+            sample_norms = np.linalg.norm(inputs.reshape(inputs.shape[0], -1), axis=1)
+            populated_mask = sample_norms > 1e-10  # Threshold for "non-zero"
+            num_populated = populated_mask.sum()
+            num_allocated = inputs.shape[0]
+
+            # Trim to populated samples only
+            if num_populated < num_allocated:
+                inputs = inputs[populated_mask]
+                params = params[populated_mask]
+                indices = indices[populated_mask]
+                print(f"  Dataset pre-allocated to {num_allocated} but only {num_populated} samples populated")
+                print(f"  Trimmed to {num_populated} non-zero samples")
+
+            self.ics = torch.from_numpy(inputs).float()  # [N', C, H, W] - keep as-is
+            self.params = torch.from_numpy(params).float()
+            self.indices = indices
+
+        # Update n_samples to reflect actual populated samples
+        self.n_samples = self.ics.shape[0]
 
     def __len__(self) -> int:
         return self.n_samples
@@ -133,7 +158,7 @@ class NOAStateDataset(Dataset):
 
         Returns:
             Dictionary with:
-                'ic': Initial condition [C, H, W]
+                'ic': Initial condition [C, H, W] where C is dataset channel count
                 'params': Sobol parameter vector [d,]
                 'sample_idx': Original index in the full dataset (for debugging/tracking)
         """
