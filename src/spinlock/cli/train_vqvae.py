@@ -1561,6 +1561,20 @@ Output:
                     # [N, M, C, H, W] -> [N, C, H, W]
                     raw_ics = raw_ics_data.mean(axis=1)
 
+                    # Check how many samples are actually populated (non-zero)
+                    # This handles cases where HDF5 file is pre-allocated but only partially filled
+                    sample_norms = np.linalg.norm(raw_ics.reshape(raw_ics.shape[0], -1), axis=1)
+                    populated_mask = sample_norms > 1e-10  # Threshold for "non-zero"
+                    num_populated = populated_mask.sum()
+                    num_allocated = raw_ics.shape[0]
+
+                    # Trim to populated samples only
+                    if num_populated < num_allocated:
+                        raw_ics = raw_ics[populated_mask]
+                        family_features = family_features[populated_mask]
+                        print(f"  {feature_family}: Dataset pre-allocated to {num_allocated} but only {num_populated} samples populated")
+                        print(f"    Trimmed to {num_populated} non-zero samples")
+
                     # Store info for hybrid encoder
                     initial_offset = sum(arr.shape[1] for arr in all_features)
                     initial_info = {
@@ -1611,6 +1625,25 @@ Output:
                     family_features = np.array(group["features"][:max_samples])
                 else:
                     family_features = np.array(group["features"])
+
+                # Check for pre-allocated but unpopulated samples
+                # Compute norm across all feature dimensions to detect all-zero rows
+                if len(family_features.shape) == 3:  # [N, M, D]
+                    sample_norms = np.linalg.norm(family_features.reshape(family_features.shape[0], -1), axis=1)
+                elif len(family_features.shape) == 2:  # [N, D]
+                    sample_norms = np.linalg.norm(family_features, axis=1)
+                else:
+                    sample_norms = None
+
+                if sample_norms is not None:
+                    populated_mask = sample_norms > 1e-10
+                    num_populated = populated_mask.sum()
+                    num_allocated = family_features.shape[0]
+
+                    if num_populated < num_allocated:
+                        family_features = family_features[populated_mask]
+                        print(f"  {feature_family}: Dataset pre-allocated to {num_allocated} but only {num_populated} samples populated")
+                        print(f"    Trimmed to {num_populated} non-zero samples")
 
                 # Reshape per_trajectory features from [N, M, D] to [N, M*D]
                 if feature_family == "summary" and len(family_features.shape) == 3:
