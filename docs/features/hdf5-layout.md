@@ -2,87 +2,165 @@
 
 This document describes the complete HDF5 schema for Spinlock datasets, including the feature storage structure used by the VQ-VAE tokenization pipeline.
 
-**Last Updated:** 2026-01-18 (v3.0 - SUMMARY features removed)
+**Last Updated:** 2026-01-29 (v3.1 - 3-channel support, realization dimension)
 
 ## Overview
 
 Spinlock datasets use HDF5 format with two main sections:
 
 1. **Core Dataset** (`/metadata/`, `/parameters/`, `/inputs/`, `/outputs/`) - Operator parameters and rollout data
-2. **Features** (`/features/`) - Extracted behavioral features (TEMPORAL family only in v3.0+)
+2. **Features** (`/features/`) - Extracted behavioral features (INITIAL, ARCHITECTURE, TEMPORAL)
 
 ## Complete Schema
 
 ```
 dataset.h5
 ├── metadata/
-│   ├── config              # JSON - full generation config
-│   ├── timestamp           # ISO timestamp
-│   └── version             # Schema version
+│   ├── evolution_policies [N]  # object - Evolution policy per sample
+│   ├── grid_sizes [N]          # int32 - Grid size per sample
+│   ├── ic_types [N]            # object - Initial condition type per sample
+│   └── noise_regimes [N]       # object - Noise regime per sample
 │
 ├── parameters/
-│   ├── params [N, P]       # float32 - Sobol parameter vectors (P=14 in v3.0)
-│   └── @dimension_names    # Attribute: parameter dimension names
+│   └── params [N, P]           # float32 - Sobol parameter vectors (P=14)
 │
 ├── inputs/
-│   └── fields [N, C, H, W] # float32 - Initial conditions
+│   └── fields [N, M, C, H, W]  # float32 - Initial conditions
+│                               # N: samples, M: realizations, C: channels
+│                               # H, W: grid height/width
 │
-├── outputs/                # (Only if store_trajectories=true)
-│   └── trajectories [N, M, T, C, H, W]  # float32 - Rollout data
+├── outputs/                    # (Only if store_trajectories=true)
+│   └── (empty or trajectories) # Rollout data (typically not stored)
 │
 └── features/
-    ├── @family_versions    # {"temporal": "3.0.0"}
-    ├── @extraction_timestamp
-    ├── @extraction_config
+    ├── architecture/
+    │   └── aggregated/
+    │       └── features [N, D_arch]  # float32 - Per-operator architectural features
     │
-    └── temporal/           # TEMPORAL family (per-timestep only)
-        ├── @version
-        ├── @feature_registry   # JSON {category: {name: index}}
-        └── features [N, T, D_temporal]  # float32 - D_temporal ≈ 328
+    ├── initial/
+    │   └── aggregated/
+    │       └── features [N, D_init]  # float32 - Initial condition features
+    │                                 # (aggregated over realizations)
+    │
+    ├── summary/                # (Present but typically empty in v3.1)
+    │   └── (empty)
+    │
+    └── temporal/
+        └── features [N, T, D_temporal]  # float32 - Per-timestep features
 ```
 
-**v3.0 Changes:**
-- Removed `/features/summary/` entirely (incompatible with online prediction)
-- TEMPORAL features enhanced from ~63D to ~328D per-timestep
-- All features now per-timestep computable for NOA online operation
+**v3.1 Changes (3-Channel Support):**
+- **inputs/fields** now has shape `[N, M, C, H, W]` with explicit realization dimension
+- Support for multi-channel inputs (C=3 for RGB-like data)
+- ARCHITECTURE features stored in `/features/architecture/aggregated/features`
+- INITIAL features stored in `/features/initial/aggregated/features`
+- TEMPORAL features enhanced to ~345D per-timestep
 
 ## Dimensions
 
-| Symbol | Description | Typical Value |
-|--------|-------------|---------------|
-| N | Number of samples (operators) | 1,000 - 100,000 |
-| M | Number of realizations | 3 - 10 |
-| T | Number of timesteps | 100 - 500 |
-| C | Number of channels | 1 |
-| H, W | Grid height/width | 128 |
-| P | Parameter dimension (v3.0+) | 14 |
-| D_temporal | TEMPORAL feature dim (v3.0+) | ~328 |
+| Symbol | Description | Typical Value | Example (50K Dataset) |
+|--------|-------------|---------------|----------------------|
+| N | Number of samples (operators) | 1,000 - 100,000 | 50,000 |
+| M | Number of realizations | 3 - 10 | 3 |
+| T | Number of timesteps | 100 - 500 | 256 |
+| C | Number of channels | 1 - 3 | 3 |
+| H, W | Grid height/width | 64 - 128 | 64 |
+| P | Parameter dimension | 14 | 14 |
+| D_arch | ARCHITECTURE feature dim | ~23 | 23 |
+| D_init | INITIAL feature dim | ~38 | 38 |
+| D_temporal | TEMPORAL feature dim | ~345 | 345 |
 
 ## Feature Families
 
+### ARCHITECTURE Family (`/features/architecture/`)
+
+Per-operator architectural features describing the neural operator structure.
+
+**Shape:** `[N, D_arch]` where D_arch ≈ 23
+
+**Storage:** `/features/architecture/aggregated/features`
+
+**Contents:**
+- Operator architecture parameters
+- Network topology features
+- Structural characteristics
+
+**Use Case:** Understanding how operator architecture affects behavioral regimes.
+
+### INITIAL Family (`/features/initial/`)
+
+Initial condition features aggregated over stochastic realizations.
+
+**Shape:** `[N, D_init]` where D_init ≈ 38
+
+**Storage:** `/features/initial/aggregated/features`
+
+**Contents:**
+- Spatial statistics of initial conditions
+- Spectral characteristics
+- Information-theoretic measures
+- Morphological features
+- **Aggregated over M realizations** to provide representative IC features
+
+**Use Case:** Understanding how initial conditions influence operator dynamics.
+
 ### TEMPORAL Family (`/features/temporal/`)
 
-Per-timestep time series preserving full temporal resolution. **This is the only feature family stored in `/features/` as of v3.0.**
+Per-timestep time series preserving full temporal resolution.
 
-**Shape:** `[N, T, D_temporal]` where D_temporal ≈ 328
+**Shape:** `[N, T, D_temporal]` where D_temporal ≈ 345
 
-**Contents (v3.0 Enhanced):**
-- **Spatial features (~105D):** Per-channel statistics, gradients, Laplacian, histogram features
-- **Spectral features (~93D):** Multi-scale FFT, power spectrum, frequency bands, spectral entropy
-- **Cross-channel features (~10D):** Pairwise correlations, covariance eigenvalues
-- **Enhanced temporal dynamics (~120D):** Windowed statistics, stability metrics, phase space features, autocorrelation
+**Storage:** `/features/temporal/features`
+
+**Contents (v3.1 Enhanced):**
+- **Spatial features:** Per-channel statistics, gradients, Laplacian, histogram features
+- **Spectral features:** Multi-scale FFT, power spectrum, frequency bands, spectral entropy
+- **Local dynamics:** Windowed statistics, stability metrics, phase space features
+- **Wavelet analysis:** Multi-resolution temporal-frequency decomposition
+- **Cross-channel features:** Pairwise correlations, covariance eigenvalues (for multi-channel data)
 
 **Use Case:** Working memory analysis, temporal pattern detection, trajectory classification, online NOA predictions.
 
 **Key Property:** All features are **per-timestep computable** (no lookahead required), enabling online operation.
 
-### ~~SUMMARY Family~~ [REMOVED in v3.0]
+### SUMMARY Family (`/features/summary/`)
 
-Aggregated trajectory-level features (causality, invariant drift, operator sensitivity) were removed in v3.0 because they require complete trajectories and are incompatible with online prediction.
+**Status:** Present in schema but typically empty in v3.1 datasets. Reserved for future trajectory-level aggregations.
 
-**Archived code:** `src/spinlock/features/temporal_old_v2/summary/`
+## Data Types and Ranges
 
-**Migration:** If you need trajectory-level aggregates, compute them post-hoc from TEMPORAL features or use v2.x datasets.
+### Inputs (`/inputs/fields`)
+
+**Shape:** `[N, M, C, H, W]` - 5D tensor
+
+**Interpretation:**
+- **N:** Sample index (operator)
+- **M:** Realization index (stochastic runs)
+- **C:** Channel index (e.g., RGB components)
+- **H, W:** Spatial grid coordinates
+
+**Example:** `(50000, 3, 3, 64, 64)` = 50,000 operators × 3 realizations × 3 channels × 64×64 grid
+
+**Data Range:** Typically normalized, e.g., `[-12.1, 12.3]` with mean ≈ 0
+
+### Parameters (`/parameters/params`)
+
+**Shape:** `[N, P]` where P=14
+
+**Type:** float32
+
+**Range:** `[0, 1]` (Sobol unit cube)
+
+**Interpretation:** Normalized operator parameters sampled via Sobol sequences for optimal space-filling coverage.
+
+### Features
+
+All feature datasets use **float32** dtype for efficiency.
+
+**Feature ranges vary by type:**
+- Spatial statistics: normalized or standardized
+- Spectral features: log-scale or normalized power
+- Information measures: bits or nats
 
 ## Reading Examples
 
@@ -92,39 +170,82 @@ Aggregated trajectory-level features (causality, invariant drift, operator sensi
 import h5py
 import numpy as np
 
-with h5py.File("dataset.h5", "r") as f:
-    # Check available feature families (v3.0: only 'temporal')
-    families = list(f["/features"].keys())
-    print(f"Available families: {families}")  # ['temporal']
+with h5py.File("datasets/cno_50k_3channel_dev.h5", "r") as f:
+    # Read inputs with realizations
+    inputs = f["/inputs/fields"][:]
+    print(f"Inputs shape: {inputs.shape}")  # [N, M, C, H, W]
+    print(f"Example: {inputs.shape} = {inputs.shape[0]} samples × "
+          f"{inputs.shape[1]} realizations × {inputs.shape[2]} channels × "
+          f"{inputs.shape[3]}×{inputs.shape[4]} grid")
 
-    # Read TEMPORAL per-timestep features
-    temporal = f["/features/temporal/features"][:]
-    print(f"TEMPORAL shape: {temporal.shape}")  # [N, T, ~328]
+    # Read feature families
+    arch_features = f["/features/architecture/aggregated/features"][:]
+    print(f"Architecture features: {arch_features.shape}")  # [N, 23]
 
-    # Read parameter vectors (14D Sobol space)
+    init_features = f["/features/initial/aggregated/features"][:]
+    print(f"Initial features: {init_features.shape}")  # [N, 38]
+
+    temporal_features = f["/features/temporal/features"][:]
+    print(f"Temporal features: {temporal_features.shape}")  # [N, T, 345]
+
+    # Read parameters
     params = f["/parameters/params"][:]
-    print(f"Parameters shape: {params.shape}")  # [N, 14]
+    print(f"Parameters: {params.shape}")  # [N, 14]
 
-    # Read feature registry for interpretability
-    registry_json = f["/features/temporal"].attrs["feature_registry"]
-    import json
-    registry = json.loads(registry_json)
-    # registry = {category: {feature_name: index}}
-
-    # Check metadata
-    version = f["/metadata/version"][()]
-    print(f"Dataset version: {version}")
+    # Read metadata
+    ic_types = f["/metadata/ic_types"][:]
+    evolution_policies = f["/metadata/evolution_policies"][:]
+    print(f"IC types: {ic_types[:5]}")
+    print(f"Evolution policies: {evolution_policies[:5]}")
 ```
 
-### VQ-VAE Feature Loading (v3.0)
+### VQ-VAE Feature Loading (v3.1)
 
 ```python
-# VQ-VAE loads TEMPORAL features directly
-features_path = "/features/temporal/features"
+import h5py
+import torch
 
-# Load INITIAL features (computed inline from /inputs/fields)
-# Load TEMPORAL features from HDF5
-# ARCHITECTURE features excluded from VQ-VAE training
+def load_features_for_vqvae(h5_path):
+    """Load features for VQ-VAE training.
+
+    VQ-VAE trains on INITIAL + TEMPORAL features.
+    ARCHITECTURE features are excluded (MNO already knows operator parameters θ).
+    """
+    with h5py.File(h5_path, "r") as f:
+        # Load INITIAL features (aggregated over realizations)
+        initial = f["/features/initial/aggregated/features"][:]
+
+        # Load TEMPORAL features (per-timestep)
+        temporal = f["/features/temporal/features"][:]
+
+        # Convert to torch tensors
+        initial_tensor = torch.from_numpy(initial)
+        temporal_tensor = torch.from_numpy(temporal)
+
+    return {
+        "initial": initial_tensor,  # [N, D_init]
+        "temporal": temporal_tensor  # [N, T, D_temporal]
+    }
+```
+
+### Inspecting Dataset Structure
+
+```python
+import h5py
+
+def print_h5_structure(h5_path):
+    """Print complete HDF5 structure."""
+    with h5py.File(h5_path, "r") as f:
+        def print_item(name, obj):
+            if isinstance(obj, h5py.Dataset):
+                print(f"  {name}: shape={obj.shape}, dtype={obj.dtype}")
+            elif isinstance(obj, h5py.Group):
+                print(f"  {name}/ (group)")
+
+        f.visititems(print_item)
+
+# Example usage
+print_h5_structure("datasets/cno_50k_3channel_dev.h5")
 ```
 
 ## Compression
@@ -141,36 +262,84 @@ Default HDF5 settings:
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.1.0 | 2026-01-29 | 3-channel support; explicit realization dimension in inputs; ARCHITECTURE and INITIAL stored in /features/ |
 | 3.0.0 | 2026-01-18 | Removed SUMMARY features; enhanced TEMPORAL to ~328D; 14D parameter space |
 | 2.0.0 | 2026-01-12 | Two-family structure (TEMPORAL, SUMMARY) with enhanced features |
 | 1.0.0 | 2025-12 | Initial implementation |
 
 ## Migration Notes
 
-### v3.0 Changes (2026-01-18)
+### v3.1 Changes (2026-01-29)
 
-**Breaking Changes:**
-- **Removed `/features/summary/`** entirely (per_trajectory, aggregated, learned, operator_sensitivity_inline)
-- **Enhanced TEMPORAL** from ~63D to ~328D per-timestep
-- **Parameter space** expanded from 12D to 14D (added dt and alpha)
-- **Feature families** reduced from 4 conceptual families to 3
+**Key Changes:**
+- **inputs/fields shape** changed from `[N, C, H, W]` to `[N, M, C, H, W]`
+  - Explicit realization dimension M (typically 3)
+  - Enables proper stochastic sampling and uncertainty quantification
+- **Multi-channel support:** C can now be 1-3 (grayscale or RGB-like)
+- **ARCHITECTURE features** now stored in `/features/architecture/aggregated/features [N, D_arch]`
+- **INITIAL features** now stored in `/features/initial/aggregated/features [N, D_init]`
+- **TEMPORAL features** expanded to ~345D per-timestep (from ~328D in v3.0)
 
-**Rationale:**
-SUMMARY features (causality, invariant drift, operator sensitivity, nonlinear dynamics) required complete trajectories for aggregation, making them incompatible with online NOA predictions. All features must now be computable per-timestep.
+**Migration from v3.0:**
+1. **inputs/fields:** Add realization dimension if missing (expand [N, C, H, W] → [N, 1, C, H, W])
+2. **features/architecture:** Extract from parameters if needed
+3. **features/initial:** Compute from inputs/fields with realization aggregation
 
-**Current Structure (v3.0):**
-- **INITIAL** features → Computed inline from `/inputs/fields` (not stored in `/features/`)
-- **ARCHITECTURE** features → Stored in `/parameters/params [N, 14]` (Sobol unit cube)
-- **TEMPORAL** features → `/features/temporal/features [N, T, ~328]` (per-timestep only)
+### From v2.x to v3.1
 
-**Archived Code:**
-Old SUMMARY implementation available at `src/spinlock/features/temporal_old_v2/summary/` for reference.
+If you have v2.x datasets:
+1. **Regenerate datasets** using v3.1 feature extraction (recommended)
+2. **Convert features** by extracting all three families (ARCHITECTURE, INITIAL, TEMPORAL)
+3. **Note:** SUMMARY features removed - compute trajectory-level aggregates post-hoc if needed
 
-### From v2.x to v3.0
+## Example: Full Dataset Inspection
 
-If you have v2.x datasets with SUMMARY features:
-1. **Regenerate datasets** using v3.0 feature extraction (recommended)
-2. **Convert features** by extracting TEMPORAL features and discarding SUMMARY
-3. **Use v2.x datasets** if you need trajectory-level aggregates (not compatible with v3.0 models)
+```python
+import h5py
+import numpy as np
 
-The conceptual 3-family framework (INITIAL, ARCHITECTURE, TEMPORAL) is described in [Feature Families README](README.md).
+with h5py.File("datasets/cno_50k_3channel_dev.h5", "r") as f:
+    print("=" * 80)
+    print("DATASET SUMMARY")
+    print("=" * 80)
+
+    # Core dimensions
+    N = f["/inputs/fields"].shape[0]
+    M = f["/inputs/fields"].shape[1]
+    C = f["/inputs/fields"].shape[2]
+    H, W = f["/inputs/fields"].shape[3:5]
+    T = f["/features/temporal/features"].shape[1]
+
+    print(f"\nSamples: {N}")
+    print(f"Realizations per sample: {M}")
+    print(f"Channels: {C}")
+    print(f"Grid size: {H}×{W}")
+    print(f"Timesteps: {T}")
+
+    # Feature dimensions
+    D_arch = f["/features/architecture/aggregated/features"].shape[1]
+    D_init = f["/features/initial/aggregated/features"].shape[1]
+    D_temporal = f["/features/temporal/features"].shape[2]
+
+    print(f"\nFeature dimensions:")
+    print(f"  ARCHITECTURE: {D_arch}D")
+    print(f"  INITIAL: {D_init}D")
+    print(f"  TEMPORAL: {D_temporal}D per timestep")
+
+    # Memory footprint
+    inputs_size = np.prod(f["/inputs/fields"].shape) * 4 / 1e9  # GB
+    temporal_size = np.prod(f["/features/temporal/features"].shape) * 4 / 1e9
+
+    print(f"\nStorage (uncompressed):")
+    print(f"  Inputs: {inputs_size:.2f} GB")
+    print(f"  Temporal features: {temporal_size:.2f} GB")
+    print(f"  Total: {inputs_size + temporal_size:.2f} GB")
+```
+
+## Notes
+
+- **Realization dimension:** The explicit M dimension in inputs allows proper handling of stochastic dynamics
+- **Feature aggregation:** INITIAL features aggregate over M realizations, while TEMPORAL features are per-realization or averaged
+- **ARCHITECTURE vs parameters:** `/parameters/params` stores raw Sobol samples; `/features/architecture/` stores derived architectural features
+- **Empty outputs:** The `/outputs/` group is present but typically empty (trajectories not stored to save space)
+- **Metadata fields:** Evolution policies, IC types, noise regimes, and grid sizes provide per-sample metadata for analysis
