@@ -429,7 +429,8 @@ def compute_default_num_tokens(
         [32, 32, 32]
     """
     # Base token count scales with embedding capacity
-    base_tokens = int(np.log2(group_embedding_dim) * 7)
+    # Reduced from 7 → 5 based on utilization analysis showing room for compression
+    base_tokens = int(np.log2(group_embedding_dim) * 5)
 
     # Compute L0 tokens first (always uses full base)
     l0_tokens_float = base_tokens * 1.0  # level_multiplier=1.0 for L0
