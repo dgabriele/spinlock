@@ -412,7 +412,15 @@ Output:
             encoder = family_config.get("encoder", "MLPEncoder")
             params = family_config.get("encoder_params", {})
             hidden = params.get("hidden_dims", [])
-            output = params.get("output_dim", 64)
+
+            # Handle encoder-specific output dimension names
+            if encoder == "initial_hybrid":
+                output = params.get("cnn_embedding_dim", 64)
+            elif encoder == "TemporalCNNEncoder":
+                output = params.get("embedding_dim", 128)
+            else:
+                output = params.get("output_dim", 64)
+
             print(f"  {family_name}:")
             print(f"    Encoder: {encoder}")
             print(f"    Hidden:  {hidden} → {output}")
@@ -584,10 +592,42 @@ Output:
         features, feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated, raw_summary = self._load_features(config)
 
         # Check for incomplete datasets (allocated but not fully generated)
-        # Detect samples that are all zeros (ungenerated)
-        non_zero_mask = np.any(features != 0, axis=1)
-        actual_samples = non_zero_mask.sum()
+        # Use multiple strategies to detect ungenerated samples:
+        # 1. Check if features are all zeros
+        # 2. Check if raw_ics are all zeros (more reliable for hybrid mode)
+        # 3. Check if feature norm is extremely small (< 1e-6)
+
         allocated_samples = len(features)
+
+        # Strategy 1: Simple zero check on features
+        feature_nonzero_mask = np.any(features != 0, axis=1)
+
+        # Strategy 2: Check raw_ics if available (most reliable for incomplete data)
+        if raw_ics is not None and len(raw_ics.shape) > 1:
+            # For raw_ics with shape [N, ...], check if all values are zero
+            ics_axes = tuple(range(1, len(raw_ics.shape)))
+            ics_nonzero_mask = np.any(raw_ics != 0, axis=ics_axes)
+            if verbose:
+                print(f"Debug: Incomplete detection strategies:")
+                print(f"  Features non-zero: {feature_nonzero_mask.sum()}/{allocated_samples}")
+                print(f"  Raw ICs non-zero:  {ics_nonzero_mask.sum()}/{allocated_samples}")
+            # Use raw_ics as ground truth if available
+            non_zero_mask = ics_nonzero_mask
+        else:
+            # Strategy 3: Check feature norm threshold (more robust than exact zero)
+            feature_norms = np.linalg.norm(features, axis=1)
+            norm_threshold = 1e-6
+            norm_nonzero_mask = feature_norms > norm_threshold
+
+            if verbose:
+                print(f"Debug: Incomplete detection strategies:")
+                print(f"  Features non-zero (exact): {feature_nonzero_mask.sum()}/{allocated_samples}")
+                print(f"  Features non-zero (norm>{norm_threshold}): {norm_nonzero_mask.sum()}/{allocated_samples}")
+
+            # Use norm-based detection (more robust)
+            non_zero_mask = norm_nonzero_mask
+
+        actual_samples = non_zero_mask.sum()
 
         if actual_samples < allocated_samples:
             if verbose:
@@ -606,6 +646,8 @@ Output:
                 is_interpolated = is_interpolated[non_zero_mask]
             if raw_summary is not None:
                 raw_summary = raw_summary[non_zero_mask]
+        elif verbose:
+            print(f"Debug: No incomplete dataset detected (all {allocated_samples} samples appear valid)")
 
         # Store reference features, interpolation mask, and raw SUMMARY as instance variables for data loaders
         self._reference_features = reference_features

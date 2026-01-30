@@ -53,7 +53,8 @@ def parse_compression_ratios(compression_ratios: str, num_levels: int = 3) -> Li
 
     # Validate all ratios are positive
     if any(r <= 0 for r in ratios):
-        raise ValueError(f"All compression ratios must be positive, got: {ratios}")
+        raise ValueError(
+            f"All compression ratios must be positive, got: {ratios}")
 
     return ratios
 
@@ -669,6 +670,7 @@ def compute_adaptive_compression_ratios(
     features: np.ndarray,
     category_name: str = "unknown",
     strategy: str = "balanced",
+    scale_factor: float = 1.2,
     **kwargs
 ) -> List[float]:
     """Compute optimal compression ratios based on feature characteristics.
@@ -699,15 +701,18 @@ def compute_adaptive_compression_ratios(
     if strategy == "variance":
         ratios = _compute_variance_driven_ratios(metrics['variance_score'])
     elif strategy == "dimensionality":
-        ratios = _compute_dimensionality_driven_ratios(metrics['dimensionality_score'])
+        ratios = _compute_dimensionality_driven_ratios(
+            metrics['dimensionality_score'])
     elif strategy == "information":
         ratios = _compute_information_driven_ratios(
             metrics['information_score'], metrics['correlation_score']
         )
     elif strategy == "balanced":
         # Weighted combination of all strategies
-        variance_ratios = _compute_variance_driven_ratios(metrics['variance_score'])
-        dim_ratios = _compute_dimensionality_driven_ratios(metrics['dimensionality_score'])
+        variance_ratios = _compute_variance_driven_ratios(
+            metrics['variance_score'])
+        dim_ratios = _compute_dimensionality_driven_ratios(
+            metrics['dimensionality_score'])
         info_ratios = _compute_information_driven_ratios(
             metrics['information_score'], metrics['correlation_score']
         )
@@ -716,7 +721,8 @@ def compute_adaptive_compression_ratios(
         weights = {
             'variance': metrics['variance_score'],
             'dimensionality': metrics['dimensionality_score'],
-            'information': 1.0 - metrics['information_score'],  # Low info → high weight
+            # Low info → high weight
+            'information': 1.0 - metrics['information_score'],
         }
 
         # Normalize weights
@@ -724,7 +730,8 @@ def compute_adaptive_compression_ratios(
         if total_weight > 0:
             weights = {k: v / total_weight for k, v in weights.items()}
         else:
-            weights = {'variance': 1/3, 'dimensionality': 1/3, 'information': 1/3}
+            weights = {'variance': 1/3,
+                       'dimensionality': 1/3, 'information': 1/3}
 
         # Weighted combination
         ratios = []
@@ -742,7 +749,7 @@ def compute_adaptive_compression_ratios(
         )
 
     # Round to 2 decimals for readability
-    ratios = [round(r, 2) for r in ratios]
+    ratios = [scale_factor*round(r, 2) for r in ratios]
 
     # NOTE: Minimum ratio constraints were tested and found to be harmful.
     # Experiments showed that aggressive compression (e.g., 11D → 4D at L0) can

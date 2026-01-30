@@ -76,6 +76,40 @@ def compute_correlation_matrix_cpu(
     return corr_matrix, condensed_dist
 
 
+def compute_distance_matrix(
+    features: np.ndarray,
+    metric: str = 'correlation',
+    corr_matrix: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """Compute pairwise distance matrix with configurable metric.
+
+    Args:
+        features: [N, D] feature array
+        metric: 'correlation', 'euclidean', or 'cosine'
+        corr_matrix: Pre-computed correlation matrix (for correlation metric)
+
+    Returns:
+        distance_matrix: [D, D] pairwise distance matrix
+    """
+    if metric == 'correlation':
+        if corr_matrix is None:
+            corr_matrix = np.corrcoef(features.T)
+        distance_matrix = 1.0 - np.abs(corr_matrix)
+        np.fill_diagonal(distance_matrix, 0.0)
+        return distance_matrix
+
+    elif metric == 'euclidean':
+        from scipy.spatial.distance import pdist, squareform
+        return squareform(pdist(features.T, metric='euclidean'))
+
+    elif metric == 'cosine':
+        from scipy.spatial.distance import pdist, squareform
+        return squareform(pdist(features.T, metric='cosine'))
+
+    else:
+        raise ValueError(f"Unknown distance metric: {metric}")
+
+
 def auto_determine_num_clusters(
     features: np.ndarray,
     min_clusters: int = 2,
@@ -206,6 +240,229 @@ def auto_determine_num_clusters(
         raise ValueError(f"Unknown auto-determination method: {method}")
 
 
+def _compute_within_cluster_dispersion(features: np.ndarray, labels: np.ndarray) -> float:
+    """Sum of pairwise distances within clusters.
+
+    Args:
+        features: [N_samples, N_features] data
+        labels: Cluster labels for each feature
+
+    Returns:
+        Total within-cluster dispersion
+    """
+    from scipy.spatial.distance import pdist
+
+    total_dispersion = 0.0
+    for cluster_id in np.unique(labels):
+        cluster_mask = labels == cluster_id
+        cluster_features = features[:, cluster_mask]
+        if cluster_features.shape[1] > 1:
+            total_dispersion += np.sum(pdist(cluster_features.T, metric='euclidean'))
+
+    return total_dispersion
+
+
+def _compute_wcss(features: np.ndarray, labels: np.ndarray) -> float:
+    """Within-cluster sum of squares.
+
+    Args:
+        features: [N_samples, N_features] data
+        labels: Cluster labels for each feature
+
+    Returns:
+        Total within-cluster sum of squares
+    """
+    wcss = 0.0
+    for cluster_id in np.unique(labels):
+        cluster_mask = labels == cluster_id
+        cluster_features = features[:, cluster_mask]
+        if cluster_features.shape[1] > 1:
+            centroid = cluster_features.mean(axis=1, keepdims=True)
+            wcss += np.sum((cluster_features - centroid) ** 2)
+    return wcss
+
+
+def _gap_statistic_k_selection(
+    features: np.ndarray,
+    min_clusters: int,
+    max_clusters: int,
+    n_refs: int = 10,
+    linkage_method: str = 'ward',
+    distance_metric: str = 'correlation',
+    subsample_size: Optional[int] = None,
+) -> int:
+    """Gap statistic: Compare log(W_k) to reference distribution.
+
+    Gap(K) = E[log(W_k)] - log(W_k)
+    Choose K where Gap(K) - Gap(K+1) + s_{K+1} >= 0
+
+    Args:
+        features: [N_samples, N_features] data
+        min_clusters: Minimum number of clusters
+        max_clusters: Maximum number of clusters
+        n_refs: Number of reference distributions
+        linkage_method: Linkage method for hierarchical clustering
+        distance_metric: Distance metric
+        subsample_size: Optional subsampling for large datasets
+
+    Returns:
+        Optimal number of clusters
+    """
+    # Subsample if requested
+    if subsample_size is not None and subsample_size < features.shape[0]:
+        indices = np.random.choice(features.shape[0], subsample_size, replace=False)
+        features = features[indices]
+
+    # Compute distance matrix for real data
+    distance_matrix = compute_distance_matrix(features, distance_metric)
+    condensed_dist = squareform(distance_matrix, checks=False)
+    Z = sch.linkage(condensed_dist, method=linkage_method)
+
+    gaps = []
+    s_k = []  # Standard errors
+
+    for k in range(min_clusters, max_clusters + 1):
+        # Real clustering
+        labels = sch.fcluster(Z, k, criterion='maxclust')
+        W_k = _compute_within_cluster_dispersion(features, labels)
+
+        # Reference distributions (uniform over feature range)
+        W_k_refs = []
+        for _ in range(n_refs):
+            ref_data = np.random.uniform(
+                low=features.min(axis=0),
+                high=features.max(axis=0),
+                size=features.shape
+            )
+            ref_dist = compute_distance_matrix(ref_data, distance_metric)
+            ref_condensed = squareform(ref_dist, checks=False)
+            ref_Z = sch.linkage(ref_condensed, method=linkage_method)
+            ref_labels = sch.fcluster(ref_Z, k, criterion='maxclust')
+            W_k_refs.append(_compute_within_cluster_dispersion(ref_data, ref_labels))
+
+        # Gap statistic
+        gap = np.mean(np.log(W_k_refs)) - np.log(W_k)
+        gaps.append(gap)
+        s_k.append(np.std(np.log(W_k_refs)) * np.sqrt(1 + 1/n_refs))
+
+        logger.info(f"  K={k}: gap={gap:.3f}, s_k={s_k[-1]:.3f}")
+
+    # Find first K where Gap(K) >= Gap(K+1) - s_{K+1}
+    for i in range(len(gaps) - 1):
+        if gaps[i] >= gaps[i+1] - s_k[i+1]:
+            best_k = min_clusters + i
+            logger.info(f"Auto-determined K={best_k} clusters (gap statistic={gaps[i]:.3f})")
+            return best_k
+
+    # If no elbow found, return max
+    logger.info(f"Auto-determined K={max_clusters} clusters (gap statistic, no clear elbow)")
+    return max_clusters
+
+
+def _elbow_k_selection(
+    features: np.ndarray,
+    min_clusters: int,
+    max_clusters: int,
+    linkage_method: str = 'ward',
+    distance_metric: str = 'correlation',
+    subsample_size: Optional[int] = None,
+) -> int:
+    """Elbow method: Find 'elbow' in WCSS curve using second derivative.
+
+    Args:
+        features: [N_samples, N_features] data
+        min_clusters: Minimum number of clusters
+        max_clusters: Maximum number of clusters
+        linkage_method: Linkage method for hierarchical clustering
+        distance_metric: Distance metric
+        subsample_size: Optional subsampling for large datasets
+
+    Returns:
+        Optimal number of clusters
+    """
+    # Subsample if requested
+    if subsample_size is not None and subsample_size < features.shape[0]:
+        indices = np.random.choice(features.shape[0], subsample_size, replace=False)
+        features = features[indices]
+
+    distance_matrix = compute_distance_matrix(features, distance_metric)
+    condensed_dist = squareform(distance_matrix, checks=False)
+    Z = sch.linkage(condensed_dist, method=linkage_method)
+
+    wcss_values = []
+    k_values = list(range(min_clusters, max_clusters + 1))
+
+    for k in k_values:
+        labels = sch.fcluster(Z, k, criterion='maxclust')
+        wcss = _compute_wcss(features, labels)
+        wcss_values.append(wcss)
+        logger.info(f"  K={k}: WCSS={wcss:.2f}")
+
+    if len(k_values) < 3:
+        return min_clusters
+
+    # Compute second differences (discrete second derivative)
+    first_diff = np.diff(wcss_values)
+    second_diff = np.diff(first_diff)
+
+    # Elbow is where second derivative is maximum
+    elbow_idx = np.argmax(np.abs(second_diff))
+    best_k = k_values[elbow_idx + 1]
+    logger.info(f"Auto-determined K={best_k} clusters (elbow method)")
+    return best_k
+
+
+def _export_dendrogram(
+    Z: np.ndarray,
+    feature_names: List[str],
+    output_path: str,
+    family_name: str
+):
+    """Export dendrogram as PNG and linkage matrix as NPZ.
+
+    Args:
+        Z: Linkage matrix from scipy.cluster.hierarchy.linkage
+        feature_names: List of feature names (for labels)
+        output_path: Directory path for outputs
+        family_name: Name for this dendrogram (used in filename)
+    """
+    from pathlib import Path
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    output_dir = Path(output_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create dendrogram plot
+    plt.figure(figsize=(20, 10))
+    sch.dendrogram(
+        Z,
+        labels=feature_names,
+        leaf_rotation=90,
+        leaf_font_size=8
+    )
+    plt.title(f'Feature Dendrogram: {family_name}')
+    plt.xlabel('Feature')
+    plt.ylabel('Distance')
+    plt.tight_layout()
+
+    # Save plot
+    plot_path = output_dir / f'{family_name}_dendrogram.png'
+    plt.savefig(plot_path, dpi=150)
+    plt.close()
+
+    # Save linkage matrix for later analysis
+    linkage_path = output_dir / f'{family_name}_linkage.npz'
+    np.savez(
+        linkage_path,
+        linkage_matrix=Z,
+        feature_names=np.array(feature_names)
+    )
+
+    logger.info(f"  Dendrogram saved: {plot_path}")
+
+
 def hierarchical_clustering_assignment(
     features: np.ndarray,
     feature_names: List[str],
@@ -218,11 +475,20 @@ def hierarchical_clustering_assignment(
     max_clusters: int = 50,
     isolated_families: Optional[List[str]] = None,
     reassign_orphans: bool = False,
+    # NEW: Clustering configuration
+    linkage_method: str = "ward",
+    distance_metric: str = "correlation",
+    k_selection_method: str = "silhouette",
+    manual_k: Optional[int] = None,
+    gap_statistic_refs: int = 10,
+    distance_threshold: Optional[float] = None,
+    export_dendrogram: bool = False,
+    dendrogram_path: str = "diagnostics/dendrograms",
 ) -> Dict[str, List[int]]:
     """Assign features to clusters using hierarchical clustering.
 
-    Uses correlation distance (1 - |correlation|) with Ward linkage to cluster
-    features based on their statistical similarity.
+    Uses configurable distance metrics and linkage methods to cluster features
+    based on their statistical similarity.
 
     For large datasets (>50K samples), subsamples for clustering to avoid
     prohibitive computational cost. Category discovery is based on feature
@@ -231,7 +497,7 @@ def hierarchical_clustering_assignment(
     Args:
         features: [N_samples, N_features] data
         feature_names: List of feature names (length N_features)
-        num_clusters: Number of clusters (None = auto-determine via silhouette)
+        num_clusters: Number of clusters (None = auto-determine)
         min_features_per_cluster: Minimum features per cluster (prevents singletons)
         orthogonality_target: Target max correlation (used for validation warning)
         random_seed: Random seed for reproducibility
@@ -244,6 +510,14 @@ def hierarchical_clustering_assignment(
         reassign_orphans: If True, features in too-small clusters are reassigned to
             nearest valid cluster by correlation distance. If False (default), small
             clusters are skipped. Set to True to guarantee 100% feature assignment.
+        linkage_method: Linkage method: 'ward', 'average', 'complete', 'single'
+        distance_metric: Distance metric: 'correlation', 'euclidean', 'cosine'
+        k_selection_method: K selection: 'silhouette', 'gap_statistic', 'elbow', 'manual'
+        manual_k: If k_selection_method='manual', use this K value
+        gap_statistic_refs: Number of reference distributions for gap statistic
+        distance_threshold: If set, cut dendrogram at this distance (overrides K selection)
+        export_dendrogram: If True, export dendrogram visualizations
+        dendrogram_path: Directory path for dendrogram exports
 
     Returns:
         Dict mapping category_name -> list of feature indices
@@ -310,40 +584,94 @@ def hierarchical_clustering_assignment(
     else:
         logger.info(f"Using all {N_samples:,} samples for clustering")
 
-    # === CORRELATION-BASED CLUSTERING ===
-    # Auto-determine num_clusters if not specified
-    # Use clustering subset (excluding isolated families)
-    if num_clusters is None:
-        num_clusters = auto_determine_num_clusters(
-            clustering_features,
-            method="silhouette",
-            min_clusters=min_clusters,
-            max_clusters=max_clusters,
-            random_seed=random_seed,
-            subsample_size=subsample_size,
-        )
-
-    # Compute correlation matrix on clustering subset (use CUDA if available)
-    if USE_CUDA:
+    # === HIERARCHICAL CLUSTERING ===
+    # Compute correlation matrix if needed (for correlation distance or for CUDA optimization)
+    corr_matrix = None
+    if USE_CUDA and distance_metric == 'correlation':
         logger.info("Computing correlation matrix (CUDA)")
-        corr_matrix_only = compute_correlation_matrix_cuda(
+        corr_matrix = compute_correlation_matrix_cuda(
             clustering_features, subsample_size=subsample_size
         )
-        # Convert to distance and condensed form for scipy
-        distance_matrix = 1.0 - np.abs(corr_matrix_only)
-        np.fill_diagonal(distance_matrix, 0.0)
-        condensed_dist = squareform(distance_matrix, checks=False)
-        corr_matrix = corr_matrix_only
-    else:
+    elif distance_metric == 'correlation':
         logger.info("Computing correlation matrix (CPU)")
-        corr_matrix, condensed_dist = compute_correlation_matrix_cpu(
+        corr_matrix, _ = compute_correlation_matrix_cpu(
             clustering_features, subsample_size=subsample_size
         )
 
-    linkage_matrix = sch.linkage(condensed_dist, method="ward")
+    # Compute distance matrix with configurable metric
+    logger.info(f"Computing distance matrix (metric: {distance_metric})")
+    distance_matrix = compute_distance_matrix(clustering_features, distance_metric, corr_matrix)
+    condensed_dist = squareform(distance_matrix, checks=False)
 
-    # Cut dendrogram to get cluster labels
-    labels = sch.fcluster(linkage_matrix, num_clusters, criterion="maxclust")
+    # Perform hierarchical clustering with configurable linkage
+    logger.info(f"Performing hierarchical clustering (linkage: {linkage_method})")
+    linkage_matrix = sch.linkage(condensed_dist, method=linkage_method)
+
+    # Export dendrogram if requested
+    if export_dendrogram:
+        family_name = "global" if not clustering_feature_names else "clustering"
+        _export_dendrogram(
+            linkage_matrix,
+            clustering_feature_names,
+            dendrogram_path,
+            family_name
+        )
+
+    # Determine number of clusters
+    if distance_threshold is not None:
+        # Cut by distance threshold (no K constraint)
+        labels = sch.fcluster(linkage_matrix, distance_threshold, criterion='distance')
+        num_clusters = len(np.unique(labels))
+        logger.info(f"Distance threshold {distance_threshold:.3f} → {num_clusters} clusters")
+    else:
+        # K-based approach with configurable selection method
+        if num_clusters is None:
+            # Auto-determine K
+            if k_selection_method == 'manual':
+                if manual_k is None:
+                    raise ValueError("manual_k must be specified when k_selection_method='manual'")
+                num_clusters = manual_k
+                logger.info(f"Using manual K={num_clusters}")
+
+            elif k_selection_method == 'gap_statistic':
+                logger.info("Auto-determining K via gap statistic")
+                num_clusters = _gap_statistic_k_selection(
+                    clustering_features,
+                    min_clusters,
+                    max_clusters,
+                    n_refs=gap_statistic_refs,
+                    linkage_method=linkage_method,
+                    distance_metric=distance_metric,
+                    subsample_size=subsample_size,
+                )
+
+            elif k_selection_method == 'elbow':
+                logger.info("Auto-determining K via elbow method")
+                num_clusters = _elbow_k_selection(
+                    clustering_features,
+                    min_clusters,
+                    max_clusters,
+                    linkage_method=linkage_method,
+                    distance_metric=distance_metric,
+                    subsample_size=subsample_size,
+                )
+
+            elif k_selection_method == 'silhouette':
+                logger.info("Auto-determining K via silhouette score")
+                num_clusters = auto_determine_num_clusters(
+                    clustering_features,
+                    method="silhouette",
+                    min_clusters=min_clusters,
+                    max_clusters=max_clusters,
+                    random_seed=random_seed,
+                    subsample_size=subsample_size,
+                )
+
+            else:
+                raise ValueError(f"Unknown K selection method: {k_selection_method}")
+
+        # Cut dendrogram to get cluster labels
+        labels = sch.fcluster(linkage_matrix, num_clusters, criterion="maxclust")
 
     # Build category assignments
     # Note: cluster_indices are indices into clustering_features, need to map back
@@ -483,6 +811,15 @@ def per_family_clustering_assignment(
     max_samples_for_clustering: int = 50000,
     isolated_families: Optional[List[str]] = None,
     reassign_orphans: bool = False,
+    # NEW: Default clustering configuration (can be overridden per-family)
+    linkage_method: str = "ward",
+    distance_metric: str = "correlation",
+    k_selection_method: str = "silhouette",
+    manual_k: Optional[int] = None,
+    gap_statistic_refs: int = 10,
+    distance_threshold: Optional[float] = None,
+    export_dendrogram: bool = False,
+    dendrogram_path: str = "diagnostics/dendrograms",
 ) -> Dict[str, List[int]]:
     """Cluster features per-family independently.
 
@@ -548,10 +885,21 @@ def per_family_clustering_assignment(
         family_max_clusters = family_params.get("max_clusters", min(12, len(family_indices) // 2))
         family_num_clusters = family_params.get("num_clusters", None)  # Explicit K
 
+        # Allow per-family override of clustering parameters
+        family_linkage = family_params.get("linkage_method", linkage_method)
+        family_distance = family_params.get("distance_metric", distance_metric)
+        family_k_selection = family_params.get("k_selection_method", k_selection_method)
+        family_manual_k = family_params.get("manual_k", manual_k)
+        family_gap_refs = family_params.get("gap_statistic_refs", gap_statistic_refs)
+        family_dist_threshold = family_params.get("distance_threshold", distance_threshold)
+
         logger.info(f"\nClustering family '{family}' ({len(family_indices)} features):")
         logger.info(f"  min_clusters: {family_min_clusters}")
         logger.info(f"  max_clusters: {family_max_clusters}")
         logger.info(f"  num_clusters: {family_num_clusters or 'auto'}")
+        logger.info(f"  linkage_method: {family_linkage}")
+        logger.info(f"  distance_metric: {family_distance}")
+        logger.info(f"  k_selection_method: {family_k_selection}")
 
         # Cluster this family (reuse existing function)
         family_assignments = hierarchical_clustering_assignment(
@@ -566,6 +914,15 @@ def per_family_clustering_assignment(
             max_clusters=family_max_clusters,
             isolated_families=None,  # Already handled above
             reassign_orphans=reassign_orphans,
+            # Pass through clustering configuration (with per-family overrides)
+            linkage_method=family_linkage,
+            distance_metric=family_distance,
+            k_selection_method=family_k_selection,
+            manual_k=family_manual_k,
+            gap_statistic_refs=family_gap_refs,
+            distance_threshold=family_dist_threshold,
+            export_dendrogram=export_dendrogram,
+            dendrogram_path=dendrogram_path,
         )
 
         # 4. Map local indices → global indices and prefix category names

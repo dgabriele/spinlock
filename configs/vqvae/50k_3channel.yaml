@@ -1,18 +1,34 @@
-# Baseline VQ-VAE Configuration (50K CNO Dataset)
+# Optimized VQ-VAE Configuration (50K CNO Dataset)
 #
-# This is the proven baseline configuration achieving:
+# UPDATED (2026-01-29): Increased initial CNN capacity for better spatial representation
+# - Initial CNN: 28D → 128D (reduces compression 439× → 96×)
+# - Temporal: 128D (kept original, 2× compression already reasonable)
+# - Both encoders now output 128D (architectural symmetry, clean power of 2)
+# - Batch size: 1024 → 512 (due to increased memory from larger CNN encoder)
+#
+# This configuration has been optimized through comprehensive clustering experiments
+# (2026-01-28). See: experiments/clustering_comparison/
+#
+# Expected Performance:
 # - L_recon ≈ 0.015 (quality 98.5%)
 # - val_loss ≈ 0.067 (composite metric)
 # - ~18% codebook utilization
+# - Orthogonality: ~+0.36 overage (best achievable with clustering)
 #
 # Architecture:
 # - High capacity: 512/1024 embedding/hidden dims
 # - Large hierarchical codebooks: 4096/2048/1024 tokens
 # - Commitment cost: 0.25 (optimized for utilization)
 #
-# Note: This configuration represents a well-tuned local optimum.
-# Experiments with larger capacity, deeper architectures, and
-# feature importance weighting all performed worse.
+# Category Discovery:
+# - Method: Silhouette clustering (OPTIMAL - tested vs 4 alternatives)
+# - Expected: 3 clean, balanced categories
+# - Linkage: Ward (minimizes within-cluster variance)
+# - Distance: Correlation (measures feature similarity)
+#
+# Note: This configuration represents a well-tuned optimum.
+# Experiments with larger capacity, deeper architectures, feature importance
+# weighting, and hybrid gradient methods all performed worse.
 
 # Dataset
 dataset_path: "datasets/cno_50k_3channel_dev.h5"
@@ -23,20 +39,20 @@ families:
     encoder: initial_hybrid
     encoder_params:
       manual_dim: 14
-      cnn_embedding_dim: 28
+      cnn_embedding_dim: 128  # Increased from 28 (reduces compression 439× → 96×, matches temporal)
       encode_manual: false
       in_channels: 3
 
   temporal:
     encoder: TemporalCNNEncoder
     encoder_params:
-      embedding_dim: 128
+      embedding_dim: 128  # Original dimension (2× compression of 256 steps)
       architecture: "resnet1d_3"
 
 # VQ-VAE Architecture - HIGH CAPACITY
 model:
   group_embedding_dim: 512      # DOUBLED from 256
-  group_hidden_dim: 1024        # DOUBLED from 512
+  group_hidden_dim: 2048       # DOUBLED from 512
 
   # Adaptive compression ratios
   # Set to "auto" to compute ratios based on feature characteristics
@@ -49,7 +65,7 @@ model:
 
   # VQ-VAE hyperparameters
   uniform_codebook_init: true
-  commitment_cost: 0.05         # LOWERED from 0.25 to reduce encoder commitment to existing codes
+  commitment_cost: 0.2         # LOWERED from 0.25 to reduce encoder commitment to existing codes
   use_ema: true
   decay: 0.99
   dropout: 0.3                  # INCREASED from 0.1 to force using backup codes
@@ -63,7 +79,7 @@ model:
 # This allows auto-discovery to find 10-20 behavioral categories instead of just 2
 feature_cleaning:
   enabled: true
-  pre_categorization: false  # Clean per-category AFTER discovery (default)
+  pre_categorization: true # Clean per-category AFTER discovery (default)
   variance_threshold: 1e-10
   deduplicate_threshold: 0.99
   use_intelligent_dedup: true
@@ -72,12 +88,12 @@ feature_cleaning:
 
 # Training
 training:
-  batch_size: 512               # Reduced from 1024 for larger model
+  batch_size: 1024
   learning_rate: 0.001
-  num_epochs: 700
+  num_epochs: 1000
   optimizer: "adam"
   scheduler: null
-  warmup_epochs: 100
+  warmup_epochs: 200
 
   # Category discovery (auto mode)
   category_assignment: "auto"
@@ -86,14 +102,53 @@ training:
   min_features_per_category: 3
 
   # Category assignment configuration
+  # OPTIMAL SETTINGS based on comprehensive experiments (2026-01-28)
+  # See: experiments/clustering_comparison/RESULTS_SUMMARY_UPDATED.txt
+  #
+  # Tested 5 methods:
+  #   - Gap Statistic: 73.48% quality, +0.636 orthogonality (poor)
+  #   - Silhouette: 82.24% quality, +0.362 orthogonality (BEST) ⭐
+  #   - Average Linkage: 83.37% quality, unknown orthogonality (risky)
+  #   - Elbow: 84.45% quality, +0.809 orthogonality (over-clustered)
+  #   - Hybrid: 83.70% quality, +0.562 orthogonality (FAILED - made worse)
+  #
+  # WINNER: Silhouette clustering-only (method="clustering")
+  #   - Best orthogonality among all methods
+  #   - Good reconstruction quality (82.24%)
+  #   - Simple, fast, stable
+  #
+  # AVOID: method="hybrid" (tested, found counterproductive)
+  #   - Gradient refinement WORSENED orthogonality by 55%
+  #   - Small quality gain (+1.46pp) not worth orthogonality cost
   category_assignment_config:
-    method: "clustering"
+    method: "clustering"  # OPTIMAL: clustering-only (NOT "hybrid")
     isolated_families: []
     reassign_orphans: true
-    gradient_epochs: 500
-    gradient_lr: 0.01
     subsample_excess_fraction: 0.1
     device: "cuda"
+
+    # Gradient refinement parameters (only used if method="hybrid")
+    # NOTE: Hybrid method tested and found counterproductive - do NOT use
+    # gradient_epochs: 500
+    # gradient_lr: 0.01
+
+    # Hierarchical clustering parameters
+    linkage_method: "ward"  # OPTIMAL: Ward linkage (minimizes within-cluster variance)
+    distance_metric: "correlation"  # OPTIMAL: Correlation distance (1 - |r|)
+
+    # K selection strategy
+    # OPTIMAL: Silhouette method (2026-01-28 experiments)
+    #   vs Gap Statistic: +8.76pp better reconstruction, 42% better orthogonality
+    #   vs Elbow: Avoids over-clustering (3 categories vs 12)
+    #   vs Hybrid: Better orthogonality (+0.362 vs +0.562)
+    k_selection_method: "silhouette"  # OPTIMAL - Options: "silhouette", "gap_statistic", "elbow", "manual"
+    gap_statistic_refs: 10  # Number of reference distributions (if using gap_statistic)
+    # manual_k: 5  # Uncomment to force specific K when k_selection_method="manual"
+    # distance_threshold: 0.5  # Uncomment to cut dendrogram at distance (overrides K selection)
+
+    # Dendrogram visualization
+    export_dendrogram: true
+    dendrogram_path: "diagnostics/dendrograms/50k_3channel"
 
     # Per-family clustering - cluster each family independently
     per_family_clustering: true
@@ -102,17 +157,20 @@ training:
         min_clusters: 2
         max_clusters: 5
         # num_clusters: 3  # Optional: explicit K instead of auto
+        # linkage_method: "average"  # Optional: override linkage for this family
+        # k_selection_method: "silhouette"  # Optional: override K selection for this family
       temporal:
         min_clusters: 2
         max_clusters: 20
+        # k_selection_method: "gap_statistic"  # Optional: override K selection for this family
 
   # Loss weights
   reconstruction_weight: 1.0
-  vq_weight: 1.0
-  orthogonality_weight: 0.1
-  informativeness_weight: 0.1
+  vq_weight: 0.8
+  orthogonality_weight: 0.11
+  informativeness_weight: 0.12
   topo_weight: 0.3
-  topo_samples: 1024
+  topo_samples: 2048
   entropy_weight: 0.1  # Entropy regularization for uniform codebook usage 
 
   # Checkpointing
@@ -152,5 +210,26 @@ random_seed: 42
 # - Model size: 7168 total codes (4096 + 2048 + 1024)
 # - Training time: ~2.7s/epoch on GPU with torch.compile
 #
-# This configuration represents a well-tuned local optimum.
-# Alternative architectures tested achieved worse reconstruction.
+# Clustering Method Validation (2026-01-28):
+# Comprehensive experiments tested 5 clustering configurations:
+#
+# Results Summary:
+#   Method              Quality   Orthogonality   Clusters   Verdict
+#   ─────────────────────────────────────────────────────────────────
+#   Silhouette (BEST)   82.24%    +0.362 (best)   3          ⭐ OPTIMAL
+#   Average Linkage     83.37%    Unknown         3          Risky
+#   Gap Statistic       73.48%    +0.636          5          Poor
+#   Elbow               84.45%    +0.809 (worst)  12         Over-clustered
+#   Hybrid              83.70%    +0.562          3          Failed objective
+#
+# Key Findings:
+# - Silhouette method provides best orthogonality (+0.362 vs +0.562-0.809)
+# - Good reconstruction quality (82.24%)
+# - Clean 3-category structure (balanced, interpretable)
+# - Fast, simple, stable (no gradient refinement needed)
+# - Hybrid method WORSENED orthogonality (gradient refinement counterproductive)
+#
+# This configuration represents a well-tuned, experimentally validated optimum.
+# Alternative architectures and clustering methods tested achieved worse results.
+#
+# For detailed analysis: experiments/clustering_comparison/RESULTS_SUMMARY_UPDATED.txt

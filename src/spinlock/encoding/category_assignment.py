@@ -95,6 +95,15 @@ class DynamicCategoryAssignment(CategoryAssignment):
         reassign_orphans: bool = False,
         per_family_clustering: bool = False,
         per_family_params: Optional[Dict[str, Dict[str, Any]]] = None,
+        # NEW: Hierarchical clustering parameters
+        linkage_method: str = "ward",
+        distance_metric: str = "correlation",
+        k_selection_method: str = "silhouette",
+        manual_k: Optional[int] = None,
+        gap_statistic_refs: int = 10,
+        distance_threshold: Optional[float] = None,
+        export_dendrogram: bool = False,
+        dendrogram_path: str = "diagnostics/dendrograms",
     ):
         """Initialize dynamic category assignment.
 
@@ -122,6 +131,14 @@ class DynamicCategoryAssignment(CategoryAssignment):
                     "initial": {"min_clusters": 2, "max_clusters": 5},
                     "temporal": {"min_clusters": 8, "max_clusters": 20}
                 }
+            linkage_method: Hierarchical linkage method: 'ward', 'average', 'complete', 'single'
+            distance_metric: Distance metric: 'correlation', 'euclidean', 'cosine'
+            k_selection_method: K selection strategy: 'silhouette', 'gap_statistic', 'elbow', 'manual'
+            manual_k: If k_selection_method='manual', use this K value
+            gap_statistic_refs: Number of reference distributions for gap statistic (default: 10)
+            distance_threshold: If set, cut dendrogram at this distance (overrides K selection)
+            export_dendrogram: If True, export dendrogram visualizations
+            dendrogram_path: Directory path for dendrogram exports
         """
         if method not in ("clustering", "gradient", "hybrid"):
             raise ValueError(f"Unknown method: {method}. Use 'clustering', 'gradient', or 'hybrid'")
@@ -142,6 +159,16 @@ class DynamicCategoryAssignment(CategoryAssignment):
         self.reassign_orphans = reassign_orphans
         self.per_family_clustering = per_family_clustering
         self.per_family_params = per_family_params or {}
+
+        # NEW: Hierarchical clustering parameters
+        self.linkage_method = linkage_method
+        self.distance_metric = distance_metric
+        self.k_selection_method = k_selection_method
+        self.manual_k = manual_k
+        self.gap_statistic_refs = gap_statistic_refs
+        self.distance_threshold = distance_threshold
+        self.export_dendrogram = export_dendrogram
+        self.dendrogram_path = dendrogram_path
 
         # Cached assignments (computed on first call to assign_categories)
         self._assignments = None
@@ -244,6 +271,15 @@ class DynamicCategoryAssignment(CategoryAssignment):
                 max_samples_for_clustering=self.max_samples_for_clustering,
                 isolated_families=self.isolated_families,
                 reassign_orphans=self.reassign_orphans,
+                # Pass through clustering configuration
+                linkage_method=self.linkage_method,
+                distance_metric=self.distance_metric,
+                k_selection_method=self.k_selection_method,
+                manual_k=self.manual_k,
+                gap_statistic_refs=self.gap_statistic_refs,
+                distance_threshold=self.distance_threshold,
+                export_dendrogram=self.export_dendrogram,
+                dendrogram_path=self.dendrogram_path,
             )
         else:
             # Existing global clustering path
@@ -259,6 +295,15 @@ class DynamicCategoryAssignment(CategoryAssignment):
                 max_clusters=self.max_clusters,
                 isolated_families=self.isolated_families,
                 reassign_orphans=self.reassign_orphans,
+                # Pass through clustering configuration
+                linkage_method=self.linkage_method,
+                distance_metric=self.distance_metric,
+                k_selection_method=self.k_selection_method,
+                manual_k=self.manual_k,
+                gap_statistic_refs=self.gap_statistic_refs,
+                distance_threshold=self.distance_threshold,
+                export_dendrogram=self.export_dendrogram,
+                dendrogram_path=self.dendrogram_path,
             )
 
         return assignments
