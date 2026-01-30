@@ -1,0 +1,163 @@
+version: "1.0"
+
+metadata:
+  name: "cno_100k_per_channel"
+  description: "CNO with 100k operators and per-channel independent IC generation for VQ-VAE category discovery"
+  author: "spinlock"
+  created: "2026-01-30"
+
+parameter_space:
+  architecture:
+    num_layers:
+      type: "integer"
+      bounds: [2, 6]
+      description: "Number of convolutional layers"
+
+    channels_per_layer:
+      type: "integer"
+      bounds: [16, 128]
+      description: "Number of channels per layer"
+
+    kernel_size:
+      type: "choice"
+      choices: [3, 5, 7]
+      description: "Convolution kernel size"
+
+  stochastic:
+    dropout_rate:
+      type: "continuous"
+      bounds: [0.0, 0.4]
+      description: "Dropout probability"
+
+    weight_decay:
+      type: "continuous"
+      bounds: [0.0, 0.01]
+      log_scale: true
+      description: "L2 regularization"
+
+  operator:
+    activation:
+      type: "choice"
+      choices: ["relu", "gelu", "tanh", "silu"]
+      description: "Activation function"
+
+    normalization:
+      type: "choice"
+      choices: ["none", "batch", "layer"]
+      description: "Normalization type"
+
+  evolution:
+    num_timesteps:
+      type: "integer"
+      bounds: [1, 10]
+      description: "Number of evolution timesteps"
+
+    spatial_correlation:
+      type: "continuous"
+      bounds: [0.0, 0.3]
+      description: "Spatial correlation strength"
+
+sampling:
+  total_samples: 100000
+  batch_size: 1000
+
+simulation:
+  device: "cuda"
+  num_realizations: 10
+  num_timesteps: 1
+
+  input_generation:
+    method: "per_channel"  # Per-channel independent IC generation
+    num_samples_per_operator: 1
+    spatial_size: "from_operator"
+
+    # Per-channel configurations for maximum diversity
+    channel_configs:
+      channel_0:  # Density field - diverse fine-grained features
+        ic_type_weights:
+          gaussian_random_field: 0.3
+          localized: 0.25
+          multiscale_grf: 0.25
+          heavy_tailed: 0.2
+
+        gaussian_random_field:
+          length_scale: 0.05
+          variance: 1.0
+
+        localized:
+          num_blobs: 5
+          min_width: 3.0
+          max_width: 10.0
+
+        multiscale_grf:
+          scales: [0.02, 0.04, 0.06, 0.08]
+          variance: 1.0
+
+        heavy_tailed:
+          alpha: 1.5
+          variance: 1.0
+
+      channel_1:  # Velocity field - structured and random patterns
+        ic_type_weights:
+          structured: 0.4
+          gaussian_random_field: 0.3
+          composite: 0.3
+
+        structured:
+          num_structures: 4
+          structure_types: ["circle", "stripe", "blob"]
+
+        gaussian_random_field:
+          length_scale: 0.1
+          variance: 1.0
+
+        composite:
+          base_field: "gaussian_random_field"
+          perturbation_field: "localized"
+          mix_ratio: 0.7
+
+      channel_2:  # Auxiliary field - coarse and multi-scale
+        ic_type_weights:
+          gaussian_random_field: 0.4
+          multiscale_grf: 0.4
+          localized: 0.2
+
+        gaussian_random_field:
+          length_scale: 0.2
+          variance: 0.5
+
+        multiscale_grf:
+          scales: [0.15, 0.20, 0.25, 0.30]
+          variance: 0.8
+
+        localized:
+          num_blobs: 3
+          min_width: 5.0
+          max_width: 15.0
+
+  performance:
+    compile: false
+    partition_by_architecture: true
+    warmup_templates: false
+    channel_bucket_size: 16
+    compile_mode: "reduce-overhead"
+
+dataset:
+  output_path: "datasets/cno_100k_per_channel.h5"
+  storage:
+    backend: "hdf5"
+    compression: "gzip"
+    compression_level: 4
+    chunk_size: 1000
+    store_trajectories: false
+
+features:
+  temporal:
+    enabled: false
+  summary:
+    enabled: false
+
+logging:
+  level: "INFO"
+  format: "structured"
+  output: "stdout"
