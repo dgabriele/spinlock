@@ -1,7 +1,7 @@
 version: "1.0"
 
 metadata:
-  name: "cno_100k_per_channel"
+  name: "100k_baseline"
   description: "CNO with 100k operators and per-channel independent IC generation for VQ-VAE category discovery"
   author: "spinlock"
   created: "2026-01-30"
@@ -143,7 +143,7 @@ simulation:
     compile_mode: "reduce-overhead"
 
 dataset:
-  output_path: "datasets/cno_100k_per_channel.h5"
+  output_path: "datasets/100k_baseline.h5"
   storage:
     backend: "hdf5"
     compression: "gzip"
