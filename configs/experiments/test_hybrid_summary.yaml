@@ -141,16 +141,12 @@ dataset:
     chunk_size: 5
     store_trajectories: false
 
-# Feature configuration with hybrid summary mode
+# Feature configuration
 features:
-  summary:
+  initial:
     enabled: true
-    summary_mode: "hybrid"  # Both manual + learned features
-    learned:
-      enabled: true
-      extract_from: "bottleneck"  # Extract from AFNO bottleneck
-      temporal_agg: "mean_max"    # Mean + max concatenated
-      spatial_agg: "gap"          # Global average pooling
+  temporal:
+    enabled: true
       projection_dim: null        # No projection, use padding for variable dimensions
       # Training config
       training_epochs: 20         # Quick training for testing

@@ -112,13 +112,10 @@ dataset:
 
 # Feature extraction configuration
 features:
-  extract_initial_condition: true
-
-  summary:
+  initial:
     enabled: true
-    per_channel: true
-    temporal_aggregation: "none"  # v3.0: per-timestep only
-    realization_aggregation: "mean"
+  temporal:
+    enabled: true
 
 logging:
   level: "INFO"

@@ -209,10 +209,10 @@ dataset:
 # Feature extraction configuration
 # Features will be extracted from all 3 channels with proper cross-channel features
 features:
+  initial:
+    enabled: true   # Enable INITIAL family (IC characteristics)
   temporal:
     enabled: true   # Enable TEMPORAL family (per-timestep time series with v3.1 enhancements)
-  summary:
-    enabled: true   # Enable SUMMARY family (aggregated scalars)
 
 # Logging configuration
 logging:

@@ -237,8 +237,6 @@ features:
     enabled: true  # Enable INITIAL family (IC features)
   temporal:
     enabled: true  # Enable TEMPORAL family (per-timestep time series)
-  summary:
-    enabled: true  # Enable SUMMARY family (aggregated scalars)
 
 # =============================================================================
 # U-AFNO Architecture Notes

@@ -212,10 +212,10 @@ dataset:
 
 # Feature extraction configuration - CRITICAL: Density-only mode
 features:
-  temporal:
+  initial:
     enabled: true
     channel_indices: [0]  # DENSITY-ONLY: Extract features from channel 0 only
-  summary:
+  temporal:
     enabled: true
     channel_indices: [0]  # DENSITY-ONLY: Extract features from channel 0 only
 

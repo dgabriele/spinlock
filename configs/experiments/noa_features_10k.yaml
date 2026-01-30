@@ -196,10 +196,10 @@ dataset:
 # Mirror the 100K dataset: SUMMARY + TEMPORAL
 # (INITIAL features are extracted inline as part of SUMMARY)
 features:
+  initial:
+    enabled: true   # INITIAL family (IC characteristics)
   temporal:
     enabled: true   # TEMPORAL family (per-timestep features)
-  summary:
-    enabled: true   # SUMMARY family (aggregated features)
 
 # Logging configuration
 logging:

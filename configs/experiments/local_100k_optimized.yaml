@@ -212,10 +212,10 @@ dataset:
 # - TEMPORAL: Per-timestep time series features [N, T, D] - preserves temporal resolution
 # - SUMMARY: Aggregated scalar features [N, D] - compressed behavioral descriptors
 features:
+  initial:
+    enabled: true   # Enable INITIAL family (IC characteristics)
   temporal:
     enabled: true   # Enable TEMPORAL family (per-timestep time series)
-  summary:
-    enabled: true   # Enable SUMMARY family (aggregated scalars)
 
 # Logging configuration
 logging:

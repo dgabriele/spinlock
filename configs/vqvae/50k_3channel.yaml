@@ -73,7 +73,7 @@ model:
 
   # Auxiliary loss weights
   orthogonality_weight: 0.1
-  informativeness_weight: 0.12
+  informativeness_weight: 0.3
 
 # Feature Cleaning
 # CRITICAL: pre_categorization=false preserves semantic diversity for clustering
@@ -174,7 +174,7 @@ training:
   reconstruction_weight: 1.0
   vq_weight: 0.8
   orthogonality_weight: 0.11
-  informativeness_weight: 0.12
+  informativeness_weight: 0.3
   topo_weight: 0.3
   topo_samples: 2048
   entropy_weight: 0.1  # Entropy regularization for uniform codebook usage 

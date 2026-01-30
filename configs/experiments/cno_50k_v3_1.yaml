@@ -208,13 +208,13 @@ dataset:
 
 # Feature extraction configuration
 # Two distinct feature families (see docs/features/README.md):
+# - INITIAL: Initial condition characteristics [N, D] - spatial, spectral, morphological features
 # - TEMPORAL: Per-timestep time series features [N, T, D] - preserves temporal resolution
-# - SUMMARY: Aggregated scalar features [N, D] - compressed behavioral descriptors
 features:
+  initial:
+    enabled: true   # Enable INITIAL family (IC characteristics)
   temporal:
     enabled: true   # Enable TEMPORAL family (per-timestep time series with v3.1 enhancements)
-  summary:
-    enabled: true   # Enable SUMMARY family (aggregated scalars)
 
 # Logging configuration
 logging:
