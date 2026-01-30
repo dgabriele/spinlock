@@ -304,6 +304,7 @@ class DatasetGenerationPipeline:
         self.sampler = self._create_sampler()
         self.operator_builder = OperatorBuilder()
         self.input_generator = self._create_input_generator()
+        self.per_channel_generator = self._create_per_channel_generator()
         self.parallel_executor = self._create_parallel_executor()
 
         # Statistics
@@ -379,6 +380,29 @@ class DatasetGenerationPipeline:
 
         return InputFieldGenerator(
             grid_size=grid_size, num_channels=num_channels, device=self.device
+        )
+
+    def _create_per_channel_generator(self) -> Optional['PerChannelICGenerator']:
+        """Create per-channel IC generator if configured."""
+        from spinlock.dataset.generators import PerChannelICGenerator
+
+        # Only create if method is "per_channel"
+        if self.config.simulation.input_generation.method != "per_channel":
+            return None
+
+        # Get channel configs
+        channel_configs = self.config.simulation.input_generation.channel_configs
+        if not channel_configs:
+            raise ValueError(
+                "method='per_channel' requires channel_configs to be specified"
+            )
+
+        num_channels = getattr(self.config, 'num_channels', 3)
+
+        return PerChannelICGenerator(
+            input_generator=self.input_generator,
+            channel_configs=channel_configs,
+            num_channels=num_channels,
         )
 
     def _create_parallel_executor(self) -> ParallelExecutor:
@@ -1183,12 +1207,21 @@ class DatasetGenerationPipeline:
 
         # Generate input fields (all operators have same dimensions in MVP)
         gen_start = time.time()
-        inputs = self.input_generator.generate_batch(
-            batch_size=batch_size,
-            field_type=self.config.simulation.input_generation.method,
-            length_scale=self.config.simulation.input_generation.length_scale,
-            variance=self.config.simulation.input_generation.variance,
-        )
+
+        # Check if using per-channel IC generation
+        if self.config.simulation.input_generation.method == "per_channel":
+            if self.per_channel_generator is None:
+                raise RuntimeError(
+                    "Per-channel generator not initialized. This should not happen."
+                )
+            inputs, _metadata = self.per_channel_generator.generate_batch(batch_size)
+        else:
+            inputs = self.input_generator.generate_batch(
+                batch_size=batch_size,
+                field_type=self.config.simulation.input_generation.method,
+                length_scale=self.config.simulation.input_generation.length_scale,
+                variance=self.config.simulation.input_generation.variance,
+            )
         self.stats["generation_time"] += time.time() - gen_start
 
         # Run inference with stochastic realizations
@@ -1618,65 +1651,88 @@ class DatasetGenerationPipeline:
                 operators.append(operator)
 
         # Generate input fields with this grid size
-        input_generator = InputFieldGenerator(
-            grid_size=grid_size, num_channels=fixed_input_channels, device=self.device
-        )
-
         gen_start = time.time()
 
         # OPTIMIZATION: Vectorized input generation - group by IC type
         ic_method = self.config.simulation.input_generation.method
 
-        # Sample IC types for entire batch first
-        if ic_method == "sampled":
-            ic_types_used = [self._sample_ic_type() for _ in range(batch_size)]
-        else:
-            ic_types_used = [ic_method] * batch_size
+        # Check if using per-channel IC generation
+        if ic_method == "per_channel":
+            # Use per-channel generator
+            from spinlock.dataset.generators import PerChannelICGenerator
 
-        # Group indices by IC type for batch generation
-        from collections import defaultdict
-        ic_type_to_indices = defaultdict(list)
-        for i, ic_type in enumerate(ic_types_used):
-            ic_type_to_indices[ic_type].append(i)
-
-        # Generate batches per IC type (amortize GPU kernel launches)
-        all_inputs = []
-        for ic_type, indices in ic_type_to_indices.items():
-            ic_params = self._get_ic_params(ic_type)
-
-            # Get base IC type for generator (strip aliases like _v0, _low, etc.)
-            base_ic_type = self._get_base_ic_type(ic_type)
-
-            # OPTIMIZATION: Generate entire batch for this IC type at once
-            batch_inputs = input_generator.generate_batch(
-                batch_size=len(indices),
-                field_type=base_ic_type,
-                **ic_params,
+            # Create per-channel generator for this grid size
+            input_generator = InputFieldGenerator(
+                grid_size=grid_size, num_channels=fixed_input_channels, device=self.device
             )
-            all_inputs.append((indices, batch_inputs))
-
-        # Pre-allocate and fill output tensor
-        if all_inputs:
-            # Get shape from first batch
-            first_batch = all_inputs[0][1]
-            inputs = torch.zeros(
-                (batch_size, *first_batch.shape[1:]),
-                dtype=first_batch.dtype,
-                device=first_batch.device,
+            per_channel_gen = PerChannelICGenerator(
+                input_generator=input_generator,
+                channel_configs=self.config.simulation.input_generation.channel_configs,
+                num_channels=fixed_input_channels,
             )
 
-            # Place batches in correct positions
-            for indices, batch_inputs in all_inputs:
-                for i, idx in enumerate(indices):
-                    inputs[idx] = batch_inputs[i]
+            inputs, metadata_list = per_channel_gen.generate_batch(batch_size)
 
-            # Free all_inputs list after copying to prevent accumulation
-            for indices, batch_inputs in all_inputs:
-                del batch_inputs
-            del all_inputs
+            # Format IC types for tracking (combine channel IC types)
+            ic_types_used = [self._format_ic_description(meta) for meta in metadata_list]
+
         else:
-            # Fallback (should never happen)
-            raise RuntimeError("No inputs generated")
+            # Original IC generation path (sampled or fixed method)
+            input_generator = InputFieldGenerator(
+                grid_size=grid_size, num_channels=fixed_input_channels, device=self.device
+            )
+
+            # Sample IC types for entire batch first
+            if ic_method == "sampled":
+                ic_types_used = [self._sample_ic_type() for _ in range(batch_size)]
+            else:
+                ic_types_used = [ic_method] * batch_size
+
+            # Group indices by IC type for batch generation
+            from collections import defaultdict
+            ic_type_to_indices = defaultdict(list)
+            for i, ic_type in enumerate(ic_types_used):
+                ic_type_to_indices[ic_type].append(i)
+
+            # Generate batches per IC type (amortize GPU kernel launches)
+            all_inputs = []
+            for ic_type, indices in ic_type_to_indices.items():
+                ic_params = self._get_ic_params(ic_type)
+
+                # Get base IC type for generator (strip aliases like _v0, _low, etc.)
+                base_ic_type = self._get_base_ic_type(ic_type)
+
+                # OPTIMIZATION: Generate entire batch for this IC type at once
+                batch_inputs = input_generator.generate_batch(
+                    batch_size=len(indices),
+                    field_type=base_ic_type,
+                    **ic_params,
+                )
+                all_inputs.append((indices, batch_inputs))
+
+            # Pre-allocate and fill output tensor
+            if all_inputs:
+                # Get shape from first batch
+                first_batch = all_inputs[0][1]
+                inputs = torch.zeros(
+                    (batch_size, *first_batch.shape[1:]),
+                    dtype=first_batch.dtype,
+                    device=first_batch.device,
+                )
+
+                # Place batches in correct positions
+                for indices, batch_inputs in all_inputs:
+                    for i, idx in enumerate(indices):
+                        inputs[idx] = batch_inputs[i]
+
+                # Free all_inputs list after copying to prevent accumulation
+                for indices, batch_inputs in all_inputs:
+                    del batch_inputs
+                del all_inputs
+            else:
+                # Fallback (should never happen)
+                raise RuntimeError("No inputs generated")
+
         self.stats["generation_time"] += time.time() - gen_start
 
         # Run inference
@@ -1740,6 +1796,42 @@ class DatasetGenerationPipeline:
         # Strip common alias patterns: _v[0-9], _low, _mid, _high
         base_type = re.sub(r'_(v\d+|low|mid|high)$', '', ic_type)
         return base_type
+
+    def _format_ic_description(self, metadata: dict[str, str]) -> str:
+        """Format per-channel IC metadata as human-readable string.
+
+        Args:
+            metadata: Dict mapping channel names to IC types
+
+        Returns:
+            Formatted string like "ch0:grf|ch1:localized|ch2:structured"
+        """
+        num_channels = getattr(self.config, 'num_channels', 3)
+        parts = []
+        for i in range(num_channels):
+            ch_name = f"channel_{i}"
+            ic_type = metadata.get(ch_name, "unknown")
+            # Abbreviate common IC types for readability
+            ic_abbrev = self._abbreviate_ic_type(ic_type)
+            parts.append(f"ch{i}:{ic_abbrev}")
+        return "|".join(parts)
+
+    def _abbreviate_ic_type(self, ic_type: str) -> str:
+        """Abbreviate IC type names for compact display."""
+        abbrevs = {
+            "gaussian_random_field": "grf",
+            "multiscale_grf": "mgrf",
+            "localized": "local",
+            "structured": "struct",
+            "composite": "comp",
+            "heavy_tailed": "heavy",
+            "quantum_wave_packet": "qwp",
+            "turing_pattern": "turing",
+            "thermal_gradient": "thermal",
+            "morphogen_gradient": "morph",
+            "reaction_front": "rxn",
+        }
+        return abbrevs.get(ic_type, ic_type[:8])
 
     def _get_ic_params(self, ic_type: str) -> Dict[str, Any]:
         """

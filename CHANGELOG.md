@@ -4,6 +4,44 @@ All notable changes to the Spinlock project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased] - 2026-01-30
+
+### Added
+- **Per-Channel Independent Initial Conditions (v3.2)** - Major enhancement for VQ-VAE diversity
+  - Each of the 3 channels can now have different IC types, parameters, or characteristics
+  - New `method: "per_channel"` with channel-specific configurations
+  - Creates richer behavioral diversity for VQ-VAE category discovery
+  - Enables cross-channel interaction pattern analysis
+  - Supports NOA compositional reasoning experiments
+
+  **Implementation:**
+  - `ChannelICConfig` dataclass for per-channel configuration
+  - `ICTypeSampler` for probabilistic IC type selection
+  - `PerChannelICGenerator` with efficient batching (groups by IC type)
+  - Pipeline integration in `DatasetGenerationPipeline`
+  - New `ic_types` format: `"ch0:grf|ch1:struct|ch2:mgrf"`
+
+  **Files:**
+  - `src/spinlock/config/schema.py` - Config classes
+  - `src/spinlock/dataset/generators.py` - Generator implementation
+  - `src/spinlock/dataset/pipeline.py` - Pipeline integration
+  - `tests/test_per_channel_ics.py` - 13 unit tests (all passing)
+  - `configs/experiments/test_per_channel_100.yaml` - Test config
+  - `configs/experiments/cno_50k_per_channel.yaml` - Production config
+  - `docs/per_channel_ic_implementation.md` - Complete documentation
+
+  **Backward Compatible:**
+  - Existing configs and datasets work unchanged
+  - VQ-VAE training requires no updates (only uses field tensors)
+  - Single IC type format still supported
+
+### Changed
+- **HDF5 Layout Documentation** (`docs/features/hdf5-layout.md`)
+  - Updated to v3.2 with per-channel IC format
+  - Added IC Type Format section explaining both formats
+  - Added migration notes for v3.2
+  - Example configurations for per-channel ICs
+
 ## [Unreleased] - 2026-01-08
 
 ### Removed

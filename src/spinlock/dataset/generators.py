@@ -17,7 +17,7 @@ Design principles:
 - Discovery-focused diversity (not benchmarking)
 """
 
-from typing import Literal, Optional, Tuple, List
+from typing import Literal, Optional, Tuple, List, Any
 
 import torch
 import numpy as np
@@ -2836,3 +2836,306 @@ class InputFieldGenerator:
             fields.append(field)
 
         return torch.stack(fields, dim=0)
+
+
+# =============================================================================
+# Per-Channel Independent IC Generation
+# =============================================================================
+
+
+class ICTypeSampler:
+    """Samples IC types from weighted distribution.
+
+    Single responsibility: Probabilistic IC type selection.
+    """
+
+    def __init__(self, ic_type_weights: dict[str, float]):
+        """Initialize sampler with normalized weights.
+
+        Args:
+            ic_type_weights: Dict mapping IC type names to weights
+        """
+        self.ic_types = list(ic_type_weights.keys())
+        self.weights = list(ic_type_weights.values())
+
+        # Normalize
+        total = sum(self.weights)
+        if total > 0:
+            self.weights = [w / total for w in self.weights]
+        else:
+            # Uniform if all zeros
+            self.weights = [1.0 / len(self.weights)] * len(self.weights)
+
+    def sample(self) -> str:
+        """Sample a single IC type.
+
+        Returns:
+            IC type name
+        """
+        import random
+        return random.choices(self.ic_types, weights=self.weights, k=1)[0]
+
+
+class PerChannelICGenerator:
+    """Generates independent ICs per channel with clean composition.
+
+    Design: Single Responsibility Principle
+    - ICTypeSampler: Samples IC types from weights
+    - InputFieldGenerator: Generates fields (unchanged, reused)
+    - PerChannelICGenerator: Composes above for per-channel generation
+    """
+
+    def __init__(
+        self,
+        input_generator: 'InputFieldGenerator',
+        channel_configs: dict[str, Any],
+        num_channels: int = 3,
+    ):
+        """Initialize per-channel generator.
+
+        Args:
+            input_generator: Existing InputFieldGenerator instance
+            channel_configs: Config for each channel (from ChannelICConfig)
+            num_channels: Number of channels (default: 3)
+        """
+        self.input_generator = input_generator
+        self.num_channels = num_channels
+
+        # Convert ChannelICConfig objects to dicts if needed
+        self.channel_configs = {}
+        for ch_name, ch_config in channel_configs.items():
+            if hasattr(ch_config, 'model_dump'):
+                # Pydantic model
+                config_dict = ch_config.model_dump()
+            elif hasattr(ch_config, 'dict'):
+                # Old pydantic
+                config_dict = ch_config.dict()
+            else:
+                # Already a dict
+                config_dict = ch_config
+            self.channel_configs[ch_name] = config_dict
+
+        # Build samplers for each channel
+        self.ic_samplers = {}
+        for ch_name, ch_config in self.channel_configs.items():
+            ic_type_weights = ch_config.get('ic_type_weights', {})
+            if ic_type_weights:
+                self.ic_samplers[ch_name] = ICTypeSampler(ic_type_weights)
+
+    def generate_batch(
+        self, batch_size: int
+    ) -> Tuple[torch.Tensor, List[dict[str, str]]]:
+        """Generate batch with per-channel independent ICs.
+
+        Args:
+            batch_size: Number of samples to generate
+
+        Returns:
+            fields: Tensor [B, C, H, W] with per-channel ICs
+            metadata: List of dicts with per-sample IC type info
+        """
+        # Sample IC types for each (sample, channel) pair
+        sample_configs = self._sample_ic_types_for_batch(batch_size)
+
+        # Generate fields per channel, batching efficiently
+        channel_fields = self._generate_all_channels(sample_configs)
+
+        # Stack into [B, C, H, W]
+        fields = torch.stack(channel_fields, dim=1)
+
+        # Build metadata
+        metadata = self._build_metadata(sample_configs)
+
+        return fields, metadata
+
+    def _sample_ic_types_for_batch(
+        self,
+        batch_size: int
+    ) -> List[dict[str, Tuple[str, dict[str, Any]]]]:
+        """Sample IC types and params for each (sample, channel).
+
+        Returns:
+            List of {channel_name: (ic_type, params)} for each sample
+        """
+        sample_configs = []
+
+        for _ in range(batch_size):
+            sample_config = {}
+
+            for c in range(self.num_channels):
+                ch_name = f"channel_{c}"
+
+                # Sample IC type for this channel
+                if ch_name in self.ic_samplers:
+                    ic_type = self.ic_samplers[ch_name].sample()
+                else:
+                    # Default to gaussian_random_field
+                    ic_type = "gaussian_random_field"
+
+                # Extract params for this IC type
+                params = self._get_ic_params(ch_name, ic_type)
+
+                sample_config[ch_name] = (ic_type, params)
+
+            sample_configs.append(sample_config)
+
+        return sample_configs
+
+    def _generate_all_channels(
+        self,
+        sample_configs: List[dict[str, Tuple[str, dict[str, Any]]]]
+    ) -> List[torch.Tensor]:
+        """Generate fields for all channels with batching optimization.
+
+        Strategy: Group samples by (channel, ic_type) for batch efficiency.
+
+        Returns:
+            List of [B, H, W] tensors, one per channel
+        """
+        batch_size = len(sample_configs)
+        channel_fields = []
+
+        for c in range(self.num_channels):
+            ch_name = f"channel_{c}"
+
+            # Group samples by IC type for this channel
+            ic_type_groups = self._group_by_ic_type(sample_configs, ch_name)
+
+            # Generate each IC type in batch
+            channel_field = torch.zeros(
+                batch_size,
+                self.input_generator.grid_size,
+                self.input_generator.grid_size,
+                device=self.input_generator.device
+            )
+
+            for ic_type, (indices, params_list) in ic_type_groups.items():
+                # Generate batch for this IC type
+                batch_ic = self._generate_ic_type_batch(
+                    ic_type=ic_type,
+                    params_list=params_list
+                )  # [len(indices), H, W]
+
+                # Place in channel field
+                for i, idx in enumerate(indices):
+                    channel_field[idx] = batch_ic[i]
+
+            channel_fields.append(channel_field)
+
+        return channel_fields
+
+    def _group_by_ic_type(
+        self,
+        sample_configs: List[dict[str, Tuple[str, dict]]],
+        channel_name: str
+    ) -> dict[str, Tuple[List[int], List[dict]]]:
+        """Group sample indices by IC type for efficient batching."""
+        groups = {}
+
+        for idx, config in enumerate(sample_configs):
+            ic_type, params = config[channel_name]
+
+            if ic_type not in groups:
+                groups[ic_type] = ([], [])
+
+            groups[ic_type][0].append(idx)  # sample index
+            groups[ic_type][1].append(params)  # params
+
+        return groups
+
+    def _generate_ic_type_batch(
+        self,
+        ic_type: str,
+        params_list: List[dict[str, Any]]
+    ) -> torch.Tensor:
+        """Generate batch of ICs for a single IC type.
+
+        Handles parameter variation within batch.
+        """
+        batch_size = len(params_list)
+
+        # Strip version suffixes (e.g., gaussian_random_field_v0 → gaussian_random_field)
+        base_ic_type = self._get_base_ic_type(ic_type)
+
+        # Create a single-channel generator for this IC type
+        # (InputFieldGenerator uses self.num_channels for output shape)
+        single_channel_gen = InputFieldGenerator(
+            grid_size=self.input_generator.grid_size,
+            num_channels=1,
+            device=self.input_generator.device
+        )
+
+        # Check if all params are identical (common case)
+        if self._all_params_equal(params_list):
+            # Single batch generation (efficient)
+            batch_fields = single_channel_gen.generate_batch(
+                batch_size=batch_size,
+                field_type=base_ic_type,
+                **params_list[0]
+            )  # [B, 1, H, W]
+            return batch_fields.squeeze(1)  # [B, H, W]
+        else:
+            # Generate individually with varying params
+            fields = []
+            for params in params_list:
+                field = single_channel_gen.generate_batch(
+                    batch_size=1,
+                    field_type=base_ic_type,
+                    **params
+                )  # [1, 1, H, W]
+                fields.append(field.squeeze(0).squeeze(0))  # [H, W]
+
+            return torch.stack(fields)  # [B, H, W]
+
+    def _get_base_ic_type(self, ic_type: str) -> str:
+        """Get base IC type from alias (e.g., gaussian_random_field_v0 → gaussian_random_field)."""
+        import re
+        base_type = re.sub(r'_(v\d+|low|mid|high)$', '', ic_type)
+        return base_type
+
+    def _get_ic_params(self, channel_name: str, ic_type: str) -> dict[str, Any]:
+        """Extract IC-type-specific parameters from channel config."""
+        if channel_name not in self.channel_configs:
+            return {}
+
+        config = self.channel_configs[channel_name]
+
+        # Get base IC type (strip version suffixes)
+        base_ic_type = self._get_base_ic_type(ic_type)
+
+        # Try full ic_type first (e.g., gaussian_random_field_v0)
+        if ic_type in config:
+            params = config[ic_type]
+            return params if isinstance(params, dict) else {}
+
+        # Fall back to base type (e.g., gaussian_random_field)
+        if base_ic_type in config:
+            params = config[base_ic_type]
+            return params if isinstance(params, dict) else {}
+
+        return {}
+
+    def _build_metadata(
+        self,
+        sample_configs: List[dict[str, Tuple[str, dict]]]
+    ) -> List[dict[str, str]]:
+        """Build per-sample metadata describing IC types."""
+        metadata = []
+
+        for config in sample_configs:
+            sample_meta = {
+                ch_name: ic_type
+                for ch_name, (ic_type, _) in config.items()
+            }
+            metadata.append(sample_meta)
+
+        return metadata
+
+    @staticmethod
+    def _all_params_equal(params_list: List[dict]) -> bool:
+        """Check if all parameter dicts are identical."""
+        if not params_list:
+            return True
+
+        first = params_list[0]
+        return all(p == first for p in params_list[1:])

@@ -309,11 +309,37 @@ class ParallelismConfig(BaseModel):
     devices: Union[Literal["auto"], list[int]] = "auto"
 
 
+class ChannelICConfig(BaseModel):
+    """Configuration for a single channel's IC generation.
+
+    Attributes:
+        ic_type_weights: Probability weights for IC type selection
+            e.g., {"gaussian_random_field": 0.5, "localized": 0.5}
+        **kwargs: IC-type-specific parameters stored as attributes
+    """
+    ic_type_weights: Dict[str, float] = Field(default_factory=dict)
+
+    # Allow arbitrary IC-type parameter dicts as fields
+    model_config = {"extra": "allow"}
+
+    @model_validator(mode='after')
+    def normalize_weights(self) -> 'ChannelICConfig':
+        """Normalize weights to sum to 1.0."""
+        if self.ic_type_weights:
+            total = sum(self.ic_type_weights.values())
+            if total > 0:
+                self.ic_type_weights = {
+                    k: v / total for k, v in self.ic_type_weights.items()
+                }
+        return self
+
+
 class InputGenerationConfig(BaseModel):
     """Input field generation configuration."""
 
     method: Literal[
         "random", "gaussian_random_field", "structured", "mixed", "sampled",
+        "per_channel",  # NEW: Per-channel independent IC generation
         # Tier 1 domain-specific ICs
         "quantum_wave_packet", "turing_pattern", "thermal_gradient",
         "morphogen_gradient", "reaction_front",
@@ -335,11 +361,14 @@ class InputGenerationConfig(BaseModel):
     variance: float = Field(default=1.0, gt=0)
     # Optional parameters for sampled IC type method
     ic_type_weights: Dict[str, float] = Field(default_factory=dict)
+    # Per-channel IC configuration (for method="per_channel")
+    channel_configs: Dict[str, ChannelICConfig] = Field(default_factory=dict)
     # Existing IC type parameter dicts
     multiscale_grf: Dict[str, Any] = Field(default_factory=dict)
     localized: Dict[str, Any] = Field(default_factory=dict)
     composite: Dict[str, Any] = Field(default_factory=dict)
     heavy_tailed: Dict[str, Any] = Field(default_factory=dict)
+    structured: Dict[str, Any] = Field(default_factory=dict)  # Add structured params
     # Tier 1 domain-specific IC parameter dicts
     quantum_wave_packet: Dict[str, Any] = Field(default_factory=dict)
     turing_pattern: Dict[str, Any] = Field(default_factory=dict)

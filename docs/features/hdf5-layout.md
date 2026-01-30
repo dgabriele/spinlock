@@ -2,7 +2,7 @@
 
 This document describes the complete HDF5 schema for Spinlock datasets, including the feature storage structure used by the VQ-VAE tokenization pipeline.
 
-**Last Updated:** 2026-01-29 (v3.1 - 3-channel support, realization dimension)
+**Last Updated:** 2026-01-30 (v3.2 - per-channel independent IC support)
 
 ## Overview
 
@@ -18,7 +18,7 @@ dataset.h5
 ├── metadata/
 │   ├── evolution_policies [N]  # object - Evolution policy per sample
 │   ├── grid_sizes [N]          # int32 - Grid size per sample
-│   ├── ic_types [N]            # object - Initial condition type per sample
+│   ├── ic_types [N]            # object - IC type per sample (see IC Type Format below)
 │   └── noise_regimes [N]       # object - Noise regime per sample
 │
 ├── parameters/
@@ -126,6 +126,64 @@ Per-timestep time series preserving full temporal resolution.
 ### SUMMARY Family (`/features/summary/`)
 
 **Status:** Present in schema but typically empty in v3.1 datasets. Reserved for future trajectory-level aggregations.
+
+## IC Type Format
+
+The `ic_types` metadata field stores the initial condition type(s) used for each sample.
+
+### Single IC Type (Legacy)
+
+When all channels use the same IC type:
+```python
+ic_types[0] = "gaussian_random_field"
+ic_types[1] = "localized"
+ic_types[2] = "multiscale_grf"
+```
+
+### Per-Channel IC Types (v3.2+)
+
+When using per-channel independent ICs (`method: "per_channel"`), the format includes channel-specific types:
+```python
+ic_types[0] = "ch0:grf|ch1:struct|ch2:mgrf"
+ic_types[1] = "ch0:local|ch1:grf|ch2:grf"
+ic_types[2] = "ch0:mgrf|ch1:struct|ch2:local"
+```
+
+**Format:** `ch{i}:{type}|ch{j}:{type}|...`
+
+**Abbreviations:**
+- `grf` = gaussian_random_field
+- `local` = localized
+- `mgrf` = multiscale_grf
+- `struct` = structured
+- `comp` = composite
+- `heavy` = heavy_tailed
+
+**Benefits:**
+- Each channel can have a different IC type with different parameters
+- Creates richer behavioral diversity for VQ-VAE category discovery
+- Enables cross-channel interaction pattern analysis
+- Supports compositional reasoning in NOA training
+
+**Example Configuration:**
+```yaml
+simulation:
+  input_generation:
+    method: "per_channel"
+    channel_configs:
+      channel_0:  # Fine-grained features
+        ic_type_weights:
+          gaussian_random_field: 0.4
+          localized: 0.3
+          multiscale_grf: 0.3
+      channel_1:  # Structured patterns
+        ic_type_weights:
+          structured: 0.5
+          gaussian_random_field: 0.5
+      channel_2:  # Coarse features
+        ic_type_weights:
+          gaussian_random_field: 1.0
+```
 
 ## Data Types and Ranges
 
@@ -262,12 +320,43 @@ Default HDF5 settings:
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.2.0 | 2026-01-30 | Per-channel independent IC generation; new ic_types format: `ch0:type\|ch1:type\|ch2:type` |
 | 3.1.0 | 2026-01-29 | 3-channel support; explicit realization dimension in inputs; ARCHITECTURE and INITIAL stored in /features/ |
 | 3.0.0 | 2026-01-18 | Removed SUMMARY features; enhanced TEMPORAL to ~328D; 14D parameter space |
 | 2.0.0 | 2026-01-12 | Two-family structure (TEMPORAL, SUMMARY) with enhanced features |
 | 1.0.0 | 2025-12 | Initial implementation |
 
 ## Migration Notes
+
+### v3.2 Changes (2026-01-30)
+
+**Key Changes:**
+- **Per-channel independent IC generation** now supported via `method: "per_channel"`
+- **ic_types format** changed for per-channel datasets:
+  - Old: `"gaussian_random_field"` (single type for all channels)
+  - New: `"ch0:grf|ch1:struct|ch2:mgrf"` (different type per channel)
+- **Backward compatible:** Single IC type format still supported for `method: "sampled"` or other methods
+- **No schema changes:** HDF5 structure remains the same, only ic_types string format differs
+
+**Migration:**
+- **Existing datasets:** No migration needed - they use single IC type format and work as-is
+- **VQ-VAE training:** No changes needed - VQ-VAE only uses field tensors, not ic_types metadata
+- **Analysis scripts:** May need updates if parsing ic_types strings
+
+**Configuration example:**
+```yaml
+simulation:
+  input_generation:
+    method: "per_channel"  # Enable per-channel ICs
+    channel_configs:
+      channel_0:
+        ic_type_weights: {gaussian_random_field: 0.5, localized: 0.5}
+        gaussian_random_field: {length_scale: 0.05}
+      channel_1:
+        ic_type_weights: {structured: 1.0}
+      channel_2:
+        ic_type_weights: {gaussian_random_field: 1.0}
+```
 
 ### v3.1 Changes (2026-01-29)
 
