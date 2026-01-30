@@ -170,9 +170,9 @@ simulation:
           variance: 1.0
 
         composite:
-          base_field: "gaussian_random_field"
-          perturbation_field: "localized"
-          mix_ratio: 0.7
+          pattern: "waves"
+          noise_level: 0.1
+          grf_length_scale: 0.05
 
       channel_2:  # Auxiliary field - coarse and multi-scale
         ic_type_weights:
