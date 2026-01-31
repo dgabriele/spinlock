@@ -305,11 +305,21 @@ class VQVAETrainer:
                 # We must apply the same mask to runtime-concatenated features
                 if self.feature_mask_tensor is not None:
                     features = features[:, self.feature_mask_tensor]
+                    # DEBUG: Print dimensions after masking
+                    if self.current_epoch == 0 and n_batches == 0:
+                        print(f"DEBUG: After masking: features.shape = {features.shape}")
 
             # Handle raw_ics for hybrid INITIAL encoder (end-to-end CNN training)
             raw_ics = batch.get("raw_ics")
             if raw_ics is not None:
                 raw_ics = raw_ics.to(self.device)
+                # DEBUG: Print raw_ics shape
+                if self.current_epoch == 0 and n_batches == 0:
+                    print(f"DEBUG: raw_ics.shape = {raw_ics.shape}")
+
+            # DEBUG: Print final features shape before model
+            if self.current_epoch == 0 and n_batches == 0:
+                print(f"DEBUG: Passing to model: features.shape = {features.shape}")
 
             # Forward pass (pass raw_ics if model supports hybrid INITIAL)
             if raw_ics is not None and hasattr(self.model, 'initial_encoder'):
