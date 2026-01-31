@@ -259,6 +259,10 @@ class VQVAETrainer:
             if "raw_summary" in batch:
                 targets["raw_summary"] = batch["raw_summary"].to(self.device)
 
+            # Extract mask info for variable-length support
+            from ..variable_length_utils import extract_mask_info_from_batch
+            mask_info = extract_mask_info_from_batch(batch, self.device)
+
             losses = compute_total_loss(
                 outputs,
                 targets,
@@ -272,6 +276,7 @@ class VQVAETrainer:
                 is_interpolated=batch.get("is_interpolated").to(self.device) if batch.get("is_interpolated") is not None else None,
                 feature_weights=self.feature_weights,
                 entropy_weight=self.entropy_weight,
+                mask_info=mask_info,
             )
 
             loss = losses["total"]
@@ -341,6 +346,11 @@ class VQVAETrainer:
                     targets = {"features": outputs["input_features"]}
                 else:
                     targets = {"features": features}
+
+                # Extract mask info for variable-length support
+                from ..variable_length_utils import extract_mask_info_from_batch
+                mask_info = extract_mask_info_from_batch(batch, self.device)
+
                 losses = compute_total_loss(
                     outputs,
                     targets,
@@ -354,6 +364,7 @@ class VQVAETrainer:
                     is_interpolated=batch.get("is_interpolated"),
                     feature_weights=self.feature_weights,
                     entropy_weight=self.entropy_weight,
+                    mask_info=mask_info,
                 )
 
                 loss = losses["total"]
