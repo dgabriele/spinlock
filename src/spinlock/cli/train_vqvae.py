@@ -1684,15 +1684,15 @@ Output:
                 vl_config = encoder_params.get("variable_length", {})
                 vl_enabled = vl_config.get("enabled", False)
 
-                # CRITICAL: Skip encoding for temporal features when variable-length is enabled
-                # Variable-length mode requires raw [N, T, D] temporal sequences for length sampling
-                # The encoder will be applied during training loop forward pass instead
+                # CRITICAL: Variable-length mode requires special handling
+                # 1. Encode ONCE at full length for category discovery (clustering needs encoded features)
+                # 2. Store raw features for variable-length training
+                # 3. Store encoder for runtime variable-length encoding
                 if vl_enabled and len(family_features.shape) == 3:
-                    print(f"  {feature_family}: Variable-length mode detected - skipping pre-encoding")
-                    print(f"    Keeping raw temporal features {family_features.shape} for runtime encoding")
+                    print(f"  {feature_family}: Variable-length mode detected - dual encoding strategy")
+                    print(f"    Raw temporal features: {family_features.shape}")
 
-                    # Create the temporal encoder (but don't apply it yet)
-                    # It will be used in the training loop to encode with variable lengths
+                    # Create the temporal encoder
                     from spinlock.encoding.encoders import get_encoder
 
                     N, T, D = family_features.shape
@@ -1706,14 +1706,31 @@ Output:
                     # Create encoder
                     temporal_encoder = get_encoder(encoder_name, input_dim=input_dim, **encoder_kwargs)
                     temporal_encoder = temporal_encoder.to(device)
-                    temporal_encoder.eval()  # Keep in eval mode (no training for now)
+                    temporal_encoder.eval()
 
-                    # Store encoder for training loop
+                    # STEP 1: Encode at full length for category discovery
+                    print(f"    Encoding at full length (T={T}) for category discovery...")
+                    batch_size = 1024
+                    encoded_features_for_clustering = []
+                    features_tensor = torch.tensor(family_features, dtype=torch.float32)
+
+                    with torch.no_grad():
+                        for i in range(0, len(features_tensor), batch_size):
+                            batch = features_tensor[i:i+batch_size].to(device)
+                            encoded = temporal_encoder(batch)  # [B, 320] at full length
+                            encoded_features_for_clustering.append(encoded.cpu().numpy())
+
+                    encoded_for_clustering = np.concatenate(encoded_features_for_clustering, axis=0)
+                    print(f"    Encoded for clustering: {encoded_for_clustering.shape}")
+
+                    # STEP 2: Store raw features for variable-length training
+                    raw_temporal_features = family_features
+                    raw_temporal_family = feature_family
+                    print(f"    Keeping raw features for variable-length training: {raw_temporal_features.shape}")
+
+                    # STEP 3: Store encoder for training loop
                     self._temporal_encoder = temporal_encoder
                     self._temporal_encoder_output_dim = temporal_encoder.total_output_dim
-
-                    print(f"    Created temporal encoder: {encoder_name}")
-                    print(f"    Will encode [N, {T}, {D}] → [N, {temporal_encoder.total_output_dim}] at runtime")
 
                     # Store encoder config for checkpoint
                     encoder_state_dicts[feature_family] = {
@@ -1723,9 +1740,12 @@ Output:
                         'variable_length_enabled': True,
                     }
 
-                    # Keep raw features - will be encoded during training
-                    # Generate placeholder feature names for raw temporal dimensions
-                    family_names = [f"{feature_family}_raw_{i}" for i in range(D)]
+                    # IMPORTANT: Use encoded features for clustering, but will use raw for training
+                    family_features = encoded_for_clustering  # Switch to encoded for clustering
+                    print(f"    Proceeding with encoded features for category discovery")
+
+                    # Continue with normal processing to split into pyramid levels
+                    encoder = temporal_encoder  # Set encoder so pyramid splitting works below
 
                 elif encoder_name and encoder_name not in ["identity", "IdentityEncoder"]:
                     # Get input dimension for encoder
