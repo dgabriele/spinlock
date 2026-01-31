@@ -19,17 +19,29 @@ def reconstruction_loss(
     outputs: Dict[str, Any],
     targets: Dict[str, torch.Tensor],
     feature_weights: Optional[torch.Tensor] = None,
+    mask_info: Optional[Dict[str, Any]] = None,
 ):
-    """Compute reconstruction loss with optional per-feature weighting.
+    """Compute reconstruction loss with optional per-feature weighting and masking.
 
     Args:
         outputs: Model outputs with 'reconstruction' dict containing 'features'
         targets: Target dict with 'features'
         feature_weights: Optional per-feature importance weights [D]
                         If None, uses uniform weighting (standard MSE)
+        mask_info: Optional mask information dict from encoder.
+                  If provided, applies sample weighting based on valid fraction.
+                  Expected keys:
+                      - num_valid_timesteps: [B] number of valid timesteps per sample
 
     Returns:
-        Reconstruction loss (weighted MSE)
+        Reconstruction loss (weighted MSE with optional sample weighting)
+
+    Notes:
+        Sample weighting prevents short trajectories from dominating gradient updates:
+        - Short trajectory (100/500 valid) gets weight 100/500 = 0.2
+        - Long trajectory (500/500 valid) gets weight 500/500 = 1.0
+
+        This ensures loss contribution is proportional to information content.
     """
     reconstruction = outputs["reconstruction"]
     recon_features = reconstruction["features"]  # [batch, D]
@@ -38,13 +50,32 @@ def reconstruction_loss(
     # Compute squared errors
     squared_errors = (recon_features - target_features) ** 2  # [batch, D]
 
+    # Apply per-feature weights
     if feature_weights is not None:
-        # Apply per-feature weights
         # feature_weights: [D] -> [1, D] for broadcasting
-        weighted_errors = squared_errors * feature_weights.unsqueeze(0)  # [batch, D]
-        loss = weighted_errors.mean()
+        squared_errors = squared_errors * feature_weights.unsqueeze(0)  # [batch, D]
+
+    # Apply sample weighting based on valid fraction (variable-length support)
+    if mask_info is not None and "num_valid_timesteps" in mask_info:
+        num_valid = mask_info["num_valid_timesteps"]  # [B]
+
+        # Normalize by maximum valid count in batch
+        # This prevents short trajectories from dominating
+        max_valid = num_valid.max().float()
+
+        if max_valid > 0:
+            # Sample weights: fraction of valid timesteps
+            # Shape: [B] -> [B, 1] for broadcasting over features
+            sample_weights = (num_valid.float() / max_valid).unsqueeze(1)
+
+            # Weight squared errors by sample importance
+            weighted_errors = squared_errors * sample_weights  # [B, D]
+            loss = weighted_errors.mean()
+        else:
+            # No valid timesteps (edge case), fallback to uniform
+            loss = squared_errors.mean()
     else:
-        # Uniform weighting (standard MSE)
+        # Standard mode: uniform weighting across samples
         loss = squared_errors.mean()
 
     return loss
@@ -366,6 +397,7 @@ def compute_total_loss(
     is_interpolated: Optional[torch.Tensor] = None,
     feature_weights: Optional[torch.Tensor] = None,
     entropy_weight: float = 0.0,
+    mask_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, torch.Tensor]:
     """Compute total loss with all components.
 
@@ -387,6 +419,10 @@ def compute_total_loss(
                         If None, uses uniform weighting (standard MSE)
         entropy_weight: Weight for entropy regularization (encourages uniform codebook usage)
                        0.0 = disabled (default). Recommended: 0.01-0.1
+        mask_info: Optional mask information dict from encoder (variable-length support).
+                  If provided, applies sample weighting in reconstruction loss.
+                  Expected keys:
+                      - num_valid_timesteps: [B] number of valid timesteps per sample
 
     Returns:
         Dict with 'total' and individual loss components including:
@@ -395,8 +431,10 @@ def compute_total_loss(
             - reference_regularization: Reference feature regularization loss
             - entropy: Entropy regularization loss (positive, 0 = perfect uniform usage)
     """
-    # 1. Reconstruction loss (with optional feature weighting)
-    recon_loss = reconstruction_loss(outputs, targets, feature_weights=feature_weights)
+    # 1. Reconstruction loss (with optional feature weighting and masking)
+    recon_loss = reconstruction_loss(
+        outputs, targets, feature_weights=feature_weights, mask_info=mask_info
+    )
 
     # 2. VQ losses (commitment + codebook, already computed in forward pass)
     vq_loss = sum(outputs["vq_losses"])
