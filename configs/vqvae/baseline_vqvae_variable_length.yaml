@@ -1,11 +1,11 @@
 # Variable-Length VQ-VAE Configuration (100K Baseline Dev Dataset)
 #
 # VARIABLE-LENGTH MODE ENABLED
-# This config tests variable-length trajectory support with conservative settings:
-# - min_timesteps: 100 (well above max downsample_factor=8)
-# - max_timesteps: 500
-# - sampling_strategy: uniform
-# - All 4 pyramid levels valid for all trajectories
+# This config tests variable-length trajectory support using powers of 2:
+# - sampling_strategy: fixed_bins
+# - length_bins: [16, 32, 64, 128, 256, 512] (powers of 2)
+# - Aligns perfectly with downsample_factors [1, 2, 4, 8]
+# - All 4 pyramid levels valid for all trajectories (min=16 > max_factor=8)
 #
 # Based on baseline_vqvae.yaml with variable-length support enabled.
 #
@@ -63,18 +63,19 @@ families:
       # Training on variable-length temporal sequences for meta-learning
       # and operator discovery.
       #
-      # Configuration: Conservative (Full pyramid always)
-      # All trajectories will have length >= 100, ensuring all 4 pyramid levels
-      # are valid (min=100 >> max_factor=8)
+      # Configuration: Powers of 2 (aligns with pyramid architecture)
+      # Using fixed_bins with powers of 2: [16, 32, 64, 128, 256, 512]
+      # This aligns perfectly with downsample_factors [1, 2, 4, 8]
       variable_length:
         enabled: true  # ENABLED for variable-length mode
 
-        # Length constraints
-        min_timesteps: 100   # Conservative: well above max factor (8)
-        max_timesteps: 500   # Maximum trajectory length (current fixed length)
+        # Length constraints (for validation)
+        min_timesteps: 16    # Minimum: 2^4 (well above max_factor=8)
+        max_timesteps: 512   # Maximum: 2^9 (power of 2, close to original 500)
 
-        # Sampling strategy
-        sampling_strategy: "uniform"  # Sample uniformly from [100, 500]
+        # Sampling strategy: fixed bins at powers of 2
+        sampling_strategy: "fixed_bins"
+        length_bins: [16, 32, 64, 128, 256, 512]  # Powers of 2 align with pyramid
 
         # Pyramid adaptation
         adaptive_pyramid: true  # Auto-skip invalid pyramid levels for short trajectories
