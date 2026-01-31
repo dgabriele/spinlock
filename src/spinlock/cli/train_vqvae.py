@@ -2388,6 +2388,18 @@ Output:
         temporal_encoder_output_dim = getattr(self, '_temporal_encoder_output_dim', None)
         encoded_initial_features = getattr(self, '_encoded_initial_features', None)
 
+        # CRITICAL: Disable torch.compile for variable-length mode
+        # torch.compile warmup runs model.forward() with a sample batch before training
+        # But with variable-length, raw temporal features [B, T, D] need runtime encoding
+        # This causes dimension mismatches during compilation
+        # TODO: Support torch.compile by creating a wrapper that encodes before model forward
+        use_torch_compile = config.get("use_torch_compile", True)
+        if temporal_encoder is not None:
+            if use_torch_compile and config.get("verbose", True):
+                print("\nWARNING: Disabling torch.compile for variable-length mode")
+                print("  torch.compile warmup incompatible with runtime temporal encoding")
+            use_torch_compile = False
+
         trainer = VQVAETrainer(
             model=model,
             train_loader=train_loader,
@@ -2407,7 +2419,7 @@ Output:
             dead_code_max_reset_fraction=config.get("dead_code_max_reset_fraction", 0.25),
             use_smart_reset=config.get("use_smart_reset", False),
             checkpoint_dir=checkpoint_dir,
-            use_torch_compile=config.get("use_torch_compile", True),
+            use_torch_compile=use_torch_compile,  # Modified above for variable-length mode
             val_every_n_epochs=config.get("val_every_n_epochs", 5),
             gradient_clip_norm=config.get("gradient_clip_norm"),
             warmup_epochs=config.get("warmup_epochs", 0),
