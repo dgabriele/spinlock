@@ -1552,6 +1552,11 @@ Output:
                 family_config = families_config[feature_family]
                 encoder_name = family_config.get("encoder")
 
+                # Check if variable-length mode is enabled for this family (needed for chunked loading)
+                encoder_params = family_config.get("encoder_params", {})
+                vl_config = encoder_params.get("variable_length", {})
+                vl_enabled = vl_config.get("enabled", False)
+
                 # Handle hybrid INITIAL encoding specially
                 # For initial_hybrid: load raw ICs and defer CNN encoding to training loop
                 if encoder_name in ["initial_hybrid", "InitialHybridEncoder"]:
@@ -1765,12 +1770,8 @@ Output:
                             print(f"  {feature_family}: Removed {zero_var_count} zero-variance features (from NaN→0)")
 
                 # Apply per-family encoder if configured
-                encoder_params = family_config.get("encoder_params", {})
+                # (encoder_params and vl_enabled already defined at top of loop)
                 encoder = None  # Track encoder for pyramid detection below
-
-                # Check if variable-length mode is enabled for this family
-                vl_config = encoder_params.get("variable_length", {})
-                vl_enabled = vl_config.get("enabled", False)
 
                 # CRITICAL: Variable-length mode requires special handling
                 # 1. Encode ONCE at full length for category discovery (clustering needs encoded features)
