@@ -6,7 +6,7 @@ with per-level projection heads to produce multi-scale temporal embeddings.
 
 import torch
 import torch.nn as nn
-from typing import List, Literal
+from typing import List, Literal, Optional, Dict, Union, Tuple
 
 from .base import BaseEncoder
 from .temporal_cnn import ResidualBlock1D
@@ -48,6 +48,13 @@ class PyramidTemporalEncoder(BaseEncoder):
             Default: [1, 2, 4, 8] (full, half, quarter, eighth resolution)
         architecture: Backbone architecture variant.
             Only 'resnet1d_3' supported.
+        variable_length_config: Optional config dict for variable-length support.
+            If provided, enables adaptive pyramid levels and masking.
+            Expected keys:
+                - enabled (bool): Enable variable-length mode
+                - adaptive_pyramid (bool): Auto-skip invalid pyramid levels
+                - min_pyramid_length (int): Minimum T_i at any level
+                - mask_downsample_method (str): "ceil" or "floor"
 
     Example:
         >>> encoder = PyramidTemporalEncoder(input_dim=345, level_dims=[32, 64, 96, 128])
@@ -55,6 +62,14 @@ class PyramidTemporalEncoder(BaseEncoder):
         >>> out = encoder(x)               # [B, 320]
         >>> out.shape
         torch.Size([16, 320])
+
+        >>> # Variable-length mode
+        >>> vl_config = {"enabled": True, "adaptive_pyramid": True}
+        >>> encoder = PyramidTemporalEncoder(input_dim=345, variable_length_config=vl_config)
+        >>> mask = torch.ones(16, 256, dtype=torch.bool)
+        >>> lengths = torch.tensor([256] * 16)
+        >>> out, mask_info = encoder(x, mask=mask, lengths=lengths)
+        >>> out.shape  # [16, 320] (padded to full dimension)
     """
 
     def __init__(
@@ -63,6 +78,7 @@ class PyramidTemporalEncoder(BaseEncoder):
         level_dims: List[int] = [32, 64, 96, 128],
         downsample_factors: List[int] = [1, 2, 4, 8],
         architecture: Literal["resnet1d_3"] = "resnet1d_3",
+        variable_length_config: Optional[Dict] = None,
     ):
         super().__init__()
 
@@ -77,10 +93,24 @@ class PyramidTemporalEncoder(BaseEncoder):
 
         self._input_dim = input_dim
         self.output_dims_per_level = list(level_dims)
+        self.downsample_factors = downsample_factors
         self._output_dim = sum(level_dims)
 
+        # Parse variable-length config
+        self.vl_config = variable_length_config or {}
+        self.vl_enabled = self.vl_config.get("enabled", False)
+
         # Multi-resolution temporal pyramid
-        self.pyramid = TemporalPyramid(downsample_factors)
+        if self.vl_enabled:
+            self.pyramid = TemporalPyramid(
+                downsample_factors,
+                mask_downsample_method=self.vl_config.get("mask_downsample_method", "ceil"),
+                adaptive=self.vl_config.get("adaptive_pyramid", True),
+                min_pyramid_length=self.vl_config.get("min_pyramid_length", 1),
+            )
+        else:
+            # Backward compatible: no adaptive features
+            self.pyramid = TemporalPyramid(downsample_factors, adaptive=False)
 
         # Shared backbone (same architecture as TemporalCNNEncoder)
         self.stage1 = nn.Sequential(
@@ -119,48 +149,181 @@ class PyramidTemporalEncoder(BaseEncoder):
         h = self.gap(h).squeeze(-1)  # [B, 256]
         return h
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        lengths: Optional[torch.Tensor] = None,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict]]:
         """Encode temporal input at multiple resolutions.
 
         Args:
             x: Input sequences [B, T, D_in]
+            mask: Optional validity mask [B, T]. False indicates invalid positions.
+            lengths: Optional actual lengths [B] for adaptive pyramid levels.
 
         Returns:
-            Concatenated multi-resolution embeddings [B, sum(level_dims)]
-        """
-        pyramid_levels = self.pyramid(x)  # List of [B, T_i, D_in]
+            If mask is None (standard mode):
+                embeddings [B, sum(level_dims)]
 
+            If mask provided (variable-length mode):
+                (embeddings [B, output_dim], mask_info dict)
+
+                embeddings are zero-padded to total_output_dim if some pyramid
+                levels are skipped due to short trajectories.
+
+                mask_info contains:
+                    - original_mask: Input mask [B, T]
+                    - level_masks: List of downsampled masks [B, T_i]
+                    - valid_factors: List of factors actually used
+                    - num_active_levels: Number of pyramid levels used
+                    - output_dim: Actual embedding dimension before padding
+                    - num_valid_timesteps: Number of valid timesteps per sample [B]
+
+        Examples:
+            >>> # Standard mode (backward compatible)
+            >>> encoder = PyramidTemporalEncoder(input_dim=64)
+            >>> x = torch.randn(16, 256, 64)
+            >>> out = encoder(x)
+            >>> out.shape  # torch.Size([16, 320])
+
+            >>> # Variable-length mode
+            >>> vl_config = {"enabled": True, "adaptive_pyramid": True}
+            >>> encoder = PyramidTemporalEncoder(input_dim=64, variable_length_config=vl_config)
+            >>> mask = torch.ones(16, 256, dtype=torch.bool)
+            >>> mask[:, 200:] = False  # Last 56 timesteps invalid
+            >>> lengths = torch.full((16,), 200)
+            >>> out, info = encoder(x, mask=mask, lengths=lengths)
+            >>> out.shape  # torch.Size([16, 320]) (padded)
+            >>> info["num_active_levels"]  # 4 (all levels valid for T=200)
+        """
+        # Create pyramid levels
+        pyramid_levels, level_masks, valid_factors = self.pyramid(x, mask, lengths)
+
+        # Process each active level
         level_embeddings = []
-        for level_input, head in zip(pyramid_levels, self.heads):
-            # Transpose for Conv1d: [B, T_i, D_in] → [B, D_in, T_i]
-            h = level_input.transpose(1, 2)
-            h = self._backbone(h)   # [B, 256]
-            h = head(h)             # [B, level_dim]
+
+        for level_idx, level_input in enumerate(pyramid_levels):
+            # Find corresponding head (match factor to original index)
+            factor = valid_factors[level_idx]
+            head_idx = self.downsample_factors.index(factor)
+            head = self.heads[head_idx]
+
+            # Apply mask if provided
+            if level_masks is not None:
+                level_mask = level_masks[level_idx]  # [B, T_i]
+                expanded_mask = level_mask.unsqueeze(-1).float()  # [B, T_i, 1]
+                level_input = level_input * expanded_mask
+
+            # Process through backbone
+            h = level_input.transpose(1, 2)  # [B, D_in, T_i]
+            h = self._backbone(h)  # [B, 256]
+            h = head(h)  # [B, level_dim]
+
             level_embeddings.append(h)
 
-        return torch.cat(level_embeddings, dim=1)  # [B, sum(level_dims)]
+        # Concatenate active levels
+        embeddings = torch.cat(level_embeddings, dim=1)  # [B, sum(active_level_dims)]
 
-    def forward_per_level(self, x: torch.Tensor) -> List[torch.Tensor]:
+        # Handle variable-dimension output
+        if mask is not None:
+            # Pad to full dimension if some levels skipped
+            embeddings = self._pad_to_full_dim(embeddings, valid_factors)
+
+            # Compute number of valid timesteps per sample
+            num_valid = mask.sum(dim=1)  # [B]
+
+            mask_info = {
+                "original_mask": mask,
+                "level_masks": level_masks,
+                "valid_factors": valid_factors,
+                "num_active_levels": len(valid_factors),
+                "output_dim": embeddings.shape[1],
+                "num_valid_timesteps": num_valid,
+            }
+            return embeddings, mask_info
+        else:
+            return embeddings
+
+    def forward_per_level(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        lengths: Optional[torch.Tensor] = None,
+    ) -> List[torch.Tensor]:
         """Return per-level embeddings separately.
 
         Useful for per-level naming, auxiliary losses, or diagnostics.
 
         Args:
             x: Input sequences [B, T, D_in]
+            mask: Optional validity mask [B, T]
+            lengths: Optional actual lengths [B]
 
         Returns:
-            List of [B, level_dim] tensors, one per pyramid level
+            List of [B, level_dim] tensors, one per active pyramid level
         """
-        pyramid_levels = self.pyramid(x)
+        pyramid_levels, level_masks, valid_factors = self.pyramid(x, mask, lengths)
 
         level_embeddings = []
-        for level_input, head in zip(pyramid_levels, self.heads):
+        for level_idx, level_input in enumerate(pyramid_levels):
+            factor = valid_factors[level_idx]
+            head_idx = self.downsample_factors.index(factor)
+            head = self.heads[head_idx]
+
+            # Apply mask if provided
+            if level_masks is not None:
+                level_mask = level_masks[level_idx]
+                expanded_mask = level_mask.unsqueeze(-1).float()
+                level_input = level_input * expanded_mask
+
             h = level_input.transpose(1, 2)
             h = self._backbone(h)
             h = head(h)
             level_embeddings.append(h)
 
         return level_embeddings
+
+    def _pad_to_full_dim(
+        self,
+        embeddings: torch.Tensor,
+        valid_factors: List[int]
+    ) -> torch.Tensor:
+        """Pad variable-dimension embeddings to full dimension.
+
+        When some pyramid levels are skipped (e.g., T=4 can't use 8x factor),
+        the output dimension is smaller than total_output_dim. This pads with
+        zeros to maintain a consistent dimension.
+
+        Args:
+            embeddings: [B, active_dim] where active_dim = sum of dims for valid_factors
+            valid_factors: List of factors actually used
+
+        Returns:
+            Padded embeddings [B, total_output_dim]
+
+        Example:
+            >>> # All levels: [32, 64, 96, 128] = 320D
+            >>> # Only [1, 2, 4]: [32, 64, 96] = 192D → pad 128 zeros
+        """
+        B, active_dim = embeddings.shape
+
+        if active_dim == self._output_dim:
+            return embeddings  # No padding needed
+
+        # Zero-pad missing levels
+        padding = torch.zeros(
+            B, self._output_dim - active_dim,
+            device=embeddings.device,
+            dtype=embeddings.dtype
+        )
+
+        return torch.cat([embeddings, padding], dim=1)
+
+    @property
+    def total_output_dim(self) -> int:
+        """Maximum output dimension when all pyramid levels are active."""
+        return self._output_dim
 
     @property
     def output_dim(self) -> int:
