@@ -162,10 +162,11 @@ feature_cleaning:
 training:
   batch_size: 1024
   learning_rate: 0.001
-  num_epochs: 1000
+  num_epochs: 100  # Variable-length: 100 epochs ≈ 400-500 hours (17-21 days)
+                   # Enough for good multi-scale coverage (~20× per sample)
   optimizer: "adam"
   scheduler: null
-  warmup_epochs: 200
+  warmup_epochs: 20  # Reduced from 200 (proportional to total epochs)
 
   # Category discovery (auto mode)
   category_assignment: "auto"
@@ -255,7 +256,7 @@ training:
   checkpoint_dir: "checkpoints/vqvae/100k_baseline_dev_variable_length"
 
   # Callbacks
-  early_stopping_patience: 100
+  early_stopping_patience: 30  # Reduced from 100 (proportional to total epochs)
   early_stopping_min_delta: 0.01
 
   # Dead code resets - DISABLED
