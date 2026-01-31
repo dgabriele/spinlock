@@ -3,7 +3,7 @@
 # VARIABLE-LENGTH MODE ENABLED
 # This config tests variable-length trajectory support using powers of 2:
 # - sampling_strategy: fixed_bins
-# - length_bins: [16, 32, 64, 128, 256, 512] (powers of 2)
+# - length_bins: [16, 32, 64, 128, 256] (powers of 2)
 # - Aligns perfectly with downsample_factors [1, 2, 4, 8]
 # - All 4 pyramid levels valid for all trajectories (min=16 > max_factor=8)
 #
@@ -64,18 +64,18 @@ families:
       # and operator discovery.
       #
       # Configuration: Powers of 2 (aligns with pyramid architecture)
-      # Using fixed_bins with powers of 2: [16, 32, 64, 128, 256, 512]
+      # Using fixed_bins with powers of 2: [16, 32, 64, 128, 256]
       # This aligns perfectly with downsample_factors [1, 2, 4, 8]
       variable_length:
         enabled: true  # ENABLED for variable-length mode
 
         # Length constraints (for validation)
         min_timesteps: 16    # Minimum: 2^4 (well above max_factor=8)
-        max_timesteps: 512   # Maximum: 2^9 (power of 2, close to original 500)
+        max_timesteps: 256   # Maximum: 2^8
 
         # Sampling strategy: fixed bins at powers of 2
         sampling_strategy: "fixed_bins"
-        length_bins: [16, 32, 64, 128, 256, 512]  # Powers of 2 align with pyramid
+        length_bins: [16, 32, 64, 128, 256]  # Powers of 2 align with pyramid
 
         # Pyramid adaptation
         adaptive_pyramid: true  # Auto-skip invalid pyramid levels for short trajectories
