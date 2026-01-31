@@ -1723,10 +1723,31 @@ Output:
 
                 # Check for pre-allocated but unpopulated samples
                 # Compute norm across all feature dimensions to detect all-zero rows
+                # Use chunked computation for large datasets to avoid memory spike
                 if len(family_features.shape) == 3:  # [N, M, D]
-                    sample_norms = np.linalg.norm(family_features.reshape(family_features.shape[0], -1), axis=1)
+                    if use_chunking and len(family_features) > 5000:
+                        # Chunked norm computation to avoid memory spike
+                        print(f"    Computing norms in chunks to find populated samples...")
+                        norm_chunk_size = 5000
+                        sample_norms = np.empty(len(family_features), dtype=np.float32)
+                        for norm_start in range(0, len(family_features), norm_chunk_size):
+                            norm_end = min(norm_start + norm_chunk_size, len(family_features))
+                            chunk_reshaped = family_features[norm_start:norm_end].reshape(norm_end - norm_start, -1)
+                            sample_norms[norm_start:norm_end] = np.linalg.norm(chunk_reshaped, axis=1)
+                            del chunk_reshaped
+                    else:
+                        sample_norms = np.linalg.norm(family_features.reshape(family_features.shape[0], -1), axis=1)
                 elif len(family_features.shape) == 2:  # [N, D]
-                    sample_norms = np.linalg.norm(family_features, axis=1)
+                    if use_chunking and len(family_features) > 5000:
+                        # Chunked norm computation
+                        print(f"    Computing norms in chunks to find populated samples...")
+                        norm_chunk_size = 5000
+                        sample_norms = np.empty(len(family_features), dtype=np.float32)
+                        for norm_start in range(0, len(family_features), norm_chunk_size):
+                            norm_end = min(norm_start + norm_chunk_size, len(family_features))
+                            sample_norms[norm_start:norm_end] = np.linalg.norm(family_features[norm_start:norm_end], axis=1)
+                    else:
+                        sample_norms = np.linalg.norm(family_features, axis=1)
                 else:
                     sample_norms = None
 
