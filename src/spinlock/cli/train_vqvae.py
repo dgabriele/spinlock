@@ -584,6 +584,11 @@ Output:
         if verbose:
             print("Loading dataset and features...")
 
+        # DEBUG: Initial memory baseline
+        import resource
+        mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # MB on Linux
+        print(f"[MEMORY DEBUG] Baseline at start: {mem_usage:.1f} MB")
+
         # Load features from dataset
         # Returns (features, feature_names, raw_ics, initial_info, encoder_state_dicts)
         # raw_ics and initial_info are non-None when using hybrid INITIAL encoding
@@ -978,7 +983,16 @@ Output:
             if verbose:
                 print("\nAuto-discovering feature categories via clustering...")
 
+            # DEBUG: Memory before category discovery
+            import resource
+            mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+            print(f"[MEMORY DEBUG] Before category discovery: {mem_usage:.1f} MB")
+
             group_indices = self._discover_categories(features, feature_names, config, verbose)
+
+            # DEBUG: Memory after category discovery
+            mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+            print(f"[MEMORY DEBUG] After category discovery: {mem_usage:.1f} MB")
 
             if verbose:
                 print(f"Discovered {len(group_indices)} categories:")
@@ -1282,9 +1296,18 @@ Output:
         if verbose:
             print("\nBuilding VQ-VAE model...")
 
+        # DEBUG: Memory before model building
+        import resource
+        mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        print(f"[MEMORY DEBUG] Before model building: {mem_usage:.1f} MB")
+
         model, vqvae_config = self._build_model(
             normalized_features, group_indices, config, verbose, initial_info
         )
+
+        # DEBUG: Memory after model building
+        mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        print(f"[MEMORY DEBUG] After model building: {mem_usage:.1f} MB")
 
         # Create data loaders
         if verbose:
@@ -1616,6 +1639,7 @@ Output:
                 # TEMPORAL uses /features/temporal directly (no aggregated sublevel)
                 # SUMMARY uses /features/summary/per_trajectory (FIX: bypasses corrupted aggregated features)
                 if feature_family == "temporal":
+                    print(f"  {feature_family}: Starting to load temporal features...")
                     features_path = f"/features/{feature_family}"
                 elif feature_family == "summary":
                     # Use per_trajectory features instead of aggregated
@@ -1634,10 +1658,63 @@ Output:
                 group = f[features_path]
 
                 # Load features (with optional sample limit)
-                if max_samples is not None and max_samples > 0:
-                    family_features = np.array(group["features"][:max_samples])
+                print(f"  {feature_family}: Loading features from HDF5...")
+
+                # Get dataset and shape info
+                h5_dataset = group["features"]
+                dataset_shape = h5_dataset.shape
+                total_samples = min(max_samples, dataset_shape[0]) if max_samples and max_samples > 0 else dataset_shape[0]
+
+                # Get chunk size configuration
+                chunk_size_config = config.get("hdf5_chunk_size", "auto")
+
+                # Auto-calculate chunk size if needed
+                if chunk_size_config == "auto" or chunk_size_config is None:
+                    if len(dataset_shape) == 3:
+                        # Target 400 MB per chunk
+                        sample_bytes = dataset_shape[1] * dataset_shape[2] * 4  # float32 = 4 bytes
+                        chunk_size = max(100, min(5000, (400 * 1024 * 1024) // sample_bytes))
+                    else:
+                        chunk_size = 1000
+                elif chunk_size_config == 0:
+                    chunk_size = total_samples  # Disable chunking
                 else:
-                    family_features = np.array(group["features"])
+                    chunk_size = int(chunk_size_config)
+
+                # Decide whether to use chunking
+                use_chunking = (
+                    chunk_size < total_samples and
+                    vl_enabled and
+                    len(dataset_shape) == 3
+                )
+
+                if use_chunking:
+                    print(f"    Using chunked loading: {total_samples} samples in chunks of {chunk_size}")
+
+                    # Pre-allocate array
+                    family_features = np.empty((total_samples, dataset_shape[1], dataset_shape[2]),
+                                               dtype=np.float32)
+
+                    # Load in chunks
+                    for chunk_start in range(0, total_samples, chunk_size):
+                        chunk_end = min(chunk_start + chunk_size, total_samples)
+
+                        # Progress logging every 5 chunks
+                        if chunk_start % (chunk_size * 5) == 0:
+                            print(f"    Loading chunk {chunk_start//chunk_size + 1} (samples {chunk_start}-{chunk_end})")
+
+                        # Load chunk from HDF5
+                        chunk = h5_dataset[chunk_start:chunk_end]
+                        family_features[chunk_start:chunk_end] = chunk
+                        del chunk
+                else:
+                    # Original path for small datasets or non-variable-length mode
+                    if max_samples is not None and max_samples > 0:
+                        family_features = np.array(h5_dataset[:max_samples])
+                    else:
+                        family_features = np.array(h5_dataset[:])
+
+                print(f"  {feature_family}: Loaded {family_features.shape}")
 
                 # Check for pre-allocated but unpopulated samples
                 # Compute norm across all feature dimensions to detect all-zero rows
@@ -1722,17 +1799,58 @@ Output:
                     # STEP 1: Encode at full length for category discovery
                     print(f"    Encoding at full length (T={T}) for category discovery...")
                     batch_size = 1024
-                    encoded_features_for_clustering = []
-                    features_tensor = torch.tensor(family_features, dtype=torch.float32)
+                    encode_chunk_size = config.get("encode_chunk_size", 5000)  # Samples to convert to tensor at once
 
-                    with torch.no_grad():
-                        for i in range(0, len(features_tensor), batch_size):
-                            batch = features_tensor[i:i+batch_size].to(device)
-                            encoded = temporal_encoder(batch)  # [B, 320] at full length
-                            encoded_features_for_clustering.append(encoded.cpu().numpy())
+                    # Use chunked encoding to avoid loading full array into GPU memory
+                    if use_chunking and encode_chunk_size < len(family_features):
+                        print(f"    Using chunked encoding: {len(family_features)} samples in chunks of {encode_chunk_size}")
+                        encoded_features_for_clustering = []
 
-                    encoded_for_clustering = np.concatenate(encoded_features_for_clustering, axis=0)
+                        with torch.no_grad():
+                            for chunk_start in range(0, len(family_features), encode_chunk_size):
+                                chunk_end = min(chunk_start + encode_chunk_size, len(family_features))
+
+                                # Progress logging
+                                if chunk_start % (encode_chunk_size * 3) == 0:
+                                    print(f"    Encoding chunk (samples {chunk_start}-{chunk_end})")
+
+                                # Convert chunk to tensor (avoids full array conversion)
+                                chunk_tensor = torch.tensor(
+                                    family_features[chunk_start:chunk_end],
+                                    dtype=torch.float32
+                                ).to(device)
+
+                                # Encode chunk in batches
+                                for i in range(0, len(chunk_tensor), batch_size):
+                                    batch = chunk_tensor[i:i+batch_size]
+                                    encoded = temporal_encoder(batch)  # [B, 320] at full length
+                                    encoded_features_for_clustering.append(encoded.cpu().numpy())
+
+                                # Free GPU memory
+                                del chunk_tensor
+                                if device.type == 'cuda':
+                                    torch.cuda.empty_cache()
+
+                        encoded_for_clustering = np.concatenate(encoded_features_for_clustering, axis=0)
+                    else:
+                        # Original batched encoding path for small datasets
+                        encoded_features_for_clustering = []
+                        features_tensor = torch.tensor(family_features, dtype=torch.float32)
+
+                        with torch.no_grad():
+                            for i in range(0, len(features_tensor), batch_size):
+                                batch = features_tensor[i:i+batch_size].to(device)
+                                encoded = temporal_encoder(batch)  # [B, 320] at full length
+                                encoded_features_for_clustering.append(encoded.cpu().numpy())
+
+                        encoded_for_clustering = np.concatenate(encoded_features_for_clustering, axis=0)
+
                     print(f"    Encoded for clustering: {encoded_for_clustering.shape}")
+
+                    # DEBUG: Memory usage after encoding
+                    import resource
+                    mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+                    print(f"    [MEMORY DEBUG] After encoding: {mem_usage:.1f} MB")
 
                     # STEP 2: Store raw features for variable-length training
                     raw_temporal_features = family_features
@@ -1921,6 +2039,11 @@ Output:
         self._raw_temporal_features = raw_temporal_features
         self._raw_temporal_family = raw_temporal_family
         self._initial_features_only = initial_features_only
+
+        # DEBUG: Memory usage after feature loading
+        import resource
+        mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        print(f"\n[MEMORY DEBUG] After feature loading: {mem_usage:.1f} MB")
 
         return features, all_feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated, raw_summary
 

@@ -280,6 +280,13 @@ logging:
 # Random seed
 random_seed: 42
 
+# Memory Management
+# Controls chunked loading to prevent OOM on large datasets
+hdf5_chunk_size: auto  # "auto" = calculate based on 400MB target per chunk
+                       # Set to integer (e.g., 1000) for manual control
+                       # Set to 0 to disable chunking
+encode_chunk_size: 5000  # Samples to convert to tensor at once during encoding
+
 # Proven Performance (epoch 100):
 # - val_loss: 0.067 (composite)
 # - L_recon: ~0.015 (quality: 0.985 = 98.5%)
