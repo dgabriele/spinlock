@@ -1512,6 +1512,7 @@ Output:
         encoder_state_dicts = {}  # Store state dicts for frozen encoders
         raw_temporal_features = None  # For variable-length mode
         raw_temporal_family = None  # Track which family is variable-length
+        initial_features_only = None  # Track initial features before temporal concatenation
 
         with h5py.File(dataset_path, "r") as f:
             for family_idx, feature_family in enumerate(feature_families):
@@ -1740,7 +1741,16 @@ Output:
                         'variable_length_enabled': True,
                     }
 
-                    # IMPORTANT: Use encoded features for clustering, but will use raw for training
+                    # IMPORTANT: Capture initial features BEFORE adding temporal for category discovery
+                    # Store initial-only features for variable-length training
+                    if len(all_features) > 0:
+                        initial_features_only = np.concatenate(all_features, axis=1)
+                        print(f"    Captured initial-only features: {initial_features_only.shape}")
+                    else:
+                        initial_features_only = None
+                        print(f"    No initial features (temporal-only mode)")
+
+                    # Use encoded features for clustering, but will use raw for training
                     family_features = encoded_for_clustering  # Switch to encoded for clustering
                     print(f"    Proceeding with encoded features for category discovery")
 
@@ -1897,9 +1907,10 @@ Output:
                         print(f"  summary: Replaced {nan_count} NaN values with 0 in raw SUMMARY")
                     print(f"  Loaded raw SUMMARY features for reference regularization: {raw_summary.shape}")
 
-        # Store raw temporal features as instance variables for dataloader creation
+        # Store raw temporal features and initial-only features for dataloader creation
         self._raw_temporal_features = raw_temporal_features
         self._raw_temporal_family = raw_temporal_family
+        self._initial_features_only = initial_features_only
 
         return features, all_feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated, raw_summary
 
@@ -2314,14 +2325,15 @@ Output:
                 # Use raw temporal features as main features for dataset (with length sampling)
                 dataset_features = self._raw_temporal_features
 
-                # If we have other families (e.g., initial), they were pre-encoded and concatenated
-                # Store them separately to concatenate after temporal encoding in training loop
-                if features is not None and features.size > 0:
-                    print(f"  Pre-encoded initial features shape: {features.shape}")
+                # CRITICAL FIX: Use initial-only features (NOT full concatenation)
+                # The full 'features' includes both initial + temporal_encoded (for clustering)
+                # We only want initial features to concatenate with runtime-encoded temporal
+                if hasattr(self, '_initial_features_only') and self._initial_features_only is not None:
+                    print(f"  Pre-encoded initial-only features shape: {self._initial_features_only.shape}")
                     print(f"  These will be concatenated with encoded temporal features during training")
                     # Store as instance variable for training loop access
-                    self._encoded_initial_features = features
-                    encoded_initial_features = features
+                    self._encoded_initial_features = self._initial_features_only
+                    encoded_initial_features = self._initial_features_only
                 else:
                     print(f"  No initial features - using temporal only")
                     self._encoded_initial_features = None
