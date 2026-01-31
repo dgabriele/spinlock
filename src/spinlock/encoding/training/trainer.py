@@ -221,6 +221,15 @@ class VQVAETrainer:
             else:
                 self.encoded_initial_features_tensor = None
 
+        # Feature cleaning mask (for variable-length mode)
+        # Tracks which features survived cleaning during category discovery
+        # Must be applied to concatenated features during training to match model expectations
+        self.feature_mask = feature_mask
+        if feature_mask is not None and temporal_encoder is not None:
+            self.feature_mask_tensor = torch.from_numpy(feature_mask).bool().to(device)
+        else:
+            self.feature_mask_tensor = None
+
         # Training history
         self.history = {"train_loss": [], "val_loss": [], "metrics": []}
 
@@ -284,6 +293,12 @@ class VQVAETrainer:
                     features = torch.cat([initial_batch, encoded_temporal], dim=1)
                 else:
                     features = encoded_temporal
+
+                # CRITICAL: Apply feature cleaning mask to match category discovery
+                # During category discovery, features were cleaned (removing low-variance, etc.)
+                # We must apply the same mask to runtime-concatenated features
+                if self.feature_mask_tensor is not None:
+                    features = features[:, self.feature_mask_tensor]
 
             # Handle raw_ics for hybrid INITIAL encoder (end-to-end CNN training)
             raw_ics = batch.get("raw_ics")
@@ -401,6 +416,10 @@ class VQVAETrainer:
                         features = torch.cat([initial_batch, encoded_temporal], dim=1)
                     else:
                         features = encoded_temporal
+
+                    # Apply feature cleaning mask to match category discovery
+                    if self.feature_mask_tensor is not None:
+                        features = features[:, self.feature_mask_tensor]
 
                 # Handle raw_ics for hybrid INITIAL encoder
                 raw_ics = batch.get("raw_ics")
