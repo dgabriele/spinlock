@@ -226,7 +226,13 @@ class VQVAETrainer:
         # Must be applied to concatenated features during training to match model expectations
         self.feature_mask = feature_mask
         if feature_mask is not None and temporal_encoder is not None:
-            self.feature_mask_tensor = torch.from_numpy(feature_mask).bool().to(device)
+            mask_tensor = torch.from_numpy(feature_mask).bool()
+            # Ensure mask is 1D (flatten if needed)
+            if mask_tensor.dim() > 1:
+                mask_tensor = mask_tensor.flatten()
+            self.feature_mask_tensor = mask_tensor.to(device)
+            if verbose:
+                logger.info(f"Feature mask loaded: {mask_tensor.sum()}/{len(mask_tensor)} features kept")
         else:
             self.feature_mask_tensor = None
 
