@@ -216,11 +216,20 @@ training:
 2. ✅ "All features have zero variance!"
    - Fixed by dual encoding (encode for clustering, keep raw for training)
 
+3. ✅ "The size of tensor a (466) must match the size of tensor b (486) at non-singleton dimension 1"
+   - Root cause: Feature cleaning created 338D features during category discovery, but training passed 358D uncleaned features
+   - Fixed by:
+     - Storing feature_mask as instance variable
+     - Extracting initial portion of mask and applying to initial_features_only
+     - Extracting temporal portion of mask and applying during training
+     - Correctly concatenating cleaned initial + cleaned temporal → 338D
+
 ### Current Status
-- Training started successfully
-- Initialization phase in progress (torch.compile warmup may take 3-5 minutes)
-- No errors in feature loading or category discovery
-- Expected to see training progress soon
+- ✅ Training working successfully!
+- ✅ Feature cleaning applied correctly in variable-length mode
+- ✅ Temporal feature mask: 300/320 features kept
+- ✅ Training progressing normally (Epoch 1: loss=47.14 → Epoch 47: loss=10.17)
+- ⚠️ torch.compile disabled for variable-length mode (runtime temporal encoding incompatible)
 
 ### Expected Output
 ```
@@ -288,6 +297,18 @@ Epoch 1/100: [Training starts]
    - Keep raw for training
    - Fixes "zero variance" error
 
+3. **c981790** - "fix: apply feature cleaning correctly in variable-length mode"
+   - Store feature_mask and extract initial/temporal portions
+   - Apply masks during training to match model's expected dimensions
+   - Fixes dimension mismatch (466D vs 486D) error
+
+4. **3750426** - "feat: implement chunked HDF5 loading to prevent OOM on large datasets"
+   - Chunked HDF5 loading with 400MB target per chunk
+   - Chunked encoding to avoid full tensor conversion
+   - Memory reduction: 15-20 GB → ~5-6 GB (66% reduction)
+   - Configuration: hdf5_chunk_size (auto/manual), encode_chunk_size (5000)
+   - Backward compatible: only activates for large + variable-length + 3D features
+
 ---
 
 ## Next Steps
@@ -317,7 +338,12 @@ Epoch 1/100: [Training starts]
 ## Troubleshooting
 
 ### If training crashes
-**Error:** Out of memory
+**Error:** Out of memory during feature loading
+- ✅ Fixed: Chunked HDF5 loading now prevents this (commit 3750426)
+- If still issues: Set `hdf5_chunk_size: 500` for smaller chunks
+- If still issues: Set `encode_chunk_size: 2000` for smaller encoding chunks
+
+**Error:** Out of memory during training
 - Reduce `batch_size` from 1024 to 512
 - Reduce `max_timesteps` from 256 to 128
 - Reduce model capacity (group_embedding_dim, group_hidden_dim)
