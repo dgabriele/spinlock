@@ -50,6 +50,86 @@ families:
       downsample_factors: [1, 2, 4, 8]    # Temporal downsampling (full/half/quarter/eighth)
       architecture: "resnet1d_3"            # Shared ResNet-1D backbone
 
+      # Variable-Length Trajectory Support (OPTIONAL)
+      # Enable training on variable-length temporal sequences for meta-learning
+      # and operator discovery. Disabled by default for backward compatibility.
+      #
+      # IMPORTANT: min_timesteps must be >= max(downsample_factors) to ensure
+      # at least one pyramid level is valid for all trajectories.
+      #
+      # variable_length:
+      #   enabled: false  # Set to true to enable variable-length mode
+      #
+      #   # Length constraints
+      #   min_timesteps: 8     # CRITICAL: Must be >= max(downsample_factors)
+      #                        # With [1,2,4,8], min=8 allows all 4 pyramid levels
+      #                        # With min=4, only [1,2,4] levels valid (8× skipped)
+      #   max_timesteps: 500   # Maximum trajectory length (current fixed length)
+      #
+      #   # Sampling strategy
+      #   sampling_strategy: "uniform"  # Options: "uniform", "geometric", "fixed_bins"
+      #                                 # - uniform: Sample uniformly from [min_T, max_T]
+      #                                 # - geometric: Exponential decay (favors shorter)
+      #                                 # - fixed_bins: Sample from predefined bins
+      #
+      #   # Geometric sampling parameters (only if strategy="geometric")
+      #   # geometric_decay: 0.01  # Higher → favor shorter trajectories
+      #                            # Lower → more uniform distribution
+      #
+      #   # Fixed bins sampling (only if strategy="fixed_bins")
+      #   # length_bins: [100, 200, 300, 400, 500]
+      #
+      #   # Pyramid adaptation (recommended: true)
+      #   adaptive_pyramid: true  # Auto-skip invalid pyramid levels for short trajectories
+      #                           # Example: T=4 with [1,2,4,8] → skip 8× (would give T=0.5)
+      #   min_pyramid_length: 1   # Minimum T_i at any pyramid level (default: 1)
+      #
+      #   # Mask downsampling method
+      #   mask_downsample_method: "ceil"  # "ceil" (conservative) or "floor" (aggressive)
+      #                                   # - ceil: Valid if ANY source timestep valid
+      #                                   # - floor: Valid only if ALL source timesteps valid
+      #
+      #   # Padding configuration
+      #   padding_value: 0.0      # Value for masked positions (default: 0.0)
+      #   padding_mode: "zero"    # "zero" or "replicate" (default: zero)
+      #
+      #   # Training curriculum (OPTIONAL)
+      #   # Gradually decrease min_timesteps over training epochs
+      #   # Allows smooth transition from long → short trajectories
+      #   # use_length_curriculum: false
+      #   # curriculum_epochs: 200        # Number of epochs for curriculum
+      #   # curriculum_start_min: 400     # Start with this min_timesteps
+      #   # curriculum_schedule: "linear" # "linear", "cosine", or "exponential"
+      #
+      # Recommended configurations:
+      #
+      # 1. Conservative (Full pyramid always):
+      #    enabled: true
+      #    min_timesteps: 100  # Well above max factor (8)
+      #    max_timesteps: 500
+      #    sampling_strategy: "uniform"
+      #
+      # 2. Aggressive (Allow short trajectories):
+      #    enabled: true
+      #    min_timesteps: 8  # Exactly max factor
+      #    max_timesteps: 500
+      #    sampling_strategy: "geometric"
+      #    geometric_decay: 0.02  # Favor shorter (faster equilibration)
+      #
+      # 3. Curriculum learning:
+      #    enabled: true
+      #    min_timesteps: 8
+      #    max_timesteps: 500
+      #    use_length_curriculum: true
+      #    curriculum_epochs: 200
+      #    curriculum_start_min: 400  # Start conservative, decrease to 8
+      #
+      # Minimum T requirements by pyramid levels:
+      #   Levels [1,2,4,8] → min_T ≥ 8 (all 4 levels)
+      #   Levels [1,2,4]   → min_T ≥ 4 (3 levels)
+      #   Levels [1,2]     → min_T ≥ 2 (2 levels)
+      #   Levels [1]       → min_T ≥ 1 (1 level)
+
 # VQ-VAE Architecture - HIGH CAPACITY
 model:
   group_embedding_dim: 512      # DOUBLED from 256
