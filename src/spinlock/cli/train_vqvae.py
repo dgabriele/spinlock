@@ -1510,6 +1510,8 @@ Output:
         raw_ics = None
         initial_info = None
         encoder_state_dicts = {}  # Store state dicts for frozen encoders
+        raw_temporal_features = None  # For variable-length mode
+        raw_temporal_family = None  # Track which family is variable-length
 
         with h5py.File(dataset_path, "r") as f:
             for family_idx, feature_family in enumerate(feature_families):
@@ -1678,7 +1680,54 @@ Output:
                 encoder_params = family_config.get("encoder_params", {})
                 encoder = None  # Track encoder for pyramid detection below
 
-                if encoder_name and encoder_name not in ["identity", "IdentityEncoder"]:
+                # Check if variable-length mode is enabled for this family
+                vl_config = encoder_params.get("variable_length", {})
+                vl_enabled = vl_config.get("enabled", False)
+
+                # CRITICAL: Skip encoding for temporal features when variable-length is enabled
+                # Variable-length mode requires raw [N, T, D] temporal sequences for length sampling
+                # The encoder will be applied during training loop forward pass instead
+                if vl_enabled and len(family_features.shape) == 3:
+                    print(f"  {feature_family}: Variable-length mode detected - skipping pre-encoding")
+                    print(f"    Keeping raw temporal features {family_features.shape} for runtime encoding")
+
+                    # Create the temporal encoder (but don't apply it yet)
+                    # It will be used in the training loop to encode with variable lengths
+                    from spinlock.encoding.encoders import get_encoder
+
+                    N, T, D = family_features.shape
+                    input_dim = D  # Per-timestep feature dimension
+
+                    # Prepare encoder kwargs
+                    encoder_kwargs = dict(encoder_params)
+                    if "variable_length" in encoder_kwargs:
+                        encoder_kwargs["variable_length_config"] = encoder_kwargs.pop("variable_length")
+
+                    # Create encoder
+                    temporal_encoder = get_encoder(encoder_name, input_dim=input_dim, **encoder_kwargs)
+                    temporal_encoder = temporal_encoder.to(device)
+                    temporal_encoder.eval()  # Keep in eval mode (no training for now)
+
+                    # Store encoder for training loop
+                    self._temporal_encoder = temporal_encoder
+                    self._temporal_encoder_output_dim = temporal_encoder.total_output_dim
+
+                    print(f"    Created temporal encoder: {encoder_name}")
+                    print(f"    Will encode [N, {T}, {D}] → [N, {temporal_encoder.total_output_dim}] at runtime")
+
+                    # Store encoder config for checkpoint
+                    encoder_state_dicts[feature_family] = {
+                        'encoder_name': encoder_name,
+                        'encoder_params': encoder_params,
+                        'state_dict': temporal_encoder.state_dict(),
+                        'variable_length_enabled': True,
+                    }
+
+                    # Keep raw features - will be encoded during training
+                    # Generate placeholder feature names for raw temporal dimensions
+                    family_names = [f"{feature_family}_raw_{i}" for i in range(D)]
+
+                elif encoder_name and encoder_name not in ["identity", "IdentityEncoder"]:
                     # Get input dimension for encoder
                     if len(family_features.shape) == 3:
                         # Temporal: [N, T, D] -> input_dim is D
@@ -1741,11 +1790,24 @@ Output:
                     else:
                         output_dim = family_features.shape[1]
                         family_names = [f"{feature_family}_{i}" for i in range(output_dim)]
+                elif len(family_features.shape) == 3:
+                    # Variable-length temporal features: keep as [N, T, D] (not encoded yet)
+                    # These will be encoded during training loop with sampled lengths
+                    # Don't append to all_features - store separately
+                    print(f"  {feature_family}: Stored raw temporal features {family_features.shape} (will encode at runtime)")
+
+                    # Store raw temporal features for variable-length training
+                    # We'll handle these separately - don't concatenate with other families
+                    raw_temporal_features = family_features
+                    raw_temporal_family = feature_family
+
+                    # Continue to next family without adding to all_features
+                    continue
                 else:
                     # Should not happen after encoder, but handle gracefully
                     raise ValueError(
                         f"Features for {feature_family} are {len(family_features.shape)}D after encoding. "
-                        f"Expected 2D. Shape: {family_features.shape}"
+                        f"Expected 2D or 3D (for variable-length). Shape: {family_features.shape}"
                     )
 
                 # Prefix feature names with family name (for multi-family)
@@ -1814,6 +1876,10 @@ Output:
                         raw_summary = np.nan_to_num(raw_summary, nan=0.0)
                         print(f"  summary: Replaced {nan_count} NaN values with 0 in raw SUMMARY")
                     print(f"  Loaded raw SUMMARY features for reference regularization: {raw_summary.shape}")
+
+        # Store raw temporal features as instance variables for dataloader creation
+        self._raw_temporal_features = raw_temporal_features
+        self._raw_temporal_family = raw_temporal_family
 
         return features, all_feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated, raw_summary
 
@@ -2212,9 +2278,40 @@ Output:
             print(f"\nVariable-length mode enabled:")
             print(f"  {length_sampler}")
 
+        # CRITICAL: Handle variable-length mode with separate temporal and initial features
+        # When variable-length is enabled:
+        # - Raw temporal features [N, T, D] for length sampling (NOT pre-encoded)
+        # - Pre-encoded initial features [N, D_initial] to concatenate after temporal encoding
+        # - During training, temporal will be encoded with masks, then concatenated with initial
+        dataset_features = features
+        encoded_initial_features = None
+
+        if length_sampler is not None:
+            if hasattr(self, '_raw_temporal_features') and self._raw_temporal_features is not None:
+                print(f"\nVariable-length mode: Using raw temporal features for runtime encoding:")
+                print(f"  Raw temporal shape: {self._raw_temporal_features.shape}")
+
+                # Use raw temporal features as main features for dataset (with length sampling)
+                dataset_features = self._raw_temporal_features
+
+                # If we have other families (e.g., initial), they were pre-encoded and concatenated
+                # Store them separately to concatenate after temporal encoding in training loop
+                if features is not None and features.size > 0:
+                    print(f"  Pre-encoded initial features shape: {features.shape}")
+                    print(f"  These will be concatenated with encoded temporal features during training")
+                    # Store as instance variable for training loop access
+                    self._encoded_initial_features = features
+                    encoded_initial_features = features
+                else:
+                    print(f"  No initial features - using temporal only")
+                    self._encoded_initial_features = None
+            else:
+                print(f"\nWARNING: Variable-length sampler enabled but no raw temporal features found!")
+                print(f"  This will fail if features are not [N, T, D]. Shape: {features.shape}")
+
         # Create data loaders using refactored utility
         return create_train_val_dataloaders(
-            features=features,
+            features=dataset_features,
             config=config,
             raw_ics=raw_ics,
             reference_features=reference_features,
@@ -2254,6 +2351,11 @@ Output:
         # Entropy regularization for uniform codebook usage
         entropy_weight = config.get("entropy_weight", 0.0)
 
+        # Check if we have temporal encoder for variable-length mode
+        temporal_encoder = getattr(self, '_temporal_encoder', None)
+        temporal_encoder_output_dim = getattr(self, '_temporal_encoder_output_dim', None)
+        encoded_initial_features = getattr(self, '_encoded_initial_features', None)
+
         trainer = VQVAETrainer(
             model=model,
             train_loader=train_loader,
@@ -2287,6 +2389,10 @@ Output:
             encoder_state_dicts=encoder_state_dicts,
             feature_mask=feature_mask,
             feature_cleaning_params=feature_cleaning_params,
+            # Variable-length mode support
+            temporal_encoder=temporal_encoder,
+            temporal_encoder_output_dim=temporal_encoder_output_dim,
+            encoded_initial_features=encoded_initial_features,
         )
 
         # A3: Feature weighting for reconstruction loss

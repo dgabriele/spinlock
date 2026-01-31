@@ -67,6 +67,10 @@ class VQVAETrainer:
         encoder_state_dicts: Optional[dict] = None,
         feature_mask: Optional[np.ndarray] = None,
         feature_cleaning_params: Optional[dict] = None,
+        # Variable-length mode support
+        temporal_encoder: Optional[nn.Module] = None,
+        temporal_encoder_output_dim: Optional[int] = None,
+        encoded_initial_features: Optional[np.ndarray] = None,
     ):
         """Initialize trainer.
 
@@ -204,6 +208,19 @@ class VQVAETrainer:
             else None
         )
 
+        # Variable-length mode support
+        self.temporal_encoder = temporal_encoder
+        self.temporal_encoder_output_dim = temporal_encoder_output_dim
+        self.encoded_initial_features = encoded_initial_features
+        if temporal_encoder is not None:
+            self.temporal_encoder = temporal_encoder.to(device)
+            self.temporal_encoder.eval()  # Keep in eval mode (not trained separately)
+            # Convert encoded_initial_features to torch tensor if provided
+            if encoded_initial_features is not None:
+                self.encoded_initial_features_tensor = torch.from_numpy(encoded_initial_features).float().to(device)
+            else:
+                self.encoded_initial_features_tensor = None
+
         # Training history
         self.history = {"train_loss": [], "val_loss": [], "metrics": []}
 
@@ -232,6 +249,41 @@ class VQVAETrainer:
 
         for batch in self.train_loader:
             features = batch["features"].to(self.device)
+
+            # VARIABLE-LENGTH MODE: Encode temporal features at runtime with sampled lengths
+            # If we have a temporal encoder, features are raw [B, T, D] temporal data
+            # Need to encode with mask, then concatenate with initial features
+            if self.temporal_encoder is not None:
+                # Extract mask and length from batch
+                mask = batch.get("mask")
+                length = batch.get("length")
+
+                # Encode temporal features with mask
+                with torch.no_grad():  # Encoder not trained separately
+                    if mask is not None:
+                        mask = mask.to(self.device)
+                        length = length.to(self.device)
+                        # Encode with variable lengths
+                        encoded_temporal, mask_info = self.temporal_encoder(
+                            features,  # [B, T, D] raw temporal
+                            mask=mask,
+                            lengths=length
+                        )
+                    else:
+                        # No mask - encode normally
+                        encoded_temporal = self.temporal_encoder(features)
+
+                # Concatenate with encoded initial features if present
+                if self.encoded_initial_features_tensor is not None:
+                    # Get batch indices to slice initial features
+                    batch_size = encoded_temporal.shape[0]
+                    # For train/val split, we need to know which samples these are
+                    # For now, assume initial features are replicated or indexed properly
+                    # This is a simplification - may need batch indices from dataloader
+                    initial_batch = self.encoded_initial_features_tensor[:batch_size]
+                    features = torch.cat([initial_batch, encoded_temporal], dim=1)
+                else:
+                    features = encoded_temporal
 
             # Handle raw_ics for hybrid INITIAL encoder (end-to-end CNN training)
             raw_ics = batch.get("raw_ics")
@@ -325,6 +377,30 @@ class VQVAETrainer:
         with torch.no_grad():
             for batch in self.val_loader:
                 features = batch["features"].to(self.device)
+
+                # VARIABLE-LENGTH MODE: Encode temporal features at runtime with sampled lengths
+                if self.temporal_encoder is not None:
+                    mask = batch.get("mask")
+                    length = batch.get("length")
+
+                    if mask is not None:
+                        mask = mask.to(self.device)
+                        length = length.to(self.device)
+                        encoded_temporal, mask_info = self.temporal_encoder(
+                            features,
+                            mask=mask,
+                            lengths=length
+                        )
+                    else:
+                        encoded_temporal = self.temporal_encoder(features)
+
+                    # Concatenate with encoded initial features if present
+                    if self.encoded_initial_features_tensor is not None:
+                        batch_size = encoded_temporal.shape[0]
+                        initial_batch = self.encoded_initial_features_tensor[:batch_size]
+                        features = torch.cat([initial_batch, encoded_temporal], dim=1)
+                    else:
+                        features = encoded_temporal
 
                 # Handle raw_ics for hybrid INITIAL encoder
                 raw_ics = batch.get("raw_ics")
