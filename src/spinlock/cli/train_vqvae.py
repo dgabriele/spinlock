@@ -1687,8 +1687,14 @@ Output:
                         # 2D: [N, D] -> input_dim is D
                         input_dim = family_features.shape[1]
 
+                    # Prepare encoder kwargs - transform variable_length to variable_length_config
+                    encoder_kwargs = dict(encoder_params)
+                    if "variable_length" in encoder_kwargs:
+                        # Rename variable_length -> variable_length_config for PyramidTemporalEncoder
+                        encoder_kwargs["variable_length_config"] = encoder_kwargs.pop("variable_length")
+
                     # Create encoder with input_dim
-                    encoder = get_encoder(encoder_name, input_dim=input_dim, **encoder_params)
+                    encoder = get_encoder(encoder_name, input_dim=input_dim, **encoder_kwargs)
                     encoder = encoder.to(device)
                     encoder.eval()
 
@@ -2171,62 +2177,21 @@ Output:
         config: Dict[str, Any],
         raw_ics: Optional[np.ndarray] = None,
     ):
-        """Create train/val data loaders.
+        """Create train/val data loaders with optional variable-length support.
 
         Args:
-            features: Pre-encoded features [N, D]
+            features: Pre-encoded features [N, D] or [N, T, D]
             config: Training configuration
             raw_ics: Optional raw initial conditions [N, C, H, W] for hybrid INITIAL
+
+        Returns:
+            Tuple of (train_loader, val_loader)
         """
-        import torch
-        from torch.utils.data import Dataset, DataLoader
-        import numpy as np
-
-        # Dataset that optionally includes raw ICs
-        class FeatureDataset(Dataset):
-            def __init__(self, features, raw_ics=None, reference_features=None, is_interpolated=None, raw_summary=None):
-                self.features = torch.from_numpy(features).float()
-                self.raw_ics = None
-                if raw_ics is not None:
-                    self.raw_ics = torch.from_numpy(raw_ics).float()
-                self.reference_features = None
-                if reference_features is not None:
-                    self.reference_features = torch.from_numpy(reference_features).float()
-                self.is_interpolated = None
-                if is_interpolated is not None:
-                    self.is_interpolated = torch.from_numpy(is_interpolated).bool()
-                self.raw_summary = None
-                if raw_summary is not None:
-                    self.raw_summary = torch.from_numpy(raw_summary).float()
-
-            def __len__(self):
-                return len(self.features)
-
-            def __getitem__(self, idx):
-                item = {"features": self.features[idx]}
-                if self.raw_ics is not None:
-                    item["raw_ics"] = self.raw_ics[idx]
-                if self.reference_features is not None:
-                    item["reference_features"] = self.reference_features[idx]
-                if self.is_interpolated is not None:
-                    item["is_interpolated"] = self.is_interpolated[idx]
-                if self.raw_summary is not None:
-                    item["raw_summary"] = self.raw_summary[idx]
-                return item
-
-        # Split into train/val (90/10)
-        n_samples = len(features)
-        n_train = int(0.9 * n_samples)
-
-        # Shuffle
-        rng = np.random.RandomState(config.get("random_seed", 42))
-        indices = rng.permutation(n_samples)
-
-        train_indices = indices[:n_train]
-        val_indices = indices[n_train:]
-
-        train_raw_ics = raw_ics[train_indices] if raw_ics is not None else None
-        val_raw_ics = raw_ics[val_indices] if raw_ics is not None else None
+        from spinlock.encoding.training.data_utils import create_train_val_dataloaders
+        from spinlock.encoding.variable_length_utils import (
+            parse_variable_length_config,
+            create_length_sampler,
+        )
 
         # Load reference features and interpolation mask for regularization (if available)
         reference_features = None
@@ -2239,47 +2204,25 @@ Output:
         if hasattr(self, '_raw_summary') and self._raw_summary is not None:
             raw_summary = self._raw_summary
 
-        train_ref_features = reference_features[train_indices] if reference_features is not None else None
-        val_ref_features = reference_features[val_indices] if reference_features is not None else None
-        train_is_interpolated = is_interpolated[train_indices] if is_interpolated is not None else None
-        val_is_interpolated = is_interpolated[val_indices] if is_interpolated is not None else None
-        train_raw_summary = raw_summary[train_indices] if raw_summary is not None else None
-        val_raw_summary = raw_summary[val_indices] if raw_summary is not None else None
+        # Parse variable-length config and create sampler if enabled
+        vl_config = parse_variable_length_config(config)
+        length_sampler = create_length_sampler(vl_config) if vl_config else None
 
-        # Debug: check what's being passed
-        if config.get("verbose", False):
-            print(f"  Creating datasets with:")
-            print(f"    train_ref_features: {train_ref_features.shape if train_ref_features is not None else None}")
-            print(f"    val_ref_features: {val_ref_features.shape if val_ref_features is not None else None}")
-            print(f"    train_raw_summary: {train_raw_summary.shape if train_raw_summary is not None else None}")
-            print(f"    val_raw_summary: {val_raw_summary.shape if val_raw_summary is not None else None}")
+        if length_sampler is not None and config.get("verbose", False):
+            print(f"\nVariable-length mode enabled:")
+            print(f"  {length_sampler}")
 
-        train_dataset = FeatureDataset(
-            features[train_indices],
-            train_raw_ics,
-            train_ref_features,
-            train_is_interpolated,
-            train_raw_summary,
+        # Create data loaders using refactored utility
+        return create_train_val_dataloaders(
+            features=features,
+            config=config,
+            raw_ics=raw_ics,
+            reference_features=reference_features,
+            is_interpolated=is_interpolated,
+            raw_summary=raw_summary,
+            length_sampler=length_sampler,
+            verbose=config.get("verbose", False),
         )
-        val_dataset = FeatureDataset(
-            features[val_indices],
-            val_raw_ics,
-            val_ref_features,
-            val_is_interpolated,
-            val_raw_summary,
-        )
-
-        batch_size = config.get("batch_size", 512)
-        val_batch_size = config.get("val_batch_size", batch_size)
-
-        train_loader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True
-        )
-        val_loader = DataLoader(
-            val_dataset, batch_size=val_batch_size, shuffle=False, num_workers=0, pin_memory=True
-        )
-
-        return train_loader, val_loader
 
     def _create_trainer(
         self,
