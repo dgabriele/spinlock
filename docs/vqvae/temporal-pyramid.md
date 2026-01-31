@@ -249,9 +249,201 @@ During feature loading (`train_vqvae.py`):
 
 ---
 
+---
+
+## Variable-Length Trajectory Support
+
+**NEW (2026-01):** The pyramid encoder now supports **variable-length temporal sequences** for meta-learning and operator discovery.
+
+### Motivation
+
+Different operators have intrinsic timescales:
+- **Fast equilibration**: T=16-32 timesteps sufficient
+- **Slow dynamics**: T=256+ timesteps needed
+
+Training on **mixed-length trajectories** helps the model learn **scale-invariant representations** where dynamics are recognized regardless of temporal resolution.
+
+### How It Works
+
+**1. Length Sampling (per batch)**
+
+Each sample gets ONE randomly sampled length when loaded:
+
+```python
+# During training, sample 42 might be seen as:
+Epoch 1, Batch 5:  T=64   (random from bins [16,32,64,128,256])
+Epoch 1, Batch 18: T=128  (different random choice)
+Epoch 2, Batch 3:  T=32   (different again)
+```
+
+**2. Masking**
+
+Create validity mask for each sample:
+```python
+Sample with T=64:
+  features: [500, D]  # Full padded trajectory
+  mask:     [True×64, False×436]  # First 64 valid
+  length:   64
+```
+
+**3. Adaptive Pyramid Levels**
+
+Pyramid automatically adjusts levels based on trajectory length:
+
+```python
+# T=256: All levels valid
+[1×] → T=256
+[2×] → T=128
+[4×] → T=64
+[8×] → T=32  ✓ All valid
+
+# T=16: Some levels skipped
+[1×] → T=16
+[2×] → T=8
+[4×] → T=4
+[8×] → T=2   ✓ Still valid (min_pyramid_length=1)
+
+# T=4: Adaptive skipping
+[1×] → T=4
+[2×] → T=2
+[4×] → T=1
+[8×] → T=0.5  ✗ SKIP (< min_pyramid_length)
+# Only uses [1×, 2×, 4×] levels
+```
+
+**4. Mask Propagation**
+
+Masks downsample through pyramid using "ceil" (conservative):
+```python
+Original mask: [True×64, False×436] at T=500
+Level 0 (1×):  [True×64, False×436]  # Full resolution
+Level 1 (2×):  [True×32, False×218]  # Pooled pairs
+Level 2 (4×):  [True×16, False×109]  # Pooled groups of 4
+Level 3 (8×):  [True×8,  False×54]   # Pooled groups of 8
+```
+
+"Ceil" method: position valid if **ANY** source timestep valid (conservative).
+
+**5. Length-Invariant Encoding**
+
+Global average pooling in backbone makes encoding **length-invariant**:
+
+```python
+# Short trajectory (T=16)
+[B, 16, 64] → Backbone → GAP → [B, 256]
+
+# Long trajectory (T=256)
+[B, 256, 64] → Backbone → GAP → [B, 256]
+
+# Same 256D embedding dimension!
+```
+
+**6. Zero-Padding for Missing Levels**
+
+If adaptive pyramid skips levels, output is zero-padded:
+
+```python
+# All levels active (T=256):
+embeddings = concat([32D, 64D, 96D, 128D]) = 320D
+
+# Only 3 levels active (T=4, skips 8×):
+embeddings = concat([32D, 64D, 96D, 0×128D]) = 320D (padded)
+```
+
+**7. Sample Weighting in Loss**
+
+Reconstruction loss weighted by valid fraction:
+
+```python
+loss = MSE(reconstruction, target) * (num_valid / max_valid)
+
+# Examples:
+Sample A (T=64):  weight = 64/256  = 0.25
+Sample B (T=256): weight = 256/256 = 1.00
+```
+
+Prevents short trajectories from dominating gradient updates!
+
+### Configuration
+
+```yaml
+families:
+  temporal:
+    encoder: PyramidTemporalEncoder
+    encoder_params:
+      level_dims: [32, 64, 96, 128]
+      downsample_factors: [1, 2, 4, 8]
+      architecture: "resnet1d_3"
+
+      # Variable-length support
+      variable_length:
+        enabled: true
+        min_timesteps: 16          # Powers of 2
+        max_timesteps: 256
+        sampling_strategy: "fixed_bins"
+        length_bins: [16, 32, 64, 128, 256]  # Aligns with pyramid
+        adaptive_pyramid: true     # Auto-skip invalid levels
+        mask_downsample_method: "ceil"  # Conservative
+```
+
+### Training Strategy
+
+**Powers of 2 for clean alignment:**
+
+Length bins `[16, 32, 64, 128, 256]` divide cleanly by factors `[1, 2, 4, 8]`:
+- T=16: levels produce [16, 8, 4, 2]
+- T=32: levels produce [32, 16, 8, 4]
+- T=64: levels produce [64, 32, 16, 8]
+- T=128: levels produce [128, 64, 32, 16]
+- T=256: levels produce [256, 128, 64, 32]
+
+No rounding, integer boundaries at every level!
+
+**Epoch requirements:**
+
+With 5 bins and uniform sampling:
+- After 5 epochs: ~63% samples seen at all lengths
+- After 10 epochs: ~89% coverage
+- After 20 epochs: ~99% coverage
+
+**Recommended:** 100-150 epochs for good multi-scale learning.
+
+### What the Model Learns
+
+With variable-length training:
+
+1. **Scale-invariant pattern recognition**
+   - Same dynamics recognized at T=16 or T=256
+   - Filters learn temporal patterns, not absolute timescales
+
+2. **Robust multi-resolution encoding**
+   - Reconstruction quality uniform across lengths
+   - No length-specific shortcuts or memorization
+
+3. **Adaptive temporal processing**
+   - Short trajectories use fewer pyramid levels
+   - Long trajectories use full pyramid hierarchy
+   - Output dimension always consistent (320D)
+
+### Implementation
+
+- **Length sampling**: `src/spinlock/encoding/trajectory_length_sampler.py`
+- **Adaptive pyramid**: `src/spinlock/encoding/temporal_pyramid.py`
+- **Variable-length encoder**: `src/spinlock/encoding/encoders/pyramid_temporal.py`
+- **Masked loss**: `src/spinlock/encoding/training/losses.py`
+- **Integration**: `src/spinlock/cli/train_vqvae.py`
+- **Tests**: `tests/encoding/test_variable_length_*.py`
+
+---
+
 ## References
 
 - **Training script**: `src/spinlock/cli/train_vqvae.py`
 - **Inference pipeline**: `src/spinlock/encoding/unified_feature_pipeline.py`
-- **Example configuration**: `configs/vqvae/50k_3channel.yaml`
-- **Unit tests**: `tests/test_pyramid_encoder.py` (if implemented)
+- **Example configurations**:
+  - `configs/vqvae/baseline_vqvae.yaml` (standard)
+  - `configs/vqvae/baseline_vqvae_variable_length.yaml` (variable-length enabled)
+- **Unit tests**:
+  - `tests/encoding/test_trajectory_length_sampler.py`
+  - `tests/encoding/test_pyramid_adaptive.py`
+  - `tests/encoding/test_variable_length_integration.py`

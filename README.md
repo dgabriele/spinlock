@@ -348,7 +348,14 @@ The temporal pyramid disentangles dynamics across scales:
 
 Each pyramid level becomes a feature family for independent clustering, allowing different behavioral categories to emerge at different temporal scales.
 
-📖 **See also:** [docs/vqvae/temporal-pyramid.md](docs/vqvae/temporal-pyramid.md) for complete temporal pyramid documentation.
+**NEW: Variable-Length Support** (2026-01)
+- Training on mixed-length trajectories (T ∈ {16, 32, 64, 128, 256})
+- Adaptive pyramid levels: automatically skip levels for short trajectories
+- Sample weighting: prevents short sequences from dominating gradients
+- Powers of 2 alignment: clean integer divisions at all pyramid levels
+- Scale-invariant learning: same dynamics recognized regardless of length
+
+📖 **See also:** [docs/vqvae/temporal-pyramid.md](docs/vqvae/temporal-pyramid.md) for complete temporal pyramid documentation including variable-length training.
 
 ### Production Baseline: 50K v3.1 with Per-Family Clustering
 
