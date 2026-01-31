@@ -2350,6 +2350,7 @@ Output:
             is_interpolated=is_interpolated,
             raw_summary=raw_summary,
             length_sampler=length_sampler,
+            encoded_initial_features=encoded_initial_features,
             verbose=config.get("verbose", False),
         )
 

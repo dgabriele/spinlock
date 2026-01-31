@@ -289,14 +289,11 @@ class VQVAETrainer:
                         encoded_temporal = self.temporal_encoder(features)
 
                 # Concatenate with encoded initial features if present
-                if self.encoded_initial_features_tensor is not None:
-                    # Get batch indices to slice initial features
-                    batch_size = encoded_temporal.shape[0]
-                    # For train/val split, we need to know which samples these are
-                    # For now, assume initial features are replicated or indexed properly
-                    # This is a simplification - may need batch indices from dataloader
-                    initial_batch = self.encoded_initial_features_tensor[:batch_size]
-                    features = torch.cat([initial_batch, encoded_temporal], dim=1)
+                # Get from batch (correctly shuffled with data)
+                initial_features = batch.get("encoded_initial_features")
+                if initial_features is not None:
+                    initial_features = initial_features.to(self.device)
+                    features = torch.cat([initial_features, encoded_temporal], dim=1)
                 else:
                     features = encoded_temporal
 
@@ -426,10 +423,11 @@ class VQVAETrainer:
                         encoded_temporal = self.temporal_encoder(features)
 
                     # Concatenate with encoded initial features if present
-                    if self.encoded_initial_features_tensor is not None:
-                        batch_size = encoded_temporal.shape[0]
-                        initial_batch = self.encoded_initial_features_tensor[:batch_size]
-                        features = torch.cat([initial_batch, encoded_temporal], dim=1)
+                    # Get from batch (correctly shuffled with data)
+                    initial_features = batch.get("encoded_initial_features")
+                    if initial_features is not None:
+                        initial_features = initial_features.to(self.device)
+                        features = torch.cat([initial_features, encoded_temporal], dim=1)
                     else:
                         features = encoded_temporal
 

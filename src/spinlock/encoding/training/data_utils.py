@@ -19,6 +19,7 @@ class FeatureDataset(Dataset):
         reference_features: Optional reference solver features [N, D] for regularization
         is_interpolated: Optional boolean mask [N] for interpolated samples
         raw_summary: Optional raw SUMMARY features [N, D] for MNO regularization
+        encoded_initial_features: Optional pre-encoded initial features [N, D_initial] for variable-length mode
     """
 
     def __init__(
@@ -28,6 +29,7 @@ class FeatureDataset(Dataset):
         reference_features: Optional[np.ndarray] = None,
         is_interpolated: Optional[np.ndarray] = None,
         raw_summary: Optional[np.ndarray] = None,
+        encoded_initial_features: Optional[np.ndarray] = None,
     ):
         self.features = torch.from_numpy(features).float()
 
@@ -47,6 +49,10 @@ class FeatureDataset(Dataset):
         if raw_summary is not None:
             self.raw_summary = torch.from_numpy(raw_summary).float()
 
+        self.encoded_initial_features = None
+        if encoded_initial_features is not None:
+            self.encoded_initial_features = torch.from_numpy(encoded_initial_features).float()
+
     def __len__(self) -> int:
         return len(self.features)
 
@@ -65,6 +71,9 @@ class FeatureDataset(Dataset):
         if self.raw_summary is not None:
             item["raw_summary"] = self.raw_summary[idx]
 
+        if self.encoded_initial_features is not None:
+            item["encoded_initial_features"] = self.encoded_initial_features[idx]
+
         return item
 
 
@@ -76,6 +85,7 @@ def create_train_val_dataloaders(
     is_interpolated: Optional[np.ndarray] = None,
     raw_summary: Optional[np.ndarray] = None,
     length_sampler: Optional[Any] = None,
+    encoded_initial_features: Optional[np.ndarray] = None,
     verbose: bool = False,
 ) -> Tuple[DataLoader, DataLoader]:
     """Create train and validation data loaders with optional variable-length support.
@@ -117,6 +127,9 @@ def create_train_val_dataloaders(
     train_raw_summary = raw_summary[train_indices] if raw_summary is not None else None
     val_raw_summary = raw_summary[val_indices] if raw_summary is not None else None
 
+    train_encoded_initial = encoded_initial_features[train_indices] if encoded_initial_features is not None else None
+    val_encoded_initial = encoded_initial_features[val_indices] if encoded_initial_features is not None else None
+
     # Debug info
     if verbose:
         print(f"  Creating datasets with:")
@@ -140,6 +153,7 @@ def create_train_val_dataloaders(
             reference_features=train_ref_features,
             is_interpolated=train_is_interpolated,
             raw_summary=train_raw_summary,
+            encoded_initial_features=train_encoded_initial,
         )
 
         val_dataset = augment_dataset_with_lengths(
@@ -150,6 +164,7 @@ def create_train_val_dataloaders(
             reference_features=val_ref_features,
             is_interpolated=val_is_interpolated,
             raw_summary=val_raw_summary,
+            encoded_initial_features=val_encoded_initial,
         )
     else:
         # Standard mode
@@ -159,6 +174,7 @@ def create_train_val_dataloaders(
             train_ref_features,
             train_is_interpolated,
             train_raw_summary,
+            train_encoded_initial,
         )
 
         val_dataset = FeatureDataset(
@@ -167,6 +183,7 @@ def create_train_val_dataloaders(
             val_ref_features,
             val_is_interpolated,
             val_raw_summary,
+            val_encoded_initial,
         )
 
     # Create data loaders
