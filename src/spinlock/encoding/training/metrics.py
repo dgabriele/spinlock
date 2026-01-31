@@ -13,7 +13,9 @@ from torch.utils.data import DataLoader
 def compute_reconstruction_error(
     model,
     dataloader: DataLoader,
-    device: str = "cuda"
+    device: str = "cuda",
+    temporal_encoder=None,
+    temporal_feature_mask=None,
 ) -> float:
     """Compute reconstruction error on dataset.
 
@@ -21,11 +23,15 @@ def compute_reconstruction_error(
         model: CategoricalHierarchicalVQVAE or VQVAEWithInitial model
         dataloader: DataLoader for evaluation
         device: Device to use
+        temporal_encoder: Optional temporal encoder for variable-length mode
 
     Returns:
         Mean reconstruction error (MSE)
     """
     model.eval()
+    if temporal_encoder is not None:
+        temporal_encoder.eval()
+
     total_error = 0.0
     n_samples = 0
 
@@ -43,6 +49,38 @@ def compute_reconstruction_error(
             else:
                 features = batch[0].to(device)
                 raw_ics = None
+
+            # VARIABLE-LENGTH MODE: Encode temporal features at runtime
+            if temporal_encoder is not None:
+                # Extract mask and length from batch
+                mask = batch.get("mask")
+                length = batch.get("length")
+
+                # Encode temporal features with mask
+                if mask is not None:
+                    mask = mask.to(device)
+                    length = length.to(device)
+                    # Encode with variable lengths
+                    encoded_temporal, mask_info = temporal_encoder(
+                        features,  # [B, T, D] raw temporal
+                        mask=mask,
+                        lengths=length
+                    )
+                else:
+                    # No mask - encode normally
+                    encoded_temporal = temporal_encoder(features)
+
+                # Apply temporal feature cleaning mask if present
+                if temporal_feature_mask is not None:
+                    encoded_temporal = encoded_temporal[:, temporal_feature_mask]
+
+                # Concatenate with encoded initial features if present
+                initial_features = batch.get("encoded_initial_features")
+                if initial_features is not None:
+                    initial_features = initial_features.to(device)
+                    features = torch.cat([initial_features, encoded_temporal], dim=1)
+                else:
+                    features = encoded_temporal
 
             # Forward pass (pass raw_ics for hybrid models)
             if is_hybrid and raw_ics is not None:
@@ -177,6 +215,8 @@ def compute_per_category_metrics(
     dataloader: DataLoader,
     device: str = "cuda",
     max_batches: int = 10,
+    temporal_encoder=None,
+    temporal_feature_mask=None,
 ) -> Dict[str, float]:
     """Compute reconstruction error and utilization per category.
 
@@ -185,6 +225,7 @@ def compute_per_category_metrics(
         dataloader: DataLoader for evaluation
         device: Device to use
         max_batches: Maximum batches to process (default 10)
+        temporal_encoder: Optional temporal encoder for variable-length mode
 
     Returns:
         Dict with keys like:
@@ -203,6 +244,9 @@ def compute_per_category_metrics(
         return {}
 
     model.eval()
+    if temporal_encoder is not None:
+        temporal_encoder.eval()
+
     metrics = {}
 
     # Get category names from config (use the model's config, not model_for_check)
@@ -231,6 +275,38 @@ def compute_per_category_metrics(
             else:
                 features = batch[0].to(device)
                 raw_ics = None
+
+            # VARIABLE-LENGTH MODE: Encode temporal features at runtime
+            if temporal_encoder is not None:
+                # Extract mask and length from batch
+                mask = batch.get("mask")
+                length = batch.get("length")
+
+                # Encode temporal features with mask
+                if mask is not None:
+                    mask = mask.to(device)
+                    length = length.to(device)
+                    # Encode with variable lengths
+                    encoded_temporal, mask_info = temporal_encoder(
+                        features,  # [B, T, D] raw temporal
+                        mask=mask,
+                        lengths=length
+                    )
+                else:
+                    # No mask - encode normally
+                    encoded_temporal = temporal_encoder(features)
+
+                # Apply temporal feature cleaning mask if present
+                if temporal_feature_mask is not None:
+                    encoded_temporal = encoded_temporal[:, temporal_feature_mask]
+
+                # Concatenate with encoded initial features if present
+                initial_features = batch.get("encoded_initial_features")
+                if initial_features is not None:
+                    initial_features = initial_features.to(device)
+                    features = torch.cat([initial_features, encoded_temporal], dim=1)
+                else:
+                    features = encoded_temporal
 
             # Forward pass (pass raw_ics for hybrid models)
             if is_hybrid and raw_ics is not None:

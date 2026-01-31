@@ -221,11 +221,41 @@ class VQVAETrainer:
             else:
                 self.encoded_initial_features_tensor = None
 
-        # Feature cleaning mask (for variable-length mode)
+        # Feature cleaning mask
         # Tracks which features survived cleaning during category discovery
-        # Must be applied to concatenated features during training to match model expectations
         self.feature_mask = feature_mask
+        self.temporal_feature_mask_tensor = None  # For variable-length mode
+
         if feature_mask is not None and temporal_encoder is not None:
+            # Variable-length mode: extract temporal portion of feature_mask
+            # feature_mask structure: [initial features | temporal_p0 | temporal_p1 | temporal_p2 | temporal_p3]
+            # We need to create a mask for the concatenated temporal encoding [320D]
+            # that matches the pyramid level structure
+
+            # Get dimensions of each pyramid level from the temporal encoder
+            if hasattr(temporal_encoder, 'output_dims_per_level'):
+                level_dims = temporal_encoder.output_dims_per_level  # e.g., [32, 64, 96, 128]
+
+                # Determine where initial features end in the original feature_mask
+                # The initial features come first, followed by pyramid levels
+                num_initial = len(encoded_initial_features[0]) if encoded_initial_features is not None else 0
+
+                # Extract temporal portion of the mask (everything after initial features)
+                temporal_mask_flat = feature_mask[num_initial:]
+
+                # The temporal_mask_flat corresponds to split pyramid levels in order:
+                # [p0_features... | p1_features... | p2_features... | p3_features...]
+                # We need to map this to the concatenated encoding structure
+                temporal_feature_mask = temporal_mask_flat
+
+                self.temporal_feature_mask_tensor = torch.from_numpy(temporal_feature_mask).bool().to(device)
+                if verbose:
+                    logger.info(f"Temporal feature mask loaded: {temporal_feature_mask.sum()}/{len(temporal_feature_mask)} temporal features kept")
+
+            self.feature_mask_tensor = None  # Don't use the full mask in variable-length mode
+
+        elif feature_mask is not None and temporal_encoder is None:
+            # Non-variable-length mode: use feature_mask as-is
             mask_tensor = torch.from_numpy(feature_mask).bool()
             # Ensure mask is 1D (flatten if needed)
             if mask_tensor.dim() > 1:
@@ -288,6 +318,10 @@ class VQVAETrainer:
                         # No mask - encode normally
                         encoded_temporal = self.temporal_encoder(features)
 
+                # Apply temporal feature cleaning mask if present
+                if self.temporal_feature_mask_tensor is not None:
+                    encoded_temporal = encoded_temporal[:, self.temporal_feature_mask_tensor]
+
                 # Concatenate with encoded initial features if present
                 # Get from batch (correctly shuffled with data)
                 initial_features = batch.get("encoded_initial_features")
@@ -297,14 +331,13 @@ class VQVAETrainer:
                 else:
                     features = encoded_temporal
 
-                # CRITICAL: Apply feature cleaning mask to match category discovery
-                # During category discovery, features were cleaned (removing low-variance, etc.)
-                # We must apply the same mask to runtime-concatenated features
-                if self.feature_mask_tensor is not None:
-                    features = features[:, self.feature_mask_tensor]
-                    # DEBUG: Print dimensions after masking
-                    if self.current_epoch == 0 and n_batches == 0:
-                        print(f"DEBUG: After masking: features.shape = {features.shape}")
+                # Feature cleaning masks have been applied above
+                # In variable-length mode:
+                #   - Category discovery uses pyramid-level-split features [initial + p0 + p1 + p2 + p3]
+                #   - Training uses concatenated features [initial + temporal_full]
+                # These have different dimensions, so the feature_mask is incompatible
+                # Feature cleaning was already applied during category discovery
+                # (features are pre-cleaned before being stored as initial_features_only)
 
             # Handle raw_ics for hybrid INITIAL encoder (end-to-end CNN training)
             raw_ics = batch.get("raw_ics")
@@ -422,6 +455,10 @@ class VQVAETrainer:
                     else:
                         encoded_temporal = self.temporal_encoder(features)
 
+                    # Apply temporal feature cleaning mask if present
+                    if self.temporal_feature_mask_tensor is not None:
+                        encoded_temporal = encoded_temporal[:, self.temporal_feature_mask_tensor]
+
                     # Concatenate with encoded initial features if present
                     # Get from batch (correctly shuffled with data)
                     initial_features = batch.get("encoded_initial_features")
@@ -431,7 +468,7 @@ class VQVAETrainer:
                     else:
                         features = encoded_temporal
 
-                    # Apply feature cleaning mask to match category discovery
+                    # Apply feature cleaning mask to concatenated features (non-variable-length mode)
                     if self.feature_mask_tensor is not None:
                         features = features[:, self.feature_mask_tensor]
 
@@ -505,7 +542,9 @@ class VQVAETrainer:
         reconstruction_error = compute_reconstruction_error(
             model_for_metrics,
             self.val_loader,
-            device=self.device
+            device=self.device,
+            temporal_encoder=self.temporal_encoder,
+            temporal_feature_mask=self.temporal_feature_mask_tensor,
         )
         quality = compute_quality_score(reconstruction_error)
 
@@ -514,7 +553,9 @@ class VQVAETrainer:
             model_for_metrics,
             self.val_loader,
             device=self.device,
-            max_batches=None  # Use full val set
+            max_batches=None,  # Use full val set
+            temporal_encoder=self.temporal_encoder,
+            temporal_feature_mask=self.temporal_feature_mask_tensor,
         )
 
         # Extract average utilization across all category-levels
@@ -540,6 +581,38 @@ class VQVAETrainer:
                 raw_ics = batch.get("raw_ics")
                 if raw_ics is not None:
                     raw_ics = raw_ics.to(self.device)
+
+                # VARIABLE-LENGTH MODE: Encode temporal features at runtime
+                if self.temporal_encoder is not None:
+                    # Extract mask and length from batch
+                    mask = batch.get("mask")
+                    length = batch.get("length")
+
+                    # Encode temporal features with mask
+                    if mask is not None:
+                        mask = mask.to(self.device)
+                        length = length.to(self.device)
+                        # Encode with variable lengths
+                        encoded_temporal, mask_info = self.temporal_encoder(
+                            features,  # [B, T, D] raw temporal
+                            mask=mask,
+                            lengths=length
+                        )
+                    else:
+                        # No mask - encode normally
+                        encoded_temporal = self.temporal_encoder(features)
+
+                    # Apply temporal feature cleaning mask if present
+                    if self.temporal_feature_mask_tensor is not None:
+                        encoded_temporal = encoded_temporal[:, self.temporal_feature_mask_tensor]
+
+                    # Concatenate with encoded initial features if present
+                    initial_features = batch.get("encoded_initial_features")
+                    if initial_features is not None:
+                        initial_features = initial_features.to(self.device)
+                        features = torch.cat([initial_features, encoded_temporal], dim=1)
+                    else:
+                        features = encoded_temporal
 
                 # Forward pass
                 if raw_ics is not None and hasattr(model_for_metrics, 'initial_encoder'):

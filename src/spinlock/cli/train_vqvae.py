@@ -715,6 +715,7 @@ Output:
         # Initialize preprocessing metadata for checkpoint reproducibility
         feature_mask = None
         feature_cleaning_params = None
+        self._feature_mask = None  # Store for later use in _create_data_loaders
 
         if clean_enabled and pre_categorization:
             if verbose:
@@ -819,8 +820,14 @@ Output:
 
                 if verbose:
                     print(f"  INITIAL offset: {initial_offset} → {new_offset}")
+
+                # Store feature_mask for later use
+                self._feature_mask = feature_mask
             else:
                 features, feature_mask, feature_names = processor.clean(features, feature_names)
+
+                # Store feature_mask for later use
+                self._feature_mask = feature_mask
 
             if verbose:
                 print(f"After cleaning: {features.shape[0]} samples × {features.shape[1]} features")
@@ -1144,6 +1151,9 @@ Output:
             feature_names = cleaned_names_list if cleaned_names_list else None
             feature_mask = global_feature_mask
             group_indices = updated_group_indices
+
+            # Store feature_mask for later use in _create_data_loaders
+            self._feature_mask = feature_mask
 
             print(f"\n{'='*70}")
             print(f"CLEANING SUMMARY")
@@ -2329,11 +2339,29 @@ Output:
                 # The full 'features' includes both initial + temporal_encoded (for clustering)
                 # We only want initial features to concatenate with runtime-encoded temporal
                 if hasattr(self, '_initial_features_only') and self._initial_features_only is not None:
-                    print(f"  Pre-encoded initial-only features shape: {self._initial_features_only.shape}")
-                    print(f"  These will be concatenated with encoded temporal features during training")
-                    # Store as instance variable for training loop access
-                    self._encoded_initial_features = self._initial_features_only
-                    encoded_initial_features = self._initial_features_only
+                    initial_only = self._initial_features_only
+
+                    # Apply feature cleaning mask to initial features if cleaning was applied
+                    if self._feature_mask is not None:
+                        # Extract the portion of feature_mask that corresponds to initial features
+                        # feature_mask maps original [initial + temporal pyramids] → cleaned features
+                        # We need to extract which initial features were kept
+                        num_initial_features = initial_only.shape[1]
+                        initial_feature_mask = self._feature_mask[:num_initial_features]
+
+                        # Apply mask to initial features
+                        initial_only_cleaned = initial_only[:, initial_feature_mask]
+                        print(f"  Initial features before cleaning: {initial_only.shape}")
+                        print(f"  Initial features after cleaning: {initial_only_cleaned.shape}")
+                        print(f"  These will be concatenated with encoded temporal features during training")
+
+                        self._encoded_initial_features = initial_only_cleaned
+                        encoded_initial_features = initial_only_cleaned
+                    else:
+                        print(f"  Pre-encoded initial-only features shape: {self._initial_features_only.shape}")
+                        print(f"  These will be concatenated with encoded temporal features during training")
+                        self._encoded_initial_features = initial_only
+                        encoded_initial_features = initial_only
                 else:
                     print(f"  No initial features - using temporal only")
                     self._encoded_initial_features = None
