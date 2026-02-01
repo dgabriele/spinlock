@@ -690,11 +690,6 @@ class VQVAETrainer:
         # Compute physics consistency metrics (MNO vs CNO SUMMARY features)
         physics_metrics = self.compute_physics_consistency()
 
-        # Compute variable-length metrics if enabled
-        vl_metrics = {}
-        if self.vl_enabled:
-            vl_metrics = self._compute_variable_length_metrics()
-
         # Return both aggregate and detailed metrics
         result = {
             "utilization": avg_utilization,
@@ -710,7 +705,6 @@ class VQVAETrainer:
         result.update(detailed_metrics)  # Include all detailed metrics
         result.update(normalized_errors)  # Per-category normalized errors
         result.update(physics_metrics)  # Include physics consistency metrics
-        result.update(vl_metrics)  # Include variable-length metrics
 
         return result
 

@@ -27,6 +27,177 @@ def get_utilization_cmap():
     )
 
 
+def _is_pyramid_model(category_names: List[str]) -> bool:
+    """Detect pyramid encoding via temporal_p0, temporal_p1, etc. in category names.
+
+    Args:
+        category_names: List of category names from checkpoint
+
+    Returns:
+        True if pyramid temporal encoding detected
+    """
+    return any('temporal_p' in cat for cat in category_names)
+
+
+def _get_pyramid_levels(category_names: List[str]) -> List[str]:
+    """Extract unique pyramid level prefixes from category names.
+
+    Args:
+        category_names: List of category names from checkpoint
+            (e.g., ['temporal_p0_cluster_1', 'temporal_p0_cluster_2', 'temporal_p1_cluster_1', ...])
+
+    Returns:
+        List of unique pyramid level prefixes (e.g., ['temporal_p0', 'temporal_p1', ...])
+    """
+    pyramid_prefixes = set()
+    for cat in category_names:
+        if 'temporal_p' in cat:
+            # Extract pyramid level prefix (e.g., 'temporal_p0' from 'temporal_p0_cluster_1')
+            # Split by underscore and take first two parts
+            parts = cat.split('_')
+            if len(parts) >= 2:
+                # Find the part with 'p' followed by digit
+                for i, part in enumerate(parts):
+                    if part.startswith('p') and len(part) > 1 and part[1].isdigit():
+                        # Join parts up to and including this part
+                        prefix = '_'.join(parts[:i+1])
+                        pyramid_prefixes.add(prefix)
+                        break
+
+    # Sort by pyramid level number (p0, p1, p2, p3)
+    sorted_prefixes = sorted(list(pyramid_prefixes), key=lambda x: int(x.split('_p')[1][0]))
+    return sorted_prefixes
+
+
+def _get_variable_length_config(checkpoint: Dict) -> Optional[Dict]:
+    """Extract variable-length config from checkpoint model_config.
+
+    Args:
+        checkpoint: Loaded checkpoint dictionary
+
+    Returns:
+        Variable-length config dict if enabled, None otherwise
+    """
+    # Extract config - try model_config first, then config
+    if "model_config" in checkpoint:
+        config = checkpoint["model_config"]
+    elif "config" in checkpoint:
+        config = checkpoint["config"]
+    else:
+        return None
+
+    # Navigate to families -> temporal -> encoder_params -> variable_length
+    families = config.get("families", {})
+    temporal = families.get("temporal", {})
+    encoder_params = temporal.get("encoder_params", {})
+    vl_config = encoder_params.get("variable_length", {})
+
+    # Check if enabled
+    if vl_config.get("enabled", False):
+        return vl_config
+
+    return None
+
+
+def extract_pyramid_metrics(
+    final_metrics: Dict[str, float],
+    pyramid_levels: List[str],
+    category_names: List[str]
+) -> Dict[str, Dict[str, Any]]:
+    """Extract per-pyramid-level metrics from final_metrics.
+
+    Args:
+        final_metrics: Dictionary of all metrics from checkpoint
+        pyramid_levels: List of pyramid level prefixes (e.g., ['temporal_p0', 'temporal_p1', ...])
+        category_names: All category names (to find which belong to each pyramid level)
+
+    Returns:
+        Dict with structure: {
+            'p0': {'utilization': [[u00, u01, u02], [u10, u11, u12], ...], 'mse': [X1, X2, ...], 'categories': [...]},
+            'p1': {...}, 'p2': {...}, 'p3': {...}
+        }
+    """
+    pyramid_metrics = {}
+
+    for level_prefix in pyramid_levels:
+        # Extract level number (e.g., 'temporal_p0' -> 'p0')
+        level_key = level_prefix.split('temporal_')[1]
+
+        # Find all categories that belong to this pyramid level
+        level_categories = [cat for cat in category_names if cat.startswith(level_prefix)]
+
+        # Collect metrics across all categories in this level
+        all_utilization = []
+        all_mse = []
+
+        for cat_name in level_categories:
+            # Extract utilization across all VQ levels for this category
+            cat_utilization = []
+            for vq_level in range(3):  # Assume 3 VQ levels (L0, L1, L2)
+                key = f"{cat_name}/level_{vq_level}/utilization"
+                if key in final_metrics:
+                    cat_utilization.append(min(final_metrics[key], 1.0))  # Cap at 1.0
+
+            if cat_utilization:
+                all_utilization.append(cat_utilization)
+
+            # Extract reconstruction MSE
+            mse_key = f"{cat_name}/reconstruction_mse"
+            if mse_key in final_metrics:
+                all_mse.append(final_metrics[mse_key])
+
+        pyramid_metrics[level_key] = {
+            'utilization': all_utilization,
+            'mse': all_mse,
+            'categories': level_categories,
+            'avg_mse': float(np.mean(all_mse)) if all_mse else None,
+        }
+
+    return pyramid_metrics
+
+
+def extract_variable_length_metrics(final_metrics: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract variable-length training metrics from final_metrics.
+
+    Args:
+        final_metrics: Dictionary of all metrics from checkpoint
+
+    Returns:
+        Dict with VL metrics if available: {
+            'length_distribution': {16: N, 32: N, ...},
+            'per_length_quality': {16: Q, 32: Q, ...},
+            'active_levels_mean': X,
+            'masking_efficiency': Y
+        }
+        None if no VL metrics found
+    """
+    # Check if VL metrics exist in final_metrics
+    has_vl_metrics = any(k.startswith('vl_') for k in final_metrics.keys())
+
+    if not has_vl_metrics:
+        return None
+
+    vl_metrics = {}
+
+    # Extract length distribution
+    if 'vl_length_distribution' in final_metrics:
+        vl_metrics['length_distribution'] = final_metrics['vl_length_distribution']
+
+    # Extract per-length quality
+    if 'vl_per_length_quality' in final_metrics:
+        vl_metrics['per_length_quality'] = final_metrics['vl_per_length_quality']
+
+    # Extract active levels by length
+    if 'vl_active_levels_by_length' in final_metrics:
+        vl_metrics['active_levels_by_length'] = final_metrics['vl_active_levels_by_length']
+
+    # Extract masking efficiency
+    if 'vl_masking_efficiency' in final_metrics:
+        vl_metrics['masking_efficiency'] = final_metrics['vl_masking_efficiency']
+
+    return vl_metrics if vl_metrics else None
+
+
 @dataclass
 class VQVAECheckpointData:
     """Container for all VQ-VAE checkpoint data needed for visualization."""
@@ -60,6 +231,16 @@ class VQVAECheckpointData:
     model_state_dict: Optional[Dict] = None
     epoch: int = 0
     best_val_loss: float = 0.0
+
+    # Pyramid encoding fields
+    is_pyramid: bool = False
+    pyramid_levels: List[str] = field(default_factory=list)  # ['temporal_p0', 'temporal_p1', ...]
+    pyramid_metrics: Optional[Dict] = None
+
+    # Variable-length fields
+    vl_enabled: bool = False
+    vl_config: Optional[Dict] = None
+    vl_metrics: Optional[Dict] = None
 
 
 def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
@@ -195,6 +376,16 @@ def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
     epoch = checkpoint.get("epoch", len(train_loss))
     best_val_loss = checkpoint.get("val_loss", val_loss[-1] if val_loss else 0.0)
 
+    # Detect pyramid encoding
+    is_pyramid = _is_pyramid_model(category_names)
+    pyramid_levels = _get_pyramid_levels(category_names) if is_pyramid else []
+    pyramid_metrics = extract_pyramid_metrics(final_metrics, pyramid_levels, category_names) if is_pyramid else None
+
+    # Detect variable-length mode
+    vl_config = _get_variable_length_config(checkpoint)
+    vl_enabled = vl_config is not None
+    vl_metrics = extract_variable_length_metrics(final_metrics) if vl_enabled else None
+
     return VQVAECheckpointData(
         input_dim=config.get("input_dim", len(feature_names)),
         group_embedding_dim=config.get("group_embedding_dim", 256),
@@ -214,6 +405,14 @@ def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
         model_state_dict=checkpoint.get("model_state_dict"),
         epoch=epoch,
         best_val_loss=best_val_loss,
+        # Pyramid fields
+        is_pyramid=is_pyramid,
+        pyramid_levels=pyramid_levels,
+        pyramid_metrics=pyramid_metrics,
+        # Variable-length fields
+        vl_enabled=vl_enabled,
+        vl_config=vl_config,
+        vl_metrics=vl_metrics,
     )
 
 

@@ -29,6 +29,7 @@ def create_architecture_diagram(ax: Axes, data: VQVAECheckpointData) -> None:
     """Create architecture schematic on given axes.
 
     Shows flow: Input → Encoders → Categories → Levels → Decoder
+    For pyramid models, shows multi-scale temporal encoding.
     """
     ax.set_xlim(0, 10)
     ax.set_ylim(0, 6)
@@ -38,6 +39,7 @@ def create_architecture_diagram(ax: Axes, data: VQVAECheckpointData) -> None:
     # Colors
     input_color = "#e1f5e1"
     encoder_color = "#fff4e1"
+    pyramid_colors = ["#4a9c3f", "#6ece5a", "#8fd97e", "#b0e49c"]  # P0-P3
     cat_color = "#e1e8f5"
     level_color = "#f5e1e8"
     decoder_color = "#e8f5e1"
@@ -49,6 +51,18 @@ def create_architecture_diagram(ax: Axes, data: VQVAECheckpointData) -> None:
     ax.add_patch(rect)
     ax.text(1.25, 3, f"Input\n{data.input_dim}D", ha="center", va="center", fontsize=9)
 
+    if data.is_pyramid:
+        # Pyramid temporal encoder structure
+        _draw_pyramid_architecture(ax, data, encoder_color, pyramid_colors, cat_color, level_color, decoder_color)
+    else:
+        # Standard encoder structure
+        _draw_standard_architecture(ax, data, encoder_color, cat_color, level_color, decoder_color)
+
+
+def _draw_standard_architecture(ax: Axes, data: VQVAECheckpointData,
+                                encoder_color: str, cat_color: str,
+                                level_color: str, decoder_color: str) -> None:
+    """Draw standard (non-pyramid) architecture diagram."""
     # Encoder box
     families = list(data.feature_families.keys())
     encoder_text = "Encoders\n" + "\n".join(families[:3])
@@ -108,6 +122,84 @@ def create_architecture_diagram(ax: Axes, data: VQVAECheckpointData) -> None:
         f"Total: {data.num_categories} categories × {data.num_levels} levels = {total_codebooks} codebooks",
         ha="center",
         fontsize=9,
+        style="italic",
+    )
+
+
+def _draw_pyramid_architecture(ax: Axes, data: VQVAECheckpointData,
+                               encoder_color: str, pyramid_colors: list,
+                               cat_color: str, level_color: str,
+                               decoder_color: str) -> None:
+    """Draw pyramid temporal encoding architecture diagram."""
+    # Pyramid encoder box (temporal)
+    rect = mpatches.FancyBboxPatch(
+        (2.5, 1), 2.2, 4, boxstyle="round,pad=0.05", facecolor=encoder_color, edgecolor="black", linewidth=2
+    )
+    ax.add_patch(rect)
+    ax.text(3.6, 4.5, "Pyramid Temporal", ha="center", va="center", fontsize=9, fontweight="bold")
+
+    # Draw 4 pyramid levels as stacked boxes
+    level_heights = [0.6, 0.6, 0.6, 0.6]
+    level_y_positions = [1.3, 2.0, 2.7, 3.4]
+    level_labels = ["P0 (1×)", "P1 (2×)", "P2 (4×)", "P3 (8×)"]
+
+    for i, (y_pos, height, label, color) in enumerate(zip(level_y_positions, level_heights, level_labels, pyramid_colors)):
+        rect = mpatches.FancyBboxPatch(
+            (2.7, y_pos), 1.8, height, boxstyle="round,pad=0.02",
+            facecolor=color, edgecolor="black", linewidth=1
+        )
+        ax.add_patch(rect)
+        ax.text(3.6, y_pos + height/2, label, ha="center", va="center", fontsize=7, fontweight="bold")
+
+    # Categories box
+    rect = mpatches.FancyBboxPatch(
+        (5.3, 1.5), 1.5, 3, boxstyle="round,pad=0.05", facecolor=cat_color, edgecolor="black"
+    )
+    ax.add_patch(rect)
+    ax.text(
+        6.05,
+        3,
+        f"Categories\n{data.num_categories}\n({data.group_embedding_dim}D)",
+        ha="center",
+        va="center",
+        fontsize=8,
+    )
+
+    # Levels box
+    rect = mpatches.FancyBboxPatch(
+        (7.2, 2), 1.2, 2, boxstyle="round,pad=0.05", facecolor=level_color, edgecolor="black"
+    )
+    ax.add_patch(rect)
+    ax.text(
+        7.8,
+        3,
+        f"Levels\n×{data.num_levels}\n(VQ)",
+        ha="center",
+        va="center",
+        fontsize=8,
+    )
+
+    # Decoder box
+    rect = mpatches.FancyBboxPatch(
+        (8.7, 2.5), 1.2, 1, boxstyle="round,pad=0.05", facecolor=decoder_color, edgecolor="black"
+    )
+    ax.add_patch(rect)
+    ax.text(9.3, 3, f"Decoder\n{data.input_dim}D", ha="center", va="center", fontsize=9)
+
+    # Arrows
+    arrow_props = dict(arrowstyle="->", color="black", lw=1.5)
+    ax.annotate("", xy=(2.5, 3), xytext=(2, 3), arrowprops=arrow_props)
+    ax.annotate("", xy=(5.3, 3), xytext=(4.7, 3), arrowprops=arrow_props)
+    ax.annotate("", xy=(7.2, 3), xytext=(6.8, 3), arrowprops=arrow_props)
+    ax.annotate("", xy=(8.7, 3), xytext=(8.4, 3), arrowprops=arrow_props)
+
+    # Pyramid info annotation
+    ax.text(
+        5,
+        0.5,
+        f"Pyramid: 4 scales (1×, 2×, 4×, 8× downsample) | {data.num_categories} categories | {data.num_levels} VQ levels",
+        ha="center",
+        fontsize=8,
         style="italic",
     )
 
@@ -203,6 +295,122 @@ def plot_reconstruction_bars(ax: Axes, data: VQVAECheckpointData) -> None:
         ax.text(bar.get_width() + 0.02, bar.get_y() + bar.get_height() / 2, f"{val:.3f}", va="center", fontsize=7)
 
 
+def plot_pyramid_reconstruction_mse(ax: Axes, data: VQVAECheckpointData) -> None:
+    """Plot per-pyramid-level reconstruction MSE as horizontal bar chart."""
+    if not data.is_pyramid or not data.pyramid_metrics:
+        ax.text(0.5, 0.5, "Pyramid metrics not available", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("Per-Pyramid-Level Quality", fontsize=12, fontweight="bold")
+        return
+
+    # Extract pyramid levels and average MSE
+    levels = []
+    mse_values = []
+    colors_pyramid = ["#4a9c3f", "#6ece5a", "#8fd97e", "#b0e49c"]  # P0-P3
+
+    for i, level_key in enumerate(['p0', 'p1', 'p2', 'p3']):
+        if level_key in data.pyramid_metrics:
+            metrics = data.pyramid_metrics[level_key]
+            if metrics['avg_mse'] is not None:
+                levels.append(level_key.upper())
+                mse_values.append(metrics['avg_mse'])
+
+    if not levels:
+        ax.text(0.5, 0.5, "No pyramid MSE data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("Per-Pyramid-Level Quality", fontsize=12, fontweight="bold")
+        return
+
+    y_pos = range(len(levels))
+    bars = ax.barh(y_pos, mse_values, color=colors_pyramid[:len(levels)])
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(levels, fontsize=10)
+    ax.set_xlabel("Reconstruction MSE")
+    ax.set_title("Per-Pyramid-Level Quality", fontsize=12, fontweight="bold")
+
+    # Annotate bars with values
+    for bar, val in zip(bars, mse_values):
+        ax.text(bar.get_width() * 1.05, bar.get_y() + bar.get_height() / 2,
+                f"{val:.2f}", va="center", fontsize=9)
+
+    # Add scale annotations
+    scale_labels = ["(1× fast)", "(2× med)", "(4× slow)", "(8× slowest)"]
+    for i, (bar, scale) in enumerate(zip(bars, scale_labels[:len(levels)])):
+        ax.text(0.05, bar.get_y() + bar.get_height() / 2,
+                scale, va="center", fontsize=7, color="white", fontweight="bold")
+
+
+def plot_variable_length_stats(ax: Axes, data: VQVAECheckpointData) -> None:
+    """Plot variable-length trajectory statistics."""
+    if not data.vl_enabled or not data.vl_metrics:
+        ax.text(0.5, 0.5, "Variable-length metrics not available", ha="center", va="center",
+                transform=ax.transAxes, fontsize=9)
+        ax.set_title("Variable-Length Statistics", fontsize=12, fontweight="bold")
+        ax.axis("off")
+        return
+
+    ax.set_title("Variable-Length Statistics", fontsize=12, fontweight="bold")
+
+    # Create 2×2 subplot grid within this ax
+    from matplotlib.gridspec import GridSpecFromSubplotSpec
+    inner_gs = GridSpecFromSubplotSpec(2, 2, subplot_spec=ax.get_subplotspec(),
+                                       hspace=0.4, wspace=0.4)
+    ax.axis("off")
+
+    # Get parent figure
+    fig = ax.figure
+
+    # Subplot 1: Length distribution
+    ax1 = fig.add_subplot(inner_gs[0, 0])
+    if 'length_distribution' in data.vl_metrics:
+        lengths = sorted(data.vl_metrics['length_distribution'].keys())
+        counts = [data.vl_metrics['length_distribution'][l] for l in lengths]
+        ax1.bar(range(len(lengths)), counts, color='#4472C4')
+        ax1.set_xticks(range(len(lengths)))
+        ax1.set_xticklabels(lengths, fontsize=8)
+        ax1.set_xlabel("Trajectory Length", fontsize=8)
+        ax1.set_ylabel("Count", fontsize=8)
+        ax1.set_title("Length Distribution", fontsize=9)
+
+    # Subplot 2: Per-length quality
+    ax2 = fig.add_subplot(inner_gs[0, 1])
+    if 'per_length_quality' in data.vl_metrics:
+        lengths = sorted(data.vl_metrics['per_length_quality'].keys())
+        quality = [data.vl_metrics['per_length_quality'][l] for l in lengths]
+        ax2.plot(lengths, quality, marker='o', color='#70AD47', linewidth=2)
+        ax2.set_xlabel("Trajectory Length", fontsize=8)
+        ax2.set_ylabel("Quality", fontsize=8)
+        ax2.set_title("Quality vs Length", fontsize=9)
+        ax2.grid(True, alpha=0.3)
+
+    # Subplot 3: Active levels by length
+    ax3 = fig.add_subplot(inner_gs[1, 0])
+    if 'active_levels_by_length' in data.vl_metrics:
+        lengths = sorted(data.vl_metrics['active_levels_by_length'].keys())
+        active = [data.vl_metrics['active_levels_by_length'][l] for l in lengths]
+        ax3.plot(lengths, active, marker='s', color='#FFC000', linewidth=2)
+        ax3.set_xlabel("Trajectory Length", fontsize=8)
+        ax3.set_ylabel("Avg Active Levels", fontsize=8)
+        ax3.set_title("Pyramid Levels Used", fontsize=9)
+        ax3.set_ylim(0, 4.5)
+        ax3.grid(True, alpha=0.3)
+
+    # Subplot 4: Summary metrics
+    ax4 = fig.add_subplot(inner_gs[1, 1])
+    ax4.axis("off")
+    summary_text = "VL Summary\n\n"
+    if 'masking_efficiency' in data.vl_metrics:
+        summary_text += f"Masking Efficiency:\n{data.vl_metrics['masking_efficiency']:.1%}\n\n"
+    if 'length_distribution' in data.vl_metrics:
+        total_samples = sum(data.vl_metrics['length_distribution'].values())
+        summary_text += f"Total Samples: {total_samples}\n\n"
+    if 'per_length_quality' in data.vl_metrics:
+        avg_quality = np.mean(list(data.vl_metrics['per_length_quality'].values()))
+        summary_text += f"Avg Quality: {avg_quality:.3f}"
+
+    ax4.text(0.5, 0.5, summary_text, ha="center", va="center",
+             fontsize=9, transform=ax4.transAxes, family="monospace")
+
+
 def create_metrics_table(ax: Axes, data: VQVAECheckpointData) -> None:
     """Create summary metrics table."""
     ax.axis("off")
@@ -252,7 +460,7 @@ def create_engineering_dashboard(
     Args:
         checkpoint_path: Path to checkpoint directory
         output_path: Optional path to save figure (PNG)
-        figsize: Figure size in inches
+        figsize: Figure size in inches (default: 16×12, auto-adjusted for pyramid)
         dpi: Resolution for saved figure
 
     Returns:
@@ -261,41 +469,87 @@ def create_engineering_dashboard(
     # Load data
     data = load_vqvae_checkpoint(checkpoint_path)
 
+    # Adjust figure size for pyramid models
+    if data.is_pyramid or data.vl_enabled:
+        figsize = (18, 14)  # Larger for pyramid + VL panels
+
     # Create figure with grid layout
     fig = plt.figure(figsize=figsize, dpi=dpi)
-    gs = GridSpec(3, 2, figure=fig, height_ratios=[1, 1.2, 1], hspace=0.3, wspace=0.25)
 
-    # Panel A: Architecture (top-left)
-    ax_arch = fig.add_subplot(gs[0, 0])
-    create_architecture_diagram(ax_arch, data)
+    # Adjust layout based on model type
+    if data.is_pyramid:
+        # Pyramid layout: 4 rows to accommodate pyramid-specific panels
+        gs = GridSpec(4, 2, figure=fig, height_ratios=[1, 1.2, 0.8, 1], hspace=0.35, wspace=0.25)
 
-    # Panel B: Training curves (top-right)
-    ax_curves = fig.add_subplot(gs[0, 1])
-    plot_training_curves(ax_curves, data)
+        # Panel A: Architecture (top-left)
+        ax_arch = fig.add_subplot(gs[0, 0])
+        create_architecture_diagram(ax_arch, data)
 
-    # Panel C: Utilization heatmap (middle, full width)
-    ax_util = fig.add_subplot(gs[1, :])
-    plot_utilization_heatmap(ax_util, data)
+        # Panel B: Training curves (top-right)
+        ax_curves = fig.add_subplot(gs[0, 1])
+        plot_training_curves(ax_curves, data)
 
-    # Panel D: Reconstruction MSE (bottom-left)
-    ax_recon = fig.add_subplot(gs[2, 0])
-    plot_reconstruction_bars(ax_recon, data)
+        # Panel C: Utilization heatmap (row 2, full width)
+        ax_util = fig.add_subplot(gs[1, :])
+        plot_utilization_heatmap(ax_util, data)
 
-    # Panel E: Summary metrics (bottom-right)
-    ax_metrics = fig.add_subplot(gs[2, 1])
-    create_metrics_table(ax_metrics, data)
+        # Panel D: Pyramid-level MSE (row 3, left)
+        ax_pyramid_mse = fig.add_subplot(gs[2, 0])
+        plot_pyramid_reconstruction_mse(ax_pyramid_mse, data)
+
+        # Panel E: Per-category MSE (row 3, right)
+        ax_recon = fig.add_subplot(gs[2, 1])
+        plot_reconstruction_bars(ax_recon, data)
+
+        # Panel F: Summary metrics (row 4, left)
+        ax_metrics = fig.add_subplot(gs[3, 0])
+        create_metrics_table(ax_metrics, data)
+
+        # Panel G: Variable-length stats (row 4, right) - if VL enabled
+        ax_vl = fig.add_subplot(gs[3, 1])
+        if data.vl_enabled:
+            plot_variable_length_stats(ax_vl, data)
+        else:
+            ax_vl.axis("off")
+
+        title_y = 0.98
+        subtitle_y = 0.96
+    else:
+        # Standard layout (backward compatible)
+        gs = GridSpec(3, 2, figure=fig, height_ratios=[1, 1.2, 1], hspace=0.3, wspace=0.25)
+
+        # Panel A: Architecture (top-left)
+        ax_arch = fig.add_subplot(gs[0, 0])
+        create_architecture_diagram(ax_arch, data)
+
+        # Panel B: Training curves (top-right)
+        ax_curves = fig.add_subplot(gs[0, 1])
+        plot_training_curves(ax_curves, data)
+
+        # Panel C: Utilization heatmap (middle, full width)
+        ax_util = fig.add_subplot(gs[1, :])
+        plot_utilization_heatmap(ax_util, data)
+
+        # Panel D: Reconstruction MSE (bottom-left)
+        ax_recon = fig.add_subplot(gs[2, 0])
+        plot_reconstruction_bars(ax_recon, data)
+
+        # Panel E: Summary metrics (bottom-right)
+        ax_metrics = fig.add_subplot(gs[2, 1])
+        create_metrics_table(ax_metrics, data)
+
+        title_y = 0.98
+        subtitle_y = 0.95
 
     # Title
-    fig.suptitle(
-        "VQ-VAE Engineering Dashboard",
-        fontsize=16,
-        fontweight="bold",
-        y=0.98,
-    )
+    title_text = "VQ-VAE Engineering Dashboard"
+    if data.is_pyramid:
+        title_text += " (Pyramid Temporal Encoding)"
+    fig.suptitle(title_text, fontsize=16, fontweight="bold", y=title_y)
 
     # Add checkpoint path as subtitle
     checkpoint_name = Path(checkpoint_path).name
-    fig.text(0.5, 0.95, f"Checkpoint: {checkpoint_name}", ha="center", fontsize=10, style="italic")
+    fig.text(0.5, subtitle_y, f"Checkpoint: {checkpoint_name}", ha="center", fontsize=10, style="italic")
 
     plt.tight_layout(rect=(0, 0, 1, 0.94))
 

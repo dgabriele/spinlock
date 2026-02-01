@@ -50,7 +50,7 @@ families:
     encoder_params:
       manual_dim: 14
       cnn_embedding_dim: 128  # Keep at 128 for variable-length mode compatibility
-      use_final_batchnorm: false  # Allow natural variance (removes artificial constraint)
+      use_final_batchnorm: true  # Keep BatchNorm for stability during VL mode
       encode_manual: false
       in_channels: 3
 

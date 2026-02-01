@@ -213,6 +213,12 @@ def compute_normalized_reconstruction_error_per_category(
                 if cat_name not in normalization_stats:
                     continue
 
+                # Validate indices are within bounds
+                max_idx = max(indices) if indices else -1
+                if max_idx >= target.shape[1]:
+                    print(f"[WARNING] Skipping {cat_name}: max index {max_idx} >= target size {target.shape[1]}")
+                    continue
+
                 # Extract category features
                 cat_target = target[:, indices]
                 cat_recon = reconstruction[:, indices]
