@@ -6,7 +6,7 @@ Ported from unisim.system.utils.metrics (2025-12-30).
 import torch
 import torch.nn.functional as F
 import numpy as np
-from typing import Dict, List
+from typing import Dict, List, Any
 from torch.utils.data import DataLoader
 
 
@@ -111,7 +111,7 @@ def compute_reconstruction_error(
 def compute_normalized_reconstruction_error_per_category(
     model,
     dataloader: DataLoader,
-    normalization_stats: Dict[str, any],
+    normalization_stats: Dict[str, Any],
     group_indices: Dict[str, List[int]],
     device: str = "cuda",
     temporal_encoder=None,
