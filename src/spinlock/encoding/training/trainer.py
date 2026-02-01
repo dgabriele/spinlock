@@ -354,26 +354,13 @@ class VQVAETrainer:
                 # Feature cleaning was already applied during category discovery
                 # (features are pre-cleaned before being stored as initial_features_only)
 
-            # Handle raw_ics for hybrid INITIAL encoder (end-to-end CNN training)
-            raw_ics = batch.get("raw_ics")
-            if raw_ics is not None:
-                raw_ics = raw_ics.to(self.device)
-                # DEBUG: Print raw_ics shape
-                if self.current_epoch == 0 and n_batches == 0:
-                    print(f"DEBUG: raw_ics.shape = {raw_ics.shape}")
-
             # DEBUG: Print final features shape before model
             if self.current_epoch == 0 and n_batches == 0:
                 print(f"DEBUG: Passing to model: features.shape = {features.shape}")
 
-            # Forward pass (pass raw_ics if model supports hybrid INITIAL)
-            if raw_ics is not None and hasattr(self.model, 'initial_encoder'):
-                outputs = self.model(features, raw_ics=raw_ics)
-            elif raw_ics is not None and hasattr(self.model, '_orig_mod') and hasattr(self.model._orig_mod, 'initial_encoder'):
-                # Handle torch.compile wrapped model
-                outputs = self.model(features, raw_ics=raw_ics)
-            else:
-                outputs = self.model(features)
+            # Forward pass WITHOUT raw_ics (features are pre-encoded during category discovery)
+            # Model expects pre-encoded dimension (encoded_dim initial + temporal)
+            outputs = self.model(features)
 
             # Compute loss
             # For hybrid INITIAL models, use the expanded input_features as target
@@ -430,16 +417,16 @@ class VQVAETrainer:
             total_loss += loss.item()
             n_batches += 1
 
-            # Save last batch for dead code reset (need both features and raw_ics for hybrid models)
+            # Save last batch for dead code reset
             last_batch = features
-            last_raw_ics = raw_ics
 
         avg_loss = total_loss / n_batches
 
         # Average loss components
         avg_loss_components = {k: v / n_batches for k, v in loss_components.items()}
 
-        return avg_loss, avg_loss_components, last_batch, last_raw_ics
+        # raw_ics not needed since features are pre-encoded
+        return avg_loss, avg_loss_components, last_batch, None
 
     def validate(self):
         """Validate on validation set.

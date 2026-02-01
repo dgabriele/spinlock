@@ -273,8 +273,7 @@ Output:
         except Exception as e:
             import traceback
             print(f"\nError during training: {e}", file=sys.stderr)
-            if args.verbose:
-                traceback.print_exc()
+            traceback.print_exc()
             return 1
 
     def _load_config(self, config_path: Path) -> Dict[str, Any]:
@@ -717,14 +716,20 @@ Output:
         # Default: false (clean AFTER discovery to preserve semantic diversity)
         pre_categorization = feature_cleaning.get("pre_categorization", False)
 
+        # DEBUG: Print cleaning configuration
+        print(f"\n[DEBUG] Feature cleaning config:")
+        print(f"  enabled: {clean_enabled}")
+        print(f"  pre_categorization: {pre_categorization}")
+        print(f"  verbose: {verbose}")
+        print(f"  Will clean: {'BEFORE' if (clean_enabled and pre_categorization) else 'AFTER' if clean_enabled else 'NEVER'} category discovery")
+
         # Initialize preprocessing metadata for checkpoint reproducibility
         feature_mask = None
         feature_cleaning_params = None
         self._feature_mask = None  # Store for later use in _create_data_loaders
 
         if clean_enabled and pre_categorization:
-            if verbose:
-                print("\nCleaning features...")
+            print("\nCleaning features (pre-categorization)...")
 
             from spinlock.encoding import FeatureProcessor
 
@@ -772,7 +777,9 @@ Output:
             # Protect INITIAL features from cleaning if hybrid mode is enabled
             if initial_info is not None:
                 initial_offset = initial_info["offset"]
-                initial_end = initial_offset + initial_info["manual_dim"]
+                # Use encoded_dim (hybrid encoded 166D) not manual_dim (raw 38D)
+                initial_dim = initial_info["encoded_dim"]
+                initial_end = initial_offset + initial_dim
 
                 # Extract INITIAL features before cleaning
                 initial_features = features[:, initial_offset:initial_end].copy()
@@ -788,8 +795,7 @@ Output:
                     if feature_names else None
                 )
 
-                if verbose:
-                    print(f"  Protected {initial_info['manual_dim']} INITIAL features from cleaning")
+                print(f"  Protected {initial_dim}D INITIAL features (hybrid encoded) from cleaning")
 
                 # Clean non-INITIAL features
                 cleaned_features, feature_mask_non_initial, cleaned_names = processor.clean(
@@ -797,9 +803,9 @@ Output:
                 )
 
                 # Reconstruct full feature_mask including INITIAL features (all True for INITIAL)
-                # feature_mask maps original 270D → final cleaned dimension
+                # feature_mask maps original dimension → final cleaned dimension
                 feature_mask = np.zeros(features.shape[1], dtype=bool)
-                # Mark INITIAL features as kept (they were protected)
+                # Mark INITIAL features as kept (they were protected from cleaning)
                 feature_mask[initial_offset:initial_end] = True
                 # Insert non-INITIAL mask values
                 non_initial_indices = list(range(initial_offset)) + list(range(initial_end, features.shape[1]))
@@ -820,14 +826,34 @@ Output:
                 if cleaned_names and initial_names:
                     feature_names = cleaned_names[:new_offset] + initial_names + cleaned_names[new_offset:]
 
-                # Update initial_info with new offset (manual_dim stays the same)
+                # Update initial_info with new offset (manual_dim and encoded_dim stay the same)
                 initial_info["offset"] = new_offset
 
-                if verbose:
-                    print(f"  INITIAL offset: {initial_offset} → {new_offset}")
+                print(f"  INITIAL offset adjusted: {initial_offset} → {new_offset}")
 
                 # Store feature_mask for later use
                 self._feature_mask = feature_mask
+
+                # DEBUG: Check for duplicate feature names after cleaning
+                if feature_names:
+                    from collections import Counter
+                    name_counts = Counter(feature_names)
+                    duplicates = {name: count for name, count in name_counts.items() if count > 1}
+                    if duplicates:
+                        print(f"\n[ERROR] Duplicate feature names after pre-categorization cleaning!")
+                        print(f"  Total duplicates: {len(duplicates)}")
+                        for name, count in list(duplicates.items())[:10]:
+                            print(f"    {name}: {count} occurrences")
+                        raise ValueError(f"Duplicate feature names found: {len(duplicates)} names have duplicates")
+                    else:
+                        print(f"  Feature names OK: {len(feature_names)} unique names")
+                        print(f"  First 5 feature names: {feature_names[:5]}")
+                        print(f"  Last 5 feature names: {feature_names[-5:]}")
+                        # Count features per family
+                        from collections import Counter
+                        families = [name.split('::')[0] if '::' in name else 'unknown' for name in feature_names]
+                        family_counts = Counter(families)
+                        print(f"  Features per family: {dict(family_counts)}")
             else:
                 features, feature_mask, feature_names = processor.clean(features, feature_names)
 
@@ -836,6 +862,19 @@ Output:
 
             if verbose:
                 print(f"After cleaning: {features.shape[0]} samples × {features.shape[1]} features")
+
+                # DEBUG: Check for duplicate feature names after cleaning
+                if feature_names:
+                    from collections import Counter
+                    name_counts = Counter(feature_names)
+                    duplicates = {name: count for name, count in name_counts.items() if count > 1}
+                    if duplicates:
+                        print(f"\n[WARNING] Duplicate feature names after pre-categorization cleaning:")
+                        for name, count in list(duplicates.items())[:10]:
+                            print(f"  {name}: {count} occurrences")
+                        print(f"  Total duplicate names: {len(duplicates)}")
+                    else:
+                        print(f"[DEBUG] No duplicate feature names after cleaning ({len(feature_names)} unique)")
         elif not clean_enabled:
             if verbose:
                 print("Feature cleaning disabled (clean_features=false in config)")
@@ -990,6 +1029,25 @@ Output:
 
             group_indices = self._discover_categories(features, feature_names, config, verbose)
 
+            # DEBUG: Validate indices immediately after discovery
+            all_indices = []
+            for cat_name, indices in group_indices.items():
+                all_indices.extend(indices)
+            if len(all_indices) != len(set(all_indices)):
+                from collections import Counter
+                counts = Counter(all_indices)
+                duplicates = {idx: count for idx, count in counts.items() if count > 1}
+                print(f"\n[ERROR] Duplicate indices detected RIGHT AFTER category discovery!")
+                print(f"  Total indices: {len(all_indices)}")
+                print(f"  Unique indices: {len(set(all_indices))}")
+                print(f"  Duplicates: {len(duplicates)}")
+                print(f"  First 10 duplicates: {list(duplicates.items())[:10]}")
+                for dup_idx in list(duplicates.keys())[:5]:
+                    cats_with_idx = [cat for cat, idxs in group_indices.items() if dup_idx in idxs]
+                    print(f"    Index {dup_idx}: appears in {cats_with_idx}")
+            else:
+                print(f"\n[DEBUG] Category discovery indices OK: {len(all_indices)} total, all unique")
+
             # DEBUG: Memory after category discovery
             mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
             print(f"[MEMORY DEBUG] After category discovery: {mem_usage:.1f} MB")
@@ -1073,6 +1131,10 @@ Output:
             return self.error("Must specify category_assignment='auto', category_mapping_file, or resume_from")
 
         # Apply per-category cleaning if deferred from earlier
+        print(f"\n[DEBUG] Checking if post-categorization cleaning should run:")
+        print(f"  clean_enabled={clean_enabled}, pre_categorization={pre_categorization}")
+        print(f"  Condition: {clean_enabled and not pre_categorization}")
+
         if clean_enabled and not pre_categorization:
             print(f"\n{'='*70}")
             print("CLEANING FEATURES PER CATEGORY")
@@ -1301,6 +1363,24 @@ Output:
         mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
         print(f"[MEMORY DEBUG] Before model building: {mem_usage:.1f} MB")
 
+        # DEBUG: Validate indices RIGHT before model building
+        all_indices = []
+        for cat_name, indices in group_indices.items():
+            all_indices.extend(indices)
+        if len(all_indices) != len(set(all_indices)):
+            from collections import Counter
+            counts = Counter(all_indices)
+            duplicates = {idx: count for idx, count in counts.items() if count > 1}
+            print(f"\n[ERROR] Duplicate indices detected RIGHT BEFORE model building!")
+            print(f"  Total indices: {len(all_indices)}")
+            print(f"  Unique indices: {len(set(all_indices))}")
+            print(f"  Duplicates: {len(duplicates)}")
+            for dup_idx in list(duplicates.keys())[:10]:
+                cats_with_idx = [cat for cat, idxs in group_indices.items() if dup_idx in idxs]
+                print(f"    Index {dup_idx} (count={duplicates[dup_idx]}): appears in {cats_with_idx}")
+        else:
+            print(f"\n[DEBUG] Indices still OK before model building: {len(all_indices)} total, all unique")
+
         model, vqvae_config = self._build_model(
             normalized_features, group_indices, config, verbose, initial_info
         )
@@ -1499,6 +1579,386 @@ Output:
 
         return config
 
+    # Feature loading helper methods
+
+    def _load_raw_ics(
+        self,
+        f: "h5py.File",
+        max_samples: Optional[int],
+    ) -> np.ndarray:
+        """Load and prepare raw initial conditions for hybrid encoding.
+
+        Args:
+            f: Open HDF5 file handle
+            max_samples: Optional limit on number of samples to load
+
+        Returns:
+            Raw ICs with shape [N, C, H, W]
+        """
+        import numpy as np
+
+        if "inputs/fields" not in f:
+            raise ValueError(
+                "Raw ICs not found at /inputs/fields. "
+                "Required for hybrid INITIAL encoding."
+            )
+
+        if max_samples is not None and max_samples > 0:
+            raw_ics_data = np.array(f["inputs/fields"][:max_samples])
+        else:
+            raw_ics_data = np.array(f["inputs/fields"])
+
+        # Handle different IC shapes:
+        # [N, M, H, W] -> add channel dim -> [N, M, 1, H, W]
+        # [N, M, C, H, W] -> use as is
+        if len(raw_ics_data.shape) == 4:
+            raw_ics_data = raw_ics_data[:, :, np.newaxis, :, :]
+
+        # Average across realizations for single IC per operator
+        # [N, M, C, H, W] -> [N, C, H, W]
+        return raw_ics_data.mean(axis=1)
+
+    def _trim_preallocated_samples(
+        self,
+        features: np.ndarray,
+        raw_ics: Optional[np.ndarray],
+        feature_family: str,
+    ) -> tuple:
+        """Trim pre-allocated but unpopulated samples (all zeros).
+
+        Args:
+            features: Features array to trim
+            raw_ics: Optional raw ICs to trim in sync
+            feature_family: Family name for logging
+
+        Returns:
+            Tuple of (trimmed_features, trimmed_raw_ics)
+        """
+        import numpy as np
+
+        sample_norms = np.linalg.norm(
+            features.reshape(features.shape[0], -1), axis=1
+        )
+        populated_mask = sample_norms > 1e-10
+        num_populated = populated_mask.sum()
+        num_allocated = features.shape[0]
+
+        if num_populated < num_allocated:
+            features = features[populated_mask]
+            if raw_ics is not None:
+                raw_ics = raw_ics[populated_mask]
+            print(
+                f"  {feature_family}: Dataset pre-allocated to {num_allocated} "
+                f"but only {num_populated} samples populated"
+            )
+            print(f"    Trimmed to {num_populated} non-zero samples")
+
+        return features, raw_ics
+
+    def _apply_hybrid_encoder(
+        self,
+        manual_features: np.ndarray,
+        raw_ics: np.ndarray,
+        encoder_params: dict,
+        initial_info: dict,
+        device: Any,
+        chunk_size: int,
+    ) -> np.ndarray:
+        """Apply InitialHybridEncoder with chunking to prevent OOM.
+
+        Args:
+            manual_features: Manual INITIAL features [N, manual_dim]
+            raw_ics: Raw initial conditions [N, C, H, W]
+            encoder_params: Encoder parameters
+            initial_info: Dict with manual_dim, cnn_dim, in_channels
+            device: Device to use for encoding
+            chunk_size: Samples per chunk
+
+        Returns:
+            Hybrid encoded features [N, manual_dim + cnn_dim]
+        """
+        import torch
+        import numpy as np
+        from spinlock.encoding.encoders import get_encoder
+
+        encoder = get_encoder(
+            "initial_hybrid",
+            manual_dim=initial_info["manual_dim"],
+            cnn_embedding_dim=initial_info["cnn_dim"],
+            encode_manual=encoder_params.get("encode_manual", False),
+            in_channels=initial_info["in_channels"],
+            use_final_batchnorm=encoder_params.get("use_final_batchnorm", False),
+        )
+        encoder = encoder.to(device)
+        encoder.eval()
+
+        # Apply encoder in chunks
+        encoded_chunks = []
+        with torch.no_grad():
+            for i in range(0, len(manual_features), chunk_size):
+                chunk_end = min(i + chunk_size, len(manual_features))
+
+                manual_chunk = torch.from_numpy(
+                    manual_features[i:chunk_end]
+                ).float().to(device)
+                ics_chunk = torch.from_numpy(
+                    raw_ics[i:chunk_end]
+                ).float().to(device)
+
+                hybrid_chunk = encoder(manual_chunk, ics_chunk)
+                encoded_chunks.append(hybrid_chunk.cpu().numpy())
+
+                # Progress logging
+                if (i // chunk_size) % 5 == 0:
+                    total_chunks = (len(manual_features) + chunk_size - 1) // chunk_size
+                    print(f"      Encoded chunk {i//chunk_size + 1}/{total_chunks}")
+
+        return np.concatenate(encoded_chunks, axis=0)
+
+    def _load_initial_hybrid_features(
+        self,
+        f: "h5py.File",
+        feature_family: str,
+        family_config: dict,
+        feature_type: str,
+        max_samples: Optional[int],
+        device: Any,
+        chunk_size: int,
+    ) -> tuple:
+        """Load and encode initial hybrid features (manual + CNN).
+
+        Args:
+            f: Open HDF5 file handle
+            feature_family: Name of feature family
+            family_config: Configuration for this family
+            feature_type: Type of features (e.g., 'aggregated')
+            max_samples: Optional limit on samples
+            device: Device for encoding
+            chunk_size: Samples per encoding chunk
+
+        Returns:
+            Tuple of (encoded_features, raw_ics, initial_info, feature_names)
+        """
+        import numpy as np
+
+        # Load manual features
+        features_path = f"/features/{feature_family}/{feature_type}"
+        if features_path not in f:
+            raise ValueError(
+                f"Manual INITIAL features not found at {features_path}. "
+                f"Run: poetry run python scripts/dev/extract_initial_features.py --dataset <path>"
+            )
+
+        group = f[features_path]
+        if max_samples is not None and max_samples > 0:
+            family_features = np.array(group["features"][:max_samples])
+        else:
+            family_features = np.array(group["features"])
+
+        # Replace NaN with 0
+        nan_count = np.isnan(family_features).sum()
+        if nan_count > 0:
+            family_features = np.nan_to_num(family_features, nan=0.0)
+            print(f"  {feature_family}: Replaced {nan_count} NaN values with 0")
+
+        # Load raw ICs
+        raw_ics = self._load_raw_ics(f, max_samples)
+
+        # Trim pre-allocated samples
+        family_features, raw_ics = self._trim_preallocated_samples(
+            family_features, raw_ics, feature_family
+        )
+
+        # Prepare initial_info
+        manual_dim = family_features.shape[1]
+        encoder_params = family_config.get("encoder_params", {})
+        cnn_dim = encoder_params.get("cnn_embedding_dim", 28)
+
+        initial_info = {
+            "offset": 0,  # Will be updated by caller
+            "manual_dim": manual_dim,
+            "cnn_dim": cnn_dim,
+            "in_channels": raw_ics.shape[1],
+            "encoded_dim": manual_dim,  # Will be updated after encoding
+        }
+
+        print(f"  {feature_family}: Hybrid mode - {manual_dim}D manual + raw ICs {raw_ics.shape}")
+        print(f"    CNN embedding_dim={cnn_dim}")
+
+        # Backward compatibility: no CNN encoding
+        if cnn_dim == 0:
+            print(f"    CNN disabled, using manual features only")
+            feature_names = [f"{feature_family}_{i}" for i in range(manual_dim)]
+            return family_features, raw_ics, initial_info, feature_names
+
+        # Apply hybrid encoder
+        print(f"    Applying InitialHybridEncoder for category discovery...")
+        encoded_features = self._apply_hybrid_encoder(
+            manual_features=family_features,
+            raw_ics=raw_ics,
+            encoder_params=encoder_params,
+            initial_info=initial_info,
+            device=device,
+            chunk_size=chunk_size,
+        )
+
+        # Update encoded_dim
+        output_dim = encoded_features.shape[1]
+        initial_info["encoded_dim"] = output_dim
+
+        print(f"    Hybrid encoding complete: {manual_dim}D manual + {cnn_dim}D CNN = {output_dim}D")
+
+        # Generate feature names
+        feature_names = [f"{feature_family}_{i}" for i in range(output_dim)]
+
+        return encoded_features, raw_ics, initial_info, feature_names
+
+    def _handle_nan_and_zero_variance(
+        self,
+        features: np.ndarray,
+        feature_family: str,
+    ) -> np.ndarray:
+        """Replace NaN values and remove zero-variance features.
+
+        Args:
+            features: Features array (2D or 3D)
+            feature_family: Family name for logging
+
+        Returns:
+            Cleaned features array
+        """
+        import numpy as np
+
+        # Replace NaN with 0
+        nan_count = np.isnan(features).sum()
+        if nan_count > 0:
+            features = np.nan_to_num(features, nan=0.0)
+            print(f"  {feature_family}: Replaced {nan_count} NaN values with 0")
+
+            # Remove zero-variance features (from NaN→0 replacement)
+            if len(features.shape) == 3:  # [N, T, D]
+                stds = features.std(axis=(0, 1))
+                zero_var_mask = stds > 1e-10
+                zero_var_count = (~zero_var_mask).sum()
+                if zero_var_count > 0:
+                    features = features[:, :, zero_var_mask]
+                    print(f"  {feature_family}: Removed {zero_var_count} zero-variance features")
+            elif len(features.shape) == 2:  # [N, D]
+                stds = features.std(axis=0)
+                zero_var_mask = stds > 1e-10
+                zero_var_count = (~zero_var_mask).sum()
+                if zero_var_count > 0:
+                    features = features[:, zero_var_mask]
+                    print(f"  {feature_family}: Removed {zero_var_count} zero-variance features")
+
+        return features
+
+    def _compute_sample_norms_chunked(
+        self,
+        features: np.ndarray,
+        use_chunking: bool,
+    ) -> Optional[np.ndarray]:
+        """Compute per-sample norms to detect populated samples.
+
+        Args:
+            features: Features array (2D or 3D)
+            use_chunking: Whether to use chunked computation
+
+        Returns:
+            Array of sample norms, or None if features are not 2D/3D
+        """
+        import numpy as np
+
+        if len(features.shape) == 3:  # [N, M, D]
+            if use_chunking and len(features) > 5000:
+                print(f"    Computing norms in chunks to find populated samples...")
+                norm_chunk_size = 5000
+                sample_norms = np.empty(len(features), dtype=np.float32)
+                for norm_start in range(0, len(features), norm_chunk_size):
+                    norm_end = min(norm_start + norm_chunk_size, len(features))
+                    chunk_reshaped = features[norm_start:norm_end].reshape(norm_end - norm_start, -1)
+                    sample_norms[norm_start:norm_end] = np.linalg.norm(chunk_reshaped, axis=1)
+                    del chunk_reshaped
+            else:
+                sample_norms = np.linalg.norm(features.reshape(features.shape[0], -1), axis=1)
+        elif len(features.shape) == 2:  # [N, D]
+            if use_chunking and len(features) > 5000:
+                print(f"    Computing norms in chunks to find populated samples...")
+                norm_chunk_size = 5000
+                sample_norms = np.empty(len(features), dtype=np.float32)
+                for norm_start in range(0, len(features), norm_chunk_size):
+                    norm_end = min(norm_start + norm_chunk_size, len(features))
+                    sample_norms[norm_start:norm_end] = np.linalg.norm(
+                        features[norm_start:norm_end], axis=1
+                    )
+            else:
+                sample_norms = np.linalg.norm(features, axis=1)
+        else:
+            sample_norms = None
+
+        return sample_norms
+
+    def _load_reference_features(
+        self,
+        f: "h5py.File",
+        max_samples: Optional[int],
+        feature_families: list,
+    ) -> tuple:
+        """Load reference features and interpolation mask for regularization.
+
+        Args:
+            f: Open HDF5 file handle
+            max_samples: Optional limit on samples
+            feature_families: List of feature families
+
+        Returns:
+            Tuple of (reference_features, is_interpolated, raw_summary)
+        """
+        import numpy as np
+
+        reference_features = None
+        is_interpolated = None
+        raw_summary = None
+
+        if 'features/reference_features' in f:
+            reference_features = f['features/reference_features'][:]
+            if max_samples is not None:
+                reference_features = reference_features[:max_samples]
+
+            nan_count = np.isnan(reference_features).sum()
+            if nan_count > 0:
+                reference_features = np.nan_to_num(reference_features, nan=0.0)
+                print(f"  summary: Replaced {nan_count} NaN values in reference features")
+            print(f"  Loaded reference features for regularization: {reference_features.shape}")
+
+        if 'metadata/is_interpolated' in f:
+            is_interpolated = f['metadata/is_interpolated'][:]
+            if max_samples is not None:
+                is_interpolated = is_interpolated[:max_samples]
+            interpolated_count = is_interpolated.sum() if is_interpolated is not None else 0
+            print(f"  Loaded interpolation mask: {interpolated_count} / {len(is_interpolated)}")
+
+        # Load raw SUMMARY features for reference regularization
+        if any('summary' in fam for fam in feature_families):
+            if 'features/summary/per_trajectory/features' in f:
+                raw_summary = f['features/summary/per_trajectory/features'][:]
+                if max_samples is not None:
+                    raw_summary = raw_summary[:max_samples]
+
+                # Reshape from [N, M, D] to [N, M*D]
+                if len(raw_summary.shape) == 3:
+                    N, M, D = raw_summary.shape
+                    raw_summary = raw_summary.reshape(N, M * D)
+                    print(f"  Reshaped raw SUMMARY from [{N}, {M}, {D}] to [{N}, {M*D}]")
+
+                nan_count = np.isnan(raw_summary).sum()
+                if nan_count > 0:
+                    raw_summary = np.nan_to_num(raw_summary, nan=0.0)
+                    print(f"  summary: Replaced {nan_count} NaN values in raw SUMMARY")
+                print(f"  Loaded raw SUMMARY for reference regularization: {raw_summary.shape}")
+
+        return reference_features, is_interpolated, raw_summary
+
     def _load_features(self, config: Dict[str, Any]) -> tuple:
         """Load features from HDF5 dataset.
 
@@ -1558,80 +2018,21 @@ Output:
                 vl_enabled = vl_config.get("enabled", False)
 
                 # Handle hybrid INITIAL encoding specially
-                # For initial_hybrid: load raw ICs and defer CNN encoding to training loop
                 if encoder_name in ["initial_hybrid", "InitialHybridEncoder"]:
-                    # Load manual features (14D)
-                    features_path = f"/features/{feature_family}/{feature_type}"
-                    if features_path not in f:
-                        raise ValueError(
-                            f"Manual INITIAL features not found at {features_path}. "
-                            f"Run: poetry run python scripts/dev/extract_initial_features.py --dataset <path>"
-                        )
+                    family_features, raw_ics, initial_info, family_names = self._load_initial_hybrid_features(
+                        f=f,
+                        feature_family=feature_family,
+                        family_config=family_config,
+                        feature_type=feature_type,
+                        max_samples=max_samples,
+                        device=device,
+                        chunk_size=config.get("encode_chunk_size", 5000),
+                    )
 
-                    group = f[features_path]
-                    if max_samples is not None and max_samples > 0:
-                        family_features = np.array(group["features"][:max_samples])
-                    else:
-                        family_features = np.array(group["features"])
+                    # Update offset in initial_info
+                    initial_info["offset"] = sum(arr.shape[1] for arr in all_features)
 
-                    # Replace NaN with 0
-                    nan_count = np.isnan(family_features).sum()
-                    if nan_count > 0:
-                        family_features = np.nan_to_num(family_features, nan=0.0)
-                        print(f"  {feature_family}: Replaced {nan_count} NaN values with 0")
-
-                    # Load raw ICs for CNN encoding
-                    if "inputs/fields" not in f:
-                        raise ValueError(
-                            "Raw ICs not found at /inputs/fields. "
-                            "Required for hybrid INITIAL encoding."
-                        )
-
-                    if max_samples is not None and max_samples > 0:
-                        raw_ics_data = np.array(f["inputs/fields"][:max_samples])
-                    else:
-                        raw_ics_data = np.array(f["inputs/fields"])
-
-                    # Handle different IC shapes:
-                    # [N, M, H, W] -> add channel dim -> [N, M, 1, H, W]
-                    # [N, M, C, H, W] -> use as is
-                    if len(raw_ics_data.shape) == 4:
-                        raw_ics_data = raw_ics_data[:, :, np.newaxis, :, :]
-
-                    # Average across realizations for single IC per operator
-                    # [N, M, C, H, W] -> [N, C, H, W]
-                    raw_ics = raw_ics_data.mean(axis=1)
-
-                    # Check how many samples are actually populated (non-zero)
-                    # This handles cases where HDF5 file is pre-allocated but only partially filled
-                    sample_norms = np.linalg.norm(raw_ics.reshape(raw_ics.shape[0], -1), axis=1)
-                    populated_mask = sample_norms > 1e-10  # Threshold for "non-zero"
-                    num_populated = populated_mask.sum()
-                    num_allocated = raw_ics.shape[0]
-
-                    # Trim to populated samples only
-                    if num_populated < num_allocated:
-                        raw_ics = raw_ics[populated_mask]
-                        family_features = family_features[populated_mask]
-                        print(f"  {feature_family}: Dataset pre-allocated to {num_allocated} but only {num_populated} samples populated")
-                        print(f"    Trimmed to {num_populated} non-zero samples")
-
-                    # Store info for hybrid encoder
-                    initial_offset = sum(arr.shape[1] for arr in all_features)
-                    initial_info = {
-                        "offset": initial_offset,
-                        "manual_dim": family_features.shape[1],
-                        "cnn_dim": family_config.get("encoder_params", {}).get("cnn_embedding_dim", 28),
-                        "in_channels": raw_ics.shape[1],
-                    }
-
-                    print(f"  {feature_family}: Hybrid mode - {family_features.shape[1]}D manual + raw ICs {raw_ics.shape}")
-                    print(f"    CNN will be trained end-to-end (embedding_dim={initial_info['cnn_dim']})")
-
-                    # Don't apply encoder - just use manual features
-                    output_dim = family_features.shape[1]
-                    family_names = [f"{feature_family}_{i}" for i in range(output_dim)]
-
+                    # Prefix feature names if multi-family
                     if len(feature_families) > 1:
                         family_names = [f"{feature_family}::{name}" for name in family_names]
 
@@ -1722,34 +2123,7 @@ Output:
                 print(f"  {feature_family}: Loaded {family_features.shape}")
 
                 # Check for pre-allocated but unpopulated samples
-                # Compute norm across all feature dimensions to detect all-zero rows
-                # Use chunked computation for large datasets to avoid memory spike
-                if len(family_features.shape) == 3:  # [N, M, D]
-                    if use_chunking and len(family_features) > 5000:
-                        # Chunked norm computation to avoid memory spike
-                        print(f"    Computing norms in chunks to find populated samples...")
-                        norm_chunk_size = 5000
-                        sample_norms = np.empty(len(family_features), dtype=np.float32)
-                        for norm_start in range(0, len(family_features), norm_chunk_size):
-                            norm_end = min(norm_start + norm_chunk_size, len(family_features))
-                            chunk_reshaped = family_features[norm_start:norm_end].reshape(norm_end - norm_start, -1)
-                            sample_norms[norm_start:norm_end] = np.linalg.norm(chunk_reshaped, axis=1)
-                            del chunk_reshaped
-                    else:
-                        sample_norms = np.linalg.norm(family_features.reshape(family_features.shape[0], -1), axis=1)
-                elif len(family_features.shape) == 2:  # [N, D]
-                    if use_chunking and len(family_features) > 5000:
-                        # Chunked norm computation
-                        print(f"    Computing norms in chunks to find populated samples...")
-                        norm_chunk_size = 5000
-                        sample_norms = np.empty(len(family_features), dtype=np.float32)
-                        for norm_start in range(0, len(family_features), norm_chunk_size):
-                            norm_end = min(norm_start + norm_chunk_size, len(family_features))
-                            sample_norms[norm_start:norm_end] = np.linalg.norm(family_features[norm_start:norm_end], axis=1)
-                    else:
-                        sample_norms = np.linalg.norm(family_features, axis=1)
-                else:
-                    sample_norms = None
+                sample_norms = self._compute_sample_norms_chunked(family_features, use_chunking)
 
                 if sample_norms is not None:
                     populated_mask = sample_norms > 1e-10
@@ -1767,28 +2141,8 @@ Output:
                     family_features = family_features.reshape(N, M * D)
                     print(f"  {feature_family}: Reshaped per_trajectory from [{N}, {M}, {D}] to [{N}, {M*D}]")
 
-                # Replace NaN with 0 before encoding (encoders can't handle NaN)
-                nan_count = np.isnan(family_features).sum()
-                if nan_count > 0:
-                    family_features = np.nan_to_num(family_features, nan=0.0)
-                    print(f"  {feature_family}: Replaced {nan_count} NaN values with 0")
-
-                    # CRITICAL: Remove zero-variance features (from NaN→0 replacement) BEFORE encoding
-                    # These corrupt the encoder and clustering if not removed
-                    if len(family_features.shape) == 3:  # [N, T, D]
-                        stds = family_features.std(axis=(0, 1))  # Compute std across samples and time
-                        zero_var_mask = stds > 1e-10  # Keep features with std > threshold
-                        zero_var_count = (~zero_var_mask).sum()
-                        if zero_var_count > 0:
-                            family_features = family_features[:, :, zero_var_mask]
-                            print(f"  {feature_family}: Removed {zero_var_count} zero-variance features (from NaN→0)")
-                    elif len(family_features.shape) == 2:  # [N, D]
-                        stds = family_features.std(axis=0)
-                        zero_var_mask = stds > 1e-10
-                        zero_var_count = (~zero_var_mask).sum()
-                        if zero_var_count > 0:
-                            family_features = family_features[:, zero_var_mask]
-                            print(f"  {feature_family}: Removed {zero_var_count} zero-variance features (from NaN→0)")
+                # Replace NaN with 0 before encoding and remove zero-variance features
+                family_features = self._handle_nan_and_zero_variance(family_features, feature_family)
 
                 # Apply per-family encoder if configured
                 # (encoder_params and vl_enabled already defined at top of loop)
@@ -2014,48 +2368,10 @@ Output:
             )
 
         # Load reference features and interpolation mask for regularization (optional)
-        reference_features = None
-        is_interpolated = None
-        raw_summary = None
         with h5py.File(dataset_path, "r") as f:
-            if 'features/reference_features' in f:
-                reference_features = f['features/reference_features'][:]
-                if max_samples is not None:
-                    reference_features = reference_features[:max_samples]
-                # Replace NaN values with 0 (consistent with feature loading)
-                nan_count = np.isnan(reference_features).sum()
-                if nan_count > 0:
-                    reference_features = np.nan_to_num(reference_features, nan=0.0)
-                    print(f"  summary: Replaced {nan_count} NaN values with 0 in reference features")
-                print(f"  Loaded reference features for regularization: {reference_features.shape}")
-
-            if 'metadata/is_interpolated' in f:
-                is_interpolated = f['metadata/is_interpolated'][:]
-                if max_samples is not None:
-                    is_interpolated = is_interpolated[:max_samples]
-                interpolated_count = is_interpolated.sum() if is_interpolated is not None else 0
-                print(f"  Loaded interpolation mask: {interpolated_count} interpolated / {len(is_interpolated)} total")
-
-            # Load raw SUMMARY features ONLY (for reference regularization)
-            # Reference regularization compares MNO SUMMARY vs CNO SUMMARY
-            raw_summary = None
-            if any('summary' in fam for fam in feature_families):
-                if 'features/summary/per_trajectory/features' in f:
-                    raw_summary = f['features/summary/per_trajectory/features'][:]
-                    if max_samples is not None:
-                        raw_summary = raw_summary[:max_samples]
-
-                    # Reshape from [N, M, D] to [N, M*D]
-                    if len(raw_summary.shape) == 3:
-                        N, M, D = raw_summary.shape
-                        raw_summary = raw_summary.reshape(N, M * D)
-                        print(f"  Reshaped raw SUMMARY per_trajectory from [{N}, {M}, {D}] to [{N}, {M*D}]")
-
-                    nan_count = np.isnan(raw_summary).sum()
-                    if nan_count > 0:
-                        raw_summary = np.nan_to_num(raw_summary, nan=0.0)
-                        print(f"  summary: Replaced {nan_count} NaN values with 0 in raw SUMMARY")
-                    print(f"  Loaded raw SUMMARY features for reference regularization: {raw_summary.shape}")
+            reference_features, is_interpolated, raw_summary = self._load_reference_features(
+                f, max_samples, feature_families
+            )
 
         # Store raw temporal features and initial-only features for dataloader creation
         self._raw_temporal_features = raw_temporal_features
@@ -2066,6 +2382,15 @@ Output:
         import resource
         mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
         print(f"\n[MEMORY DEBUG] After feature loading: {mem_usage:.1f} MB")
+
+        # DEBUG: Verify dimensional consistency
+        if initial_info is not None:
+            print(f"\n[DIMENSION DEBUG] Category discovery complete:")
+            print(f"  Initial features (hybrid encoded): {initial_info['encoded_dim']}D")
+            print(f"    - Manual: {initial_info['manual_dim']}D")
+            print(f"    - CNN embedding: {initial_info['cnn_dim']}D")
+            print(f"  Total features (initial + temporal): {features.shape}")
+            print(f"  Model will be built expecting: {features.shape[1]}D input")
 
         return features, all_feature_names, raw_ics, initial_info, encoder_state_dicts, reference_features, is_interpolated, raw_summary
 
@@ -2354,6 +2679,16 @@ Output:
                 # Parse compression_ratios from config (e.g., "0.5:1:1.5" → [0.5, 1.0, 1.5])
                 compression_ratios = parse_compression_ratios(compression_ratios_str)
 
+        # DEBUG: Final check before creating config
+        print(f"\n[DEBUG] Creating CategoricalVQVAEConfig with:")
+        print(f"  input_dim: {features.shape[1]}")
+        print(f"  num_categories: {len(group_indices)}")
+        all_indices_check = []
+        for cat_name, indices in group_indices.items():
+            all_indices_check.extend(indices)
+            print(f"  {cat_name}: {len(indices)} indices")
+        print(f"  Total indices: {len(all_indices_check)}, unique: {len(set(all_indices_check))}")
+
         vqvae_config = CategoricalVQVAEConfig(
             input_dim=features.shape[1],
             group_indices=group_indices,
@@ -2367,6 +2702,8 @@ Output:
             uniform_codebook_init=config.get("uniform_codebook_init", False),
         )
 
+        print(f"\n[DEBUG] CategoricalVQVAEConfig created successfully")
+
         # Build model - use wrapper for hybrid INITIAL encoding
         if initial_info is not None:
             from spinlock.encoding.vqvae_with_initial import VQVAEWithInitial
@@ -2376,7 +2713,7 @@ Output:
                 initial_manual_dim=initial_info["manual_dim"],
                 initial_cnn_dim=initial_info["cnn_dim"],
                 initial_feature_offset=initial_info["offset"],
-                initial_feature_count=initial_info["manual_dim"],
+                initial_feature_count=initial_info["encoded_dim"],  # Use encoded_dim (270D) instead of manual_dim (14D)
                 in_channels=initial_info["in_channels"],
             )
             if verbose:
@@ -2390,6 +2727,16 @@ Output:
         print(f"Model created:")
         print(f"  Total parameters:     {total_params:,}")
         print(f"  Trainable parameters: {trainable_params:,}")
+
+        # DEBUG: Verify model input dimension matches features
+        if initial_info is not None:
+            print(f"\n[DIMENSION DEBUG] Model architecture:")
+            print(f"  Model expects input_dim: {vqvae_config.input_dim}D")
+            print(f"  Initial feature offset: {initial_info['offset']}")
+            print(f"  Initial feature count: {initial_info['encoded_dim']}D (hybrid encoded)")
+            print(f"  Features shape: {features.shape}")
+            if vqvae_config.input_dim != features.shape[1]:
+                print(f"  WARNING: Dimension mismatch! Model expects {vqvae_config.input_dim}D but got {features.shape[1]}D")
 
         # Log category structure and compression details
         print(f"\n{'='*70}")
@@ -2484,26 +2831,25 @@ Output:
                 # The full 'features' includes both initial + temporal_encoded (for clustering)
                 # We only want initial features to concatenate with runtime-encoded temporal
                 if hasattr(self, '_initial_features_only') and self._initial_features_only is not None:
-                    initial_only = self._initial_features_only
+                    initial_only = self._initial_features_only  # Now hybrid encoded (e.g., 270D)
 
                     # Apply feature cleaning mask to initial features if cleaning was applied
                     if self._feature_mask is not None:
                         # Extract the portion of feature_mask that corresponds to initial features
-                        # feature_mask maps original [initial + temporal pyramids] → cleaned features
-                        # We need to extract which initial features were kept
+                        # NOTE: initial_only is now hybrid encoded (e.g., 270D = 14D manual + 256D CNN)
                         num_initial_features = initial_only.shape[1]
                         initial_feature_mask = self._feature_mask[:num_initial_features]
 
                         # Apply mask to initial features
                         initial_only_cleaned = initial_only[:, initial_feature_mask]
-                        print(f"  Initial features before cleaning: {initial_only.shape}")
-                        print(f"  Initial features after cleaning: {initial_only_cleaned.shape}")
+                        print(f"  Initial features (hybrid encoded) before cleaning: {initial_only.shape}")
+                        print(f"  Initial features (hybrid encoded) after cleaning: {initial_only_cleaned.shape}")
                         print(f"  These will be concatenated with encoded temporal features during training")
 
                         self._encoded_initial_features = initial_only_cleaned
                         encoded_initial_features = initial_only_cleaned
                     else:
-                        print(f"  Pre-encoded initial-only features shape: {self._initial_features_only.shape}")
+                        print(f"  Pre-encoded initial-only features (hybrid) shape: {self._initial_features_only.shape}")
                         print(f"  These will be concatenated with encoded temporal features during training")
                         self._encoded_initial_features = initial_only
                         encoded_initial_features = initial_only

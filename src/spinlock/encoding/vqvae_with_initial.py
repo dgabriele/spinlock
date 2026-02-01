@@ -138,16 +138,21 @@ class VQVAEWithInitial(nn.Module):
             adjusted[cat] = new_indices
 
         # Add new CNN feature indices to INITIAL category
-        # Find which category contains INITIAL features
-        for cat, indices in adjusted.items():
-            if any(initial_offset <= idx < initial_offset + initial_count for idx in indices):
-                # Add CNN feature indices (after manual features)
-                cnn_indices = list(range(
-                    initial_offset + self.initial_manual_dim,
-                    initial_offset + new_initial_count
-                ))
-                adjusted[cat] = sorted(set(indices) | set(cnn_indices))
-                break
+        # NOTE: Only needed when features contain manual-only INITIAL (not hybrid-encoded)
+        # If initial_count == new_initial_count, features are already hybrid-encoded
+        # and CNN indices were assigned during category discovery
+        if initial_count != new_initial_count:
+            # Features contain manual-only INITIAL, need to add CNN indices
+            # Find which category contains INITIAL features
+            for cat, indices in adjusted.items():
+                if any(initial_offset <= idx < initial_offset + initial_count for idx in indices):
+                    # Add CNN feature indices (after manual features)
+                    cnn_indices = list(range(
+                        initial_offset + self.initial_manual_dim,
+                        initial_offset + new_initial_count
+                    ))
+                    adjusted[cat] = sorted(set(indices) | set(cnn_indices))
+                    break
 
         return adjusted
 
@@ -167,26 +172,31 @@ class VQVAEWithInitial(nn.Module):
         Returns:
             VQ-VAE output dictionary with reconstructions, tokens, losses, etc.
         """
+        # Features already contain hybrid-encoded INITIAL (from category discovery)
+        # Model was built expecting this dimension (encoded_dim initial + temporal)
+
         if raw_ics is not None:
-            # Extract manual INITIAL features
+            # Runtime re-encoding mode (for debugging/fine-tuning only)
+            # Extract manual portion and re-encode
             manual_start = self.initial_feature_offset
             manual_end = manual_start + self.initial_manual_dim
             manual_features = features[:, manual_start:manual_end]
 
-            # Encode with hybrid encoder (CNN is trainable)
+            # Encode with hybrid encoder
             initial_embeddings = self.initial_encoder(manual_features, raw_ics)
 
-            # Replace manual-only INITIAL with hybrid embeddings
+            # Replace entire hybrid-encoded portion (not just manual)
             features_before = features[:, :manual_start]
-            features_after = features[:, manual_end:]
+            # Skip the entire pre-encoded hybrid portion (encoded_dim)
+            features_after = features[:, manual_start + self.initial_feature_count:]
 
-            # Concatenate: [before_initial | hybrid_initial | after_initial]
             combined_features = torch.cat([
                 features_before,
                 initial_embeddings,
                 features_after,
             ], dim=1)
         else:
+            # Standard path: features pre-encoded during category discovery
             combined_features = features
 
         # Forward through VQ-VAE
