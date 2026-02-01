@@ -2586,6 +2586,7 @@ Output:
             topo_samples=config.get("topo_samples", 64),
             reference_reg_weight=ref_reg_weight,
             entropy_weight=entropy_weight,
+            normalize_mse=config.get("normalize_mse", True),  # Normalize MSE losses by default
             early_stopping_patience=config.get("early_stopping_patience", 100),
             early_stopping_min_delta=config.get("early_stopping_min_delta", 0.01),
             dead_code_reset_interval=config.get("dead_code_reset_interval", 100),

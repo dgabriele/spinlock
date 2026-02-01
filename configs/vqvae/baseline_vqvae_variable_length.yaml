@@ -162,7 +162,7 @@ feature_cleaning:
 training:
   batch_size: 1024
   learning_rate: 0.001
-  num_epochs: 100  # Variable-length: 100 epochs ≈ 400-500 hours (17-21 days)
+  num_epochs: 2000  # Variable-length: 100 epochs ≈ 400-500 hours (17-21 days)
                    # Enough for good multi-scale coverage (~20× per sample)
   optimizer: "adam"
   scheduler: null
@@ -242,21 +242,29 @@ training:
         min_clusters: 2
         max_clusters: 20
 
+  # Loss normalization
+  # Normalizes MSE-based losses (L_recon, L_info) by target variance
+  # Makes losses scale-invariant and magnitudes more predictable
+  # Recommended: true (default)
+  normalize_mse: true  # Set to false to use raw MSE (legacy behavior)
+
   # Loss weights
-  reconstruction_weight: 1.0
-  vq_weight: 0.8
-  orthogonality_weight: 0.11
-  informativeness_weight: 0.3
-  topo_weight: 0.3
-  topo_samples: 2048
-  entropy_weight: 0.1  # Entropy regularization for uniform codebook usage 
+  # NOTE: With normalize_mse=true, MSE losses are bounded ~[0, 2]
+  #       making them comparable to orthogonality [0, 1] and topographic [0, 2]
+  reconstruction_weight: 1.0    # Primary reconstruction quality
+  vq_weight: 0.8               # Vector quantization commitment
+  orthogonality_weight: 0.11   # Codebook diversity (already normalized)
+  informativeness_weight: 0.3  # Partial decoder quality (normalized if normalize_mse=true)
+  topo_weight: 0.3            # Topology preservation (already normalized)
+  topo_samples: 2048          # Samples for topographic loss computation
+  entropy_weight: 0.1         # Uniform codebook usage (already normalized) 
 
   # Checkpointing
   save_every: 25
   checkpoint_dir: "checkpoints/vqvae/100k_baseline_dev_variable_length"
 
   # Callbacks
-  early_stopping_patience: 30  # Reduced from 100 (proportional to total epochs)
+  early_stopping_patience: 200 
   early_stopping_min_delta: 0.01
 
   # Dead code resets - DISABLED

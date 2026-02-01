@@ -15,11 +15,47 @@ import torch.nn.functional as F
 from typing import Dict, Any, Optional
 
 
+def normalized_mse(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Compute normalized MSE that is scale-invariant.
+
+    Normalizes by target variance to make loss scale-invariant:
+    - normalized_mse = 0.0: Perfect reconstruction
+    - normalized_mse = 1.0: Reconstruction as good as predicting the mean (random)
+    - normalized_mse > 1.0: Worse than predicting the mean
+
+    This makes MSE-based losses comparable across different feature scales
+    and configurations, putting them in a similar range to other normalized
+    losses like orthogonality [0, 1] and topographic [0, 2].
+
+    Args:
+        prediction: Predicted values [B, D]
+        target: Target values [B, D]
+
+    Returns:
+        Scalar normalized MSE loss
+
+    Example:
+        >>> target = torch.randn(32, 100) * 10  # Scale = 10
+        >>> pred_random = torch.randn(32, 100) * 10  # Random prediction
+        >>> normalized_mse(pred_random, target)  # ≈ 1.0
+        >>> pred_perfect = target.clone()
+        >>> normalized_mse(pred_perfect, target)  # ≈ 0.0
+    """
+    mse = F.mse_loss(prediction, target)
+
+    # Normalize by target variance
+    # This makes the loss scale-invariant
+    target_var = target.var() + 1e-8  # Add epsilon for numerical stability
+
+    return mse / target_var
+
+
 def reconstruction_loss(
     outputs: Dict[str, Any],
     targets: Dict[str, torch.Tensor],
     feature_weights: Optional[torch.Tensor] = None,
     mask_info: Optional[Dict[str, Any]] = None,
+    normalize: bool = True,
 ):
     """Compute reconstruction loss with optional per-feature weighting and masking.
 
@@ -32,9 +68,11 @@ def reconstruction_loss(
                   If provided, applies sample weighting based on valid fraction.
                   Expected keys:
                       - num_valid_timesteps: [B] number of valid timesteps per sample
+        normalize: If True, normalize MSE by target variance for scale-invariance.
+                  Default: True (recommended for consistent loss magnitudes)
 
     Returns:
-        Reconstruction loss (weighted MSE with optional sample weighting)
+        Reconstruction loss (weighted MSE with optional sample weighting and normalization)
 
     Notes:
         Sample weighting prevents short trajectories from dominating gradient updates:
@@ -42,6 +80,11 @@ def reconstruction_loss(
         - Long trajectory (500/500 valid) gets weight 500/500 = 1.0
 
         This ensures loss contribution is proportional to information content.
+
+        Normalization (if enabled) makes the loss scale-invariant:
+        - Normalized MSE = 0.0: Perfect reconstruction
+        - Normalized MSE = 1.0: As good as predicting the mean
+        - Normalized MSE > 1.0: Worse than predicting the mean
     """
     reconstruction = outputs["reconstruction"]
     recon_features = reconstruction["features"]  # [batch, D]
@@ -77,6 +120,11 @@ def reconstruction_loss(
     else:
         # Standard mode: uniform weighting across samples
         loss = squared_errors.mean()
+
+    # Normalize by target variance if requested
+    if normalize:
+        target_var = target_features.var() + 1e-8
+        loss = loss / target_var
 
     return loss
 
@@ -145,7 +193,11 @@ def orthogonality_loss(model, max_samples: int = 64):
     return loss / len(model.quantizers)
 
 
-def informativeness_loss(outputs: Dict[str, Any], targets: Dict[str, torch.Tensor]):
+def informativeness_loss(
+    outputs: Dict[str, Any],
+    targets: Dict[str, torch.Tensor],
+    normalize: bool = True,
+):
     """Compute informativeness loss from partial decoders.
 
     Encourages each level to independently reconstruct the input.
@@ -153,9 +205,17 @@ def informativeness_loss(outputs: Dict[str, Any], targets: Dict[str, torch.Tenso
     Args:
         outputs: Model outputs with 'partial_reconstructions' key
         targets: Target dict with 'features'
+        normalize: If True, normalize MSE by target variance for scale-invariance.
+                  Default: True (recommended for consistent loss magnitudes)
 
     Returns:
-        Informativeness loss (average MSE across partial decoders)
+        Informativeness loss (average MSE across partial decoders, optionally normalized)
+
+    Notes:
+        Normalization (if enabled) makes the loss scale-invariant:
+        - Normalized MSE = 0.0: Perfect reconstruction
+        - Normalized MSE = 1.0: As good as predicting the mean
+        - Normalized MSE > 1.0: Worse than predicting the mean
     """
     partial_recons = outputs["partial_reconstructions"]
     target = targets["features"]
@@ -164,6 +224,11 @@ def informativeness_loss(outputs: Dict[str, Any], targets: Dict[str, torch.Tenso
     loss = sum(F.mse_loss(partial, target) for partial in partial_recons) / len(
         partial_recons
     )
+
+    # Normalize by target variance if requested
+    if normalize:
+        target_var = target.var() + 1e-8
+        loss = loss / target_var
 
     return loss
 
@@ -276,6 +341,7 @@ def reference_regularization_loss(
     targets: Dict[str, torch.Tensor],
     reference_features: Optional[torch.Tensor] = None,
     is_interpolated: Optional[torch.Tensor] = None,
+    normalize: bool = True,
 ) -> torch.Tensor:
     """Regularize MNO SUMMARY features against reference solver SUMMARY features.
 
@@ -294,6 +360,8 @@ def reference_regularization_loss(
         targets: Target dict containing 'raw_summary' [B, 330] (MNO SUMMARY features)
         reference_features: Reference solver SUMMARY features [B, 330] from CNO
         is_interpolated: Boolean mask [B] for interpolated samples
+        normalize: If True, normalize MSE by target variance for scale-invariance.
+                  Default: True (recommended for consistent loss magnitudes)
 
     Returns:
         Scalar loss: MSE between MNO SUMMARY and reference SUMMARY (330D vs 330D)
@@ -330,6 +398,11 @@ def reference_regularization_loss(
 
     # MSE between MNO SUMMARY and reference (CNO) SUMMARY in raw space
     loss = F.mse_loss(mno_summary, reference_summary)
+
+    # Normalize by target variance if requested
+    if normalize:
+        target_var = reference_summary.var() + 1e-8
+        loss = loss / target_var
 
     return loss
 
@@ -398,6 +471,7 @@ def compute_total_loss(
     feature_weights: Optional[torch.Tensor] = None,
     entropy_weight: float = 0.0,
     mask_info: Optional[Dict[str, Any]] = None,
+    normalize_mse: bool = True,
 ) -> Dict[str, torch.Tensor]:
     """Compute total loss with all components.
 
@@ -423,6 +497,8 @@ def compute_total_loss(
                   If provided, applies sample weighting in reconstruction loss.
                   Expected keys:
                       - num_valid_timesteps: [B] number of valid timesteps per sample
+        normalize_mse: If True, normalize MSE-based losses by target variance.
+                      Default: True (recommended for consistent loss magnitudes across configs)
 
     Returns:
         Dict with 'total' and individual loss components including:
@@ -430,41 +506,72 @@ def compute_total_loss(
             - topo_post: Post-quantization topographic similarity (correlation)
             - reference_regularization: Reference feature regularization loss
             - entropy: Entropy regularization loss (positive, 0 = perfect uniform usage)
+            - reconstruction_raw: Raw (unnormalized) reconstruction MSE (for logging)
+            - informativeness_raw: Raw (unnormalized) informativeness MSE (for logging)
     """
     # 1. Reconstruction loss (with optional feature weighting and masking)
     recon_loss = reconstruction_loss(
-        outputs, targets, feature_weights=feature_weights, mask_info=mask_info
+        outputs, targets,
+        feature_weights=feature_weights,
+        mask_info=mask_info,
+        normalize=normalize_mse
     )
+
+    # Also compute raw version for logging (if normalization enabled)
+    if normalize_mse:
+        recon_loss_raw = reconstruction_loss(
+            outputs, targets,
+            feature_weights=feature_weights,
+            mask_info=mask_info,
+            normalize=False
+        )
+    else:
+        recon_loss_raw = recon_loss
 
     # 2. VQ losses (commitment + codebook, already computed in forward pass)
     vq_loss = sum(outputs["vq_losses"])
 
-    # 3. Orthogonality loss (codebook diversity)
+    # 3. Orthogonality loss (codebook diversity) - already normalized [0, 1]
     ortho_loss = orthogonality_loss(model)
 
     # 4. Informativeness loss (partial decoders)
-    info_loss = informativeness_loss(outputs, targets)
+    info_loss = informativeness_loss(outputs, targets, normalize=normalize_mse)
 
-    # 5. Topographic similarity loss (PRE + POST quantization)
+    # Also compute raw version for logging (if normalization enabled)
+    if normalize_mse:
+        info_loss_raw = informativeness_loss(outputs, targets, normalize=False)
+    else:
+        info_loss_raw = info_loss
+
+    # 5. Topographic similarity loss (PRE + POST quantization) - already normalized [0, 2]
     topo_loss, topo_metrics = topographic_similarity_loss(outputs, targets, topo_samples)
 
     # 6. Reference feature regularization loss (optional)
     if reference_reg_weight > 0 and reference_features is not None:
         ref_reg_loss = reference_regularization_loss(
-            outputs, targets, reference_features, is_interpolated
+            outputs, targets, reference_features, is_interpolated,
+            normalize=normalize_mse
         )
+        if normalize_mse:
+            ref_reg_loss_raw = reference_regularization_loss(
+                outputs, targets, reference_features, is_interpolated,
+                normalize=False
+            )
+        else:
+            ref_reg_loss_raw = ref_reg_loss
     else:
         # Skip computation if disabled (weight = 0) or no reference features
         ref_reg_loss = torch.tensor(0.0, device=targets["features"].device)
+        ref_reg_loss_raw = ref_reg_loss
 
-    # 7. Entropy regularization loss (optional)
+    # 7. Entropy regularization loss (optional) - already normalized [0, log(K)]
     if entropy_weight > 0:
         ent_loss = entropy_regularization_loss(outputs, device=targets["features"].device)
     else:
         # Skip computation if disabled (weight = 0)
         ent_loss = torch.tensor(0.0, device=targets["features"].device)
 
-    # Total loss
+    # Total loss (uses normalized versions if normalize_mse=True)
     total = (
         recon_loss
         + vq_loss
@@ -478,12 +585,15 @@ def compute_total_loss(
     return {
         "total": total,
         "reconstruction": recon_loss,
+        "reconstruction_raw": recon_loss_raw,  # Raw (unnormalized) for logging
         "vq": vq_loss,
         "orthogonality": ortho_loss,
         "informativeness": info_loss,
+        "informativeness_raw": info_loss_raw,  # Raw (unnormalized) for logging
         "topographic": topo_loss,
         "topo_pre": topo_metrics["topo_pre"],  # Pre-quantization correlation
         "topo_post": topo_metrics["topo_post"],  # Post-quantization correlation
-        "reference_regularization": ref_reg_loss,  # Reference feature regularization
+        "reference_regularization": ref_reg_loss,
+        "reference_regularization_raw": ref_reg_loss_raw,  # Raw (unnormalized) for logging
         "entropy": ent_loss,  # Entropy regularization (uniform codebook usage)
     }

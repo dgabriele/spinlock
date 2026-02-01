@@ -43,6 +43,7 @@ class VQVAETrainer:
         topo_samples: int = 64,
         reference_reg_weight: float = 0.0,
         entropy_weight: float = 0.0,
+        normalize_mse: bool = True,
         # Callbacks
         early_stopping_patience: int = 100,
         early_stopping_min_delta: float = 0.01,
@@ -157,6 +158,7 @@ class VQVAETrainer:
         self.topo_samples = topo_samples
         self.reference_reg_weight = reference_reg_weight
         self.entropy_weight = entropy_weight
+        self.normalize_mse = normalize_mse
 
         # Feature weights (for A3 feature-weighted reconstruction)
         self.feature_weights = None  # Will be set externally if needed
@@ -387,6 +389,7 @@ class VQVAETrainer:
                 reference_reg_weight=self.reference_reg_weight,
                 reference_features=batch.get("reference_features").to(self.device) if batch.get("reference_features") is not None else None,
                 is_interpolated=batch.get("is_interpolated").to(self.device) if batch.get("is_interpolated") is not None else None,
+                normalize_mse=self.normalize_mse,
                 feature_weights=self.feature_weights,
                 entropy_weight=self.entropy_weight,
                 mask_info=mask_info,
@@ -511,6 +514,7 @@ class VQVAETrainer:
                     feature_weights=self.feature_weights,
                     entropy_weight=self.entropy_weight,
                     mask_info=mask_info,
+                    normalize_mse=self.normalize_mse,
                 )
 
                 loss = losses["total"]
@@ -830,6 +834,8 @@ class VQVAETrainer:
 
                 # Log detailed loss components (second line for readability)
                 components_msg = "  Loss components: "
+
+                # Show normalized values (used in optimization)
                 components_msg += f"L_recon={loss_components.get('reconstruction', 0.0):.6f}, "
                 components_msg += f"L_vq={loss_components.get('vq', 0.0):.6f}, "
                 components_msg += f"L_ortho={loss_components.get('orthogonality', 0.0):.6f}, "
@@ -837,6 +843,14 @@ class VQVAETrainer:
                 components_msg += f"L_topo={loss_components.get('topographic', 0.0):.6f}"
                 if entropy_loss != 0.0:
                     components_msg += f", L_entropy={entropy_loss:.6f}"
+
+                # If MSE normalization enabled, also show raw values for comparison
+                if self.normalize_mse:
+                    components_msg += "\n  Raw (unnormalized) MSE: "
+                    components_msg += f"L_recon_raw={loss_components.get('reconstruction_raw', 0.0):.6f}, "
+                    components_msg += f"L_info_raw={loss_components.get('informativeness_raw', 0.0):.6f}"
+                    if self.reference_reg_weight > 0:
+                        components_msg += f", L_ref_raw={loss_components.get('reference_regularization_raw', 0.0):.6f}"
                 logger.info(components_msg)
 
                 # Add physics consistency metrics if available (separate line for readability)
