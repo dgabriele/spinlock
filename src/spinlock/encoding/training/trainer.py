@@ -286,11 +286,14 @@ class VQVAETrainer:
         # Track loss components
         loss_components = {
             "reconstruction": 0.0,
+            "reconstruction_raw": 0.0,  # Raw (unnormalized) MSE for logging
             "vq": 0.0,
             "orthogonality": 0.0,
             "informativeness": 0.0,
+            "informativeness_raw": 0.0,  # Raw (unnormalized) MSE for logging
             "topographic": 0.0,
             "reference_regularization": 0.0,
+            "reference_regularization_raw": 0.0,  # Raw (unnormalized) MSE for logging
             "entropy": 0.0,
         }
 
