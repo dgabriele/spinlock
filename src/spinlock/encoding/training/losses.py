@@ -56,6 +56,8 @@ def reconstruction_loss(
     feature_weights: Optional[torch.Tensor] = None,
     mask_info: Optional[Dict[str, Any]] = None,
     normalize: bool = True,
+    normalization_stats: Optional[Dict] = None,
+    group_indices: Optional[Dict[str, list]] = None,
 ):
     """Compute reconstruction loss with optional per-feature weighting and masking.
 
@@ -70,6 +72,11 @@ def reconstruction_loss(
                       - num_valid_timesteps: [B] number of valid timesteps per sample
         normalize: If True, normalize MSE by target variance for scale-invariance.
                   Default: True (recommended for consistent loss magnitudes)
+        normalization_stats: Optional pre-computed normalization statistics per category.
+                            If provided, uses dataset variance instead of batch variance.
+                            More stable and comparable to validation metrics.
+        group_indices: Optional category-to-feature-indices mapping.
+                      Required if normalization_stats is provided.
 
     Returns:
         Reconstruction loss (weighted MSE with optional sample weighting and normalization)
@@ -85,6 +92,9 @@ def reconstruction_loss(
         - Normalized MSE = 0.0: Perfect reconstruction
         - Normalized MSE = 1.0: As good as predicting the mean
         - Normalized MSE > 1.0: Worse than predicting the mean
+
+        If normalization_stats provided, uses pre-computed dataset variance (stable).
+        Otherwise falls back to online batch variance (may vary significantly).
     """
     reconstruction = outputs["reconstruction"]
     recon_features = reconstruction["features"]  # [batch, D]
@@ -123,8 +133,44 @@ def reconstruction_loss(
 
     # Normalize by target variance if requested
     if normalize:
-        target_var = target_features.var() + 1e-8
-        loss = loss / target_var
+        if normalization_stats is not None and group_indices is not None:
+            # Use pre-computed dataset variance (stable, comparable to validation)
+            # Compute per-category normalized losses, then weighted average
+            # This matches how validation metrics are computed
+            total_normalized = 0.0
+            total_features = 0
+            device = target_features.device
+
+            for cat_name, indices in group_indices.items():
+                if cat_name in normalization_stats:
+                    # Extract category features
+                    cat_indices_tensor = torch.tensor(indices, device=device, dtype=torch.long)
+                    cat_recon = recon_features[:, cat_indices_tensor]
+                    cat_target = target_features[:, cat_indices_tensor]
+
+                    # Compute per-category MSE
+                    cat_mse = F.mse_loss(cat_recon, cat_target)
+
+                    # Normalize by category variance
+                    stats = normalization_stats[cat_name]
+                    std_tensor = torch.from_numpy(stats.std).float().to(device)
+                    cat_variance = (std_tensor ** 2).mean() + 1e-8
+                    cat_normalized = cat_mse / cat_variance
+
+                    # Weighted by feature count
+                    total_normalized += cat_normalized * len(indices)
+                    total_features += len(indices)
+
+            if total_features > 0:
+                loss = total_normalized / total_features
+            else:
+                # Fallback to batch variance
+                target_var = target_features.var() + 1e-8
+                loss = loss / target_var
+        else:
+            # Fallback to online batch variance
+            target_var = target_features.var() + 1e-8
+            loss = loss / target_var
 
     return loss
 
@@ -196,41 +242,89 @@ def orthogonality_loss(model, max_samples: int = 64):
 def informativeness_loss(
     outputs: Dict[str, Any],
     targets: Dict[str, torch.Tensor],
+    model,
     normalize: bool = True,
+    normalization_stats: Optional[Dict] = None,
 ):
-    """Compute informativeness loss from partial decoders.
+    """Compute per-category informativeness loss.
 
-    Encourages each level to independently reconstruct the input.
+    Each category's partial decoder reconstructs only its OWN features.
+    This aligns with disentanglement principles and makes the task
+    information-theoretically sound (no longer asking 4D latent to
+    reconstruct 486D features it never saw).
 
     Args:
         outputs: Model outputs with 'partial_reconstructions' key
         targets: Target dict with 'features'
+        model: VQ-VAE model (for accessing group_indices and categories)
         normalize: If True, normalize MSE by target variance for scale-invariance.
                   Default: True (recommended for consistent loss magnitudes)
+        normalization_stats: Optional pre-computed normalization statistics per category.
+                            If provided, uses dataset variance instead of batch variance.
+                            More stable and comparable to validation metrics.
 
     Returns:
-        Informativeness loss (average MSE across partial decoders, optionally normalized)
+        Informativeness loss (average MSE across per-category reconstructions)
 
     Notes:
+        Per-category reconstruction:
+        - temporal_p0 latent → reconstruct temporal_p0 features (32D → 32D)
+        - initial latent → reconstruct initial features (166D → 166D)
+        - NOT full reconstruction (32D → 486D) which is impossible
+
         Normalization (if enabled) makes the loss scale-invariant:
         - Normalized MSE = 0.0: Perfect reconstruction
         - Normalized MSE = 1.0: As good as predicting the mean
         - Normalized MSE > 1.0: Worse than predicting the mean
+
+        If normalization_stats provided, uses pre-computed dataset variance (stable).
+        Otherwise falls back to online batch variance (may vary significantly).
     """
-    partial_recons = outputs["partial_reconstructions"]
-    target = targets["features"]
+    partial_recons = outputs["partial_reconstructions"]  # List[Tensor[B, 486]]
+    target = targets["features"]  # [B, 486]
 
-    # Average MSE across all partial decoders
-    loss = sum(F.mse_loss(partial, target) for partial in partial_recons) / len(
-        partial_recons
-    )
+    # Get category-to-feature mapping
+    group_indices = model.config.group_indices
+    categories = model.config.categories
+    device = target.device
 
-    # Normalize by target variance if requested
-    if normalize:
-        target_var = target.var() + 1e-8
-        loss = loss / target_var
+    # Compute per-category reconstruction loss
+    losses = []
+    idx = 0  # Index into partial_recons list
 
-    return loss
+    for category in categories:
+        cat_indices = torch.tensor(group_indices[category], device=device)
+        cat_levels = model.config.get_category_levels(category)
+
+        # Average across levels for this category
+        for level_idx in range(len(cat_levels)):
+            partial = partial_recons[idx]  # [B, 486] full reconstruction
+
+            # Extract category-specific features
+            partial_cat = partial[:, cat_indices]  # [B, num_cat_features]
+            target_cat = target[:, cat_indices]    # [B, num_cat_features]
+
+            # MSE on category features only
+            cat_loss = F.mse_loss(partial_cat, target_cat)
+
+            # Normalize if requested
+            if normalize:
+                if normalization_stats is not None and category in normalization_stats:
+                    # Use pre-computed dataset variance (stable, comparable to validation)
+                    stats = normalization_stats[category]
+                    std_tensor = torch.from_numpy(stats.std).float().to(device)
+                    cat_variance = (std_tensor ** 2).mean() + 1e-8
+                    cat_loss = cat_loss / cat_variance
+                else:
+                    # Fallback to online batch variance
+                    target_var = target_cat.var() + 1e-8
+                    cat_loss = cat_loss / target_var
+
+            losses.append(cat_loss)
+            idx += 1
+
+    # Average across all category-levels
+    return torch.stack(losses).mean()
 
 
 def topographic_similarity_loss(
@@ -472,6 +566,8 @@ def compute_total_loss(
     entropy_weight: float = 0.0,
     mask_info: Optional[Dict[str, Any]] = None,
     normalize_mse: bool = True,
+    normalization_stats: Optional[Dict] = None,
+    group_indices: Optional[Dict[str, list]] = None,
 ) -> Dict[str, torch.Tensor]:
     """Compute total loss with all components.
 
@@ -499,6 +595,11 @@ def compute_total_loss(
                       - num_valid_timesteps: [B] number of valid timesteps per sample
         normalize_mse: If True, normalize MSE-based losses by target variance.
                       Default: True (recommended for consistent loss magnitudes across configs)
+        normalization_stats: Optional pre-computed normalization statistics per category.
+                            If provided, uses dataset variance for normalization (stable).
+                            If None, uses batch variance (may vary significantly).
+        group_indices: Optional category-to-feature-indices mapping.
+                      Required if normalization_stats is provided.
 
     Returns:
         Dict with 'total' and individual loss components including:
@@ -514,7 +615,9 @@ def compute_total_loss(
         outputs, targets,
         feature_weights=feature_weights,
         mask_info=mask_info,
-        normalize=normalize_mse
+        normalize=normalize_mse,
+        normalization_stats=normalization_stats,
+        group_indices=group_indices,
     )
 
     # Also compute raw version for logging (if normalization enabled)
@@ -523,7 +626,9 @@ def compute_total_loss(
             outputs, targets,
             feature_weights=feature_weights,
             mask_info=mask_info,
-            normalize=False
+            normalize=False,
+            normalization_stats=normalization_stats,
+            group_indices=group_indices,
         )
     else:
         recon_loss_raw = recon_loss
@@ -535,11 +640,19 @@ def compute_total_loss(
     ortho_loss = orthogonality_loss(model)
 
     # 4. Informativeness loss (partial decoders)
-    info_loss = informativeness_loss(outputs, targets, normalize=normalize_mse)
+    info_loss = informativeness_loss(
+        outputs, targets, model,
+        normalize=normalize_mse,
+        normalization_stats=normalization_stats,
+    )
 
     # Also compute raw version for logging (if normalization enabled)
     if normalize_mse:
-        info_loss_raw = informativeness_loss(outputs, targets, normalize=False)
+        info_loss_raw = informativeness_loss(
+            outputs, targets, model,
+            normalize=False,
+            normalization_stats=normalization_stats,
+        )
     else:
         info_loss_raw = info_loss
 

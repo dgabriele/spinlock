@@ -393,6 +393,8 @@ class VQVAETrainer:
                 feature_weights=self.feature_weights,
                 entropy_weight=self.entropy_weight,
                 mask_info=mask_info,
+                normalization_stats=self.normalization_stats,
+                group_indices=self.group_indices,
             )
 
             loss = losses["total"]
@@ -515,6 +517,8 @@ class VQVAETrainer:
                     entropy_weight=self.entropy_weight,
                     mask_info=mask_info,
                     normalize_mse=self.normalize_mse,
+                    normalization_stats=self.normalization_stats,
+                    group_indices=self.group_indices,
                 )
 
                 loss = losses["total"]
@@ -969,12 +973,24 @@ class VQVAETrainer:
 
                 logger.info(msg)
 
-                # Training loss components (what the optimizer sees)
+                # Training loss components (normalized - what the optimizer sees)
                 components_msg = "  Train: "
-                components_msg += f"recon={loss_components.get('reconstruction', 0.0):.3f}, "
+                if self.normalize_mse:
+                    # Show both raw and normalized when normalization is enabled
+                    components_msg += f"recon={loss_components.get('reconstruction_raw', 0.0):.3f}"
+                    components_msg += f" (norm={loss_components.get('reconstruction', 0.0):.3f}), "
+                else:
+                    components_msg += f"recon={loss_components.get('reconstruction', 0.0):.3f}, "
+
                 components_msg += f"vq={loss_components.get('vq', 0.0):.3f}, "
                 components_msg += f"ortho={loss_components.get('orthogonality', 0.0):.3f}, "
-                components_msg += f"info={loss_components.get('informativeness', 0.0):.3f}, "
+
+                if self.normalize_mse:
+                    components_msg += f"info={loss_components.get('informativeness_raw', 0.0):.3f}"
+                    components_msg += f" (norm={loss_components.get('informativeness', 0.0):.3f}), "
+                else:
+                    components_msg += f"info={loss_components.get('informativeness', 0.0):.3f}, "
+
                 components_msg += f"topo={loss_components.get('topographic', 0.0):.3f}"
 
                 entropy_loss = loss_components.get("entropy", 0.0)
@@ -983,27 +999,23 @@ class VQVAETrainer:
 
                 ref_reg = loss_components.get("reference_regularization", 0.0)
                 if ref_reg > 0:
-                    components_msg += f", ref={ref_reg:.3f}"
+                    if self.normalize_mse:
+                        components_msg += f", ref={loss_components.get('reference_regularization_raw', 0.0):.3f}"
+                        components_msg += f" (norm={ref_reg:.3f})"
+                    else:
+                        components_msg += f", ref={ref_reg:.3f}"
 
                 logger.info(components_msg)
-
-                # Raw MSE values (for interpretability)
-                if self.normalize_mse:
-                    raw_msg = "  Raw MSE: "
-                    raw_msg += f"recon={loss_components.get('reconstruction_raw', 0.0):.3f}, "
-                    raw_msg += f"info={loss_components.get('informativeness_raw', 0.0):.3f}"
-                    if self.reference_reg_weight > 0:
-                        raw_msg += f", ref={loss_components.get('reference_regularization_raw', 0.0):.3f}"
-                    logger.info(raw_msg)
 
                 # Validation metrics
                 val_msg = "  Val: "
                 recon_error = metrics.get("reconstruction_error", 0.0)
-                val_msg += f"recon={recon_error:.3f}"
 
                 if "reconstruction_error_normalized" in metrics:
                     recon_norm = metrics["reconstruction_error_normalized"]
-                    val_msg += f", recon_norm={recon_norm:.3f}"
+                    val_msg += f"recon={recon_error:.3f} (norm={recon_norm:.3f})"
+                else:
+                    val_msg += f"recon={recon_error:.3f}"
 
                 topo_pre = metrics.get("topo_pre", 0.0)
                 topo_post = metrics.get("topo_post", 0.0)
