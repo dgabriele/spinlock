@@ -835,8 +835,16 @@ class VQVAETrainer:
 
                         # Track active pyramid levels if available
                         if "num_active_levels" in mask_info:
-                            for length, n_active in zip(lengths, mask_info["num_active_levels"]):
-                                active_levels_by_length[int(length)].append(n_active.item())
+                            num_active = mask_info["num_active_levels"]
+                            # num_active_levels can be either a tensor/array (per-sample) or a single int (same for all samples)
+                            if isinstance(num_active, (int, float)):
+                                # Same number of active levels for all samples in batch
+                                for length in lengths:
+                                    active_levels_by_length[int(length)].append(float(num_active))
+                            else:
+                                # Per-sample active levels
+                                for length, n_active in zip(lengths, num_active):
+                                    active_levels_by_length[int(length)].append(n_active.item() if hasattr(n_active, 'item') else float(n_active))
 
                         # Track masking efficiency
                         valid_frac = mask.float().mean(dim=1)
