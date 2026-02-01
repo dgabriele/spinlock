@@ -350,10 +350,12 @@ Each pyramid level becomes a feature family for independent clustering, allowing
 
 **NEW: Variable-Length Support** (2026-01)
 - Training on mixed-length trajectories (T ∈ {16, 32, 64, 128, 256})
+- Hybrid initial encoding: 166D (38D manual + 128D CNN) applied during category discovery
 - Adaptive pyramid levels: automatically skip levels for short trajectories
 - Sample weighting: prevents short sequences from dominating gradients
 - Powers of 2 alignment: clean integer divisions at all pyramid levels
 - Scale-invariant learning: same dynamics recognized regardless of length
+- Total input dimension: 486D (166 initial + 320 temporal)
 
 📖 **See also:** [docs/vqvae/temporal-pyramid.md](docs/vqvae/temporal-pyramid.md) for complete temporal pyramid documentation including variable-length training.
 
@@ -457,6 +459,14 @@ poetry run spinlock train-vqvae \
 poetry run spinlock train-vqvae \
     --config configs/vqvae/validation/1k_arch_summary.yaml \
     --verbose
+```
+
+**Training output:**
+```
+Epoch 728/1000 (9.6s): train=0.495, val=0.576, util=16.7%
+  Train: recon=0.022, vq=0.018, ortho=0.172, info=0.635, topo=0.011, entropy=2.008
+  Raw MSE: recon=0.561, info=16.101
+  Val: recon=0.791, recon_norm=0.366, topo=0.990→0.996
 ```
 
 ### Extract Behavioral Tokens

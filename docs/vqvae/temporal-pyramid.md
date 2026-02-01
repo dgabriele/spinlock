@@ -263,6 +263,24 @@ Different operators have intrinsic timescales:
 
 Training on **mixed-length trajectories** helps the model learn **scale-invariant representations** where dynamics are recognized regardless of temporal resolution.
 
+### Hybrid Initial Encoding
+
+In variable-length mode, initial features are **hybrid-encoded** during category discovery to ensure dimensional consistency between discovery and training phases:
+
+**Architecture:**
+- Manual features: 38D (spatial, spectral, morphological characteristics)
+- CNN encoding: 128D (learned from raw initial condition images via `InitialHybridEncoder`)
+- **Total initial encoding: 166D** (38D manual + 128D CNN)
+- Combined with temporal: 486D total (166 initial + 320 temporal)
+
+**Why Hybrid Encoding:**
+The `InitialHybridEncoder` applies CNN feature extraction during category discovery (not just training) to ensure the model is built with the correct input dimensions. This enables full CNN capacity for representing initial condition structure while maintaining dimensional consistency throughout the pipeline.
+
+**Implementation:**
+- Category discovery: Applies `InitialHybridEncoder` in chunks to 100K samples
+- Training: Uses pre-encoded 166D hybrid features (no re-encoding needed)
+- Model expects: 486D input (166 initial + 320 temporal after feature cleaning)
+
 ### How It Works
 
 **1. Length Sampling (per batch)**
@@ -368,6 +386,15 @@ Prevents short trajectories from dominating gradient updates!
 
 ```yaml
 families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 38           # Manual features dimension
+      cnn_embedding_dim: 128   # CNN encoding dimension
+      encode_manual: false     # Use raw manual features
+      in_channels: 3           # RGB initial condition images
+      use_final_batchnorm: true  # Stabilize hybrid encoding
+
   temporal:
     encoder: PyramidTemporalEncoder
     encoder_params:

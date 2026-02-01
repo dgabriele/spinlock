@@ -255,7 +255,7 @@ training:
   reconstruction_weight: 1.0    # Primary reconstruction quality
   vq_weight: 0.8                # Vector quantization commitment
   orthogonality_weight: 0.125   # Codebook diversity (already normalized)
-  informativeness_weight: 0.15  # Partial decoder quality (normalized if normalize_mse=true)
+  informativeness_weight: 0.20  # Partial decoder quality (normalized if normalize_mse=true) - INCREASED to improve category informativeness
   entropy_weight: 0.15          # Uniform codebook usage (already normalized) 
   topo_weight: 0.5              # Topology preservation (already normalized)
   topo_samples: 2048            # Samples for topographic loss computation

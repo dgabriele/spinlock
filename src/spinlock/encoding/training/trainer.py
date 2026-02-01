@@ -956,60 +956,60 @@ class VQVAETrainer:
 
             # Logging
             if self.verbose:
+                # Main summary line
                 msg = f"Epoch {epoch}/{epochs} ({epoch_time:.1f}s): "
-                msg += f"train_loss={train_loss:.6f}"
+                msg += f"train={train_loss:.6f}"
                 if should_validate:
-                    msg += f", val_loss={val_loss:.6f}"
+                    msg += f", val={val_loss:.6f}"
                 else:
-                    msg += f", val_loss={last_val_loss:.6f} (cached)"
+                    msg += f", val={last_val_loss:.6f} (cached)"
 
-                # Add utilization and reconstruction loss to log
                 util = metrics.get("utilization", 0.0)
-                recon_error = metrics.get("reconstruction_error", 0.0)
-                msg += f", util={util:.1%}, L_recon={recon_error:.6f}"
-
-                # Add normalized reconstruction if available
-                if "reconstruction_error_normalized" in metrics:
-                    recon_norm = metrics["reconstruction_error_normalized"]
-                    msg += f", L_recon_norm={recon_norm:.6f}"
-
-                # Add topographic similarity metrics
-                topo_pre = metrics.get("topo_pre", 0.0)
-                topo_post = metrics.get("topo_post", 0.0)
-                msg += f", topo_pre={topo_pre:.3f}, topo_post={topo_post:.3f}"
-
-                # Add reference regularization loss if active
-                ref_reg = loss_components.get("reference_regularization", 0.0)
-                if ref_reg > 0:
-                    msg += f", ref_reg={ref_reg:.6f}"
-
-                # Add entropy regularization loss if active
-                entropy_loss = loss_components.get("entropy", 0.0)
-                if entropy_loss > 0 or (self.entropy_weight > 0 and entropy_loss != 0.0):
-                    msg += f", entropy={entropy_loss:.6f}"
+                msg += f", util={util:.1%}"
 
                 logger.info(msg)
 
-                # Log detailed loss components (second line for readability)
-                components_msg = "  Loss components: "
+                # Training loss components (what the optimizer sees)
+                components_msg = "  Train: "
+                components_msg += f"recon={loss_components.get('reconstruction', 0.0):.3f}, "
+                components_msg += f"vq={loss_components.get('vq', 0.0):.3f}, "
+                components_msg += f"ortho={loss_components.get('orthogonality', 0.0):.3f}, "
+                components_msg += f"info={loss_components.get('informativeness', 0.0):.3f}, "
+                components_msg += f"topo={loss_components.get('topographic', 0.0):.3f}"
 
-                # Show normalized values (used in optimization)
-                components_msg += f"L_recon={loss_components.get('reconstruction', 0.0):.6f}, "
-                components_msg += f"L_vq={loss_components.get('vq', 0.0):.6f}, "
-                components_msg += f"L_ortho={loss_components.get('orthogonality', 0.0):.6f}, "
-                components_msg += f"L_info={loss_components.get('informativeness', 0.0):.6f}, "
-                components_msg += f"L_topo={loss_components.get('topographic', 0.0):.6f}"
+                entropy_loss = loss_components.get("entropy", 0.0)
                 if entropy_loss != 0.0:
-                    components_msg += f", L_entropy={entropy_loss:.6f}"
+                    components_msg += f", entropy={entropy_loss:.3f}"
 
-                # If MSE normalization enabled, also show raw values for comparison
-                if self.normalize_mse:
-                    components_msg += "\n  Raw (unnormalized) MSE: "
-                    components_msg += f"L_recon_raw={loss_components.get('reconstruction_raw', 0.0):.6f}, "
-                    components_msg += f"L_info_raw={loss_components.get('informativeness_raw', 0.0):.6f}"
-                    if self.reference_reg_weight > 0:
-                        components_msg += f", L_ref_raw={loss_components.get('reference_regularization_raw', 0.0):.6f}"
+                ref_reg = loss_components.get("reference_regularization", 0.0)
+                if ref_reg > 0:
+                    components_msg += f", ref={ref_reg:.3f}"
+
                 logger.info(components_msg)
+
+                # Raw MSE values (for interpretability)
+                if self.normalize_mse:
+                    raw_msg = "  Raw MSE: "
+                    raw_msg += f"recon={loss_components.get('reconstruction_raw', 0.0):.3f}, "
+                    raw_msg += f"info={loss_components.get('informativeness_raw', 0.0):.3f}"
+                    if self.reference_reg_weight > 0:
+                        raw_msg += f", ref={loss_components.get('reference_regularization_raw', 0.0):.3f}"
+                    logger.info(raw_msg)
+
+                # Validation metrics
+                val_msg = "  Val: "
+                recon_error = metrics.get("reconstruction_error", 0.0)
+                val_msg += f"recon={recon_error:.3f}"
+
+                if "reconstruction_error_normalized" in metrics:
+                    recon_norm = metrics["reconstruction_error_normalized"]
+                    val_msg += f", recon_norm={recon_norm:.3f}"
+
+                topo_pre = metrics.get("topo_pre", 0.0)
+                topo_post = metrics.get("topo_post", 0.0)
+                val_msg += f", topo={topo_pre:.3f}→{topo_post:.3f}"
+
+                logger.info(val_msg)
 
                 # Add physics consistency metrics if available (separate line for readability)
                 # Only log if actually active (any value > 0)

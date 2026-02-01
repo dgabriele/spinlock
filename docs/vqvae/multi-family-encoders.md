@@ -38,14 +38,21 @@ encoder = get_encoder('ICCNNEncoder', embedding_dim=28)
    - Use for: INITIAL spatial grids [B, 1, 128, 128]
    - Params: `embedding_dim`, `in_channels`, `architecture`
 
-4. **PyramidTemporalEncoder** (`pyramid_temporal.py`): Multi-resolution temporal CNN
+4. **InitialHybridEncoder** (`initial_hybrid.py`): Hybrid manual + CNN encoder
+   - Use for: INITIAL features combining manual statistics with CNN-encoded spatial structure
+   - Architecture: Concatenates manual features with CNN embeddings from raw initial conditions
+   - Params: `manual_dim`, `cnn_embedding_dim`, `encode_manual`, `in_channels`, `use_final_batchnorm`
+   - Output: `manual_dim + cnn_embedding_dim` (e.g., 38D + 128D = 166D)
+   - **Critical for variable-length mode**: Ensures dimensional consistency between category discovery and training
+
+5. **PyramidTemporalEncoder** (`pyramid_temporal.py`): Multi-resolution temporal CNN
    - Use for: TEMPORAL per-timestep sequences requiring multi-scale analysis
    - Architecture: Shared ResNet-1D backbone + per-level projection heads
    - Params: `level_dims`, `downsample_factors`, `architecture`
    - Output: Concatenated multi-scale embeddings (e.g., 320D = 32+64+96+128)
    - **Key feature**: `output_dims_per_level` attribute enables per-level family splitting
 
-5. **TemporalCNNEncoder** (`temporal_cnn.py`): Single-scale temporal CNN
+6. **TemporalCNNEncoder** (`temporal_cnn.py`): Single-scale temporal CNN
    - Use for: TEMPORAL sequences when single resolution sufficient
    - Params: `embedding_dim`, `architecture`
    - Output: Single embedding vector (e.g., 128D)
@@ -72,6 +79,15 @@ families:
     encoder: ICCNNEncoder
     encoder_params:
       embedding_dim: 64
+
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 38              # Manual feature dimension
+      cnn_embedding_dim: 128      # CNN encoding dimension
+      encode_manual: false        # Use raw manual features
+      in_channels: 3              # RGB initial condition images
+      use_final_batchnorm: true   # Stabilize hybrid encoding
 
   temporal:
     encoder: PyramidTemporalEncoder
