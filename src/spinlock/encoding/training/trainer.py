@@ -163,6 +163,10 @@ class VQVAETrainer:
         # Feature weights (for A3 feature-weighted reconstruction)
         self.feature_weights = None  # Will be set externally if needed
 
+        # Store normalization stats and group indices for normalized metrics
+        self.normalization_stats = normalization_stats
+        self.group_indices = group_indices
+
         # Callbacks
         self.early_stopping = EarlyStopping(
             patience=early_stopping_patience,
@@ -214,6 +218,12 @@ class VQVAETrainer:
         self.temporal_encoder = temporal_encoder
         self.temporal_encoder_output_dim = temporal_encoder_output_dim
         self.encoded_initial_features = encoded_initial_features
+
+        # Detect if variable-length mode is enabled
+        self.vl_enabled = False
+        if temporal_encoder is not None and hasattr(temporal_encoder, 'vl_config'):
+            self.vl_enabled = temporal_encoder.vl_config.get('enabled', False)
+
         if temporal_encoder is not None:
             self.temporal_encoder = temporal_encoder.to(device)
             self.temporal_encoder.eval()  # Keep in eval mode (not trained separately)
@@ -531,12 +541,12 @@ class VQVAETrainer:
         """Compute validation metrics.
 
         Returns:
-            Dict with utilization, quality, topographic similarity, and detailed per-category metrics
+            Dict with utilization, reconstruction error (raw and normalized), topographic similarity, and detailed per-category metrics
         """
         from .metrics import (
             compute_per_category_metrics,
             compute_reconstruction_error,
-            compute_quality_score
+            compute_normalized_reconstruction_error_per_category,
         )
         from .losses import topographic_similarity_loss
 
@@ -545,7 +555,7 @@ class VQVAETrainer:
         if hasattr(self.model, '_orig_mod'):
             model_for_metrics = self.model._orig_mod
 
-        # Compute reconstruction error and quality
+        # Compute reconstruction error (raw MSE)
         reconstruction_error = compute_reconstruction_error(
             model_for_metrics,
             self.val_loader,
@@ -553,7 +563,33 @@ class VQVAETrainer:
             temporal_encoder=self.temporal_encoder,
             temporal_feature_mask=self.temporal_feature_mask_tensor,
         )
-        quality = compute_quality_score(reconstruction_error)
+
+        # Compute normalized reconstruction error per category
+        normalized_errors = {}
+        if self.normalization_stats is not None and self.group_indices is not None:
+            normalized_errors = compute_normalized_reconstruction_error_per_category(
+                model_for_metrics,
+                self.val_loader,
+                self.normalization_stats,
+                self.group_indices,
+                device=self.device,
+                temporal_encoder=self.temporal_encoder,
+                temporal_feature_mask=self.temporal_feature_mask_tensor,
+            )
+
+        # Compute overall normalized error (weighted by feature count)
+        overall_normalized_error = None
+        if normalized_errors and self.group_indices:
+            weighted_sum = 0.0
+            total_features = 0
+            for cat_name, indices in self.group_indices.items():
+                norm_key = f"{cat_name}/reconstruction_error_normalized"
+                if norm_key in normalized_errors:
+                    weighted_sum += normalized_errors[norm_key] * len(indices)
+                    total_features += len(indices)
+
+            if total_features > 0:
+                overall_normalized_error = weighted_sum / total_features
 
         # Compute detailed metrics on validation set
         detailed_metrics = compute_per_category_metrics(
@@ -654,16 +690,27 @@ class VQVAETrainer:
         # Compute physics consistency metrics (MNO vs CNO SUMMARY features)
         physics_metrics = self.compute_physics_consistency()
 
+        # Compute variable-length metrics if enabled
+        vl_metrics = {}
+        if self.vl_enabled:
+            vl_metrics = self._compute_variable_length_metrics()
+
         # Return both aggregate and detailed metrics
         result = {
             "utilization": avg_utilization,
-            "reconstruction_error": reconstruction_error,
-            "quality": quality,
+            "reconstruction_error": reconstruction_error,  # Raw MSE
             "topo_pre": avg_topo_pre,  # Pre-quantization topographic similarity
             "topo_post": avg_topo_post,  # Post-quantization topographic similarity
         }
+
+        # Add overall normalized error if computed
+        if overall_normalized_error is not None:
+            result["reconstruction_error_normalized"] = overall_normalized_error
+
         result.update(detailed_metrics)  # Include all detailed metrics
+        result.update(normalized_errors)  # Per-category normalized errors
         result.update(physics_metrics)  # Include physics consistency metrics
+        result.update(vl_metrics)  # Include variable-length metrics
 
         return result
 
@@ -733,6 +780,120 @@ class VQVAETrainer:
             result["physics_mse_exact"] = 0.0
 
         return result
+
+    def _compute_variable_length_metrics(self) -> Dict[str, Any]:
+        """Compute variable-length specific metrics during validation.
+
+        Tracks:
+        - Length distribution (how often each bin sampled)
+        - Per-length reconstruction quality
+        - Active pyramid levels by length
+        - Masking efficiency
+
+        Returns:
+            Dict with VL metrics
+        """
+        from collections import defaultdict
+        import torch.nn.functional as F
+
+        length_counts = defaultdict(int)
+        quality_by_length = defaultdict(list)
+        active_levels_by_length = defaultdict(list)
+        valid_fractions = []
+
+        # Unwrap compiled model if using torch.compile
+        model_for_metrics = self.model
+        if hasattr(self.model, '_orig_mod'):
+            model_for_metrics = self.model._orig_mod
+
+        model_for_metrics.eval()
+        with torch.no_grad():
+            for batch in self.val_loader:
+                # Check if batch has length information
+                if "length" not in batch:
+                    continue
+
+                lengths = batch["length"].cpu().numpy()
+                features = batch["features"].to(self.device)
+                mask = batch.get("mask")
+
+                # Track length distribution
+                for length in lengths:
+                    length_counts[int(length)] += 1
+
+                # Encode temporal features with mask
+                if self.temporal_encoder is not None:
+                    if mask is not None:
+                        mask = mask.to(self.device)
+                        length_tensor = batch["length"].to(self.device)
+                        # Encode with variable lengths
+                        encoded_temporal, mask_info = self.temporal_encoder(
+                            features,  # [B, T, D] raw temporal
+                            mask=mask,
+                            lengths=length_tensor
+                        )
+
+                        # Track active pyramid levels if available
+                        if "num_active_levels" in mask_info:
+                            for length, n_active in zip(lengths, mask_info["num_active_levels"]):
+                                active_levels_by_length[int(length)].append(n_active.item())
+
+                        # Track masking efficiency
+                        valid_frac = mask.float().mean(dim=1)
+                        valid_fractions.extend(valid_frac.cpu().numpy())
+                    else:
+                        # No mask - encode normally
+                        encoded_temporal = self.temporal_encoder(features)
+
+                    # Apply temporal feature cleaning mask if present
+                    if self.temporal_feature_mask_tensor is not None:
+                        encoded_temporal = encoded_temporal[:, self.temporal_feature_mask_tensor]
+
+                    # Concatenate with encoded initial features if present
+                    initial_features = batch.get("encoded_initial_features")
+                    if initial_features is not None:
+                        initial_features = initial_features.to(self.device)
+                        features_encoded = torch.cat([initial_features, encoded_temporal], dim=1)
+                    else:
+                        features_encoded = encoded_temporal
+                else:
+                    features_encoded = features
+
+                # Forward pass through VQ-VAE
+                outputs = model_for_metrics(features_encoded)
+
+                # Compute reconstruction quality per length
+                recon = outputs["reconstruction"]["features"]
+                mse = F.mse_loss(features_encoded, recon, reduction='none').mean(dim=1)
+
+                for length, mse_val in zip(lengths, mse):
+                    # Convert MSE to quality score (1 - normalized_mse)
+                    quality_by_length[int(length)].append(1.0 - mse_val.item())
+
+        # Average metrics
+        vl_metrics = {}
+
+        # Length distribution
+        if length_counts:
+            vl_metrics["vl_length_distribution"] = dict(length_counts)
+
+        # Per-length quality
+        if quality_by_length:
+            vl_metrics["vl_per_length_quality"] = {
+                k: float(np.mean(v)) for k, v in quality_by_length.items()
+            }
+
+        # Active levels by length
+        if active_levels_by_length:
+            vl_metrics["vl_active_levels_by_length"] = {
+                k: float(np.mean(v)) for k, v in active_levels_by_length.items()
+            }
+
+        # Masking efficiency
+        if valid_fractions:
+            vl_metrics["vl_masking_efficiency"] = float(np.mean(valid_fractions))
+
+        return vl_metrics
 
     def train(self, epochs: int):
         """Train for specified number of epochs.
@@ -817,6 +978,11 @@ class VQVAETrainer:
                 util = metrics.get("utilization", 0.0)
                 recon_error = metrics.get("reconstruction_error", 0.0)
                 msg += f", util={util:.1%}, L_recon={recon_error:.6f}"
+
+                # Add normalized reconstruction if available
+                if "reconstruction_error_normalized" in metrics:
+                    recon_norm = metrics["reconstruction_error_normalized"]
+                    msg += f", L_recon_norm={recon_norm:.6f}"
 
                 # Add topographic similarity metrics
                 topo_pre = metrics.get("topo_pre", 0.0)

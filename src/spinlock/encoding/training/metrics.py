@@ -108,6 +108,135 @@ def compute_reconstruction_error(
     return total_error / n_samples
 
 
+def compute_normalized_reconstruction_error_per_category(
+    model,
+    dataloader: DataLoader,
+    normalization_stats: Dict[str, any],
+    group_indices: Dict[str, List[int]],
+    device: str = "cuda",
+    temporal_encoder=None,
+    temporal_feature_mask=None,
+) -> Dict[str, float]:
+    """Compute variance-normalized reconstruction error per category.
+
+    Normalizes MSE by feature variance for scale-invariance:
+    - normalized_mse = raw_mse / feature_variance
+    - normalized_mse ≈ 0: Excellent reconstruction
+    - normalized_mse ≈ 1: As good as predicting mean (random)
+    - normalized_mse > 1: Worse than predicting mean
+
+    Args:
+        model: VQ-VAE model
+        dataloader: Validation data loader
+        normalization_stats: Dict[category_name: NormalizationStats]
+        group_indices: Dict[category_name: List[feature_indices]]
+        device: Compute device
+        temporal_encoder: Optional temporal encoder for VL mode
+        temporal_feature_mask: Optional feature mask
+
+    Returns:
+        Dict with keys: "{category}/reconstruction_error_normalized": float
+    """
+    model.eval()
+    if temporal_encoder is not None:
+        temporal_encoder.eval()
+
+    # Per-category error accumulators
+    category_errors = {cat: [] for cat in group_indices.keys()}
+
+    # Check if model is a hybrid model that needs raw_ics
+    is_hybrid = hasattr(model, 'initial_encoder')
+
+    with torch.no_grad():
+        for batch in dataloader:
+            # Extract features from batch (handle both dict and tuple formats)
+            if isinstance(batch, dict):
+                features = batch["features"].to(device)
+                raw_ics = batch.get("raw_ics")
+                if raw_ics is not None:
+                    raw_ics = raw_ics.to(device)
+            else:
+                features = batch[0].to(device)
+                raw_ics = None
+
+            # VARIABLE-LENGTH MODE: Encode temporal features at runtime
+            if temporal_encoder is not None:
+                # Extract mask and length from batch
+                mask = batch.get("mask")
+                length = batch.get("length")
+
+                # Encode temporal features with mask
+                if mask is not None:
+                    mask = mask.to(device)
+                    length = length.to(device)
+                    # Encode with variable lengths
+                    encoded_temporal, mask_info = temporal_encoder(
+                        features,  # [B, T, D] raw temporal
+                        mask=mask,
+                        lengths=length
+                    )
+                else:
+                    # No mask - encode normally
+                    encoded_temporal = temporal_encoder(features)
+
+                # Apply temporal feature cleaning mask if present
+                if temporal_feature_mask is not None:
+                    encoded_temporal = encoded_temporal[:, temporal_feature_mask]
+
+                # Concatenate with encoded initial features if present
+                initial_features = batch.get("encoded_initial_features")
+                if initial_features is not None:
+                    initial_features = initial_features.to(device)
+                    features = torch.cat([initial_features, encoded_temporal], dim=1)
+                else:
+                    features = encoded_temporal
+
+            # Forward pass (pass raw_ics for hybrid models)
+            if is_hybrid and raw_ics is not None:
+                outputs = model(features, raw_ics=raw_ics)
+            else:
+                outputs = model(features)
+
+            # Get reconstruction and target
+            reconstruction = outputs["reconstruction"]
+            if isinstance(reconstruction, dict):
+                reconstruction = reconstruction["features"]
+
+            # For hybrid models, use input_features (expanded) as target
+            if "input_features" in outputs:
+                target = outputs["input_features"]
+            else:
+                target = features
+
+            # Compute per-category normalized errors
+            for cat_name, indices in group_indices.items():
+                if cat_name not in normalization_stats:
+                    continue
+
+                # Extract category features
+                cat_target = target[:, indices]
+                cat_recon = reconstruction[:, indices]
+
+                # Raw MSE
+                raw_mse = F.mse_loss(cat_recon, cat_target)
+
+                # Normalize by feature variance
+                stats = normalization_stats[cat_name]
+                std_tensor = torch.from_numpy(stats.std).float().to(device)
+                variance = (std_tensor ** 2).mean() + 1e-8
+
+                normalized_mse = raw_mse / variance
+                category_errors[cat_name].append(normalized_mse.item())
+
+    # Average per category
+    result = {}
+    for cat_name, errors in category_errors.items():
+        if errors:
+            result[f"{cat_name}/reconstruction_error_normalized"] = np.mean(errors)
+
+    return result
+
+
 def compute_quality_score(reconstruction_error: float, max_error: float = 1.0) -> float:
     """Compute quality score from reconstruction error.
 

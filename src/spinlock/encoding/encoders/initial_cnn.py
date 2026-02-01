@@ -72,15 +72,17 @@ class InitialCNNEncoder(BaseEncoder):
         - Stage 2: ResBlock(32→64, s=2)
         - Stage 3: ResBlock(64→128, s=2)
         - Stage 4: ResBlock(128→256, s=2)
-        - Output: AdaptiveAvgPool + Linear(256→embedding_dim) + BN
+        - Output: AdaptiveAvgPool + Linear(256→embedding_dim) + Optional BN
 
     Args:
         embedding_dim: Output embedding dimension (default: 28)
         in_channels: Input channels (default: 1 for grayscale ICs)
         architecture: Architecture variant (only 'resnet3' supported)
+        use_final_batchnorm: Apply BatchNorm1d to final embedding (default: False).
+            Setting to False allows natural variance preservation, improving VQ-VAE performance.
 
     Example:
-        >>> encoder = InitialCNNEncoder(embedding_dim=28)
+        >>> encoder = InitialCNNEncoder(embedding_dim=28, use_final_batchnorm=False)
         >>> ics = torch.randn(32, 1, 128, 128)  # [batch, channels, H, W]
         >>> embeddings = encoder(ics)           # [batch, 28]
     """
@@ -89,7 +91,8 @@ class InitialCNNEncoder(BaseEncoder):
         self,
         embedding_dim: int = 28,
         in_channels: int = 1,
-        architecture: Literal['resnet3'] = 'resnet3'
+        architecture: Literal['resnet3'] = 'resnet3',
+        use_final_batchnorm: bool = False,
     ):
         super().__init__()
 
@@ -98,6 +101,7 @@ class InitialCNNEncoder(BaseEncoder):
 
         self._embedding_dim = embedding_dim
         self.in_channels = in_channels
+        self.use_final_batchnorm = use_final_batchnorm
 
         # Stage 1: Initial convolution
         self.stage1 = nn.Sequential(
@@ -126,7 +130,12 @@ class InitialCNNEncoder(BaseEncoder):
 
         # Final projection to embedding space
         self.fc = nn.Linear(256, embedding_dim)
-        self.bn_final = nn.BatchNorm1d(embedding_dim)
+
+        # Make final BatchNorm optional (default: False for natural variance)
+        if use_final_batchnorm:
+            self.bn_final = nn.BatchNorm1d(embedding_dim)
+        else:
+            self.bn_final = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Encode IC spatial data to embedding.
@@ -150,7 +159,10 @@ class InitialCNNEncoder(BaseEncoder):
 
         # Final projection
         x = self.fc(x)  # [B, embedding_dim]
-        x = self.bn_final(x)  # [B, embedding_dim]
+
+        # Only apply BatchNorm if enabled
+        if self.bn_final is not None:
+            x = self.bn_final(x)  # [B, embedding_dim]
 
         return x
 

@@ -53,12 +53,17 @@ class InitialCNNConfig(BaseModel):
     embedding_dim: int = Field(
         default=28,
         ge=8,
-        le=128,
+        le=512,
         description="Dimensionality of learned embedding"
     )
     architecture: Literal['resnet3'] = Field(
         default='resnet3',
         description="CNN backbone architecture"
+    )
+    use_final_batchnorm: bool = Field(
+        default=False,
+        description="Apply BatchNorm1d to final embedding (constrains variance to ~1.0). "
+                    "Setting to False allows natural variance preservation, improving VQ-VAE performance."
     )
 
     # Training/loading

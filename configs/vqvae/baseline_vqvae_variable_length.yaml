@@ -9,11 +9,12 @@
 #
 # Based on baseline_vqvae.yaml with variable-length support enabled.
 #
-# UPDATED (2026-01-29): Increased initial CNN capacity for better spatial representation
-# - Initial CNN: 28D → 128D (reduces compression 439× → 96×)
-# - Temporal: 128D (kept original, 2× compression already reasonable)
-# - Both encoders now output 128D (architectural symmetry, clean power of 2)
-# - Batch size: 1024 → 512 (due to increased memory from larger CNN encoder)
+# UPDATED (2026-02-01): VQ-VAE Performance Improvements
+# - Initial CNN: 128D → 256D (match temporal backbone, double capacity)
+# - Removed final BatchNorm constraint (allows natural variance preservation)
+# - Added normalized reconstruction metrics (variance-normalized per category)
+# - Reduced epochs: 2000 → 1000 (sufficient with improved architecture)
+# - Expected: Initial quality 30% → 70-80%+ (matching temporal performance)
 #
 # This configuration has been optimized through comprehensive clustering experiments
 # (2026-01-28). See: experiments/clustering_comparison/
@@ -48,7 +49,8 @@ families:
     encoder: initial_hybrid
     encoder_params:
       manual_dim: 14
-      cnn_embedding_dim: 128  # Increased from 28 (reduces compression 439× → 96×, matches temporal)
+      cnn_embedding_dim: 256  # Increased from 128 (double capacity, match temporal backbone)
+      use_final_batchnorm: false  # Allow natural variance (removes artificial constraint)
       encode_manual: false
       in_channels: 3
 
@@ -162,8 +164,7 @@ feature_cleaning:
 training:
   batch_size: 1024
   learning_rate: 0.001
-  num_epochs: 2000  # Variable-length: 100 epochs ≈ 400-500 hours (17-21 days)
-                   # Enough for good multi-scale coverage (~20× per sample)
+  num_epochs: 1000  # Reduced from 2000 (sufficient for convergence with improved architecture)
   optimizer: "adam"
   scheduler: null
   warmup_epochs: 20  # Reduced from 200 (proportional to total epochs)
@@ -252,12 +253,12 @@ training:
   # NOTE: With normalize_mse=true, MSE losses are bounded ~[0, 2]
   #       making them comparable to orthogonality [0, 1] and topographic [0, 2]
   reconstruction_weight: 1.0    # Primary reconstruction quality
-  vq_weight: 0.8               # Vector quantization commitment
-  orthogonality_weight: 0.11   # Codebook diversity (already normalized)
-  informativeness_weight: 0.3  # Partial decoder quality (normalized if normalize_mse=true)
-  topo_weight: 0.3            # Topology preservation (already normalized)
-  topo_samples: 2048          # Samples for topographic loss computation
-  entropy_weight: 0.1         # Uniform codebook usage (already normalized) 
+  vq_weight: 0.8                # Vector quantization commitment
+  orthogonality_weight: 0.125   # Codebook diversity (already normalized)
+  informativeness_weight: 0.15  # Partial decoder quality (normalized if normalize_mse=true)
+  entropy_weight: 0.15          # Uniform codebook usage (already normalized) 
+  topo_weight: 0.5              # Topology preservation (already normalized)
+  topo_samples: 2048            # Samples for topographic loss computation
 
   # Checkpointing
   save_every: 25

@@ -30,6 +30,9 @@ class InitialHybridEncoder(BaseEncoder):
         encode_manual: If True, apply MLP to manual features (default: False)
         manual_hidden_dims: Hidden layer sizes for manual MLP (if encode_manual=True)
         manual_output_dim: Output dimension for manual MLP (if encode_manual=True)
+        in_channels: Input channels for CNN encoder (default: 1)
+        use_final_batchnorm: Apply BatchNorm1d to final CNN embedding (default: False).
+            Setting to False allows natural variance preservation.
 
     Example:
         >>> encoder = InitialHybridEncoder(manual_dim=14, cnn_embedding_dim=28)
@@ -46,6 +49,7 @@ class InitialHybridEncoder(BaseEncoder):
         manual_hidden_dims: Tuple[int, ...] = (64,),
         manual_output_dim: int = 14,
         in_channels: int = 1,
+        use_final_batchnorm: bool = False,
     ):
         super().__init__()
 
@@ -77,6 +81,7 @@ class InitialHybridEncoder(BaseEncoder):
         self.cnn_encoder = InitialCNNEncoder(
             embedding_dim=cnn_embedding_dim,
             in_channels=in_channels,
+            use_final_batchnorm=use_final_batchnorm,
         )
 
         self._output_dim = self._manual_output_dim + cnn_embedding_dim
