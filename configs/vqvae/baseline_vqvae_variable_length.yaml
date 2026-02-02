@@ -257,8 +257,8 @@ training:
     # Mega-category splitting - recursively split categories > max_category_size
     split_mega_categories: true
     max_category_size: 40           # Maximum features per category
-    max_split_recursion_depth: 3    # Maximum recursion depth
-    max_clusters_for_split: 8       # Maximum clusters to try when splitting
+    max_split_recursion_depth: 5    # INCREASED from 3 to allow deeper splitting
+    max_clusters_for_split: 12      # INCREASED from 8 to try more subdivision options
 
   # Loss normalization
   # Normalizes MSE-based losses (L_recon, L_info) by target variance
@@ -290,9 +290,9 @@ training:
   early_stopping_min_delta: 0.01
 
   # Dead code resets - DISABLED
-  dead_code_reset_interval: 0
-  dead_code_threshold: 5.0
-  dead_code_max_reset_fraction: 0.0
+  dead_code_reset_interval: 50           # Reset every 50 epochs (less disruptive)
+  dead_code_threshold: 5.0              # Percentile threshold (5th = bottom 5%)
+  dead_code_max_reset_fraction: 0.05    # Reset up to 5% of codes (~1-2 per interval)
 
   # Validation
   val_every_n_epochs: 5
