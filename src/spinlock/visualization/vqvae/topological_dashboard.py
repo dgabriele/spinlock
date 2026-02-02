@@ -17,6 +17,8 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 import torch
+from sklearn.metrics import silhouette_score, davies_bouldin_score
+from sklearn.decomposition import PCA
 
 from .utils import VQVAECheckpointData, load_vqvae_checkpoint, get_utilization_cmap
 
@@ -75,6 +77,97 @@ def extract_codebook_embeddings(
             usage[f"cb_{idx}"] = state[orig_key].numpy()
 
     return embeddings, usage, codebook_keys
+
+
+def compute_tsne_quality_metrics(
+    embeddings: Dict[str, np.ndarray],
+    coords: np.ndarray,
+    labels: np.ndarray,
+) -> Dict[str, float]:
+    """Compute quality metrics for t-SNE embedding and codebook structure.
+
+    Args:
+        embeddings: Dict of codebook embeddings (high-dimensional)
+        coords: t-SNE coordinates (2D)
+        labels: Category labels for each point
+
+    Returns:
+        Dict with quality metrics
+    """
+    # Concatenate all embeddings (high-D space), normalizing and padding like in t-SNE
+    all_embeddings = []
+    max_dim = max(emb.shape[1] for emb in embeddings.values())
+
+    for emb in embeddings.values():
+        # L2 normalize before padding
+        norms = np.linalg.norm(emb, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1, norms)
+        emb_normalized = emb / norms
+
+        # Pad to max dimension
+        if emb_normalized.shape[1] < max_dim:
+            padded = np.zeros((emb.shape[0], max_dim))
+            padded[:, :emb_normalized.shape[1]] = emb_normalized
+            emb_normalized = padded
+
+        all_embeddings.append(emb_normalized)
+
+    X_high = np.vstack(all_embeddings)
+
+    metrics = {}
+
+    # 1. Cluster Quality Metrics
+    try:
+        # Silhouette score: measures how similar points are to their own cluster vs other clusters
+        # Range: [-1, 1], higher is better
+        if len(np.unique(labels)) > 1:
+            metrics['silhouette_score'] = silhouette_score(X_high, labels)
+        else:
+            metrics['silhouette_score'] = 0.0
+    except:
+        metrics['silhouette_score'] = 0.0
+
+    try:
+        # Davies-Bouldin index: ratio of within-cluster to between-cluster distances
+        # Lower is better, <1.0 indicates well-separated clusters
+        if len(np.unique(labels)) > 1:
+            metrics['davies_bouldin'] = davies_bouldin_score(X_high, labels)
+        else:
+            metrics['davies_bouldin'] = 0.0
+    except:
+        metrics['davies_bouldin'] = 0.0
+
+    # 2. t-SNE Faithfulness Metrics
+    try:
+        # Trustworthiness: measures if nearby points in 2D are also nearby in high-D
+        from sklearn.manifold import trustworthiness
+        metrics['trustworthiness'] = trustworthiness(X_high, coords, n_neighbors=15)
+    except:
+        metrics['trustworthiness'] = 0.0
+
+    # 3. Codebook Diversity Metrics
+    try:
+        # Mean pairwise distance in high-D space
+        from scipy.spatial.distance import pdist
+        pairwise_dists = pdist(X_high, metric='euclidean')
+        metrics['mean_pairwise_dist'] = np.mean(pairwise_dists)
+        metrics['min_pairwise_dist'] = np.min(pairwise_dists)
+        metrics['std_pairwise_dist'] = np.std(pairwise_dists)
+    except:
+        metrics['mean_pairwise_dist'] = 0.0
+        metrics['min_pairwise_dist'] = 0.0
+        metrics['std_pairwise_dist'] = 0.0
+
+    # 4. Dimensionality Assessment
+    try:
+        # PCA to see how much variance is captured by top 2 components
+        pca = PCA(n_components=min(2, X_high.shape[1]))
+        pca.fit(X_high)
+        metrics['variance_2d'] = np.sum(pca.explained_variance_ratio_)
+    except:
+        metrics['variance_2d'] = 0.0
+
+    return metrics
 
 
 def compute_tsne_embedding(
@@ -351,6 +444,73 @@ def plot_codebook_similarity(
     cbar.set_label("Cosine Similarity", fontsize=9)
 
 
+def plot_tsne_quality_panel(
+    ax: Axes,
+    metrics: Dict[str, float],
+) -> None:
+    """Plot t-SNE quality metrics panel."""
+    ax.axis("off")
+
+    # Format metrics with interpretation
+    def format_metric(value: float, good_threshold: float, reverse: bool = False) -> str:
+        """Format metric with color indicator."""
+        if reverse:
+            indicator = "✓" if value < good_threshold else "✗"
+        else:
+            indicator = "✓" if value >= good_threshold else "✗"
+        return f"{indicator} {value:.3f}"
+
+    # Interpret silhouette score
+    silhouette = metrics.get('silhouette_score', 0.0)
+    if silhouette > 0.7:
+        sil_quality = "excellent"
+    elif silhouette > 0.5:
+        sil_quality = "good"
+    elif silhouette > 0.3:
+        sil_quality = "moderate"
+    else:
+        sil_quality = "poor"
+
+    # Interpret Davies-Bouldin
+    db = metrics.get('davies_bouldin', 0.0)
+    if db < 1.0:
+        db_quality = "well-separated"
+    elif db < 1.5:
+        db_quality = "moderate"
+    else:
+        db_quality = "overlapping"
+
+    metrics_text = f"""t-SNE Quality Metrics
+
+Cluster Quality:
+  Silhouette:     {silhouette:.3f} ({sil_quality})
+  Davies-Bouldin: {db:.3f} ({db_quality})
+
+t-SNE Faithfulness:
+  Trustworthiness: {metrics.get('trustworthiness', 0.0):.3f}
+  (neighbors preserved)
+
+Codebook Diversity:
+  Mean distance: {metrics.get('mean_pairwise_dist', 0.0):.2f}
+  Min distance:  {metrics.get('min_pairwise_dist', 0.0):.2f}
+  Std distance:  {metrics.get('std_pairwise_dist', 0.0):.2f}
+
+Dimensionality:
+  Variance (2D): {metrics.get('variance_2d', 0.0)*100:.1f}%
+"""
+
+    ax.text(
+        0.05, 0.95, metrics_text,
+        transform=ax.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        family="monospace",
+        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3),
+    )
+
+    ax.set_title("t-SNE Quality", fontsize=11, fontweight="bold")
+
+
 def plot_embedding_statistics(
     ax: Axes,
     embeddings: Dict[str, np.ndarray],
@@ -430,28 +590,33 @@ def create_topological_dashboard(
     print("Computing t-SNE embedding...")
     coords, labels, codebook_ids = compute_tsne_embedding(embeddings)
 
+    # Compute t-SNE quality metrics
+    print("Computing quality metrics...")
+    quality_metrics = compute_tsne_quality_metrics(embeddings, coords, labels)
+
     # Create figure with grid layout
     fig = plt.figure(figsize=figsize, dpi=dpi)
 
     # Layout: t-SNE takes left 2/3, similarity matrix and stats on right
+    # Add 3rd row for t-SNE quality metrics
     gs = GridSpec(
-        2, 2,
+        3, 2,
         figure=fig,
         width_ratios=[1.2, 1],
-        height_ratios=[2, 1],
-        hspace=0.3,
+        height_ratios=[2, 1, 0.8],
+        hspace=0.35,
         wspace=0.25,
     )
 
-    # Panel A: t-SNE (large, left side, spans both rows)
-    ax_tsne = fig.add_subplot(gs[:, 0])
+    # Panel A: t-SNE (large, left side, spans rows 0-1)
+    ax_tsne = fig.add_subplot(gs[0:2, 0])
     plot_tsne_codebooks(
         ax_tsne, coords, labels, codebook_ids,
         num_categories=data.num_categories,
         num_levels=data.num_levels,
     )
 
-    # Panel B: Similarity matrix (top-right, larger now)
+    # Panel B: Similarity matrix (top-right)
     ax_sim = fig.add_subplot(gs[0, 1])
     plot_codebook_similarity(
         ax_sim, embeddings,
@@ -459,9 +624,17 @@ def create_topological_dashboard(
         num_levels=data.num_levels,
     )
 
-    # Panel C: Statistics (bottom-right)
+    # Panel C: Statistics (middle-right)
     ax_stats = fig.add_subplot(gs[1, 1])
     plot_embedding_statistics(ax_stats, embeddings, usage, data)
+
+    # Panel D: t-SNE quality metrics (bottom-left)
+    ax_quality = fig.add_subplot(gs[2, 0])
+    plot_tsne_quality_panel(ax_quality, quality_metrics)
+
+    # Panel E: Empty (bottom-right, for balance)
+    ax_empty = fig.add_subplot(gs[2, 1])
+    ax_empty.axis('off')
 
     # Title
     fig.suptitle(
