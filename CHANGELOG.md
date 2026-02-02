@@ -4,6 +4,72 @@ All notable changes to the Spinlock project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased] - 2026-02-02
+
+### Added
+- **torch.compile support for variable-length models** - Selective compilation architecture
+  - Fixed-length: ~30-40% speedup (full model compilation)
+  - Variable-length: ~15-25% speedup (encoder/decoder only, skip dynamic temporal)
+  - Compilation disabled by default for variable-length (limited benefit)
+  - See `docs/vqvae/torch-compile.md` for optimization guide
+- **Learnable category assignment** - Gradient-based category optimization with Gumbel-Softmax
+  - End-to-end optimization of feature-to-category mappings
+  - Temperature annealing (1.0 → 0.1) for soft-to-hard assignments
+  - Assignment losses (orthogonality, balance) for stable training
+  - Supports both standard and hybrid initial encoders
+  - See `docs/vqvae/learnable-assignments.md` for implementation details
+- **Hybrid initial encoder integration** - End-to-end CNN training for initial conditions
+  - Gradients flow from VQ-VAE losses back through CNN encoder
+  - Compatible with both static and learnable assignments
+  - 14D raw ICs → 128D CNN features during category discovery
+  - See `docs/vqvae/architecture.md#hybrid-initial-path` for architecture
+- **Comprehensive VQ-VAE documentation**
+  - `docs/vqvae/README.md` - Complete guide with workflows and troubleshooting
+  - `docs/vqvae/architecture.md` - Encoding paths, components, training process
+  - `docs/vqvae/assignment-strategies.md` - Static vs learnable comparison
+  - `docs/vqvae/learnable-assignments.md` - Integration architecture details
+  - `docs/vqvae/learnable-mode-guide.md` - Complete usage guide
+  - `docs/vqvae/variable-length-encoding.md` - Temporal pyramid integration
+  - `docs/vqvae/torch-compile.md` - Performance optimization
+  - `docs/decisions/2026-02-learnable-integration.md` - Implementation decision record
+
+### Changed
+- **Documentation reorganization** - Root directory cleanup
+  - Moved implementation docs from root to `docs/vqvae/`
+  - Updated README with VQ-VAE architecture overview
+  - Added VQ-VAE section to documentation index
+  - Root now contains only standard files (README.md, CHANGELOG.md)
+- **VQ-VAE compilation defaults** - Variable-length models no longer compile by default
+  - Limited speedup (~15-25%) not worth compilation overhead
+  - Can still enable with `--compile` flag
+  - Fixed-length models benefit significantly (~30-40% speedup)
+
+### Fixed
+- **Device mismatch in dead code reset** - CPU/CUDA tensor errors
+  - Proper device handling for assignment matrix in reset logic
+  - Fixes crash when using learnable assignments with dead code reset
+- **Missing raw_ics support in compilation wrapper** - Variable-length compilation errors
+  - Added `raw_ics` parameter to compiled forward signature
+  - Enables hybrid encoder with compilation
+- **Model unwrapping in metrics computation** - Compiled model compatibility
+  - Extract underlying model from `OptimizedModule` wrapper
+  - Fixes metric extraction from compiled models
+- **Feature masking for learnable models in dead code reset**
+  - Proper handling of soft assignments during reset
+  - Prevents incorrect feature grouping in learnable mode
+
+### Documentation
+- Added `docs/vqvae/architecture.md` (~400 lines)
+- Added `docs/vqvae/assignment-strategies.md` (~300 lines)
+- Added `docs/vqvae/torch-compile.md` (moved from root)
+- Added `docs/vqvae/learnable-assignments.md` (merged from 2 root files)
+- Added `docs/vqvae/learnable-mode-guide.md` (moved from root, merged content)
+- Added `docs/vqvae/variable-length-encoding.md` (moved from root)
+- Added `docs/vqvae/README.md` (~50 lines)
+- Added `docs/decisions/2026-02-learnable-integration.md` (moved from root)
+- Updated `README.md` with VQ-VAE architecture section
+- Updated `README.md` documentation index with VQ-VAE links
+
 ## [Unreleased] - 2026-01-30
 
 ### Added

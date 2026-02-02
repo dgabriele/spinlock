@@ -87,3 +87,4 @@ datasets/*.backup
 # Temporary session notes (should be in docs/sessions/)
 /*_SUMMARY.md
 /RESUME_*.md
+datasets/.100k_baseline_dev.h5.*

@@ -1,0 +1,239 @@
+# Learnable Hybrid Variable-Length VQ-VAE Configuration
+#
+# ⚠️ IMPORTANT: This config EXTENDS baseline_vqvae_variable_length.yaml
+#
+# Base Config: baseline_vqvae_variable_length.yaml
+# - All settings inherited unless explicitly overridden below
+# - Uses initial_hybrid encoder (manual + CNN)
+# - Variable-length trajectory support enabled
+# - High capacity model (512/2048 embedding/hidden)
+# - Per-family clustering with mega-category splitting
+#
+# This Config Adds: Learnable category assignments
+# - End-to-end gradient-based assignment optimization
+# - Temperature annealing for Gumbel-Softmax
+# - Dual optimizers (model + assignments)
+#
+# Changes from baseline:
+#   1. training.category_assignment: "auto" → "learnable"
+#   2. Added learnable_assignment section
+#   3. training.checkpoint_dir updated for separate output
+
+# ═══════════════════════════════════════════════════════════════
+# BASELINE SETTINGS (INHERITED FROM baseline_vqvae_variable_length.yaml)
+# ═══════════════════════════════════════════════════════════════
+
+# Dataset
+dataset_path: "datasets/100k_baseline_dev.h5"
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 14
+      cnn_embedding_dim: 128
+      use_final_batchnorm: true
+      encode_manual: false
+      in_channels: 3
+
+  temporal:
+    encoder: PyramidTemporalEncoder
+    encoder_params:
+      level_dims: [32, 64, 96, 128]
+      downsample_factors: [1, 2, 4, 8]
+      architecture: "resnet1d_3"
+      variable_length:
+        enabled: true
+        min_timesteps: 16
+        max_timesteps: 256
+        sampling_strategy: "fixed_bins"
+        length_bins: [16, 32, 64, 128, 256]
+        adaptive_pyramid: true
+        min_pyramid_length: 1
+        mask_downsample_method: "ceil"
+
+# Model Architecture
+model:
+  group_embedding_dim: 512
+  group_hidden_dim: 2048
+  compression_ratios: "auto"
+  auto_compression_strategy: "balanced"
+  levels: []
+  uniform_codebook_init: true
+  commitment_cost: 0.1
+  use_ema: true
+  decay: 0.99
+  dropout: 0.35
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.3
+
+# Feature Cleaning
+feature_cleaning:
+  enabled: true
+  pre_categorization: true
+  variance_threshold: 1e-10
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
+  outlier_method: "percentile"
+  percentile_range: [0.5, 99.5]
+
+# ═══════════════════════════════════════════════════════════════
+# LEARNABLE MODE OVERRIDES (CHANGES FROM BASELINE)
+# ═══════════════════════════════════════════════════════════════
+
+# Training Configuration
+training:
+  batch_size: 1024
+  learning_rate: 0.001
+  num_epochs: 1000
+  optimizer: "adam"
+
+  scheduler:
+    type: "cosine"
+    T_max: 1000
+    eta_min: 0.0001
+  warmup_epochs: 20
+
+  # ┌─────────────────────────────────────────────────────────────┐
+  # │ OVERRIDE 1: Enable learnable category assignments          │
+  # │ Baseline: category_assignment: "auto"                       │
+  # │ Learnable: category_assignment: "learnable"                 │
+  # └─────────────────────────────────────────────────────────────┘
+  category_assignment: learnable  # CHANGED FROM "auto"
+
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+
+  # Category assignment config - INHERITED
+  # (Used for initialization, then made learnable)
+  category_assignment_config:
+    method: "clustering"
+    isolated_families: []
+    reassign_orphans: true
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+    linkage_method: "ward"
+    distance_metric: "correlation"
+    k_selection_method: "silhouette"
+    gap_statistic_refs: 10
+    export_dendrogram: true
+    dendrogram_path: "diagnostics/dendrograms/learnable_hybrid_vl"
+    per_family_clustering: true
+    per_family_params:
+      initial:
+        min_clusters: 2
+        max_clusters: 12
+      temporal_p0:
+        min_clusters: 2
+        max_clusters: 10
+      temporal_p1:
+        min_clusters: 2
+        max_clusters: 15
+      temporal_p2:
+        min_clusters: 2
+        max_clusters: 25
+      temporal_p3:
+        min_clusters: 2
+        max_clusters: 35
+    split_mega_categories: true
+    max_category_size: 40
+    max_split_recursion_depth: 5
+    max_clusters_for_split: 12
+
+  # Loss configuration - INHERITED
+  normalize_mse: true
+  reconstruction_weight: 1.0
+  category_reconstruction_weight: 0.15
+  vq_weight: 0.8
+  orthogonality_weight: 0.125
+  informativeness_weight: 0.35
+  entropy_weight: 0.25
+  topo_weight: 0.5
+  topo_samples: 2048
+
+  # ┌─────────────────────────────────────────────────────────────┐
+  # │ OVERRIDE 2: Checkpoint directory for learnable variant     │
+  # │ Baseline: checkpoints/vqvae/100k_fine_grained_categories    │
+  # │ Learnable: checkpoints/vqvae/learnable_hybrid_vl            │
+  # └─────────────────────────────────────────────────────────────┘
+  checkpoint_dir: "checkpoints/vqvae/learnable_hybrid_vl"  # CHANGED
+
+  save_every: 25
+  early_stopping_patience: 200
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets enabled:
+  # dead_code_reset_interval: 50
+  # dead_code_max_reset_fraction: 0.05
+
+  # Disabled:
+  dead_code_reset_interval: 0
+  dead_code_max_reset_fraction: 0.0
+
+  val_every_n_epochs: 5
+  use_torch_compile: true
+
+# ═══════════════════════════════════════════════════════════════
+# NEW SECTION: Learnable Assignment Configuration
+# ═══════════════════════════════════════════════════════════════
+
+learnable_assignment:
+  # Initialization method
+  init_method: "clustering"  # Initialize from clustering (then optimize)
+
+  # Temperature annealing (Gumbel-Softmax)
+  temperature_start: 1.0     # Start: soft assignments (explore)
+  temperature_end: 0.1       # End: sharp assignments (exploit)
+  temperature_schedule: "linear"  # Options: "linear", "cosine", "exponential"
+
+  # Assignment regularization losses
+  orthogonality_weight: 0.1  # Encourage diverse category representations
+  balance_weight: 0.05       # Encourage balanced category sizes
+  family_constraint_weight: 1.0  # Keep features within family boundaries
+
+  # Optimization
+  assignment_lr: 0.001       # Learning rate for assignment matrix
+                            # (Separate optimizer from main model)
+
+  # Optional: Freeze assignments after N epochs
+  freeze_after_epochs: null  # Set to integer to freeze after warmup
+                            # null = never freeze (end-to-end training)
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Memory Management
+hdf5_chunk_size: auto
+encode_chunk_size: 5000
+
+# ═══════════════════════════════════════════════════════════════
+# Expected Performance vs Baseline
+# ═══════════════════════════════════════════════════════════════
+#
+# Baseline (clustering-only):
+#   - val_loss: ~0.067
+#   - L_recon: ~0.015 (98.5% quality)
+#   - Utilization: ~18%
+#   - Fixed categories (no gradient-based refinement)
+#
+# Learnable (this config):
+#   - Expected: Similar or better reconstruction
+#   - Benefit: End-to-end optimized categories
+#   - Benefit: Assignments adapt during training
+#   - Benefit: Potentially better utilization
+#   - Trade-off: +~20% training time (dual optimization)
+#
+# Training command:
+#   spinlock train-vqvae \
+#     --config configs/vqvae/learnable_hybrid_variable_length.yaml \
+#     --epochs 1000 \
+#     --verbose

@@ -289,7 +289,7 @@ training:
   early_stopping_patience: 200 
   early_stopping_min_delta: 0.01
 
-  # Dead code resets - DISABLED
+  # Dead code resets
   dead_code_reset_interval: 50           # Reset every 50 epochs (less disruptive)
   dead_code_threshold: 5.0              # Percentile threshold (5th = bottom 5%)
   dead_code_max_reset_fraction: 0.05    # Reset up to 5% of codes (~1-2 per interval)

@@ -316,6 +316,31 @@ See [docs/features/](docs/features/) for detailed feature definitions and extrac
 
 The VQ-VAE pipeline transforms continuous behavioral features into discrete tokens—a compositional vocabulary for describing neural operator dynamics.
 
+### VQ-VAE Architecture
+
+Spinlock's VQ-VAE converts operator features into discrete behavioral tokens through:
+
+1. **Category Assignment** - Groups features into semantic categories (static or learned)
+2. **Hierarchical Encoding** - Multi-level representation per category
+3. **Vector Quantization** - Discrete codebook learning
+4. **Reconstruction** - Decoder trained to recover original features
+
+**Assignment Strategies:**
+- **Static Assignment** (Default): Pre-computed clustering, deterministic, interpretable
+- **Learnable Assignment** (Optional): Gradient-based optimization, task-optimal, flexible
+
+**Encoding Paths:**
+- **Fixed-length**: Standard feature vectors from pre-computed SDF extractions
+- **Variable-length**: Temporal pyramid for multi-scale dynamics (runtime encoding)
+- **Hybrid**: End-to-end CNN training for initial conditions with gradient flow
+
+**Performance:**
+- Compilation: ~30-40% speedup (fixed-length), ~15-25% (variable-length)
+- Memory: 2-6 GB GPU depending on encoding path
+- Quality: >95% feature recovery, 15-30% codebook utilization
+
+See [docs/vqvae/architecture.md](docs/vqvae/architecture.md) for comprehensive architecture details and [docs/vqvae/assignment-strategies.md](docs/vqvae/assignment-strategies.md) for choosing between static and learnable assignments.
+
 ### Why "Categories"?
 
 The term **categories** for the top-level groupings produced by orthogonality-weighted clustering is deliberate. These are not mere statistical clusters but conceptual primitives through which continuous dynamical behavior is coarse-grained into interpretable structure.
@@ -450,15 +475,21 @@ poetry run spinlock visualize-dataset \
 ### Train VQ-VAE Tokenizer
 
 ```bash
-# Train on full dataset with ARCHITECTURE + SUMMARY features
+# Standard static assignment (default, fast)
 poetry run spinlock train-vqvae \
-    --config configs/vqvae/production/10k_arch_summary_400epochs.yaml \
-    --verbose
+    --config configs/vqvae/baseline_vqvae_variable_length.yaml \
+    --epochs 500
 
-# Or train on validation dataset (1K samples) for testing
+# Learnable assignment (gradient-based categories)
 poetry run spinlock train-vqvae \
-    --config configs/vqvae/validation/1k_arch_summary.yaml \
-    --verbose
+    --config configs/vqvae/learnable_hybrid_variable_length.yaml \
+    --epochs 1000
+
+# Enable torch.compile for speedup
+poetry run spinlock train-vqvae \
+    --config configs/vqvae/baseline_vqvae_variable_length.yaml \
+    --compile \
+    --epochs 500
 ```
 
 **Training output:**
@@ -520,17 +551,39 @@ For detailed installation instructions, platform-specific guides, and troublesho
 
 ## 📚 Documentation
 
+### Core Guides
+
 - [**NOA Roadmap**](docs/noa-roadmap.md) - 5-phase development plan for Neural Operator Agents
 - [**Architecture**](docs/architecture.md) - Detailed system design and implementation
 - [**Independent Optimization Guide**](docs/noa-vqvae-independent.md) - **Recommended approach:** Complete guide for 3-stage independent training. Stage 1: High fidelity physics baseline (pure MSE, L_traj < 1.0). Stage 2: Generate 100K+ NOA rollout features. Stage 3: Train VQ-VAE on NOA's distribution (alignment by construction). Includes implementation details, hyperparameters, troubleshooting, and performance benchmarks. Achieves optimal physics + optimal tokenization without competing gradients.
 - [**NOA Training Guide**](docs/noa-training-guide.md) - Training configuration, loss functions, checkpointing, and troubleshooting
 - [**Two-Stage Curriculum (Deprecated)**](docs/two-stage-curriculum-architecture.md) - Alternative approach with token-conditioned training (Stage 1) and VQ-led fine-tuning (Stage 2). Deprecated due to competing gradients between L_traj and L_recon causing equilibrium plateaus at batch 500 where neither objective optimizes fully. Empirical analysis shows NOA learns "VQ-friendly" dynamics at cost of physics accuracy. See independent optimization for superior approach.
+
+### VQ-VAE Documentation
+
+- [**VQ-VAE Overview**](docs/vqvae/README.md) - Complete guide to VQ-VAE architecture and usage
+- [**Architecture**](docs/vqvae/architecture.md) - Encoding paths, components, and training process
+- [**Assignment Strategies**](docs/vqvae/assignment-strategies.md) - Static vs learnable category assignment
+- [**Learnable Assignments**](docs/vqvae/learnable-assignments.md) - Gradient-based category learning implementation
+- [**Learnable Mode Guide**](docs/vqvae/learnable-mode-guide.md) - Complete usage guide for learnable mode
+- [**Variable-Length Encoding**](docs/vqvae/variable-length-encoding.md) - Temporal pyramid integration
+- [**torch.compile Optimization**](docs/vqvae/torch-compile.md) - Performance optimization guide
+- [**Checkpoint Format**](docs/vqvae/checkpoint-format.md) - Model saving/loading specification
+
+### Features & Data
+
 - [**Feature Families**](docs/features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL feature definitions and extraction
 - [**HDF5 Layout**](docs/features/hdf5-layout.md) - Dataset schema reference for VQ-VAE pipeline
+
+### Baselines
+
 - [**Baselines**](docs/baselines/README.md) - Production datasets and VQ-VAE tokenizers
   - [50K VQ-VAE Baseline](docs/baselines/50k-vqvae-baseline.md) - **CURRENT:** Per-family clustering tokenizer (val_loss: 0.049, L_recon: 0.027, utilization: 20.5%, topo: 1.000)
   - [100K Dataset](docs/baselines/100k-full-features-dataset.md) - 100K operators with INITIAL+SUMMARY+TEMPORAL+ARCHITECTURE features
   - [100K VQ-VAE](docs/baselines/100k-full-features-vqvae.md) - Prior baseline tokenizer (val_loss: 0.172, quality: 0.95, utilization: 67%)
+
+### Getting Started
+
 - [**Getting Started**](docs/getting-started.md) - Tutorials and end-to-end examples
 - [**Installation**](docs/installation.md) - Platform-specific installation guides
 

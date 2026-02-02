@@ -277,6 +277,14 @@ class VQVAEWithInitial(nn.Module):
         Returns:
             Number of codes reset
         """
+        # Check if using learnable per-family assignments
+        has_learnable = hasattr(self.vqvae, 'assignment_matrix') and self.vqvae.assignment_matrix is not None
+        if has_learnable and hasattr(self.vqvae.assignment_matrix, 'feature_families'):
+            # Per-family learnable mode: dead code reset not compatible
+            # The feature dimension mismatch between combined features and per-family
+            # assignment matrices causes errors. Skip reset in this mode.
+            return 0
+
         if raw_ics is None:
             # Can't do proper reset without raw_ics for CNN encoding
             return 0
