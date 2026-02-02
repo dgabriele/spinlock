@@ -2548,6 +2548,11 @@ Output:
             # Per-family clustering - cluster each family independently
             per_family_clustering=cat_config.get("per_family_clustering", False),
             per_family_params=cat_config.get("per_family_params", {}),
+            # Mega-category splitting - recursively split large categories
+            split_mega_categories=cat_config.get("split_mega_categories", False),
+            max_category_size=cat_config.get("max_category_size", 40),
+            max_split_recursion_depth=cat_config.get("max_split_recursion_depth", 3),
+            max_clusters_for_split=cat_config.get("max_clusters_for_split", 8),
         )
 
         # Compute assignments

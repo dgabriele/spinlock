@@ -104,6 +104,11 @@ class DynamicCategoryAssignment(CategoryAssignment):
         distance_threshold: Optional[float] = None,
         export_dendrogram: bool = False,
         dendrogram_path: str = "diagnostics/dendrograms",
+        # NEW: Mega-category splitting
+        split_mega_categories: bool = False,
+        max_category_size: int = 40,
+        max_split_recursion_depth: int = 3,
+        max_clusters_for_split: int = 8,
     ):
         """Initialize dynamic category assignment.
 
@@ -139,6 +144,10 @@ class DynamicCategoryAssignment(CategoryAssignment):
             distance_threshold: If set, cut dendrogram at this distance (overrides K selection)
             export_dendrogram: If True, export dendrogram visualizations
             dendrogram_path: Directory path for dendrogram exports
+            split_mega_categories: If True, recursively split categories > max_category_size
+            max_category_size: Maximum features per category (default: 40)
+            max_split_recursion_depth: Maximum recursion depth for splitting (default: 3)
+            max_clusters_for_split: Maximum clusters to try when splitting (default: 8)
         """
         if method not in ("clustering", "gradient", "hybrid"):
             raise ValueError(f"Unknown method: {method}. Use 'clustering', 'gradient', or 'hybrid'")
@@ -169,6 +178,12 @@ class DynamicCategoryAssignment(CategoryAssignment):
         self.distance_threshold = distance_threshold
         self.export_dendrogram = export_dendrogram
         self.dendrogram_path = dendrogram_path
+
+        # NEW: Mega-category splitting parameters
+        self.split_mega_categories = split_mega_categories
+        self.max_category_size = max_category_size
+        self.max_split_recursion_depth = max_split_recursion_depth
+        self.max_clusters_for_split = max_clusters_for_split
 
         # Cached assignments (computed on first call to assign_categories)
         self._assignments = None
@@ -280,6 +295,11 @@ class DynamicCategoryAssignment(CategoryAssignment):
                 distance_threshold=self.distance_threshold,
                 export_dendrogram=self.export_dendrogram,
                 dendrogram_path=self.dendrogram_path,
+                # Pass through mega-category splitting
+                split_mega_categories=self.split_mega_categories,
+                max_category_size=self.max_category_size,
+                max_split_recursion_depth=self.max_split_recursion_depth,
+                max_clusters_for_split=self.max_clusters_for_split,
             )
         else:
             # Existing global clustering path
@@ -304,6 +324,11 @@ class DynamicCategoryAssignment(CategoryAssignment):
                 distance_threshold=self.distance_threshold,
                 export_dendrogram=self.export_dendrogram,
                 dendrogram_path=self.dendrogram_path,
+                # Pass through mega-category splitting
+                split_mega_categories=self.split_mega_categories,
+                max_category_size=self.max_category_size,
+                max_split_recursion_depth=self.max_split_recursion_depth,
+                max_clusters_for_split=self.max_clusters_for_split,
             )
 
         return assignments

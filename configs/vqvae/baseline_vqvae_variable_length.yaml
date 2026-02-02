@@ -254,6 +254,12 @@ training:
         min_clusters: 2
         max_clusters: 35  # INCREASED from 20 (128 features / 35 = ~4 per category)
 
+    # Mega-category splitting - recursively split categories > max_category_size
+    split_mega_categories: true
+    max_category_size: 40           # Maximum features per category
+    max_split_recursion_depth: 3    # Maximum recursion depth
+    max_clusters_for_split: 8       # Maximum clusters to try when splitting
+
   # Loss normalization
   # Normalizes MSE-based losses (L_recon, L_info) by target variance
   # Makes losses scale-invariant and magnitudes more predictable

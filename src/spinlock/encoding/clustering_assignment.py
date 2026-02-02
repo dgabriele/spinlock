@@ -484,6 +484,11 @@ def hierarchical_clustering_assignment(
     distance_threshold: Optional[float] = None,
     export_dendrogram: bool = False,
     dendrogram_path: str = "diagnostics/dendrograms",
+    # NEW: Mega-category splitting
+    split_mega_categories: bool = False,
+    max_category_size: int = 40,
+    max_split_recursion_depth: int = 3,
+    max_clusters_for_split: int = 8,
 ) -> Dict[str, List[int]]:
     """Assign features to clusters using hierarchical clustering.
 
@@ -518,6 +523,10 @@ def hierarchical_clustering_assignment(
         distance_threshold: If set, cut dendrogram at this distance (overrides K selection)
         export_dendrogram: If True, export dendrogram visualizations
         dendrogram_path: Directory path for dendrogram exports
+        split_mega_categories: If True, recursively split categories > max_category_size
+        max_category_size: Maximum features per category (default: 40)
+        max_split_recursion_depth: Maximum recursion depth for splitting (default: 3)
+        max_clusters_for_split: Maximum clusters to try when splitting (default: 8)
 
     Returns:
         Dict mapping category_name -> list of feature indices
@@ -748,6 +757,34 @@ def hierarchical_clustering_assignment(
 
         logger.info(f"✓ All {len(orphaned_features)} orphaned features reassigned")
 
+    # NEW: Split mega-categories if requested
+    if split_mega_categories:
+        # Use module-level function to avoid shadowing
+        split_fn = globals()['split_mega_categories']
+        assignments = split_fn(
+            assignments=assignments,
+            features=clustering_features,
+            feature_names=clustering_feature_names,
+            max_category_size=max_category_size,
+            max_recursion_depth=max_split_recursion_depth,
+            min_features_per_cluster=min_features_per_cluster,
+            linkage_method=linkage_method,
+            distance_metric=distance_metric,
+            k_selection_method=k_selection_method,
+            min_clusters=2,
+            max_clusters_for_split=max_clusters_for_split,
+            random_seed=random_seed,
+            subsample_size=subsample_size,
+            export_dendrogram=export_dendrogram,
+            dendrogram_path=dendrogram_path,
+        )
+
+        # Remap to original indices (assignments use clustering subset indices)
+        assignments = {
+            name: [clustering_indices[i] for i in local_indices]
+            for name, local_indices in assignments.items()
+        }
+
     # Merge isolated assignments with clustered assignments
     all_assignments = {**isolated_assignments, **assignments}
 
@@ -820,6 +857,11 @@ def per_family_clustering_assignment(
     distance_threshold: Optional[float] = None,
     export_dendrogram: bool = False,
     dendrogram_path: str = "diagnostics/dendrograms",
+    # NEW: Mega-category splitting
+    split_mega_categories: bool = False,
+    max_category_size: int = 40,
+    max_split_recursion_depth: int = 3,
+    max_clusters_for_split: int = 8,
 ) -> Dict[str, List[int]]:
     """Cluster features per-family independently.
 
@@ -837,6 +879,18 @@ def per_family_clustering_assignment(
         max_samples_for_clustering: Maximum samples for clustering
         isolated_families: Families to isolate (place in single category, skip clustering)
         reassign_orphans: Reassign small clusters within families
+        linkage_method: Hierarchical linkage method (can be overridden per-family)
+        distance_metric: Distance metric (can be overridden per-family)
+        k_selection_method: K selection method (can be overridden per-family)
+        manual_k: Manual K value if k_selection_method='manual'
+        gap_statistic_refs: Number of reference distributions for gap statistic
+        distance_threshold: Distance threshold for cutting dendrogram
+        export_dendrogram: Whether to export dendrograms
+        dendrogram_path: Path for dendrogram exports
+        split_mega_categories: If True, recursively split categories > max_category_size
+        max_category_size: Maximum features per category (default: 40)
+        max_split_recursion_depth: Maximum recursion depth for splitting (default: 3)
+        max_clusters_for_split: Maximum clusters to try when splitting (default: 8)
 
     Returns:
         Dict mapping category_name -> list of feature indices
@@ -923,6 +977,11 @@ def per_family_clustering_assignment(
             distance_threshold=family_dist_threshold,
             export_dendrogram=export_dendrogram,
             dendrogram_path=dendrogram_path,
+            # Pass through mega-category splitting
+            split_mega_categories=split_mega_categories,
+            max_category_size=max_category_size,
+            max_split_recursion_depth=max_split_recursion_depth,
+            max_clusters_for_split=max_clusters_for_split,
         )
 
         # 4. Map local indices → global indices and prefix category names
@@ -942,6 +1001,284 @@ def per_family_clustering_assignment(
     logger.info(f"  Total features assigned: {sum(len(indices) for indices in assignments.values())}")
 
     return assignments
+
+
+def _recursive_split_category(
+    category_name: str,
+    category_indices: List[int],
+    features: np.ndarray,
+    feature_names: List[str],
+    max_category_size: int,
+    current_depth: int,
+    max_depth: int,
+    min_features_per_cluster: int,
+    linkage_method: str,
+    distance_metric: str,
+    k_selection_method: str,
+    min_clusters: int,
+    max_clusters_for_split: int,
+    random_seed: int,
+    subsample_size: Optional[int],
+    export_dendrogram: bool,
+    dendrogram_path: str,
+) -> Dict[str, List[int]]:
+    """Recursively split a single category if it exceeds max_category_size.
+
+    Args:
+        category_name: Name of the category being split
+        category_indices: Global feature indices in this category
+        features: Full feature matrix [N_samples, N_features]
+        feature_names: Full list of feature names
+        max_category_size: Maximum allowed category size
+        current_depth: Current recursion depth
+        max_depth: Maximum recursion depth
+        min_features_per_cluster: Minimum features per cluster
+        linkage_method: Hierarchical linkage method
+        distance_metric: Distance metric for clustering
+        k_selection_method: K selection method
+        min_clusters: Minimum clusters for splitting
+        max_clusters_for_split: Maximum clusters to try when splitting
+        random_seed: Random seed
+        subsample_size: Subsample size for clustering
+        export_dendrogram: Whether to export dendrograms
+        dendrogram_path: Path for dendrogram exports
+
+    Returns:
+        Dict mapping category_name -> list of global feature indices
+        If no split occurs, returns {category_name: category_indices}
+        If split occurs, returns {"name_split_0": [...], "name_split_1": [...], ...}
+    """
+    # Base case 1: Category is small enough
+    if len(category_indices) <= max_category_size:
+        return {category_name: category_indices}
+
+    # Base case 2: Max recursion depth reached
+    if current_depth >= max_depth:
+        logger.warning(
+            f"  Max recursion depth ({max_depth}) reached for {category_name} "
+            f"({len(category_indices)} features). Accepting mega-category."
+        )
+        return {category_name: category_indices}
+
+    # Base case 3: Too few features to split
+    if len(category_indices) < min_features_per_cluster * 2:
+        logger.warning(
+            f"  Cannot split {category_name}: {len(category_indices)} features < "
+            f"{min_features_per_cluster * 2} (2 * min_features_per_cluster)"
+        )
+        return {category_name: category_indices}
+
+    # Extract features for this category
+    category_features = features[:, category_indices]
+    category_feature_names = [feature_names[i] for i in category_indices]
+
+    logger.info(
+        f"  Splitting {category_name} ({len(category_indices)} features) at depth {current_depth}..."
+    )
+
+    # Run hierarchical clustering on this subset
+    try:
+        # Determine max clusters for this split (scale with category size)
+        effective_max_clusters = min(
+            max_clusters_for_split,
+            len(category_indices) // min_features_per_cluster
+        )
+
+        sub_assignments = hierarchical_clustering_assignment(
+            features=category_features,
+            feature_names=category_feature_names,
+            num_clusters=None,  # Auto-determine
+            min_features_per_cluster=min_features_per_cluster,
+            orthogonality_target=0.3,  # Not critical for splitting
+            random_seed=random_seed,
+            max_samples_for_clustering=50000,
+            min_clusters=min_clusters,
+            max_clusters=effective_max_clusters,
+            isolated_families=None,
+            reassign_orphans=True,  # Ensure all features assigned
+            linkage_method=linkage_method,
+            distance_metric=distance_metric,
+            k_selection_method=k_selection_method,
+            manual_k=None,
+            gap_statistic_refs=10,
+            distance_threshold=None,
+            export_dendrogram=export_dendrogram,
+            dendrogram_path=dendrogram_path,
+            # Disable recursive splitting within the recursive call (prevent infinite recursion)
+            split_mega_categories=False,
+        )
+
+        # Check if splitting occurred (more than 1 sub-category)
+        if len(sub_assignments) <= 1:
+            logger.warning(
+                f"  Silhouette chose K=1 for {category_name}. Cannot split (uniform data)."
+            )
+            return {category_name: category_indices}
+
+        # Map local indices back to global indices
+        result = {}
+        for split_idx, (sub_name, local_indices) in enumerate(sub_assignments.items()):
+            # Map from local (category subset) indices to global indices
+            global_indices = [category_indices[i] for i in local_indices]
+
+            # Generate split name
+            split_name = f"{category_name}_split_{split_idx}"
+
+            # Recursively split if sub-category is still too large
+            sub_result = _recursive_split_category(
+                category_name=split_name,
+                category_indices=global_indices,
+                features=features,
+                feature_names=feature_names,
+                max_category_size=max_category_size,
+                current_depth=current_depth + 1,
+                max_depth=max_depth,
+                min_features_per_cluster=min_features_per_cluster,
+                linkage_method=linkage_method,
+                distance_metric=distance_metric,
+                k_selection_method=k_selection_method,
+                min_clusters=min_clusters,
+                max_clusters_for_split=max_clusters_for_split,
+                random_seed=random_seed,
+                subsample_size=subsample_size,
+                export_dendrogram=export_dendrogram,
+                dendrogram_path=dendrogram_path,
+            )
+            result.update(sub_result)
+
+        logger.info(
+            f"  ✓ Split {category_name} into {len(result)} sub-categories: "
+            f"{list(result.keys())}"
+        )
+        return result
+
+    except Exception as e:
+        logger.error(
+            f"  Error splitting {category_name}: {e}. Accepting mega-category."
+        )
+        return {category_name: category_indices}
+
+
+def split_mega_categories(
+    assignments: Dict[str, List[int]],
+    features: np.ndarray,
+    feature_names: List[str],
+    max_category_size: int = 40,
+    max_recursion_depth: int = 3,
+    min_features_per_cluster: int = 3,
+    linkage_method: str = "ward",
+    distance_metric: str = "correlation",
+    k_selection_method: str = "silhouette",
+    min_clusters: int = 2,
+    max_clusters_for_split: int = 8,
+    random_seed: int = 42,
+    subsample_size: Optional[int] = None,
+    export_dendrogram: bool = False,
+    dendrogram_path: str = "diagnostics/dendrograms",
+) -> Dict[str, List[int]]:
+    """Recursively split categories exceeding max_category_size.
+
+    Identifies mega-categories and splits them using the same hierarchical
+    clustering method, recursively until all categories are ≤ max_category_size
+    or max_recursion_depth is reached.
+
+    Args:
+        assignments: Dict mapping category_name -> list of feature indices
+        features: [N_samples, N_features] full feature matrix
+        feature_names: Full list of feature names
+        max_category_size: Maximum features per category (default: 40)
+        max_recursion_depth: Maximum recursion depth (default: 3)
+        min_features_per_cluster: Minimum features per cluster
+        linkage_method: Hierarchical linkage method
+        distance_metric: Distance metric for clustering
+        k_selection_method: K selection method
+        min_clusters: Minimum clusters for splitting (default: 2)
+        max_clusters_for_split: Maximum clusters to try when splitting (default: 8)
+        random_seed: Random seed for reproducibility
+        subsample_size: Optional subsampling for large datasets
+        export_dendrogram: Whether to export dendrograms for splits
+        dendrogram_path: Path for dendrogram exports
+
+    Returns:
+        Updated assignments dict with mega-categories split
+        Example: {
+            "cluster_1": [0, 2, 5],  # Small category, unchanged
+            "cluster_2_split_0": [1, 3, 4],  # Split from cluster_2
+            "cluster_2_split_1": [6, 7, 8],  # Split from cluster_2
+        }
+    """
+    # Identify mega-categories and non-mega categories
+    mega_categories = {}
+    normal_categories = {}
+
+    for cat_name, indices in assignments.items():
+        if len(indices) > max_category_size:
+            mega_categories[cat_name] = indices
+        else:
+            normal_categories[cat_name] = indices
+
+    # If no mega-categories, return early
+    if not mega_categories:
+        logger.info("No mega-categories found. Skipping split.")
+        return assignments
+
+    logger.info(
+        f"\nSplitting {len(mega_categories)} mega-categories "
+        f"(size > {max_category_size}):"
+    )
+    for cat_name, indices in mega_categories.items():
+        logger.info(f"  {cat_name}: {len(indices)} features")
+
+    # Split each mega-category recursively
+    split_assignments = {}
+    for cat_name, indices in mega_categories.items():
+        result = _recursive_split_category(
+            category_name=cat_name,
+            category_indices=indices,
+            features=features,
+            feature_names=feature_names,
+            max_category_size=max_category_size,
+            current_depth=0,
+            max_depth=max_recursion_depth,
+            min_features_per_cluster=min_features_per_cluster,
+            linkage_method=linkage_method,
+            distance_metric=distance_metric,
+            k_selection_method=k_selection_method,
+            min_clusters=min_clusters,
+            max_clusters_for_split=max_clusters_for_split,
+            random_seed=random_seed,
+            subsample_size=subsample_size,
+            export_dendrogram=export_dendrogram,
+            dendrogram_path=dendrogram_path,
+        )
+        split_assignments.update(result)
+
+    # Merge normal + split categories
+    final_assignments = {**normal_categories, **split_assignments}
+
+    # Log summary
+    logger.info(f"\nMega-category splitting complete:")
+    logger.info(f"  Original categories: {len(assignments)}")
+    logger.info(f"  Final categories: {len(final_assignments)}")
+    logger.info(f"  Categories added: {len(final_assignments) - len(assignments)}")
+
+    # Log size distribution
+    sizes = [len(indices) for indices in final_assignments.values()]
+    logger.info(f"  Category sizes: min={min(sizes)}, max={max(sizes)}, "
+                f"mean={np.mean(sizes):.1f}, median={np.median(sizes):.1f}")
+
+    # Check if any mega-categories remain (couldn't be split)
+    remaining_mega = [
+        (name, len(indices))
+        for name, indices in final_assignments.items()
+        if len(indices) > max_category_size
+    ]
+    if remaining_mega:
+        logger.warning(f"  Warning: {len(remaining_mega)} unsplittable mega-categories remain:")
+        for name, size in remaining_mega:
+            logger.warning(f"    {name}: {size} features (could not split)")
+
+    return final_assignments
 
 
 def validate_cluster_orthogonality(
