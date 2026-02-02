@@ -28,6 +28,8 @@ class VQVAEWithInitial(nn.Module):
 
     The CNN portion of InitialHybridEncoder is trained via backprop from VQ-VAE losses.
 
+    Supports both static and learnable category assignments.
+
     Args:
         vqvae_config: Configuration for the underlying VQ-VAE
         initial_manual_dim: Dimension of pre-extracted manual features (default: 14)
@@ -35,6 +37,8 @@ class VQVAEWithInitial(nn.Module):
         initial_feature_offset: Starting index of INITIAL features in concatenated input
         initial_feature_count: Number of INITIAL features expected (manual_dim)
         in_channels: Number of channels in raw ICs (default: 1)
+        assignment_matrix: Optional learnable assignment matrix for soft routing.
+                          If None, uses static hard routing (default).
 
     Example:
         >>> model = VQVAEWithInitial(
@@ -58,6 +62,7 @@ class VQVAEWithInitial(nn.Module):
         initial_feature_offset: int = 0,
         initial_feature_count: int = 14,
         in_channels: int = 1,
+        assignment_matrix: Optional[nn.Module] = None,
     ):
         super().__init__()
 
@@ -104,8 +109,11 @@ class VQVAEWithInitial(nn.Module):
             compression_ratios=vqvae_config.compression_ratios,
         )
 
-        # Underlying VQ-VAE
-        self.vqvae = CategoricalHierarchicalVQVAE(adjusted_config)
+        # Underlying VQ-VAE with optional learnable assignment matrix
+        self.vqvae = CategoricalHierarchicalVQVAE(
+            adjusted_config,
+            assignment_matrix=assignment_matrix
+        )
 
     def _adjust_group_indices(
         self,
@@ -160,6 +168,7 @@ class VQVAEWithInitial(nn.Module):
         self,
         features: torch.Tensor,
         raw_ics: Optional[torch.Tensor] = None,
+        temperature: float = 1.0,
     ) -> Dict[str, Any]:
         """Forward pass with optional raw IC encoding.
 
@@ -168,6 +177,7 @@ class VQVAEWithInitial(nn.Module):
                       Contains manual INITIAL features at initial_feature_offset
             raw_ics: Raw initial conditions [batch_size, in_channels, H, W]
                      If None, assumes INITIAL CNN features are already in features
+            temperature: Temperature for Gumbel-Softmax (learnable assignments only)
 
         Returns:
             VQ-VAE output dictionary with reconstructions, tokens, losses, etc.
@@ -199,8 +209,8 @@ class VQVAEWithInitial(nn.Module):
             # Standard path: features pre-encoded during category discovery
             combined_features = features
 
-        # Forward through VQ-VAE
-        outputs = self.vqvae(combined_features)
+        # Forward through VQ-VAE (pass temperature for learnable assignments)
+        outputs = self.vqvae(combined_features, temperature=temperature)
 
         # Include combined_features as the reconstruction target
         # This is needed because the hybrid encoder expands features from
@@ -247,6 +257,11 @@ class VQVAEWithInitial(nn.Module):
     def category_names(self):
         """Delegate to underlying VQ-VAE category names."""
         return self.vqvae.category_names
+
+    @property
+    def assignment_matrix(self):
+        """Delegate to underlying VQ-VAE assignment matrix."""
+        return self.vqvae.assignment_matrix
 
     def reset_dead_codes(self, training_batch, threshold, raw_ics=None):
         """Reset dead codes in hybrid VQ-VAE model.

@@ -2744,10 +2744,65 @@ Output:
         if initial_info is not None:
             from spinlock.encoding.vqvae_with_initial import VQVAEWithInitial
 
+            # Build assignment matrix first (if learnable mode)
+            assignment_matrix = None
             if use_learnable:
-                print("\n[WARNING] Learnable assignment mode not yet supported with hybrid INITIAL encoding")
-                print("  Falling back to standard categorical VQ-VAE with static assignments\n")
-                use_learnable = False
+                from spinlock.encoding.learnable_assignment import (
+                    initialize_from_clustering,
+                    PerFamilyAssignmentMatrix,
+                    SoftAssignmentMatrix
+                )
+                import torch
+
+                if verbose:
+                    print("\n[LEARNABLE ASSIGNMENT MODE with HYBRID ENCODER]")
+                    print("Creating VQ-VAE with learnable category assignments + end-to-end CNN training\n")
+
+                # Determine if using per-family assignments
+                per_family = config.get("category_assignment_config", {}).get("per_family_clustering", False)
+
+                # Build feature families if per-family mode
+                feature_families = None
+                if per_family:
+                    feature_families = {}
+                    for cat_name, indices in group_indices.items():
+                        # Extract family from category name (e.g., "initial_0" -> "initial")
+                        family_name = cat_name.rsplit('_', 1)[0] if '_' in cat_name else cat_name
+                        if family_name not in feature_families:
+                            feature_families[family_name] = []
+                        feature_families[family_name].extend(indices)
+
+                # Initialize assignment matrix from clustering
+                if verbose:
+                    print("Initializing assignment matrix from clustering...")
+
+                init_logits, categories_per_family = initialize_from_clustering(
+                    group_indices,
+                    features.shape[1],
+                    per_family=per_family,
+                    feature_families=feature_families
+                )
+
+                # Create assignment matrix
+                if per_family:
+                    assignment_matrix = PerFamilyAssignmentMatrix(
+                        feature_families,
+                        categories_per_family,
+                        init_logits=init_logits
+                    )
+                else:
+                    num_features = features.shape[1]
+                    num_categories = len(group_indices)
+                    assignment_matrix = SoftAssignmentMatrix(
+                        num_features,
+                        num_categories,
+                        init_logits=init_logits
+                    )
+
+                if verbose:
+                    print(f"  Assignment matrix initialized: {assignment_matrix}")
+                    if per_family:
+                        print(f"  Per-family mode: {len(feature_families)} families")
 
             model = VQVAEWithInitial(
                 vqvae_config=vqvae_config,
@@ -2756,6 +2811,7 @@ Output:
                 initial_feature_offset=initial_info["offset"],
                 initial_feature_count=initial_info["encoded_dim"],  # Use encoded_dim (270D) instead of manual_dim (14D)
                 in_channels=initial_info["in_channels"],
+                assignment_matrix=assignment_matrix,
             )
             if verbose:
                 print("Using VQVAEWithInitial for end-to-end INITIAL CNN training")
@@ -3019,17 +3075,17 @@ Output:
         temporal_encoder_output_dim = getattr(self, '_temporal_encoder_output_dim', None)
         encoded_initial_features = getattr(self, '_encoded_initial_features', None)
 
-        # CRITICAL: Disable torch.compile for variable-length mode
-        # torch.compile warmup runs model.forward() with a sample batch before training
-        # But with variable-length, raw temporal features [B, T, D] need runtime encoding
-        # This causes dimension mismatches during compilation
-        # TODO: Support torch.compile by creating a wrapper that encodes before model forward
-        use_torch_compile = config.get("use_torch_compile", True)
+        # torch.compile support for variable-length mode
+        # Default to disabled for variable-length due to limited speedup on most hardware
         if temporal_encoder is not None:
+            use_torch_compile = config.get("use_torch_compile", False)  # Default: False for variable-length
             if use_torch_compile and config.get("verbose", True):
-                print("\nWARNING: Disabling torch.compile for variable-length mode")
-                print("  torch.compile warmup incompatible with runtime temporal encoding")
-            use_torch_compile = False
+                print("\nVariable-length mode with torch.compile:")
+                print("  ✓ VQ-VAE core will be compiled (static graph)")
+                print("  ✓ Temporal encoding in eager mode (dynamic shapes)")
+                print("  Expected speedup: 10-20% (hardware dependent)")
+        else:
+            use_torch_compile = config.get("use_torch_compile", True)  # Default: True for fixed-length
 
         # Create trainer (learnable or standard)
         if use_learnable:

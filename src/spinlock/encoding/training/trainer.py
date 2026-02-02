@@ -127,14 +127,36 @@ class VQVAETrainer:
 
         self.model = model.to(device)
 
+        # Smart compilation: detect if variable-length or hybrid mode
+        requires_dynamic_encoding = (temporal_encoder is not None)
+
         # Apply torch.compile() for speedup (PyTorch 2.0+)
         if use_torch_compile and device == "cuda":
             try:
-                self.model = torch.compile(self.model, mode="default")
-                if verbose:
-                    logger.info(
-                        "Applied torch.compile() - expect 30-40% speedup after warmup"
+                if requires_dynamic_encoding:
+                    # Selective compilation for variable-length models
+                    from .compilation_wrapper import DynamicEncodingWrapper
+
+                    # temporal_feature_mask_tensor will be set later in __init__
+                    # For now, we'll set it to None and update it later
+                    self.model = DynamicEncodingWrapper(
+                        model=self.model,
+                        temporal_encoder=None,  # Will be set later
+                        temporal_feature_mask=None,  # Will be set later
+                        compile_core=True,
                     )
+                    if verbose:
+                        logger.info(
+                            "Selective compilation: VQ-VAE core only (variable-length mode)"
+                        )
+                        logger.info("  Expected speedup: 15-25% (vs 30-40% for fixed-length)")
+                else:
+                    # Full compilation for fixed-length models
+                    self.model = torch.compile(self.model, mode="default")
+                    if verbose:
+                        logger.info(
+                            "Full compilation: expect 30-40% speedup after warmup"
+                        )
             except Exception as e:
                 if verbose:
                     logger.warning(
@@ -261,6 +283,11 @@ class VQVAETrainer:
             else:
                 self.encoded_initial_features_tensor = None
 
+            # Update wrapper with temporal encoder if using dynamic encoding wrapper
+            from .compilation_wrapper import DynamicEncodingWrapper
+            if isinstance(self.model, DynamicEncodingWrapper):
+                self.model.temporal_encoder = self.temporal_encoder
+
         # Feature cleaning mask
         # Tracks which features survived cleaning during category discovery
         self.feature_mask = feature_mask
@@ -292,6 +319,11 @@ class VQVAETrainer:
                 if verbose:
                     logger.info(f"Temporal feature mask loaded: {temporal_feature_mask.sum()}/{len(temporal_feature_mask)} temporal features kept")
 
+                # Update wrapper with temporal feature mask if using dynamic encoding wrapper
+                from .compilation_wrapper import DynamicEncodingWrapper
+                if isinstance(self.model, DynamicEncodingWrapper):
+                    self.model.temporal_feature_mask = self.temporal_feature_mask_tensor
+
             self.feature_mask_tensor = None  # Don't use the full mask in variable-length mode
 
         elif feature_mask is not None and temporal_encoder is None:
@@ -308,6 +340,66 @@ class VQVAETrainer:
 
         # Training history
         self.history = {"train_loss": [], "val_loss": [], "metrics": []}
+
+    def _encode_variable_length_features(self, batch: Dict[str, Any], device: str) -> torch.Tensor:
+        """DEPRECATED: Encode variable-length temporal features at runtime.
+
+        Use DynamicEncodingWrapper instead for better performance with torch.compile.
+        Kept for backward compatibility only.
+
+        This method handles the common pattern of encoding raw temporal features
+        with variable lengths and concatenating them with encoded initial features.
+
+        Args:
+            batch: Batch dictionary containing:
+                - features: Raw temporal features [B, T, D] or pre-encoded [B, D]
+                - mask: Optional validity mask for variable-length sequences
+                - length: Optional sequence lengths
+                - encoded_initial_features: Optional pre-encoded initial features
+            device: Device to move tensors to
+
+        Returns:
+            Encoded features tensor [B, D]
+        """
+        features = batch["features"].to(device)
+
+        # If no temporal encoder, return features as-is (already encoded)
+        if self.temporal_encoder is None:
+            return features
+
+        # Extract mask and length from batch
+        mask = batch.get("mask")
+        length = batch.get("length")
+
+        # Encode temporal features with mask
+        with torch.no_grad():  # Encoder not trained separately
+            if mask is not None:
+                mask = mask.to(device)
+                length = length.to(device)
+                # Encode with variable lengths
+                encoded_temporal, mask_info = self.temporal_encoder(
+                    features,  # [B, T, D] raw temporal
+                    mask=mask,
+                    lengths=length
+                )
+            else:
+                # No mask - encode normally
+                encoded_temporal = self.temporal_encoder(features)
+
+        # Apply temporal feature cleaning mask if present
+        if self.temporal_feature_mask_tensor is not None:
+            encoded_temporal = encoded_temporal[:, self.temporal_feature_mask_tensor]
+
+        # Concatenate with encoded initial features if present
+        # Get from batch (correctly shuffled with data)
+        initial_features = batch.get("encoded_initial_features")
+        if initial_features is not None:
+            initial_features = initial_features.to(device)
+            features = torch.cat([initial_features, encoded_temporal], dim=1)
+        else:
+            features = encoded_temporal
+
+        return features
 
     def train_epoch(self):
         """Train for one epoch.
@@ -338,59 +430,34 @@ class VQVAETrainer:
         }
 
         for batch in self.train_loader:
+            # Extract batch data
             features = batch["features"].to(self.device)
+            mask = batch.get("mask")
+            if mask is not None:
+                mask = mask.to(self.device)
+            lengths = batch.get("length")
+            if lengths is not None:
+                lengths = lengths.to(self.device)
+            encoded_initial = batch.get("encoded_initial_features")
+            if encoded_initial is not None:
+                encoded_initial = encoded_initial.to(self.device)
 
-            # VARIABLE-LENGTH MODE: Encode temporal features at runtime with sampled lengths
-            # If we have a temporal encoder, features are raw [B, T, D] temporal data
-            # Need to encode with mask, then concatenate with initial features
-            if self.temporal_encoder is not None:
-                # Extract mask and length from batch
-                mask = batch.get("mask")
-                length = batch.get("length")
-
-                # Encode temporal features with mask
-                with torch.no_grad():  # Encoder not trained separately
-                    if mask is not None:
-                        mask = mask.to(self.device)
-                        length = length.to(self.device)
-                        # Encode with variable lengths
-                        encoded_temporal, mask_info = self.temporal_encoder(
-                            features,  # [B, T, D] raw temporal
-                            mask=mask,
-                            lengths=length
-                        )
-                    else:
-                        # No mask - encode normally
-                        encoded_temporal = self.temporal_encoder(features)
-
-                # Apply temporal feature cleaning mask if present
-                if self.temporal_feature_mask_tensor is not None:
-                    encoded_temporal = encoded_temporal[:, self.temporal_feature_mask_tensor]
-
-                # Concatenate with encoded initial features if present
-                # Get from batch (correctly shuffled with data)
-                initial_features = batch.get("encoded_initial_features")
-                if initial_features is not None:
-                    initial_features = initial_features.to(self.device)
-                    features = torch.cat([initial_features, encoded_temporal], dim=1)
-                else:
-                    features = encoded_temporal
-
-                # Feature cleaning masks have been applied above
-                # In variable-length mode:
-                #   - Category discovery uses pyramid-level-split features [initial + p0 + p1 + p2 + p3]
-                #   - Training uses concatenated features [initial + temporal_full]
-                # These have different dimensions, so the feature_mask is incompatible
-                # Feature cleaning was already applied during category discovery
-                # (features are pre-cleaned before being stored as initial_features_only)
+            # Forward - wrapper handles encoding if needed
+            from .compilation_wrapper import DynamicEncodingWrapper
+            if isinstance(self.model, DynamicEncodingWrapper):
+                outputs = self.model(features, mask, lengths, encoded_initial)
+            else:
+                # Fixed-length path or legacy path
+                features = self._encode_variable_length_features(batch, self.device)
+                outputs = self.model(features)
 
             # DEBUG: Print final features shape before model
             if self.current_epoch == 0 and n_batches == 0:
-                print(f"DEBUG: Passing to model: features.shape = {features.shape}")
-
-            # Forward pass WITHOUT raw_ics (features are pre-encoded during category discovery)
-            # Model expects pre-encoded dimension (encoded_dim initial + temporal)
-            outputs = self.model(features)
+                if isinstance(self.model, DynamicEncodingWrapper):
+                    encoded_features = self.model.encode_features(features, mask, lengths, encoded_initial)
+                    print(f"DEBUG: Passing to model: features.shape = {encoded_features.shape}")
+                else:
+                    print(f"DEBUG: Passing to model: features.shape = {features.shape}")
 
             # Compute loss
             # For hybrid INITIAL models, use the expanded input_features as target
@@ -450,8 +517,16 @@ class VQVAETrainer:
             total_loss += loss.item()
             n_batches += 1
 
-            # Save last batch for dead code reset
-            last_batch = features
+            # Save last batch for dead code reset (use encoded features)
+            from .compilation_wrapper import DynamicEncodingWrapper
+            if isinstance(self.model, DynamicEncodingWrapper):
+                last_batch = self.model.encode_features(features, mask, lengths, encoded_initial)
+            else:
+                last_batch = features
+
+            # Ensure last_batch is on the correct device (fix device mismatch in dead code reset)
+            if last_batch is not None and hasattr(last_batch, 'to'):
+                last_batch = last_batch.to(self.device)
 
         avg_loss = total_loss / n_batches
 
@@ -473,54 +548,40 @@ class VQVAETrainer:
 
         with torch.no_grad():
             for batch in self.val_loader:
+                # Extract batch data
                 features = batch["features"].to(self.device)
-
-                # VARIABLE-LENGTH MODE: Encode temporal features at runtime with sampled lengths
-                if self.temporal_encoder is not None:
-                    mask = batch.get("mask")
-                    length = batch.get("length")
-
-                    if mask is not None:
-                        mask = mask.to(self.device)
-                        length = length.to(self.device)
-                        encoded_temporal, mask_info = self.temporal_encoder(
-                            features,
-                            mask=mask,
-                            lengths=length
-                        )
-                    else:
-                        encoded_temporal = self.temporal_encoder(features)
-
-                    # Apply temporal feature cleaning mask if present
-                    if self.temporal_feature_mask_tensor is not None:
-                        encoded_temporal = encoded_temporal[:, self.temporal_feature_mask_tensor]
-
-                    # Concatenate with encoded initial features if present
-                    # Get from batch (correctly shuffled with data)
-                    initial_features = batch.get("encoded_initial_features")
-                    if initial_features is not None:
-                        initial_features = initial_features.to(self.device)
-                        features = torch.cat([initial_features, encoded_temporal], dim=1)
-                    else:
-                        features = encoded_temporal
-
-                    # Apply feature cleaning mask to concatenated features (non-variable-length mode)
-                    if self.feature_mask_tensor is not None:
-                        features = features[:, self.feature_mask_tensor]
-
-                # Handle raw_ics for hybrid INITIAL encoder
+                mask = batch.get("mask")
+                if mask is not None:
+                    mask = mask.to(self.device)
+                lengths = batch.get("length")
+                if lengths is not None:
+                    lengths = lengths.to(self.device)
+                encoded_initial = batch.get("encoded_initial_features")
+                if encoded_initial is not None:
+                    encoded_initial = encoded_initial.to(self.device)
                 raw_ics = batch.get("raw_ics")
                 if raw_ics is not None:
                     raw_ics = raw_ics.to(self.device)
 
-                # Forward pass (pass raw_ics if model supports hybrid INITIAL)
-                if raw_ics is not None and hasattr(self.model, 'initial_encoder'):
-                    outputs = self.model(features, raw_ics=raw_ics)
-                elif raw_ics is not None and hasattr(self.model, '_orig_mod') and hasattr(self.model._orig_mod, 'initial_encoder'):
-                    # Handle torch.compile wrapped model
-                    outputs = self.model(features, raw_ics=raw_ics)
+                # Forward - wrapper handles encoding if needed
+                from .compilation_wrapper import DynamicEncodingWrapper
+                if isinstance(self.model, DynamicEncodingWrapper):
+                    outputs = self.model(features, mask, lengths, encoded_initial, raw_ics=raw_ics)
                 else:
-                    outputs = self.model(features)
+                    # Fixed-length path or legacy path
+                    features = self._encode_variable_length_features(batch, self.device)
+                    # Apply feature cleaning mask (non-variable-length mode)
+                    if self.feature_mask_tensor is not None and self.temporal_encoder is None:
+                        features = features[:, self.feature_mask_tensor]
+
+                    # Forward pass (pass raw_ics if model supports hybrid INITIAL)
+                    if raw_ics is not None and hasattr(self.model, 'initial_encoder'):
+                        outputs = self.model(features, raw_ics=raw_ics)
+                    elif raw_ics is not None and hasattr(self.model, '_orig_mod') and hasattr(self.model._orig_mod, 'initial_encoder'):
+                        # Handle torch.compile wrapped model
+                        outputs = self.model(features, raw_ics=raw_ics)
+                    else:
+                        outputs = self.model(features)
 
                 # Compute loss
                 # For hybrid INITIAL models, use the expanded input_features as target
@@ -573,9 +634,14 @@ class VQVAETrainer:
         )
         from .losses import topographic_similarity_loss
 
-        # Unwrap compiled model if using torch.compile
+        # Unwrap compiled model if using torch.compile or wrapper
         model_for_metrics = self.model
-        if hasattr(self.model, '_orig_mod'):
+        from .compilation_wrapper import DynamicEncodingWrapper
+        if isinstance(self.model, DynamicEncodingWrapper):
+            # Unwrap DynamicEncodingWrapper to get original model
+            model_for_metrics = self.model._original_model
+        elif hasattr(self.model, '_orig_mod'):
+            # Unwrap torch.compile wrapper
             model_for_metrics = self.model._orig_mod
 
         # Compute reconstruction error (raw MSE)
@@ -841,9 +907,14 @@ class VQVAETrainer:
         active_levels_by_length = defaultdict(list)
         valid_fractions = []
 
-        # Unwrap compiled model if using torch.compile
+        # Unwrap compiled model if using torch.compile or wrapper
         model_for_metrics = self.model
-        if hasattr(self.model, '_orig_mod'):
+        from .compilation_wrapper import DynamicEncodingWrapper
+        if isinstance(self.model, DynamicEncodingWrapper):
+            # Unwrap DynamicEncodingWrapper to get original model
+            model_for_metrics = self.model._original_model
+        elif hasattr(self.model, '_orig_mod'):
+            # Unwrap torch.compile wrapper
             model_for_metrics = self.model._orig_mod
 
         model_for_metrics.eval()

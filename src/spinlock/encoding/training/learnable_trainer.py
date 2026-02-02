@@ -2,11 +2,13 @@
 
 import logging
 import torch
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from .trainer import VQVAETrainer
 from .annealing import TemperatureScheduler
+from .losses import compute_total_loss
 from ..categorical_vqvae import CategoricalHierarchicalVQVAE
+from ..variable_length_utils import extract_mask_info_from_batch
 
 logger = logging.getLogger(__name__)
 
@@ -78,25 +80,63 @@ class LearnableVQVAETrainer(VQVAETrainer):
         temperature = self.temp_scheduler(self.current_epoch)
 
         for batch_idx, batch in enumerate(self.train_loader):
+            # Extract batch data
             features = batch["features"].to(self.device)
-            last_batch = features
+            mask = batch.get("mask")
+            if mask is not None:
+                mask = mask.to(self.device)
+            lengths = batch.get("length")
+            if lengths is not None:
+                lengths = lengths.to(self.device)
+            encoded_initial = batch.get("encoded_initial_features")
+            if encoded_initial is not None:
+                encoded_initial = encoded_initial.to(self.device)
+
             last_raw_ics = batch.get("raw_ics")
+            if last_raw_ics is not None:
+                last_raw_ics = last_raw_ics.to(self.device)
 
             # Get optional data
             reference_features = batch.get("reference_features")
             if reference_features is not None:
                 reference_features = reference_features.to(self.device)
 
-            # Forward pass with temperature
-            outputs = self.model(features, temperature=temperature)
+            # Forward - wrapper handles encoding if needed
+            from .compilation_wrapper import DynamicEncodingWrapper
+            if isinstance(self.model, DynamicEncodingWrapper):
+                outputs = self.model(features, mask, lengths, encoded_initial, temperature=temperature)
+                # Get encoded features for assignment losses (with mask for training)
+                encoded_features = self.model.encode_features(features, mask, lengths, encoded_initial, apply_mask=True)
+                # For dead code reset, learnable models need UNMASKED features
+                # (assignment matrix operates on full feature space)
+                last_batch = self.model.encode_features(features, mask, lengths, encoded_initial, apply_mask=False)
+            else:
+                # Legacy path
+                encoded_features = self._encode_variable_length_features(batch, self.device)
+                outputs = self.model(encoded_features, temperature=temperature)
+                last_batch = encoded_features
 
-            # Compute standard VQ-VAE losses
-            from .losses import compute_total_loss
+            # Ensure last_batch is on the correct device (fix device mismatch in dead code reset)
+            if last_batch is not None and hasattr(last_batch, 'to'):
+                last_batch = last_batch.to(self.device)
 
             # Prepare targets dict (required by compute_total_loss)
-            targets = {"features": features}
+            # For hybrid INITIAL models, use the expanded input_features as target
+            # (includes CNN embeddings that must be reconstructed)
+            if "input_features" in outputs:
+                targets = {"features": outputs["input_features"]}
+            else:
+                targets = {"features": features}
+
             if reference_features is not None:
                 targets["reference_features"] = reference_features
+
+            # Add raw_summary to targets for physics consistency measurement
+            if "raw_summary" in batch:
+                targets["raw_summary"] = batch["raw_summary"].to(self.device)
+
+            # Extract mask info for variable-length support
+            mask_info = extract_mask_info_from_batch(batch, self.device)
 
             losses = compute_total_loss(
                 outputs,
@@ -104,19 +144,29 @@ class LearnableVQVAETrainer(VQVAETrainer):
                 self.model,
                 orthogonality_weight=self.orthogonality_weight,
                 informativeness_weight=self.informativeness_weight,
+                category_reconstruction_weight=self.category_reconstruction_weight,
                 topo_weight=self.topo_weight,
                 topo_samples=self.topo_samples,
                 reference_reg_weight=self.reference_reg_weight,
                 reference_features=reference_features,
                 feature_weights=self.feature_weights,
+                entropy_weight=self.entropy_weight,
+                mask_info=mask_info,
                 normalize_mse=self.normalize_mse,
                 normalization_stats=self.normalization_stats,
                 group_indices=self.group_indices,
             )
 
-            # Compute assignment losses
-            soft_assign = self.model.assignment_matrix(temperature)
-            assign_losses = self.compute_assignment_losses(features, soft_assign)
+            # Compute assignment losses (use encoded features)
+            # Get the assignment matrix (handle wrapper)
+            from .compilation_wrapper import DynamicEncodingWrapper
+            if isinstance(self.model, DynamicEncodingWrapper):
+                assignment_matrix = self.model._original_model.assignment_matrix
+            else:
+                assignment_matrix = self.model.assignment_matrix
+
+            soft_assign = assignment_matrix(temperature)
+            assign_losses = self.compute_assignment_losses(encoded_features, soft_assign)
 
             # Total loss
             loss = losses["total"] + assign_losses["total"]
