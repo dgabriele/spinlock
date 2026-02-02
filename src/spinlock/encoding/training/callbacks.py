@@ -447,7 +447,7 @@ class Checkpointer:
 
         self.best_loss = float("inf")
 
-    def __call__(self, model, optimizer, val_loss: float, epoch: int, metrics: dict):
+    def __call__(self, model, optimizer, val_loss: float, epoch: int, metrics: dict, history: dict = None):
         """Save checkpoint if best or at interval.
 
         Args:
@@ -456,6 +456,7 @@ class Checkpointer:
             val_loss: Validation loss
             epoch: Current epoch
             metrics: Metrics dict
+            history: Training history dict (optional, for resume support)
         """
         # Check if this is the best model
         is_best = False
@@ -470,17 +471,17 @@ class Checkpointer:
         # Save best model
         if is_best:
             checkpoint_path = self.checkpoint_dir / "best_model.pt"
-            self._save_checkpoint(checkpoint_path, model, optimizer, epoch, val_loss, metrics)
+            self._save_checkpoint(checkpoint_path, model, optimizer, epoch, val_loss, metrics, history)
 
         # Save periodic checkpoint
         if self.save_every is not None and epoch % self.save_every == 0:
             checkpoint_path = self.checkpoint_dir / f"checkpoint_epoch_{epoch}.pt"
-            self._save_checkpoint(checkpoint_path, model, optimizer, epoch, val_loss, metrics)
+            self._save_checkpoint(checkpoint_path, model, optimizer, epoch, val_loss, metrics, history)
             if self.verbose:
                 logger.info(f"  [Checkpointer] Saved checkpoint at epoch {epoch}")
 
     def _save_checkpoint(
-        self, path: Path, model, optimizer, epoch: int, val_loss: float, metrics: dict
+        self, path: Path, model, optimizer, epoch: int, val_loss: float, metrics: dict, history: dict = None
     ):
         """Save checkpoint to disk.
 
@@ -491,6 +492,7 @@ class Checkpointer:
             epoch: Current epoch
             val_loss: Validation loss
             metrics: Metrics dict
+            history: Training history dict (optional, for resume support)
         """
         checkpoint = {
             "epoch": epoch,
@@ -499,6 +501,10 @@ class Checkpointer:
             "val_loss": val_loss,
             "metrics": metrics,
         }
+
+        # Save training history for resume support
+        if history is not None:
+            checkpoint["history"] = history
 
         # Add full training metadata for reproducibility (if provided)
         if self.config is not None:

@@ -1420,6 +1420,7 @@ Output:
         )
 
         # Load checkpoint if resuming
+        start_epoch = 1
         if config.get("resume_from"):
             if verbose:
                 print(f"\nLoading checkpoint from {config['resume_from']}...")
@@ -1429,14 +1430,27 @@ Output:
             if "optimizer_state_dict" in checkpoint:
                 trainer.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
+            # Extract starting epoch
+            loaded_epoch = checkpoint.get("epoch", 0)
+            start_epoch = loaded_epoch + 1
+
+            # Restore training history if available
+            if "history" in checkpoint:
+                trainer.history = checkpoint["history"]
+                if verbose:
+                    print(f"Restored training history ({len(trainer.history.get('train_loss', []))} previous epochs)")
+
             if verbose:
-                print(f"Resumed from epoch {checkpoint.get('epoch', 'unknown')}")
+                print(f"Resumed from epoch {loaded_epoch}")
+                total_epochs = config.get("epochs", 500)
+                remaining_epochs = total_epochs - loaded_epoch
+                print(f"Will train from epoch {start_epoch} to {total_epochs} ({remaining_epochs} more epochs)")
 
         # Train
         if verbose:
             print("\nStarting training...\n")
 
-        history = trainer.train(epochs=config.get("epochs", 500))
+        history = trainer.train(epochs=config.get("epochs", 500), start_epoch=start_epoch)
 
         # Save final model
         if verbose:

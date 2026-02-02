@@ -29,15 +29,17 @@ Each resolution reveals different structure. The pyramid makes this explicit.
 
 ### 1. Temporal Downsampling (`TemporalPyramid`)
 
-Input: `[B, T, 345]` per-timestep features
+Input: `[B, T, 3]` raw temporal trajectory (T ≤ 256 timesteps, 3 channels)
 
 Output: 4 views at different resolutions
-- **P0**: `[B, T, 345]` — full resolution (every timestep)
-- **P1**: `[B, T/2, 345]` — half resolution (avg-pooled pairs)
-- **P2**: `[B, T/4, 345]` — quarter resolution
-- **P3**: `[B, T/8, 345]` — eighth resolution
+- **P0**: `[B, T, 3]` — full resolution (every timestep, max T=256)
+- **P1**: `[B, T/2, 3]` — half resolution (avg-pooled pairs, max T=128)
+- **P2**: `[B, T/4, 3]` — quarter resolution (max T=64)
+- **P3**: `[B, T/8, 3]` — eighth resolution (max T=32)
 
 Implementation: `nn.AdaptiveAvgPool1d` along time axis.
+
+**Note**: Max timesteps = 256 (configured in variable-length mode). Each pyramid level processes progressively downsampled views.
 
 ### 2. Shared ResNet-1D Backbone
 
@@ -120,6 +122,100 @@ temporal_p3: token 3   (global trend type)
 ```
 
 This is richer than a single 128D temporal embedding — it disentangles temporal structure across scales rather than compressing everything into one vector.
+
+---
+
+## Complete Pyramid Encoding Flow
+
+### End-to-End Architecture
+
+```
+Input: Raw Temporal Trajectory
+    [Batch, T≤256 timesteps, 3 channels]
+              ↓
+    ┌─────────┴──────────┬──────────┬──────────┐
+    ↓                    ↓          ↓          ↓
+  Level 0            Level 1    Level 2    Level 3
+  (1× downsample)    (2×)       (4×)       (8×)
+    ↓                    ↓          ↓          ↓
+  [B,256,3]          [B,128,3]  [B,64,3]  [B,32,3]
+    ↓                    ↓          ↓          ↓
+    └─────────┬──────────┴──────────┴──────────┘
+              ↓
+    Shared ResNet-1D Backbone
+    (Conv1d → ResBlocks → GlobalAvgPool)
+    Same weights for all levels
+              ↓
+    ┌─────────┴──────────┬──────────┬──────────┐
+    ↓                    ↓          ↓          ↓
+  [B, 256D]          [B, 256D]  [B, 256D]  [B, 256D]
+    ↓                    ↓          ↓          ↓
+  Per-Level Projection Heads (separate weights)
+    ↓                    ↓          ↓          ↓
+  [B, 32D]           [B, 64D]   [B, 96D]   [B, 128D]
+    └─────────┬──────────┴──────────┴──────────┘
+              ↓
+        Concatenate
+              ↓
+      [B, 320D temporal]
+              ↓
+  ┌───────────┴────────────┐
+  ↓                        ↓
+Initial (166D)    Temporal (320D)
+  └───────────┬────────────┘
+              ↓
+       [B, 486D total]
+              ↓
+    Feature Categorization
+              ↓
+  ┌───┬─────┬─────┬─────┬─────┬───┐
+  ↓   ↓     ↓     ↓     ↓     ↓   ↓
+ init temp  temp  temp  temp  ... (other
+(166D) _p0   _p1   _p2   _p3       categories)
+      (32D) (64D) (96D) (128D)
+  ↓   ↓     ↓     ↓     ↓     ↓   ↓
+    VQ-VAE per category
+    (independent encoding)
+```
+
+### Key Architecture Points
+
+- **Max timesteps**: 256 (set via `max_timesteps: 256` in config)
+- **Input channels**: 3 raw features per timestep
+- **Shared backbone**: All pyramid levels use same ResNet-1D weights
+- **Multi-scale processing**: Each level sees different temporal resolution
+- **Per-level projections**: Separate heads create different-sized embeddings
+- **Total temporal output**: 320D (32+64+96+128)
+- **Combined input**: 486D (166 initial + 320 temporal) fed to VQ-VAE
+- **Feature splitting**: Temporal 320D split into 4 categories (temporal_p0 through temporal_p3)
+
+### Processing Example
+
+For a sample trajectory with T=128 timesteps:
+
+1. **Downsample to pyramid levels**:
+   - P0: [B, 128, 3] (full resolution)
+   - P1: [B, 64, 3] (2× downsampled)
+   - P2: [B, 32, 3] (4× downsampled)
+   - P3: [B, 16, 3] (8× downsampled)
+
+2. **Process through shared backbone**: Each level → [B, 256D]
+
+3. **Project to different dimensions**:
+   - P0 → [B, 32D]
+   - P1 → [B, 64D]
+   - P2 → [B, 96D]
+   - P3 → [B, 128D]
+
+4. **Concatenate**: [B, 320D]
+
+5. **Combine with initial features**: [B, 166D + 320D = 486D]
+
+6. **Split for categorization**:
+   - temporal_p0: features[166:198] (32D from P0)
+   - temporal_p1: features[198:262] (64D from P1)
+   - temporal_p2: features[262:358] (96D from P2)
+   - temporal_p3: features[358:486] (128D from P3)
 
 ---
 
@@ -299,8 +395,8 @@ Epoch 2, Batch 3:  T=32   (different again)
 Create validity mask for each sample:
 ```python
 Sample with T=64:
-  features: [500, D]  # Full padded trajectory
-  mask:     [True×64, False×436]  # First 64 valid
+  features: [256, 3]  # Full padded trajectory (max 256 timesteps)
+  mask:     [True×64, False×192]  # First 64 valid, rest padded
   length:   64
 ```
 
@@ -333,11 +429,11 @@ Pyramid automatically adjusts levels based on trajectory length:
 
 Masks downsample through pyramid using "ceil" (conservative):
 ```python
-Original mask: [True×64, False×436] at T=500
-Level 0 (1×):  [True×64, False×436]  # Full resolution
-Level 1 (2×):  [True×32, False×218]  # Pooled pairs
-Level 2 (4×):  [True×16, False×109]  # Pooled groups of 4
-Level 3 (8×):  [True×8,  False×54]   # Pooled groups of 8
+Original mask: [True×64, False×192] at T=256 max
+Level 0 (1×):  [True×64, False×192]  # Full resolution
+Level 1 (2×):  [True×32, False×96]   # Pooled pairs
+Level 2 (4×):  [True×16, False×48]   # Pooled groups of 4
+Level 3 (8×):  [True×8,  False×24]   # Pooled groups of 8
 ```
 
 "Ceil" method: position valid if **ANY** source timestep valid (conservative).

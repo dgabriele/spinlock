@@ -888,11 +888,12 @@ class VQVAETrainer:
 
         return vl_metrics
 
-    def train(self, epochs: int):
+    def train(self, epochs: int, start_epoch: int = 1):
         """Train for specified number of epochs.
 
         Args:
-            epochs: Number of epochs to train
+            epochs: Total number of epochs to train to (not number of additional epochs)
+            start_epoch: Starting epoch number (default: 1, for resume: loaded_epoch + 1)
 
         Returns:
             Training history dict
@@ -901,7 +902,11 @@ class VQVAETrainer:
             logger.info("=" * 70)
             logger.info("VQ-VAE TRAINING")
             logger.info("=" * 70)
-            logger.info(f"Epochs: {epochs}")
+            if start_epoch > 1:
+                logger.info(f"Resuming from epoch {start_epoch - 1}")
+                logger.info(f"Training epochs {start_epoch} to {epochs} ({epochs - start_epoch + 1} more epochs)")
+            else:
+                logger.info(f"Epochs: {epochs}")
             logger.info(f"Training samples: {len(self.train_loader.dataset)}")
             logger.info(f"Validation samples: {len(self.val_loader.dataset)}")
             logger.info(f"Device: {self.device}")
@@ -916,7 +921,7 @@ class VQVAETrainer:
         start_time = time.time()
         last_val_loss = None
 
-        for epoch in range(1, epochs + 1):
+        for epoch in range(start_epoch, epochs + 1):
             epoch_start = time.time()
             self.current_epoch = epoch
 
@@ -1090,7 +1095,7 @@ class VQVAETrainer:
 
             # 2. Checkpointing (only when we validated)
             if should_validate and self.checkpointer is not None:
-                self.checkpointer(self.model, self.optimizer, val_loss, epoch, metrics)
+                self.checkpointer(self.model, self.optimizer, val_loss, epoch, metrics, self.history)
 
             # 3. Early stopping (only when we validated)
             if should_validate and self.early_stopping(val_loss, epoch):
