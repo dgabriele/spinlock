@@ -1084,14 +1084,13 @@ class VQVAETrainer:
 
                 if "reconstruction_error_normalized" in metrics:
                     recon_norm = metrics["reconstruction_error_normalized"]
-                    val_msg += f"recon={recon_error:.3f} (per-cat={recon_norm:.3f}"
 
-                    # Add global reconstruction quality if available
+                    # Show global first (consistent with training logs)
                     if "global_reconstruction_error_normalized" in metrics:
                         global_norm = metrics["global_reconstruction_error_normalized"]
-                        val_msg += f", global={global_norm:.3f})"
+                        val_msg += f"recon={recon_error:.3f} (global={global_norm:.3f}, per-cat={recon_norm:.3f})"
                     else:
-                        val_msg += ")"
+                        val_msg += f"recon={recon_error:.3f} (per-cat={recon_norm:.3f})"
                 else:
                     val_msg += f"recon={recon_error:.3f}"
 
