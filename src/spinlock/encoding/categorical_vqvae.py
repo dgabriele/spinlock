@@ -251,20 +251,44 @@ class CategoricalHierarchicalVQVAE(nn.Module):
          ...]
     """
 
-    def __init__(self, config: CategoricalVQVAEConfig):
-        """Initialize categorical hierarchical VQ-VAE."""
+    def __init__(
+        self,
+        config: CategoricalVQVAEConfig,
+        assignment_matrix: Optional[nn.Module] = None
+    ):
+        """Initialize categorical hierarchical VQ-VAE.
+
+        Args:
+            config: VQ-VAE configuration
+            assignment_matrix: Optional learnable assignment matrix for soft routing.
+                              If None, uses static hard routing (default behavior).
+        """
         super().__init__()
 
         self.config = config
+        self.assignment_matrix = assignment_matrix
 
-        # Feature extractor (input → N category embeddings)
-        self.feature_extractor = GroupedFeatureExtractor(
-            input_dim=config.input_dim,
-            group_indices=config.group_indices,
-            group_embedding_dim=config.group_embedding_dim,
-            group_hidden_dim=config.group_hidden_dim,
-            dropout=config.dropout,
-        )
+        # Feature extraction (conditional based on mode)
+        if assignment_matrix is not None:
+            # Learnable mode: soft routing
+            from .soft_routing import SoftGroupedFeatureExtractor
+            self.soft_router = SoftGroupedFeatureExtractor(
+                input_dim=config.input_dim,
+                num_categories=len(config.categories),
+                embedding_dim=config.group_embedding_dim,
+                hidden_dim=config.group_hidden_dim
+            )
+            self.feature_extractor = None  # Not used in learnable mode
+        else:
+            # Static mode: hard routing (existing behavior)
+            self.feature_extractor = GroupedFeatureExtractor(
+                input_dim=config.input_dim,
+                group_indices=config.group_indices,
+                group_embedding_dim=config.group_embedding_dim,
+                group_hidden_dim=config.group_hidden_dim,
+                dropout=config.dropout,
+            )
+            self.soft_router = None
 
         # Categorical projector (N embeddings → N×L latent vectors)
         self.projector = CategoricalProjector(
@@ -347,7 +371,7 @@ class CategoricalHierarchicalVQVAE(nn.Module):
         return self.vq_layers
 
     def encode(self, x: torch.Tensor) -> List[torch.Tensor]:
-        """Encode input to N×L latent vectors.
+        """Encode input to N×L latent vectors (soft or hard routing).
 
         Args:
             x: Input features [batch, input_dim]
@@ -355,10 +379,23 @@ class CategoricalHierarchicalVQVAE(nn.Module):
         Returns:
             List of N×L latent vectors [batch, latent_dim]
         """
-        # Extract category embeddings
-        group_embeddings = self.feature_extractor(x)
+        # Feature extraction (conditional based on mode)
+        if self.soft_router is not None:
+            # Learnable mode: get soft assignments
+            temperature = getattr(self, '_current_temperature', 1.0)  # Set by trainer
+            soft_assign = self.assignment_matrix(temperature)
+            group_emb_tensor = self.soft_router(x, soft_assign)  # [B, K, E]
 
-        # Project to N×L hierarchical latent vectors
+            # Convert tensor to dict format for projector
+            group_embeddings = {
+                cat: group_emb_tensor[:, i, :]
+                for i, cat in enumerate(self.config.categories)
+            }
+        else:
+            # Static mode: hard routing (existing)
+            group_embeddings = self.feature_extractor(x)  # Dict[cat → [B, E]]
+
+        # Project to N×L hierarchical latent vectors (IDENTICAL for both modes)
         latent_vectors = self.projector(group_embeddings)
 
         return latent_vectors
@@ -518,11 +555,12 @@ class CategoricalHierarchicalVQVAE(nn.Module):
 
         return info_loss
 
-    def forward(self, x: torch.Tensor) -> Dict[str, Any]:
+    def forward(self, x: torch.Tensor, temperature: float = 1.0) -> Dict[str, Any]:
         """Full forward pass: encode → quantize → decode.
 
         Args:
             x: Input features [batch, input_dim]
+            temperature: Temperature for learnable mode (ignored in static mode)
 
         Returns:
             Dictionary with keys:
@@ -534,6 +572,9 @@ class CategoricalHierarchicalVQVAE(nn.Module):
                 - tokens: Token indices [batch, N×L]
                 - encodings: List of one-hot encodings for entropy regularization
         """
+        # Store temperature for encode() to access (learnable mode only)
+        self._current_temperature = temperature
+
         # Encode to N×L latent vectors
         z_list = self.encode(x)
 

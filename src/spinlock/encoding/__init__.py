@@ -46,6 +46,7 @@ Usage:
 """
 
 from .categorical_vqvae import CategoricalHierarchicalVQVAE, CategoricalVQVAEConfig
+from .learnable_assignment import LearnableAssignmentConfig
 from .category_assignment import CategoryAssignment, DynamicCategoryAssignment
 from .clustering_assignment import (
     hierarchical_clustering_assignment,
@@ -98,6 +99,8 @@ __all__ = [
     # Main model
     "CategoricalHierarchicalVQVAE",
     "CategoricalVQVAEConfig",
+    # Learnable assignment
+    "LearnableAssignmentConfig",
     # Category assignment
     "CategoryAssignment",
     "DynamicCategoryAssignment",

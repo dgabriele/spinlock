@@ -1,0 +1,374 @@
+# Variable-Length VQ-VAE Configuration with LEARNABLE CATEGORY ASSIGNMENTS
+#
+# VARIABLE-LENGTH MODE + LEARNABLE ASSIGNMENTS ENABLED
+# This config combines:
+# 1. Variable-length trajectory support (powers of 2: [16, 32, 64, 128, 256])
+# 2. End-to-end learnable category assignments via Gumbel-Softmax
+#
+# Category assignments are optimized during training to minimize reconstruction loss
+# rather than using static pre-clustering.
+#
+# Based on baseline_vqvae_variable_length.yaml with learnable assignment mode.
+#
+# UPDATED (2026-02-01): VQ-VAE Performance Improvements
+# - Initial CNN: 128D → 256D (match temporal backbone, double capacity)
+# - Removed final BatchNorm constraint (allows natural variance preservation)
+# - Added normalized reconstruction metrics (variance-normalized per category)
+# - Reduced epochs: 2000 → 1000 (sufficient with improved architecture)
+# - Expected: Initial quality 30% → 70-80%+ (matching temporal performance)
+#
+# This configuration has been optimized through comprehensive clustering experiments
+# (2026-01-28). See: experiments/clustering_comparison/
+#
+# Expected Performance:
+# - L_recon ≈ 0.015 (quality 98.5%)
+# - val_loss ≈ 0.067 (composite metric)
+# - ~18% codebook utilization
+# - Orthogonality: ~+0.36 overage (best achievable with clustering)
+#
+# Architecture:
+# - High capacity: 512/1024 embedding/hidden dims
+# - Large hierarchical codebooks: 4096/2048/1024 tokens
+# - Commitment cost: 0.25 (optimized for utilization)
+#
+# Category Discovery:
+# - Method: Silhouette clustering (OPTIMAL - tested vs 4 alternatives)
+# - Expected: 3 clean, balanced categories
+# - Linkage: Ward (minimizes within-cluster variance)
+# - Distance: Correlation (measures feature similarity)
+#
+# Note: This configuration represents a well-tuned optimum.
+# Experiments with larger capacity, deeper architectures, feature importance
+# weighting, and hybrid gradient methods all performed worse.
+
+# Dataset
+dataset_path: "datasets/100k_baseline_dev.h5"
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 14
+      cnn_embedding_dim: 128  # Keep at 128 for variable-length mode compatibility
+      use_final_batchnorm: true  # Keep BatchNorm for stability during VL mode
+      encode_manual: false
+      in_channels: 3
+
+  temporal:
+    encoder: PyramidTemporalEncoder
+    encoder_params:
+      level_dims: [32, 64, 96, 128]       # Per-level output dimensions (total 320D)
+      downsample_factors: [1, 2, 4, 8]    # Temporal downsampling (full/half/quarter/eighth)
+      architecture: "resnet1d_3"            # Shared ResNet-1D backbone
+
+      # Variable-Length Trajectory Support - ENABLED
+      # Training on variable-length temporal sequences for meta-learning
+      # and operator discovery.
+      #
+      # Configuration: Powers of 2 (aligns with pyramid architecture)
+      # Using fixed_bins with powers of 2: [16, 32, 64, 128, 256]
+      # This aligns perfectly with downsample_factors [1, 2, 4, 8]
+      variable_length:
+        enabled: true  # ENABLED for variable-length mode
+
+        # Length constraints (for validation)
+        min_timesteps: 16    # Minimum: 2^4 (well above max_factor=8)
+        max_timesteps: 256   # Maximum: 2^8
+
+        # Sampling strategy: fixed bins at powers of 2
+        sampling_strategy: "fixed_bins"
+        length_bins: [16, 32, 64, 128, 256]  # Powers of 2 align with pyramid
+
+        # Pyramid adaptation
+        adaptive_pyramid: true  # Auto-skip invalid pyramid levels for short trajectories
+        min_pyramid_length: 1   # Minimum T_i at any pyramid level
+
+        # Mask downsampling method
+        mask_downsample_method: "ceil"  # Conservative: valid if ANY source timestep valid
+      #
+      #   # Training curriculum (OPTIONAL)
+      #   # Gradually decrease min_timesteps over training epochs
+      #   # Allows smooth transition from long → short trajectories
+      #   # use_length_curriculum: false
+      #   # curriculum_epochs: 200        # Number of epochs for curriculum
+      #   # curriculum_start_min: 400     # Start with this min_timesteps
+      #   # curriculum_schedule: "linear" # "linear", "cosine", or "exponential"
+      #
+      # Recommended configurations:
+      #
+      # 1. Conservative (Full pyramid always):
+      #    enabled: true
+      #    min_timesteps: 100  # Well above max factor (8)
+      #    max_timesteps: 500
+      #    sampling_strategy: "uniform"
+      #
+      # 2. Aggressive (Allow short trajectories):
+      #    enabled: true
+      #    min_timesteps: 8  # Exactly max factor
+      #    max_timesteps: 500
+      #    sampling_strategy: "geometric"
+      #    geometric_decay: 0.02  # Favor shorter (faster equilibration)
+      #
+      # 3. Curriculum learning:
+      #    enabled: true
+      #    min_timesteps: 8
+      #    max_timesteps: 500
+      #    use_length_curriculum: true
+      #    curriculum_epochs: 200
+      #    curriculum_start_min: 400  # Start conservative, decrease to 8
+      #
+      # Minimum T requirements by pyramid levels:
+      #   Levels [1,2,4,8] → min_T ≥ 8 (all 4 levels)
+      #   Levels [1,2,4]   → min_T ≥ 4 (3 levels)
+      #   Levels [1,2]     → min_T ≥ 2 (2 levels)
+      #   Levels [1]       → min_T ≥ 1 (1 level)
+
+# VQ-VAE Architecture - HIGH CAPACITY
+model:
+  group_embedding_dim: 512      # DOUBLED from 256
+  group_hidden_dim: 2048       # DOUBLED from 512
+
+  # Adaptive compression ratios
+  # Set to "auto" to compute ratios based on feature characteristics
+  # (variance, dimensionality, information content, correlation)
+  compression_ratios: "auto"
+  auto_compression_strategy: "balanced"  # Options: "variance", "dimensionality", "information", "balanced"
+
+  # Levels already define the architecture
+  levels: []
+
+  # VQ-VAE hyperparameters
+  uniform_codebook_init: true
+  commitment_cost: 0.1         # LOWERED from 0.2 to encourage exploration of new codes
+  use_ema: true
+  decay: 0.99
+  dropout: 0.35                 # INCREASED from 0.3 to reduce overfitting (train/val gap mitigation)
+
+  # Auxiliary loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.3
+
+# Feature Cleaning
+# CRITICAL: pre_categorization=false preserves semantic diversity for clustering
+# This allows auto-discovery to find 10-20 behavioral categories instead of just 2
+feature_cleaning:
+  enabled: true
+  pre_categorization: true # Clean per-category AFTER discovery (default)
+  variance_threshold: 1e-10
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
+  outlier_method: "percentile"
+  percentile_range: [0.5, 99.5]
+
+# Training
+training:
+  batch_size: 1024
+  learning_rate: 0.001
+  num_epochs: 1000  # Reduced from 2000 (sufficient for convergence with improved architecture)
+  optimizer: "adam"
+
+  # Learning rate scheduler - reduces overfitting and oscillation
+  # Cosine annealing smoothly decays LR from initial to eta_min over T_max epochs
+  scheduler:
+    type: "cosine"
+    T_max: 1000        # Decay over full training duration
+    eta_min: 0.0001    # Minimum LR (10% of initial 0.001)
+    # Benefits:
+    # - Reduces oscillation in later epochs (allows fine-tuning)
+    # - Helps escape local minima early (high LR)
+    # - Settles into better solution late (low LR)
+    # - Addresses train/val gap by preventing overfitting
+  warmup_epochs: 20  # Reduced from 200 (proportional to total epochs)
+
+  # Category discovery (learnable mode - end-to-end gradient-based optimization)
+  category_assignment: "learnable"
+  num_categories_auto: null
+  orthogonality_target: 0.15
+  min_features_per_category: 3
+
+  # Category assignment configuration
+  # OPTIMAL SETTINGS based on comprehensive experiments (2026-01-28)
+  # See: experiments/clustering_comparison/RESULTS_SUMMARY_UPDATED.txt
+  #
+  # Tested 5 methods:
+  #   - Gap Statistic: 73.48% quality, +0.636 orthogonality (poor)
+  #   - Silhouette: 82.24% quality, +0.362 orthogonality (BEST) ⭐
+  #   - Average Linkage: 83.37% quality, unknown orthogonality (risky)
+  #   - Elbow: 84.45% quality, +0.809 orthogonality (over-clustered)
+  #   - Hybrid: 83.70% quality, +0.562 orthogonality (FAILED - made worse)
+  #
+  # WINNER: Silhouette clustering-only (method="clustering")
+  #   - Best orthogonality among all methods
+  #   - Good reconstruction quality (82.24%)
+  #   - Simple, fast, stable
+  #
+  # AVOID: method="hybrid" (tested, found counterproductive)
+  #   - Gradient refinement WORSENED orthogonality by 55%
+  #   - Small quality gain (+1.46pp) not worth orthogonality cost
+  category_assignment_config:
+    method: "clustering"  # OPTIMAL: clustering-only (NOT "hybrid")
+    isolated_families: []
+    reassign_orphans: true
+    subsample_excess_fraction: 0.1
+    device: "cuda"
+
+    # Gradient refinement parameters (only used if method="hybrid")
+    # NOTE: Hybrid method tested and found counterproductive - do NOT use
+    # gradient_epochs: 500
+    # gradient_lr: 0.01
+
+    # Hierarchical clustering parameters
+    linkage_method: "ward"  # OPTIMAL: Ward linkage (minimizes within-cluster variance)
+    distance_metric: "correlation"  # OPTIMAL: Correlation distance (1 - |r|)
+
+    # K selection strategy
+    # OPTIMAL: Silhouette method (2026-01-28 experiments)
+    #   vs Gap Statistic: +8.76pp better reconstruction, 42% better orthogonality
+    #   vs Elbow: Avoids over-clustering (3 categories vs 12)
+    #   vs Hybrid: Better orthogonality (+0.362 vs +0.562)
+    k_selection_method: "silhouette"  # OPTIMAL - Options: "silhouette", "gap_statistic", "elbow", "manual"
+    gap_statistic_refs: 10  # Number of reference distributions (if using gap_statistic)
+    # manual_k: 5  # Uncomment to force specific K when k_selection_method="manual"
+    # distance_threshold: 0.5  # Uncomment to cut dendrogram at distance (overrides K selection)
+
+    # Dendrogram visualization
+    export_dendrogram: true
+    dendrogram_path: "diagnostics/dendrograms/100k_fine_grained_categories"
+
+    # Per-family clustering - cluster each family independently
+    per_family_clustering: true
+    per_family_params:
+      initial:
+        min_clusters: 2
+        max_clusters: 12  # INCREASED from 5 (166 features / 12 = ~14 per category)
+      temporal_p0:
+        min_clusters: 2
+        max_clusters: 10  # OK (29 features / 10 = ~3 per category)
+      temporal_p1:
+        min_clusters: 2
+        max_clusters: 15  # INCREASED from 10 (55 features / 15 = ~4 per category)
+      temporal_p2:
+        min_clusters: 2
+        max_clusters: 25  # INCREASED from 15 (94 features / 25 = ~4 per category)
+      temporal_p3:
+        min_clusters: 2
+        max_clusters: 35  # INCREASED from 20 (128 features / 35 = ~4 per category)
+
+    # Mega-category splitting - recursively split categories > max_category_size
+    # NOTE: In learnable mode, these parameters are only used for initialization clustering
+    split_mega_categories: true
+    max_category_size: 40           # Maximum features per category
+    max_split_recursion_depth: 5    # INCREASED from 3 to allow deeper splitting
+    max_clusters_for_split: 12      # INCREASED from 8 to try more subdivision options
+
+  # Learnable Assignment Configuration
+  # End-to-end gradient-based optimization of category assignments
+  learnable_assignment:
+    # Initialization from clustering (warm start)
+    init_method: "clustering"
+
+    # Temperature annealing for Gumbel-Softmax
+    temperature_start: 1.0          # Soft assignments (uniform-like)
+    temperature_end: 0.1            # Hard assignments (sharp)
+    temperature_schedule: "linear"  # Options: linear, exponential, cosine
+
+    # Assignment loss weights
+    orthogonality_weight: 0.1       # Penalize correlated categories
+    balance_weight: 0.05            # Penalize unbalanced category sizes
+    family_constraint_weight: 1.0   # Penalize cross-family assignments (per-family mode)
+
+    # Optimization
+    assignment_lr: 0.001            # Lower than main LR for stability
+
+    # Optional: freeze assignments after convergence
+    freeze_after_epochs: null       # Set to epoch number to freeze, null to keep learning
+
+  # Loss normalization
+  # Normalizes MSE-based losses (L_recon, L_info) by target variance
+  # Makes losses scale-invariant and magnitudes more predictable
+  # Recommended: true (default)
+  normalize_mse: true  # Set to false to use raw MSE (legacy behavior)
+
+  # Loss weights
+  # NOTE: With normalize_mse=true, MSE losses are bounded ~[0, 2]
+  #       making them comparable to orthogonality [0, 1] and topographic [0, 2]
+  reconstruction_weight: 1.0    # Primary reconstruction quality (global: MSE / global_variance)
+  category_reconstruction_weight: 0.15  # Per-category reconstruction regularizer
+                                        # Ensures all categories contribute (prevents collapse)
+                                        # Set to 0.0 to use only global reconstruction
+                                        # Recommended: 0.10-0.20 when enabled
+  vq_weight: 0.8                # Vector quantization commitment
+  orthogonality_weight: 0.125   # Codebook diversity (already normalized)
+  informativeness_weight: 0.35  # Per-category partial decoder reconstruction - INCREASED from 0.30 to push specialization
+  entropy_weight: 0.25          # Uniform codebook usage - INCREASED from 0.15 to improve utilization
+  topo_weight: 0.5              # Topology preservation (already normalized)
+  topo_samples: 2048            # Samples for topographic loss computation
+
+  # Checkpointing
+  save_every: 25
+  checkpoint_dir: "checkpoints/vqvae/100k_learnable_vl"
+
+  # Callbacks
+  early_stopping_patience: 200 
+  early_stopping_min_delta: 0.01
+
+  # Dead code resets - DISABLED
+  dead_code_reset_interval: 50           # Reset every 50 epochs (less disruptive)
+  dead_code_threshold: 5.0              # Percentile threshold (5th = bottom 5%)
+  dead_code_max_reset_fraction: 0.05    # Reset up to 5% of codes (~1-2 per interval)
+
+  # Validation
+  val_every_n_epochs: 5
+
+  # Performance
+  use_torch_compile: true
+
+# Logging
+logging:
+  wandb: false
+  log_interval: 100
+  eval_interval: 500
+  verbose: true
+
+# Random seed
+random_seed: 42
+
+# Memory Management
+# Controls chunked loading to prevent OOM on large datasets
+hdf5_chunk_size: auto  # "auto" = calculate based on 400MB target per chunk
+                       # Set to integer (e.g., 1000) for manual control
+                       # Set to 0 to disable chunking
+encode_chunk_size: 5000  # Samples to convert to tensor at once during encoding
+
+# Proven Performance (epoch 100):
+# - val_loss: 0.067 (composite)
+# - L_recon: ~0.015 (quality: 0.985 = 98.5%)
+# - Codebook utilization: ~18%
+# - Topology preservation: 0.975 (pre) → 0.998 (post)
+# - Model size: 7168 total codes (4096 + 2048 + 1024)
+# - Training time: ~2.7s/epoch on GPU with torch.compile
+#
+# Clustering Method Validation (2026-01-28):
+# Comprehensive experiments tested 5 clustering configurations:
+#
+# Results Summary:
+#   Method              Quality   Orthogonality   Clusters   Verdict
+#   ─────────────────────────────────────────────────────────────────
+#   Silhouette (BEST)   82.24%    +0.362 (best)   3          ⭐ OPTIMAL
+#   Average Linkage     83.37%    Unknown         3          Risky
+#   Gap Statistic       73.48%    +0.636          5          Poor
+#   Elbow               84.45%    +0.809 (worst)  12         Over-clustered
+#   Hybrid              83.70%    +0.562          3          Failed objective
+#
+# Key Findings:
+# - Silhouette method provides best orthogonality (+0.362 vs +0.562-0.809)
+# - Good reconstruction quality (82.24%)
+# - Clean 3-category structure (balanced, interpretable)
+# - Fast, simple, stable (no gradient refinement needed)
+# - Hybrid method WORSENED orthogonality (gradient refinement counterproductive)
+#
+# This configuration represents a well-tuned, experimentally validated optimum.
+# Alternative architectures and clustering methods tested achieved worse results.
+#
+# For detailed analysis: experiments/clustering_comparison/RESULTS_SUMMARY_UPDATED.txt

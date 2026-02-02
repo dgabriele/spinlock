@@ -196,6 +196,12 @@ Output:
             help="Print detailed progress information",
         )
 
+        exec_group.add_argument(
+            "--learnable",
+            action="store_true",
+            help="Use learnable category assignments (end-to-end training)",
+        )
+
         # Adaptive tuning options
         tuning_group = parser.add_argument_group("adaptive tuning options")
 
@@ -1023,7 +1029,8 @@ Output:
                     print("  No features pruned (all pass thresholds)")
 
         # Auto-discover categories (if needed)
-        if config.get("category_assignment") == "auto" and config.get("resume_from") is None:
+        # For learnable mode, we still run clustering for initialization
+        if config.get("category_assignment") in ["auto", "learnable"] and config.get("resume_from") is None:
             if verbose:
                 print("\nAuto-discovering feature categories via clustering...")
 
@@ -1386,8 +1393,8 @@ Output:
         else:
             print(f"\n[DEBUG] Indices still OK before model building: {len(all_indices)} total, all unique")
 
-        model, vqvae_config = self._build_model(
-            normalized_features, group_indices, config, verbose, initial_info
+        model, vqvae_config, use_learnable_actual = self._build_model(
+            normalized_features, group_indices, config, verbose, initial_info, feature_names
         )
 
         # DEBUG: Memory after model building
@@ -1422,6 +1429,7 @@ Output:
             feature_mask,
             feature_cleaning_params,
             per_family_stats,
+            use_learnable_actual,
         )
 
         # Load checkpoint if resuming
@@ -2653,6 +2661,7 @@ Output:
         config: Dict[str, Any],
         verbose: bool,
         initial_info: Optional[Dict[str, Any]] = None,
+        feature_names: Optional[List[str]] = None,
     ):
         """Build VQ-VAE model.
 
@@ -2728,9 +2737,17 @@ Output:
 
         print(f"\n[DEBUG] CategoricalVQVAEConfig created successfully")
 
+        # Check if using learnable assignment mode
+        use_learnable = config.get("category_assignment") == "learnable" or config.get("learnable", False)
+
         # Build model - use wrapper for hybrid INITIAL encoding
         if initial_info is not None:
             from spinlock.encoding.vqvae_with_initial import VQVAEWithInitial
+
+            if use_learnable:
+                print("\n[WARNING] Learnable assignment mode not yet supported with hybrid INITIAL encoding")
+                print("  Falling back to standard categorical VQ-VAE with static assignments\n")
+                use_learnable = False
 
             model = VQVAEWithInitial(
                 vqvae_config=vqvae_config,
@@ -2742,6 +2759,69 @@ Output:
             )
             if verbose:
                 print("Using VQVAEWithInitial for end-to-end INITIAL CNN training")
+        elif use_learnable:
+            from spinlock.encoding.learnable_assignment import (
+                initialize_from_clustering,
+                PerFamilyAssignmentMatrix,
+                SoftAssignmentMatrix
+            )
+            import torch
+
+            if verbose:
+                print("\n[LEARNABLE ASSIGNMENT MODE]")
+                print("Creating VQ-VAE with learnable category assignments\n")
+
+            # Determine if using per-family assignments
+            per_family = config.get("category_assignment_config", {}).get("per_family", False)
+
+            # Build feature families if per-family mode
+            feature_families = None
+            if per_family:
+                feature_families = {}
+                for cat_name, indices in group_indices.items():
+                    # Extract family from category name (e.g., "initial_0" -> "initial")
+                    family_name = cat_name.rsplit('_', 1)[0] if '_' in cat_name else cat_name
+                    if family_name not in feature_families:
+                        feature_families[family_name] = []
+                    feature_families[family_name].extend(indices)
+
+            # Initialize assignment matrix from clustering
+            if verbose:
+                print("Initializing assignment matrix from clustering...")
+
+            init_logits, categories_per_family = initialize_from_clustering(
+                group_indices,
+                features.shape[1],
+                per_family=per_family,
+                feature_families=feature_families
+            )
+
+            # Create assignment matrix
+            if per_family:
+                assignment_matrix = PerFamilyAssignmentMatrix(
+                    feature_families,
+                    categories_per_family,
+                    init_logits=init_logits
+                )
+            else:
+                num_features = features.shape[1]
+                num_categories = len(group_indices)
+                assignment_matrix = SoftAssignmentMatrix(
+                    num_features,
+                    num_categories,
+                    init_logits=init_logits
+                )
+
+            if verbose:
+                print(f"  Assignment matrix initialized: {assignment_matrix}")
+                if per_family:
+                    print(f"  Per-family mode: {len(feature_families)} families")
+
+            # Create unified model with assignment matrix
+            model = CategoricalHierarchicalVQVAE(
+                config=vqvae_config,
+                assignment_matrix=assignment_matrix
+            )
         else:
             model = CategoricalHierarchicalVQVAE(vqvae_config)
 
@@ -2792,7 +2872,7 @@ Output:
 
         print(f"{'='*70}\n")
 
-        return model, vqvae_config
+        return model, vqvae_config, use_learnable
 
     def _create_data_loaders(
         self,
@@ -2910,10 +2990,17 @@ Output:
         feature_mask: Optional[np.ndarray] = None,
         feature_cleaning_params: Optional[Dict[str, Any]] = None,
         per_family_stats: Optional[Dict[str, tuple]] = None,
+        use_learnable: bool = False,
     ):
         """Create VQVAETrainer with full metadata for checkpoint reproducibility."""
         from spinlock.encoding.training import VQVAETrainer
         from pathlib import Path
+
+        # Use the actual use_learnable flag (passed from _build_model which may have fallen back to static)
+
+        if use_learnable:
+            from spinlock.encoding.training.learnable_trainer import LearnableVQVAETrainer
+            from spinlock.encoding.training.annealing import TemperatureScheduler
 
         checkpoint_dir = config.get("checkpoint_dir")
         if checkpoint_dir is None and config.get("output_dir"):
@@ -2944,47 +3031,106 @@ Output:
                 print("  torch.compile warmup incompatible with runtime temporal encoding")
             use_torch_compile = False
 
-        trainer = VQVAETrainer(
-            model=model,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            learning_rate=config.get("learning_rate", 1e-3),
-            device=config.get("device", "cuda"),
-            orthogonality_weight=config.get("orthogonality_weight", 0.1),
-            informativeness_weight=config.get("informativeness_weight", 0.1),
-            category_reconstruction_weight=config.get("category_reconstruction_weight", 0.0),
-            topo_weight=config.get("topo_weight", 0.02),
-            topo_samples=config.get("topo_samples", 64),
-            reference_reg_weight=ref_reg_weight,
-            entropy_weight=entropy_weight,
-            normalize_mse=config.get("normalize_mse", True),  # Normalize MSE losses by default
-            early_stopping_patience=config.get("early_stopping_patience", 100),
-            early_stopping_min_delta=config.get("early_stopping_min_delta", 0.01),
-            dead_code_reset_interval=config.get("dead_code_reset_interval", 100),
-            dead_code_threshold=config.get("dead_code_threshold", 10.0),
-            dead_code_max_reset_fraction=config.get("dead_code_max_reset_fraction", 0.25),
-            use_smart_reset=config.get("use_smart_reset", False),
-            checkpoint_dir=checkpoint_dir,
-            use_torch_compile=use_torch_compile,  # Modified above for variable-length mode
-            val_every_n_epochs=config.get("val_every_n_epochs", 5),
-            gradient_clip_norm=config.get("gradient_clip_norm"),
-            warmup_epochs=config.get("warmup_epochs", 0),
-            scheduler_config=config.get("scheduler"),
-            verbose=config.get("verbose", True),
-            # Metadata for checkpoint reproducibility
-            config=config,
-            group_indices=group_indices,
-            normalization_stats=normalization_stats,
-            per_family_normalization_stats=per_family_stats,
-            feature_names=feature_names,
-            encoder_state_dicts=encoder_state_dicts,
-            feature_mask=feature_mask,
-            feature_cleaning_params=feature_cleaning_params,
-            # Variable-length mode support
-            temporal_encoder=temporal_encoder,
-            temporal_encoder_output_dim=temporal_encoder_output_dim,
-            encoded_initial_features=encoded_initial_features,
-        )
+        # Create trainer (learnable or standard)
+        if use_learnable:
+            # Get learnable assignment config
+            learnable_config = config.get("learnable_assignment", {})
+
+            # Create temperature scheduler
+            temp_scheduler = TemperatureScheduler(
+                start=learnable_config.get("temperature_start", 1.0),
+                end=learnable_config.get("temperature_end", 0.1),
+                total_epochs=config.get("epochs", 500),
+                schedule=learnable_config.get("temperature_schedule", "linear")
+            )
+
+            trainer = LearnableVQVAETrainer(
+                model=model,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                temp_scheduler=temp_scheduler,
+                assignment_lr=learnable_config.get("assignment_lr", 0.001),
+                assignment_orthogonality_weight=learnable_config.get("orthogonality_weight", 0.1),
+                assignment_balance_weight=learnable_config.get("balance_weight", 0.05),
+                learning_rate=config.get("learning_rate", 1e-3),
+                device=config.get("device", "cuda"),
+                orthogonality_weight=config.get("orthogonality_weight", 0.1),
+                informativeness_weight=config.get("informativeness_weight", 0.1),
+                category_reconstruction_weight=config.get("category_reconstruction_weight", 0.0),
+                topo_weight=config.get("topo_weight", 0.02),
+                topo_samples=config.get("topo_samples", 64),
+                reference_reg_weight=ref_reg_weight,
+                entropy_weight=entropy_weight,
+                normalize_mse=config.get("normalize_mse", True),
+                early_stopping_patience=config.get("early_stopping_patience", 100),
+                early_stopping_min_delta=config.get("early_stopping_min_delta", 0.01),
+                dead_code_reset_interval=config.get("dead_code_reset_interval", 100),
+                dead_code_threshold=config.get("dead_code_threshold", 10.0),
+                dead_code_max_reset_fraction=config.get("dead_code_max_reset_fraction", 0.25),
+                use_smart_reset=config.get("use_smart_reset", False),
+                checkpoint_dir=checkpoint_dir,
+                use_torch_compile=use_torch_compile,
+                val_every_n_epochs=config.get("val_every_n_epochs", 5),
+                gradient_clip_norm=learnable_config.get("gradient_clip_norm", 1.0),
+                warmup_epochs=config.get("warmup_epochs", 0),
+                scheduler_config=config.get("scheduler"),
+                verbose=config.get("verbose", True),
+                # Metadata for checkpoint reproducibility
+                config=config,
+                group_indices=group_indices,
+                normalization_stats=normalization_stats,
+                per_family_normalization_stats=per_family_stats,
+                feature_names=feature_names,
+                encoder_state_dicts=encoder_state_dicts,
+                feature_mask=feature_mask,
+                feature_cleaning_params=feature_cleaning_params,
+                # Variable-length mode support
+                temporal_encoder=temporal_encoder,
+                temporal_encoder_output_dim=temporal_encoder_output_dim,
+                encoded_initial_features=encoded_initial_features,
+            )
+        else:
+            trainer = VQVAETrainer(
+                model=model,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                learning_rate=config.get("learning_rate", 1e-3),
+                device=config.get("device", "cuda"),
+                orthogonality_weight=config.get("orthogonality_weight", 0.1),
+                informativeness_weight=config.get("informativeness_weight", 0.1),
+                category_reconstruction_weight=config.get("category_reconstruction_weight", 0.0),
+                topo_weight=config.get("topo_weight", 0.02),
+                topo_samples=config.get("topo_samples", 64),
+                reference_reg_weight=ref_reg_weight,
+                entropy_weight=entropy_weight,
+                normalize_mse=config.get("normalize_mse", True),  # Normalize MSE losses by default
+                early_stopping_patience=config.get("early_stopping_patience", 100),
+                early_stopping_min_delta=config.get("early_stopping_min_delta", 0.01),
+                dead_code_reset_interval=config.get("dead_code_reset_interval", 100),
+                dead_code_threshold=config.get("dead_code_threshold", 10.0),
+                dead_code_max_reset_fraction=config.get("dead_code_max_reset_fraction", 0.25),
+                use_smart_reset=config.get("use_smart_reset", False),
+                checkpoint_dir=checkpoint_dir,
+                use_torch_compile=use_torch_compile,  # Modified above for variable-length mode
+                val_every_n_epochs=config.get("val_every_n_epochs", 5),
+                gradient_clip_norm=config.get("gradient_clip_norm"),
+                warmup_epochs=config.get("warmup_epochs", 0),
+                scheduler_config=config.get("scheduler"),
+                verbose=config.get("verbose", True),
+                # Metadata for checkpoint reproducibility
+                config=config,
+                group_indices=group_indices,
+                normalization_stats=normalization_stats,
+                per_family_normalization_stats=per_family_stats,
+                feature_names=feature_names,
+                encoder_state_dicts=encoder_state_dicts,
+                feature_mask=feature_mask,
+                feature_cleaning_params=feature_cleaning_params,
+                # Variable-length mode support
+                temporal_encoder=temporal_encoder,
+                temporal_encoder_output_dim=temporal_encoder_output_dim,
+                encoded_initial_features=encoded_initial_features,
+            )
 
         # A3: Feature weighting for reconstruction loss
         feature_weighting_config = config.get("feature_weighting", {})

@@ -1,0 +1,142 @@
+# Learnable Category Assignment VQ-VAE Configuration
+#
+# This config enables end-to-end learnable category assignments using Gumbel-Softmax.
+# Categories are discovered through gradient descent to minimize reconstruction loss,
+# rather than through static pre-clustering.
+#
+# Benefits:
+# - Task-optimal categories (learned to minimize reconstruction)
+# - Automatic balancing (no dead code reset needed)
+# - Simpler configuration (no max_category_size, etc.)
+# - More principled (end-to-end differentiable)
+
+# Dataset
+dataset_path: "datasets/100k_baseline_dev.h5"
+
+# Feature Families
+families:
+  initial:
+    encoder: initial_hybrid
+    encoder_params:
+      manual_dim: 14
+      cnn_embedding_dim: 128
+      encode_manual: false
+      in_channels: 3
+
+  temporal:
+    encoder: PyramidTemporalEncoder
+    encoder_params:
+      level_dims: [32, 64, 96, 128]
+      downsample_factors: [1, 2, 4, 8]
+      architecture: "resnet1d_3"
+
+# Model Architecture
+model:
+  group_embedding_dim: 512
+  group_hidden_dim: 1024
+  decoder_hidden_dim: 768
+  commitment_cost: 0.25
+  use_ema: true
+  ema_decay: 0.99
+  dropout: 0.1
+
+  # Hierarchical quantization levels (auto-computed from compression ratios)
+  compression_ratios: "0.5:1.0:1.5"  # L0=feats×0.5, L1=feats×1.0, L2=feats×1.5
+
+  # Codebook initialization (all levels start equal, dead code reset naturally prunes)
+  uniform_codebook_init: false
+
+# Training Configuration
+training:
+  num_epochs: 500  # Shorter for initial testing, increase to 1000 for full training
+  batch_size: 512
+  learning_rate: 0.001
+  device: cuda
+  checkpoint_dir: "checkpoints/vqvae/learnable"
+
+  # Category assignment method
+  category_assignment: learnable  # Enable learnable assignments
+
+  # Loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topo_weight: 0.02
+  topo_samples: 64
+
+  # Normalization
+  normalize_mse: true
+
+  # Optimization
+  warmup_epochs: 0
+  gradient_clip_norm: 1.0  # Important for stability with learnable assignments
+  use_torch_compile: true
+  val_every_n_epochs: 5
+
+  # Early stopping (disabled for learnable mode - let assignments converge)
+  early_stopping_patience: 200
+  early_stopping_min_delta: 0.001
+
+  # Dead code reset (disabled for learnable mode - assignments auto-balance)
+  dead_code_reset_interval: 0
+  use_smart_reset: false
+
+# Learnable Assignment Configuration
+learnable_assignment:
+  # Initialization from clustering
+  init_method: "clustering"
+
+  # Temperature annealing for Gumbel-Softmax
+  temperature_start: 1.0
+  temperature_end: 0.1
+  temperature_schedule: "linear"  # Options: linear, exponential, cosine
+
+  # Assignment loss weights
+  orthogonality_weight: 0.1
+  balance_weight: 0.05
+  family_constraint_weight: 1.0
+
+  # Optimization
+  assignment_lr: 0.001
+
+  # Optional: freeze assignments after convergence
+  freeze_after_epochs: null  # Set to epoch number to freeze, null to keep learning
+
+# Category Assignment Config (for initialization clustering)
+category_assignment_config:
+  per_family: true
+  per_family_params:
+    initial:
+      min_clusters: 2
+      max_clusters: 5
+    temporal_p0:
+      min_clusters: 2
+      max_clusters: 4
+    temporal_p1:
+      min_clusters: 2
+      max_clusters: 6
+    temporal_p2:
+      min_clusters: 2
+      max_clusters: 8
+    temporal_p3:
+      min_clusters: 2
+      max_clusters: 10
+
+# Feature Cleaning (recommended for numerical stability)
+feature_cleaning:
+  enabled: true
+  pre_categorization: false
+  variance_threshold: 1e-8
+  correlation_threshold: 0.99
+  nan_strategy: "median"
+  outlier_strategy: "mad"
+  outlier_threshold: 5.0
+
+# Logging
+logging:
+  verbose: true
+
+# Checkpoint directory (required)
+checkpoint_dir: "checkpoints/vqvae/learnable"
+
+# Random seed for reproducibility
+random_seed: 42
