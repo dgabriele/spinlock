@@ -1,0 +1,110 @@
+# Learnable VQ-VAE with Strong Informativeness Regularization
+#
+# Based on learnable_simple_test.yaml but with increased informativeness_weight
+# to force better information distribution across latent vectors.
+#
+# Rationale: Baseline achieved global recon=0.005 (excellent), so we have headroom
+# to push harder on informativeness without hurting reconstruction quality.
+
+# Dataset
+dataset_path: "datasets/100k_baseline_dev.h5"
+
+# Feature Families - SIMPLE (no hybrid encoding)
+families:
+  initial:
+    encoder: identity  # Use raw features as-is (no CNN)
+    encoder_params: {}
+
+  temporal:
+    encoder: PyramidTemporalEncoder
+    encoder_params:
+      level_dims: [32, 64, 96, 128]
+      downsample_factors: [1, 2, 4, 8]
+      architecture: "resnet1d_3"
+
+# VQ-VAE Architecture
+model:
+  group_embedding_dim: 512
+  group_hidden_dim: 1024
+  compression_ratios: "0.5:1.0:1.5"
+  commitment_cost: 0.25
+  use_ema: true
+  ema_decay: 0.99
+  dropout: 0.1
+
+# Training Configuration
+training:
+  num_epochs: 50
+  batch_size: 512
+  learning_rate: 0.001
+  device: cuda
+  checkpoint_dir: "checkpoints/vqvae/learnable_strong_info"
+
+  # ENABLE LEARNABLE MODE
+  category_assignment: learnable
+
+  # Loss weights
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.3  # INCREASED from 0.1 (3x stronger)
+  topo_weight: 0.02
+  topo_samples: 64
+  normalize_mse: true
+
+  # Optimization
+  warmup_epochs: 0
+  use_torch_compile: true
+  val_every_n_epochs: 5
+
+  # Callbacks (disable for learnable mode)
+  early_stopping_patience: 200
+  dead_code_reset_interval: 0
+  use_smart_reset: false
+
+# Learnable Assignment Configuration
+learnable_assignment:
+  init_method: "clustering"
+  temperature_start: 1.0
+  temperature_end: 0.1
+  temperature_schedule: "linear"
+  orthogonality_weight: 0.1
+  balance_weight: 0.05
+  family_constraint_weight: 1.0
+  assignment_lr: 0.001
+  freeze_after_epochs: null
+
+# Category Assignment Config (for initialization)
+category_assignment_config:
+  method: "clustering"
+  linkage_method: "ward"
+  distance_metric: "correlation"
+  k_selection_method: "silhouette"
+  per_family_clustering: true
+  per_family_params:
+    initial:
+      min_clusters: 2
+      max_clusters: 5
+    temporal_p0:
+      min_clusters: 2
+      max_clusters: 4
+    temporal_p1:
+      min_clusters: 2
+      max_clusters: 6
+    temporal_p2:
+      min_clusters: 2
+      max_clusters: 8
+    temporal_p3:
+      min_clusters: 2
+      max_clusters: 10
+
+# Feature Cleaning
+feature_cleaning:
+  enabled: true
+  pre_categorization: true
+  variance_threshold: 1e-8
+  correlation_threshold: 0.99
+  nan_strategy: "median"
+  outlier_strategy: "mad"
+  outlier_threshold: 5.0
+
+# Random seed
+random_seed: 42
