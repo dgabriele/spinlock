@@ -3,7 +3,7 @@
 Creates a multi-panel figure showing:
 - Model architecture schematic
 - Training curves (loss, quality)
-- Utilization heatmap (categories × levels)
+- Loss component evolution (recon, VQ, ortho, info, topo, entropy)
 - Per-category reconstruction MSE
 - Summary metrics table
 """
@@ -231,6 +231,73 @@ def plot_training_curves(ax: Axes, data: VQVAECheckpointData) -> None:
 
     ax.set_title("Training Curves", fontsize=12, fontweight="bold")
     ax.legend(loc="upper right", fontsize=8)
+
+
+def plot_loss_component_evolution(ax: Axes, data: VQVAECheckpointData) -> None:
+    """Plot evolution of all loss components over training.
+
+    Shows how different loss components (reconstruction, VQ, orthogonality,
+    informativeness, topographic, entropy) evolved during training.
+    """
+    if not data.loss_components_history:
+        ax.text(0.5, 0.5, "Loss component history not available",
+                ha="center", va="center", transform=ax.transAxes, fontsize=10)
+        ax.set_title("Loss Component Evolution", fontsize=12, fontweight="bold")
+        return
+
+    # Extract loss components over epochs
+    epochs = list(range(1, len(data.loss_components_history) + 1))
+
+    # Define components to plot with colors and labels
+    components = {
+        'reconstruction_global': {'label': 'Recon (global)', 'color': '#2E86AB', 'linestyle': '-', 'linewidth': 2.5},
+        'reconstruction_category': {'label': 'Recon (category)', 'color': '#A23B72', 'linestyle': '--', 'linewidth': 2},
+        'vq': {'label': 'VQ', 'color': '#F18F01', 'linestyle': '-', 'linewidth': 1.5},
+        'orthogonality': {'label': 'Orthogonality', 'color': '#C73E1D', 'linestyle': '-', 'linewidth': 1.5},
+        'informativeness': {'label': 'Informativeness', 'color': '#6A4C93', 'linestyle': '-', 'linewidth': 1.5},
+        'topographic': {'label': 'Topographic', 'color': '#1B998B', 'linestyle': '-', 'linewidth': 1.5},
+        'entropy': {'label': 'Entropy', 'color': '#E63946', 'linestyle': ':', 'linewidth': 1.5},
+    }
+
+    # Extract time series for each component
+    component_series = {key: [] for key in components.keys()}
+    for loss_dict in data.loss_components_history:
+        for key in components.keys():
+            value = loss_dict.get(key, np.nan)
+            component_series[key].append(value)
+
+    # Plot each component
+    for key, config in components.items():
+        series = component_series[key]
+        # Only plot if we have data
+        if series and not all(np.isnan(series)):
+            ax.plot(epochs, series,
+                   label=config['label'],
+                   color=config['color'],
+                   linestyle=config['linestyle'],
+                   linewidth=config['linewidth'],
+                   alpha=0.85)
+
+    # Styling
+    ax.set_xlabel("Epoch", fontsize=10)
+    ax.set_ylabel("Loss Value", fontsize=10)
+    ax.set_title("Loss Component Evolution", fontsize=12, fontweight="bold")
+    ax.legend(loc='upper right', fontsize=8, framealpha=0.9, ncol=2)
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+    ax.set_xlim(0, len(epochs))
+
+    # Use log scale if dynamic range is large
+    try:
+        valid_values = [v for series in component_series.values()
+                       for v in series if not np.isnan(v) and v > 0]
+        if valid_values:
+            max_val = max(valid_values)
+            min_val = min(valid_values)
+            if max_val / min_val > 50:  # Large dynamic range
+                ax.set_yscale('log')
+                ax.set_ylabel("Loss Value (log scale)", fontsize=10)
+    except:
+        pass  # Keep linear scale if anything goes wrong
 
 
 def plot_utilization_heatmap(ax: Axes, data: VQVAECheckpointData) -> None:
@@ -489,9 +556,9 @@ def create_engineering_dashboard(
         ax_curves = fig.add_subplot(gs[0, 1])
         plot_training_curves(ax_curves, data)
 
-        # Panel C: Utilization heatmap (row 2, full width)
-        ax_util = fig.add_subplot(gs[1, :])
-        plot_utilization_heatmap(ax_util, data)
+        # Panel C: Loss component evolution (row 2, full width)
+        ax_loss = fig.add_subplot(gs[1, :])
+        plot_loss_component_evolution(ax_loss, data)
 
         # Panel D: Pyramid-level MSE (row 3, left)
         ax_pyramid_mse = fig.add_subplot(gs[2, 0])
@@ -526,9 +593,9 @@ def create_engineering_dashboard(
         ax_curves = fig.add_subplot(gs[0, 1])
         plot_training_curves(ax_curves, data)
 
-        # Panel C: Utilization heatmap (middle, full width)
-        ax_util = fig.add_subplot(gs[1, :])
-        plot_utilization_heatmap(ax_util, data)
+        # Panel C: Loss component evolution (middle, full width)
+        ax_loss = fig.add_subplot(gs[1, :])
+        plot_loss_component_evolution(ax_loss, data)
 
         # Panel D: Reconstruction MSE (bottom-left)
         ax_recon = fig.add_subplot(gs[2, 0])

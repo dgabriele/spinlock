@@ -225,6 +225,7 @@ class VQVAECheckpointData:
     train_loss: List[float]
     val_loss: List[float]
     metrics_history: List[Dict[str, float]]  # per-epoch metrics
+    loss_components_history: List[Dict[str, float]]  # per-epoch loss components
     final_metrics: Dict[str, float]
 
     # Model state
@@ -351,6 +352,7 @@ def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
     train_loss = []
     val_loss = []
     metrics_history = []
+    loss_components_history = []
     final_metrics = {}
 
     if history_path.exists():
@@ -359,6 +361,7 @@ def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
         train_loss = history.get("train_loss", [])
         val_loss = history.get("val_loss", [])
         metrics_history = history.get("metrics", [])
+        loss_components_history = history.get("loss_components", [])
         final_metrics = history.get("final_metrics", {})
     elif "history" in checkpoint:
         # History embedded in checkpoint
@@ -366,6 +369,7 @@ def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
         train_loss = history.get("train_loss", [])
         val_loss = history.get("val_loss", [])
         metrics_history = history.get("metrics", [])
+        loss_components_history = history.get("loss_components", [])
         final_metrics = history.get("final_metrics", {})
 
     # If no history file, try to get final_metrics from checkpoint directly
@@ -401,6 +405,7 @@ def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
         train_loss=train_loss,
         val_loss=val_loss,
         metrics_history=metrics_history,
+        loss_components_history=loss_components_history,
         final_metrics=final_metrics,
         model_state_dict=checkpoint.get("model_state_dict"),
         epoch=epoch,
