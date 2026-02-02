@@ -213,20 +213,9 @@ Spinlock's VQ-VAE converts operator features into discrete behavioral tokens thr
 
 See [docs/vqvae/architecture.md](docs/vqvae/architecture.md) for comprehensive architecture details and [docs/vqvae/assignment-strategies.md](docs/vqvae/assignment-strategies.md) for choosing between static and learnable assignments.
 
-### Why "Categories"?
+### Terminology Note
 
-The term **categories** for the top-level groupings produced by orthogonality-weighted clustering is deliberate. These are not mere statistical clusters but conceptual primitives through which continuous dynamical behavior is coarse-grained into interpretable structure.
-
-| Term | Why Not | Categories Are Different |
-|------|---------|--------------------------|
-| **Clusters** | Too neutral—implies data density, not conceptual primacy | Categories are the basic "kinds" of behavior, not density modes |
-| **Modes** | Suggests spectral/vibrational modes (overlaps with AFNO terminology) | Categories are perceptual, not physical |
-| **Prototypes** | Feels exemplar-based (like k-means centers) | Categories are hierarchical lenses, not single points |
-| **Factors** | Evokes latent variables without hierarchical structure | Categories have multi-level refinement |
-
-**Philosophical grounding:** Categories function as fundamental ways of understanding emergent behavior—akin to Aristotelian/Kantian categories that structure perception of reality. In the NOA's "mind," categories are perceptual building blocks: the agent "sees" the world through these coarse filters first (top-level codebooks), then refines within them (lower levels). The orthogonality weighting explicitly encourages independence, reinforcing their role as distinct, non-overlapping modes of interpretation.
-
-**Long-term vision:** These categories are seeds of an emergent "language of computation" that NOA may use for reasoning and discovery—the first step in turning continuous physics into symbolic thought.
+We use **categories** rather than "clusters" or "modes" for the top-level feature groupings to emphasize their role in hierarchical encoding. Each category represents a distinct behavioral modality with independent multi-level quantization. Orthogonality weighting during clustering encourages non-overlapping semantic groupings rather than just density-based clusters.
 
 ### Modern Features
 
