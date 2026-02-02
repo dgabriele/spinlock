@@ -58,6 +58,7 @@ def reconstruction_loss(
     normalize: bool = True,
     normalization_stats: Optional[Dict] = None,
     group_indices: Optional[Dict[str, list]] = None,
+    return_components: bool = False,
 ):
     """Compute reconstruction loss with optional per-feature weighting and masking.
 
@@ -77,9 +78,15 @@ def reconstruction_loss(
                             More stable and comparable to validation metrics.
         group_indices: Optional category-to-feature-indices mapping.
                       Required if normalization_stats is provided.
+        return_components: If True, return dict with 'global', 'category', and 'raw' losses.
+                          If False, return only global loss (backward compatible).
 
     Returns:
-        Reconstruction loss (weighted MSE with optional sample weighting and normalization)
+        If return_components=False: Single global reconstruction loss (backward compatible)
+        If return_components=True: Dict with keys:
+            - 'global': Global reconstruction (MSE / global_variance)
+            - 'category': Per-category reconstruction (weighted avg of MSE_cat / var_cat)
+            - 'raw': Raw unnormalized MSE
 
     Notes:
         Sample weighting prevents short trajectories from dominating gradient updates:
@@ -93,8 +100,11 @@ def reconstruction_loss(
         - Normalized MSE = 1.0: As good as predicting the mean
         - Normalized MSE > 1.0: Worse than predicting the mean
 
-        If normalization_stats provided, uses pre-computed dataset variance (stable).
-        Otherwise falls back to online batch variance (may vary significantly).
+        Global vs Per-Category Normalization:
+        - Global: MSE across all features / global variance (primary objective)
+        - Category: Average of (MSE_cat / var_cat) for each category (regularizer)
+        - Global reflects true reconstruction fidelity
+        - Category ensures all categories contribute (prevents collapse)
     """
     reconstruction = outputs["reconstruction"]
     recon_features = reconstruction["features"]  # [batch, D]
@@ -123,23 +133,44 @@ def reconstruction_loss(
 
             # Weight squared errors by sample importance
             weighted_errors = squared_errors * sample_weights  # [B, D]
-            loss = weighted_errors.mean()
+            raw_mse = weighted_errors.mean()
         else:
             # No valid timesteps (edge case), fallback to uniform
-            loss = squared_errors.mean()
+            raw_mse = squared_errors.mean()
     else:
         # Standard mode: uniform weighting across samples
-        loss = squared_errors.mean()
+        raw_mse = squared_errors.mean()
 
     # Normalize by target variance if requested
     if normalize:
         if normalization_stats is not None and group_indices is not None:
-            # Use pre-computed dataset variance (stable, comparable to validation)
-            # Compute per-category normalized losses, then weighted average
-            # This matches how validation metrics are computed
+            device = target_features.device
+
+            # GLOBAL RECONSTRUCTION: MSE / global_variance (primary objective)
+            # Compute global variance from all feature variances
+            all_variances = []
+            for cat_name, indices in group_indices.items():
+                if cat_name in normalization_stats:
+                    stats = normalization_stats[cat_name]
+                    cat_variances = stats.std ** 2
+                    all_variances.append(cat_variances)
+
+            if all_variances:
+                import numpy as np
+                global_var_array = np.concatenate(all_variances)
+                global_variance = float(global_var_array.mean() + 1e-8)
+                # Convert to tensor on same device as raw_mse
+                global_variance_tensor = torch.tensor(global_variance, device=device, dtype=raw_mse.dtype)
+                global_loss = raw_mse / global_variance_tensor
+            else:
+                # Fallback to batch variance
+                global_variance = target_features.var() + 1e-8
+                global_loss = raw_mse / global_variance
+
+            # PER-CATEGORY RECONSTRUCTION: weighted_avg(MSE_cat / var_cat) (regularizer)
+            # Ensures all categories contribute, prevents collapse
             total_normalized = 0.0
             total_features = 0
-            device = target_features.device
 
             for cat_name, indices in group_indices.items():
                 if cat_name in normalization_stats:
@@ -162,17 +193,36 @@ def reconstruction_loss(
                     total_features += len(indices)
 
             if total_features > 0:
-                loss = total_normalized / total_features
+                category_loss = total_normalized / total_features
             else:
                 # Fallback to batch variance
                 target_var = target_features.var() + 1e-8
-                loss = loss / target_var
+                category_loss = raw_mse / target_var
         else:
-            # Fallback to online batch variance
+            # Fallback to online batch variance (both global and category are same)
             target_var = target_features.var() + 1e-8
-            loss = loss / target_var
+            global_loss = raw_mse / target_var
+            category_loss = global_loss
 
-    return loss
+        if return_components:
+            return {
+                "global": global_loss,
+                "category": category_loss,
+                "raw": raw_mse,
+            }
+        else:
+            # Backward compatible: return global loss as primary
+            return global_loss
+    else:
+        # No normalization requested, return raw MSE
+        if return_components:
+            return {
+                "global": raw_mse,
+                "category": raw_mse,
+                "raw": raw_mse,
+            }
+        else:
+            return raw_mse
 
 
 def orthogonality_loss(model, max_samples: int = 64):
@@ -557,6 +607,7 @@ def compute_total_loss(
     model,
     orthogonality_weight: float = 0.1,
     informativeness_weight: float = 0.1,
+    category_reconstruction_weight: float = 0.0,
     topo_weight: float = 0.02,
     topo_samples: int = 64,
     reference_reg_weight: float = 0.0,
@@ -577,6 +628,10 @@ def compute_total_loss(
         model: CategoricalHierarchicalVQVAE model
         orthogonality_weight: Weight for orthogonality loss
         informativeness_weight: Weight for informativeness loss
+        category_reconstruction_weight: Weight for per-category reconstruction regularizer
+                                       Ensures all categories contribute (prevents collapse).
+                                       0.0 = disabled, use only global reconstruction (default).
+                                       Recommended: 0.1-0.2 if enabled.
         topo_weight: Weight for topographic loss
         topo_samples: Number of samples for topographic loss
         reference_reg_weight: Weight for reference feature regularization loss
@@ -610,28 +665,30 @@ def compute_total_loss(
             - reconstruction_raw: Raw (unnormalized) reconstruction MSE (for logging)
             - informativeness_raw: Raw (unnormalized) informativeness MSE (for logging)
     """
-    # 1. Reconstruction loss (with optional feature weighting and masking)
-    recon_loss = reconstruction_loss(
+    # 1. Reconstruction loss (global + optional per-category regularizer)
+    # Get reconstruction components (global, category, raw)
+    recon_components = reconstruction_loss(
         outputs, targets,
         feature_weights=feature_weights,
         mask_info=mask_info,
         normalize=normalize_mse,
         normalization_stats=normalization_stats,
         group_indices=group_indices,
+        return_components=True,
     )
 
-    # Also compute raw version for logging (if normalization enabled)
-    if normalize_mse:
-        recon_loss_raw = reconstruction_loss(
-            outputs, targets,
-            feature_weights=feature_weights,
-            mask_info=mask_info,
-            normalize=False,
-            normalization_stats=normalization_stats,
-            group_indices=group_indices,
-        )
+    # Extract components
+    recon_global = recon_components["global"]  # Primary objective: full reconstruction
+    recon_category = recon_components["category"]  # Regularizer: per-category balance
+    recon_loss_raw = recon_components["raw"]  # For logging
+
+    # Combine global + category with weights
+    # Global is primary (weight=1.0 implicit via reconstruction_weight in trainer)
+    # Category is auxiliary regularizer (prevents category collapse)
+    if category_reconstruction_weight > 0:
+        recon_loss = recon_global + category_reconstruction_weight * recon_category
     else:
-        recon_loss_raw = recon_loss
+        recon_loss = recon_global
 
     # 2. VQ losses (commitment + codebook, already computed in forward pass)
     vq_loss = sum(outputs["vq_losses"])
@@ -697,7 +754,9 @@ def compute_total_loss(
 
     return {
         "total": total,
-        "reconstruction": recon_loss,
+        "reconstruction": recon_loss,  # Combined (global + category_weight * category)
+        "reconstruction_global": recon_global,  # Global reconstruction (primary)
+        "reconstruction_category": recon_category,  # Per-category reconstruction (regularizer)
         "reconstruction_raw": recon_loss_raw,  # Raw (unnormalized) for logging
         "vq": vq_loss,
         "orthogonality": ortho_loss,

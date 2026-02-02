@@ -39,6 +39,7 @@ class VQVAETrainer:
         # Loss weights
         orthogonality_weight: float = 0.1,
         informativeness_weight: float = 0.1,
+        category_reconstruction_weight: float = 0.0,
         topo_weight: float = 0.02,
         topo_samples: int = 64,
         reference_reg_weight: float = 0.0,
@@ -57,6 +58,7 @@ class VQVAETrainer:
         val_every_n_epochs: int = 5,
         gradient_clip_norm: Optional[float] = None,
         warmup_epochs: int = 0,
+        scheduler_config: Optional[dict] = None,
         # Logging
         verbose: bool = True,
         # Metadata for checkpoint reproducibility
@@ -83,6 +85,7 @@ class VQVAETrainer:
             device: Device to use
             orthogonality_weight: Weight for orthogonality loss
             informativeness_weight: Weight for informativeness loss
+            category_reconstruction_weight: Weight for per-category reconstruction regularizer (0.0 = disabled)
             topo_weight: Weight for topographic loss
             topo_samples: Number of samples for topographic loss
             reference_reg_weight: Weight for reference feature regularization (0.0 = disabled)
@@ -151,9 +154,34 @@ class VQVAETrainer:
         self.warmup_epochs = warmup_epochs
         self.current_epoch = 0
 
+        # Learning rate scheduler (optional)
+        self.scheduler = None
+        if scheduler_config is not None:
+            scheduler_type = scheduler_config.get("type", "cosine")
+            if scheduler_type == "cosine":
+                self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    self.optimizer,
+                    T_max=scheduler_config.get("T_max", 1000),
+                    eta_min=scheduler_config.get("eta_min", 0.0001),
+                )
+            elif scheduler_type == "step":
+                self.scheduler = torch.optim.lr_scheduler.StepLR(
+                    self.optimizer,
+                    step_size=scheduler_config.get("step_size", 200),
+                    gamma=scheduler_config.get("gamma", 0.5),
+                )
+            elif scheduler_type == "exponential":
+                self.scheduler = torch.optim.lr_scheduler.ExponentialLR(
+                    self.optimizer,
+                    gamma=scheduler_config.get("gamma", 0.95),
+                )
+            else:
+                raise ValueError(f"Unknown scheduler type: {scheduler_type}")
+
         # Loss weights
         self.orthogonality_weight = orthogonality_weight
         self.informativeness_weight = informativeness_weight
+        self.category_reconstruction_weight = category_reconstruction_weight
         self.topo_weight = topo_weight
         self.topo_samples = topo_samples
         self.reference_reg_weight = reference_reg_weight
@@ -296,6 +324,8 @@ class VQVAETrainer:
         # Track loss components
         loss_components = {
             "reconstruction": 0.0,
+            "reconstruction_global": 0.0,  # Global reconstruction (primary)
+            "reconstruction_category": 0.0,  # Per-category reconstruction (regularizer)
             "reconstruction_raw": 0.0,  # Raw (unnormalized) MSE for logging
             "vq": 0.0,
             "orthogonality": 0.0,
@@ -384,6 +414,7 @@ class VQVAETrainer:
                 self.model,
                 orthogonality_weight=self.orthogonality_weight,
                 informativeness_weight=self.informativeness_weight,
+                category_reconstruction_weight=self.category_reconstruction_weight,
                 topo_weight=self.topo_weight,
                 topo_samples=self.topo_samples,
                 reference_reg_weight=self.reference_reg_weight,
@@ -508,6 +539,7 @@ class VQVAETrainer:
                     self.model,
                     orthogonality_weight=self.orthogonality_weight,
                     informativeness_weight=self.informativeness_weight,
+                    category_reconstruction_weight=self.category_reconstruction_weight,
                     topo_weight=self.topo_weight,
                     topo_samples=self.topo_samples,
                     reference_reg_weight=self.reference_reg_weight,
@@ -569,6 +601,7 @@ class VQVAETrainer:
             )
 
         # Compute overall normalized error (weighted by feature count)
+        # NOTE: This is per-category average, not global reconstruction quality
         overall_normalized_error = None
         if normalized_errors and self.group_indices:
             weighted_sum = 0.0
@@ -581,6 +614,24 @@ class VQVAETrainer:
 
             if total_features > 0:
                 overall_normalized_error = weighted_sum / total_features
+
+        # Compute GLOBAL reconstruction quality (full 486D reconstruction)
+        # This directly measures: MSE(full_recon, full_target) / variance(full_target)
+        # Unlike per-category average, this shows true reconstruction fidelity
+        global_normalized_error = None
+        if reconstruction_error > 0 and self.normalization_stats:
+            # Compute global variance from all features
+            all_variances = []
+            for cat_name, stats in self.normalization_stats.items():
+                # stats.std is per-feature std for this category
+                cat_variances = stats.std ** 2
+                all_variances.append(cat_variances)
+
+            if all_variances:
+                # Concatenate all feature variances
+                global_var_array = np.concatenate(all_variances)
+                global_variance = global_var_array.mean() + 1e-8
+                global_normalized_error = reconstruction_error / global_variance
 
         # Compute detailed metrics on validation set
         detailed_metrics = compute_per_category_metrics(
@@ -689,9 +740,13 @@ class VQVAETrainer:
             "topo_post": avg_topo_post,  # Post-quantization topographic similarity
         }
 
-        # Add overall normalized error if computed
+        # Add overall normalized error if computed (per-category average)
         if overall_normalized_error is not None:
             result["reconstruction_error_normalized"] = overall_normalized_error
+
+        # Add global normalized error if computed (true global reconstruction quality)
+        if global_normalized_error is not None:
+            result["global_reconstruction_error_normalized"] = global_normalized_error
 
         result.update(detailed_metrics)  # Include all detailed metrics
         result.update(normalized_errors)  # Per-category normalized errors
@@ -976,14 +1031,25 @@ class VQVAETrainer:
                 util = metrics.get("utilization", 0.0)
                 msg += f", util={util:.1%}"
 
+                # Show current learning rate if scheduler is active
+                if self.scheduler is not None:
+                    current_lr = self.optimizer.param_groups[0]['lr']
+                    msg += f", lr={current_lr:.6f}"
+
                 logger.info(msg)
 
                 # Training loss components (normalized - what the optimizer sees)
                 components_msg = "  Train: "
                 if self.normalize_mse:
-                    # Show both raw and normalized when normalization is enabled
+                    # Show raw, global, and category reconstruction
                     components_msg += f"recon={loss_components.get('reconstruction_raw', 0.0):.3f}"
-                    components_msg += f" (norm={loss_components.get('reconstruction', 0.0):.3f}), "
+                    components_msg += f" (global={loss_components.get('reconstruction_global', 0.0):.3f}"
+
+                    # Only show category if weight is non-zero
+                    if self.category_reconstruction_weight > 0:
+                        components_msg += f", cat={loss_components.get('reconstruction_category', 0.0):.3f}), "
+                    else:
+                        components_msg += "), "
                 else:
                     components_msg += f"recon={loss_components.get('reconstruction', 0.0):.3f}, "
 
@@ -1018,7 +1084,14 @@ class VQVAETrainer:
 
                 if "reconstruction_error_normalized" in metrics:
                     recon_norm = metrics["reconstruction_error_normalized"]
-                    val_msg += f"recon={recon_error:.3f} (norm={recon_norm:.3f})"
+                    val_msg += f"recon={recon_error:.3f} (per-cat={recon_norm:.3f}"
+
+                    # Add global reconstruction quality if available
+                    if "global_reconstruction_error_normalized" in metrics:
+                        global_norm = metrics["global_reconstruction_error_normalized"]
+                        val_msg += f", global={global_norm:.3f})"
+                    else:
+                        val_msg += ")"
                 else:
                     val_msg += f"recon={recon_error:.3f}"
 
@@ -1102,6 +1175,10 @@ class VQVAETrainer:
                 if self.verbose:
                     logger.info(f"Early stopping triggered at epoch {epoch}")
                 break
+
+            # 4. Learning rate scheduler step (after warmup completes)
+            if self.scheduler is not None and epoch > self.warmup_epochs:
+                self.scheduler.step()
 
         # Final metrics
         final_metrics = self.compute_metrics()

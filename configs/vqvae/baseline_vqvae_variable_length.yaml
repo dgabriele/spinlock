@@ -142,7 +142,7 @@ model:
   commitment_cost: 0.2         # LOWERED from 0.25 to reduce encoder commitment to existing codes
   use_ema: true
   decay: 0.99
-  dropout: 0.3                  # INCREASED from 0.1 to force using backup codes
+  dropout: 0.35                 # INCREASED from 0.3 to reduce overfitting (train/val gap mitigation)
 
   # Auxiliary loss weights
   orthogonality_weight: 0.1
@@ -166,7 +166,18 @@ training:
   learning_rate: 0.001
   num_epochs: 1000  # Reduced from 2000 (sufficient for convergence with improved architecture)
   optimizer: "adam"
-  scheduler: null
+
+  # Learning rate scheduler - reduces overfitting and oscillation
+  # Cosine annealing smoothly decays LR from initial to eta_min over T_max epochs
+  scheduler:
+    type: "cosine"
+    T_max: 1000        # Decay over full training duration
+    eta_min: 0.0001    # Minimum LR (10% of initial 0.001)
+    # Benefits:
+    # - Reduces oscillation in later epochs (allows fine-tuning)
+    # - Helps escape local minima early (high LR)
+    # - Settles into better solution late (low LR)
+    # - Addresses train/val gap by preventing overfitting
   warmup_epochs: 20  # Reduced from 200 (proportional to total epochs)
 
   # Category discovery (auto mode)
@@ -252,10 +263,14 @@ training:
   # Loss weights
   # NOTE: With normalize_mse=true, MSE losses are bounded ~[0, 2]
   #       making them comparable to orthogonality [0, 1] and topographic [0, 2]
-  reconstruction_weight: 1.0    # Primary reconstruction quality
+  reconstruction_weight: 1.0    # Primary reconstruction quality (global: MSE / global_variance)
+  category_reconstruction_weight: 0.15  # Per-category reconstruction regularizer
+                                        # Ensures all categories contribute (prevents collapse)
+                                        # Set to 0.0 to use only global reconstruction
+                                        # Recommended: 0.10-0.20 when enabled
   vq_weight: 0.8                # Vector quantization commitment
   orthogonality_weight: 0.125   # Codebook diversity (already normalized)
-  informativeness_weight: 0.35  # Per-category reconstruction (normalized) - INCREASED from 0.30 to push specialization
+  informativeness_weight: 0.35  # Per-category partial decoder reconstruction - INCREASED from 0.30 to push specialization
   entropy_weight: 0.15          # Uniform codebook usage (already normalized) - REDUCED from 0.25 (was dominating at 55% of loss)
   topo_weight: 0.5              # Topology preservation (already normalized)
   topo_samples: 2048            # Samples for topographic loss computation

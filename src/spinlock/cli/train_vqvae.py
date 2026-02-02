@@ -485,6 +485,11 @@ Output:
         print(f"  Commitment:      {config['model'].get('commitment_cost', 0.25)}")
         print(f"  Orthogonality:   {config['training'].get('orthogonality_weight', 0.1)}")
         print(f"  Informativeness: {config['training'].get('informativeness_weight', 0.1)}")
+
+        cat_recon_weight = config['training'].get('category_reconstruction_weight', 0.0)
+        if cat_recon_weight > 0:
+            print(f"  Category Recon:  {cat_recon_weight} (per-category regularizer)")
+
         print(f"  Topographic:     {config['training'].get('topo_weight', 0.02)}")
         print(f"  Topo samples:    {config['training'].get('topo_samples', 64)}")
 
@@ -2942,6 +2947,7 @@ Output:
             device=config.get("device", "cuda"),
             orthogonality_weight=config.get("orthogonality_weight", 0.1),
             informativeness_weight=config.get("informativeness_weight", 0.1),
+            category_reconstruction_weight=config.get("category_reconstruction_weight", 0.0),
             topo_weight=config.get("topo_weight", 0.02),
             topo_samples=config.get("topo_samples", 64),
             reference_reg_weight=ref_reg_weight,
@@ -2958,6 +2964,7 @@ Output:
             val_every_n_epochs=config.get("val_every_n_epochs", 5),
             gradient_clip_norm=config.get("gradient_clip_norm"),
             warmup_epochs=config.get("warmup_epochs", 0),
+            scheduler_config=config.get("scheduler"),
             verbose=config.get("verbose", True),
             # Metadata for checkpoint reproducibility
             config=config,
