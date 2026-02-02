@@ -1,12 +1,12 @@
 # Spinlock
 
-**Pre-training framework for neural operator systems**
+**Generative pre-training framework for neural operator systems**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Poetry](https://img.shields.io/badge/dependency%20manager-poetry-blue)](https://python-poetry.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Spinlock is a framework for generating large-scale PDE trajectory datasets and training neural operator components. It provides infrastructure for stratified sampling across operator parameter spaces, multi-modal feature extraction, behavioral tokenization via VQ-VAE, and meta-operator training.
+Spinlock (named after quantum field spin alignment, not concurrency primitives) is a framework for generating large-scale PDE trajectory datasets and training neural operator components. It provides infrastructure for stratified sampling across operator parameter spaces, multi-modal feature extraction, behavioral tokenization via VQ-VAE, and meta-operator training.
 
 The framework is designed as a foundation for higher-level systems—agents that reason about dynamics, generative models for exploration, or surrogate models for behavioral sampling.
 
