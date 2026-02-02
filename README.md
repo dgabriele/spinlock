@@ -356,76 +356,30 @@ The term **categories** for the top-level groupings produced by orthogonality-we
 
 **Long-term vision:** These categories are seeds of an emergent "language of computation" that NOA may use for reasoning and discovery—the first step in turning continuous physics into symbolic thought.
 
-📖 **See also:** [docs/baselines/50k-vqvae-baseline.md](docs/baselines/50k-vqvae-baseline.md) for the full terminology discussion and current production baseline.
+### Modern Features
 
-### Hierarchical Architecture
+**Hierarchical Multi-Scale Encoding:**
+- **Spatial hierarchy**: Multi-level VQ quantization per category for coarse-to-fine representation
+- **Temporal hierarchy**: Pyramid encoder capturing dynamics at multiple scales (fast fluctuations → slow trends)
+- **Per-family clustering**: Independent category discovery for initial conditions and temporal dynamics
 
-The VQ-VAE uses **dual hierarchy**:
+**Variable-Length Sequence Support:**
+- Adaptive pyramid levels for sequences of varying lengths (16-256 timesteps)
+- Scale-invariant learning: same behavioral patterns recognized regardless of trajectory duration
+- Sample weighting to prevent short sequences from dominating gradients
 
-1. **Spatial hierarchy**: 3-level coarse→fine VQ quantization per category (L0→L1→L2)
-2. **Temporal hierarchy**: 4-scale pyramid encoder (P0: full resolution → P3: eighth resolution)
+**Advanced Training Techniques:**
+- **Learnable category assignments**: Gradient-based optimization of feature-to-category mappings with Gumbel-Softmax
+- **Hybrid initial encoder**: End-to-end CNN training for initial conditions with gradient flow
+- **torch.compile optimization**: 30-40% speedup for fixed-length, 15-25% for variable-length models
+- **Per-family assignment matrices**: Block-diagonal constraints for clean family separation
 
-The temporal pyramid disentangles dynamics across scales:
-- **P0 (32D)**: Fast dynamics, high-frequency fluctuations
-- **P1 (64D)**: Medium-scale patterns
-- **P2 (96D)**: Slow dynamics
-- **P3 (128D)**: Global trends, low-frequency structure
-
-Each pyramid level becomes a feature family for independent clustering, allowing different behavioral categories to emerge at different temporal scales.
-
-**NEW: Variable-Length Support** (2026-01)
-- Training on mixed-length trajectories (T ∈ {16, 32, 64, 128, 256})
-- Hybrid initial encoding: 166D (38D manual + 128D CNN) applied during category discovery
-- Adaptive pyramid levels: automatically skip levels for short trajectories
-- Sample weighting: prevents short sequences from dominating gradients
-- Powers of 2 alignment: clean integer divisions at all pyramid levels
-- Scale-invariant learning: same dynamics recognized regardless of length
-- Total input dimension: 486D (166 initial + 320 temporal)
-
-📖 **See also:** [docs/vqvae/temporal-pyramid.md](docs/vqvae/temporal-pyramid.md) for complete temporal pyramid documentation including variable-length training.
-
-### Production Baseline: 50K v3.1 with Per-Family Clustering
-
-Our current baseline achieves **97.3% reconstruction quality** with **20.5% codebook utilization** on 50,000 CNO samples:
-
-| Metric | Value |
-|--------|-------|
-| Val Loss | **0.049** |
-| Reconstruction Error | **0.027** (97.3% quality) |
-| Codebook Utilization | **20.5%** (98/477 codes) |
-| Topographic Similarity (Post) | **1.000** (perfect) |
-| Topographic Similarity (Pre) | **0.986** (excellent) |
-| Input Features | 142 (14 initial + 128 temporal v3.1) |
-| Categories Discovered | **8** (per-family clustering) |
-| Hierarchical Levels | 2 (initial) or 3 (temporal) per category |
-| Total Tokens/Sample | **22** (4 initial + 18 temporal) |
-| Combinatorial Capacity | **~2.2 billion** distinct sequences |
-
-**Key design choices:**
-- **Per-family clustering**: Initial and temporal features clustered independently to discover semantic subcategories within each family (2 initial + 6 temporal categories)
-- **Enhanced v3.1 temporal features**: Spectral analysis, local dynamics, wavelet transforms (128D)
-- **Adaptive compression ratios**: Auto-determined per category using balanced strategy
-- **Entropy regularization**: Encourages uniform codebook usage (reformulated as positive loss: log(K) - entropy)
-- **Low commitment cost** (0.05): Allows encoder exploration of full codebook
-- **High dropout** (0.3): Robustness and forces backup code usage
-
-### Visualization Dashboards
-
-```bash
-# Generate all three dashboards
-poetry run spinlock visualize-vqvae \
-    --checkpoint checkpoints/vqvae/50k_baseline/ \
-    --output visualizations/ \
-    --type all
-```
-
-| Dashboard | Purpose |
-|-----------|---------|
-| **Engineering** | Training curves, utilization heatmap, architecture schematic |
-| **Topological** | t-SNE codebook embeddings, inter-codebook similarity |
-| **Semantic** | Feature→category mapping, category sizes, correlation |
-
-📖 **Detailed documentation:** [docs/baselines/50k-vqvae-baseline.md](docs/baselines/50k-vqvae-baseline.md)
+📖 **Complete documentation:**
+- [VQ-VAE Architecture Guide](docs/vqvae/architecture.md) - Comprehensive architecture overview
+- [Assignment Strategies](docs/vqvae/assignment-strategies.md) - Static vs learnable comparison
+- [Temporal Pyramid](docs/vqvae/temporal-pyramid.md) - Multi-scale temporal encoding
+- [Variable-Length Encoding](docs/vqvae/variable-length-encoding.md) - Adaptive sequence handling
+- [Performance Optimization](docs/vqvae/torch-compile.md) - torch.compile integration
 
 ---
 
@@ -575,12 +529,9 @@ For detailed installation instructions, platform-specific guides, and troublesho
 - [**Feature Families**](docs/features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL feature definitions and extraction
 - [**HDF5 Layout**](docs/features/hdf5-layout.md) - Dataset schema reference for VQ-VAE pipeline
 
-### Baselines
+### Baselines & Experiments
 
-- [**Baselines**](docs/baselines/README.md) - Production datasets and VQ-VAE tokenizers
-  - [50K VQ-VAE Baseline](docs/baselines/50k-vqvae-baseline.md) - **CURRENT:** Per-family clustering tokenizer (val_loss: 0.049, L_recon: 0.027, utilization: 20.5%, topo: 1.000)
-  - [100K Dataset](docs/baselines/100k-full-features-dataset.md) - 100K operators with INITIAL+SUMMARY+TEMPORAL+ARCHITECTURE features
-  - [100K VQ-VAE](docs/baselines/100k-full-features-vqvae.md) - Prior baseline tokenizer (val_loss: 0.172, quality: 0.95, utilization: 67%)
+- [**Baselines Directory**](docs/baselines/README.md) - Historical baselines and experimental results
 
 ### Getting Started
 
