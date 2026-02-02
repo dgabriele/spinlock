@@ -32,7 +32,7 @@ Input Features → Category Assignment → Grouped Encoding → Vector Quantizat
 
 ### 1. Fixed-Length Path (Standard)
 
-For pre-computed feature vectors from SDF simulations.
+For pre-computed feature vectors from operator trajectories.
 
 ```
 Features [B, D]

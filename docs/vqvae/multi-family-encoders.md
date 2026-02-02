@@ -63,14 +63,14 @@ encoder = get_encoder('ICCNNEncoder', embedding_dim=28)
 
 ```yaml
 families:
-  sdf:
+  initial:
     encoder: MLPEncoder
     encoder_params:
       hidden_dims: [256, 128]
       output_dim: 64
       dropout: 0.1
 
-  nop:
+  temporal:
     encoder: IdentityEncoder
     encoder_params:
       input_dim: 31
@@ -105,15 +105,15 @@ from spinlock.encoding.categorical_vqvae import CategoricalVQVAEConfig
 config = CategoricalVQVAEConfig(
     input_dim=252,  # Total feature dim
     group_indices={
-        'sdf': [0, 1, 2, ...],  # 221 features
-        'nop': [221, 222, ...],  # 31 features
+        'initial': [0, 1, 2, ...],  # 221 features
+        'temporal': [221, 222, ...],  # 31 features
     },
     family_encoders={
-        'sdf': {
+        'initial': {
             'encoder': 'MLPEncoder',
             'encoder_params': {'hidden_dims': [256, 128], 'output_dim': 64}
         },
-        'nop': {
+        'temporal': {
             'encoder': 'IdentityEncoder',
             'encoder_params': {'input_dim': 31}
         }
@@ -133,10 +133,10 @@ from spinlock.encoding.grouped_feature_extractor import GroupedFeatureExtractor
 
 extractor = GroupedFeatureExtractor(
     input_dim=252,
-    group_indices={'sdf': [0, ...], 'nop': [221, ...]},
+    group_indices={'initial': [0, ...], 'temporal': [221, ...]},
     group_embedding_dim=64,
     family_encoders={  # NEW: optional encoder config
-        'sdf': {'encoder': 'MLPEncoder', 'encoder_params': {...}},
+        'initial': {'encoder': 'MLPEncoder', 'encoder_params': {...}},
     }
 )
 ```
@@ -166,12 +166,12 @@ Passed to `GroupedFeatureExtractor` during model initialization.
 ```yaml
 # configs/vqvae/sdf_nop.yaml
 families:
-  sdf:
+  initial:
     encoder: MLPEncoder
     encoder_params:
       hidden_dims: [256, 128]
       output_dim: 64
-  nop:
+  temporal:
     encoder: MLPEncoder
     encoder_params:
       hidden_dims: [128, 64]
@@ -203,13 +203,13 @@ families:
 ```yaml
 # configs/vqvae/multi_family_example.yaml
 families:
-  sdf:
+  initial:
     encoder: MLPEncoder
     encoder_params:
       hidden_dims: [256, 128]
       output_dim: 64
 
-  nop:
+  temporal:
     encoder: MLPEncoder
     encoder_params:
       hidden_dims: [128, 64]
@@ -237,7 +237,7 @@ model:
 ```python
 config = CategoricalVQVAEConfig(
     input_dim=252,
-    group_indices={'sdf': [...], 'nop': [...]},
+    group_indices={'initial': [...], 'temporal': [...]},
     # No family_encoders specified
 )
 ```
@@ -308,10 +308,10 @@ from spinlock.encoding.categorical_vqvae import CategoricalVQVAEConfig, Categori
 
 config = CategoricalVQVAEConfig(
     input_dim=252,
-    group_indices={'sdf': list(range(221)), 'nop': list(range(221, 252))},
+    group_indices={'initial': list(range(221)), 'temporal': list(range(221, 252))},
     family_encoders={
-        'sdf': {'encoder': 'MLPEncoder', 'encoder_params': {'hidden_dims': [256, 128], 'output_dim': 64}},
-        'nop': {'encoder': 'IdentityEncoder', 'encoder_params': {'input_dim': 31}},
+        'initial': {'encoder': 'MLPEncoder', 'encoder_params': {'hidden_dims': [256, 128], 'output_dim': 64}},
+        'temporal': {'encoder': 'IdentityEncoder', 'encoder_params': {'input_dim': 31}},
     },
     levels=[{'latent_dim': 32, 'num_tokens': 128}],
 )
