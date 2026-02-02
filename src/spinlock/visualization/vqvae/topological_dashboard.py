@@ -170,6 +170,41 @@ def compute_tsne_quality_metrics(
     return metrics
 
 
+def filter_active_codes(
+    embeddings: Dict[str, np.ndarray],
+    usage: Dict[str, np.ndarray],
+    threshold: float = 0.1,
+) -> Dict[str, np.ndarray]:
+    """Filter codebook embeddings to only include active codes.
+
+    Args:
+        embeddings: Dict[codebook_key] -> embedding matrix [num_codes, dim]
+        usage: Dict[codebook_key] -> usage counts [num_codes]
+        threshold: Minimum usage count to consider a code active
+
+    Returns:
+        Filtered embeddings dict with only active codes
+    """
+    filtered = {}
+
+    for cb_key in embeddings.keys():
+        if cb_key not in usage:
+            # No usage info, keep all codes
+            filtered[cb_key] = embeddings[cb_key]
+            continue
+
+        # Get active code mask
+        usage_counts = usage[cb_key]
+        active_mask = usage_counts > threshold
+
+        # Filter embeddings
+        if active_mask.any():
+            filtered[cb_key] = embeddings[cb_key][active_mask]
+        # If no codes are active, skip this codebook entirely
+
+    return filtered
+
+
 def compute_tsne_embedding(
     embeddings: Dict[str, np.ndarray],
     perplexity: int = 15,
@@ -586,13 +621,17 @@ def create_topological_dashboard(
     data = load_vqvae_checkpoint(checkpoint_path)
     embeddings, usage, codebook_keys = extract_codebook_embeddings(checkpoint_path)
 
-    # Compute t-SNE
-    print("Computing t-SNE embedding...")
-    coords, labels, codebook_ids = compute_tsne_embedding(embeddings)
+    # Filter to only active codes (usage > 0.1)
+    print("Filtering to active codes only...")
+    embeddings_active = filter_active_codes(embeddings, usage, threshold=0.1)
 
-    # Compute t-SNE quality metrics
+    # Compute t-SNE (using only active codes)
+    print("Computing t-SNE embedding...")
+    coords, labels, codebook_ids = compute_tsne_embedding(embeddings_active)
+
+    # Compute t-SNE quality metrics (using only active codes)
     print("Computing quality metrics...")
-    quality_metrics = compute_tsne_quality_metrics(embeddings, coords, labels)
+    quality_metrics = compute_tsne_quality_metrics(embeddings_active, coords, labels)
 
     # Create figure with grid layout
     fig = plt.figure(figsize=figsize, dpi=dpi)

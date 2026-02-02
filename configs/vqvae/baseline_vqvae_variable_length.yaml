@@ -139,7 +139,7 @@ model:
 
   # VQ-VAE hyperparameters
   uniform_codebook_init: true
-  commitment_cost: 0.2         # LOWERED from 0.25 to reduce encoder commitment to existing codes
+  commitment_cost: 0.1         # LOWERED from 0.2 to encourage exploration of new codes
   use_ema: true
   decay: 0.99
   dropout: 0.35                 # INCREASED from 0.3 to reduce overfitting (train/val gap mitigation)
@@ -233,26 +233,26 @@ training:
 
     # Dendrogram visualization
     export_dendrogram: true
-    dendrogram_path: "diagnostics/dendrograms/100k_baseline_dev_variable_length"
+    dendrogram_path: "diagnostics/dendrograms/100k_fine_grained_categories"
 
     # Per-family clustering - cluster each family independently
     per_family_clustering: true
     per_family_params:
       initial:
         min_clusters: 2
-        max_clusters: 5
+        max_clusters: 12  # INCREASED from 5 (166 features / 12 = ~14 per category)
       temporal_p0:
         min_clusters: 2
-        max_clusters: 10
+        max_clusters: 10  # OK (29 features / 10 = ~3 per category)
       temporal_p1:
         min_clusters: 2
-        max_clusters: 10
+        max_clusters: 15  # INCREASED from 10 (55 features / 15 = ~4 per category)
       temporal_p2:
         min_clusters: 2
-        max_clusters: 15
+        max_clusters: 25  # INCREASED from 15 (94 features / 25 = ~4 per category)
       temporal_p3:
         min_clusters: 2
-        max_clusters: 20
+        max_clusters: 35  # INCREASED from 20 (128 features / 35 = ~4 per category)
 
   # Loss normalization
   # Normalizes MSE-based losses (L_recon, L_info) by target variance
@@ -271,13 +271,13 @@ training:
   vq_weight: 0.8                # Vector quantization commitment
   orthogonality_weight: 0.125   # Codebook diversity (already normalized)
   informativeness_weight: 0.35  # Per-category partial decoder reconstruction - INCREASED from 0.30 to push specialization
-  entropy_weight: 0.15          # Uniform codebook usage (already normalized) - REDUCED from 0.25 (was dominating at 55% of loss)
+  entropy_weight: 0.25          # Uniform codebook usage - INCREASED from 0.15 to improve utilization
   topo_weight: 0.5              # Topology preservation (already normalized)
   topo_samples: 2048            # Samples for topographic loss computation
 
   # Checkpointing
   save_every: 25
-  checkpoint_dir: "checkpoints/vqvae/100k_baseline_dev_variable_length"
+  checkpoint_dir: "checkpoints/vqvae/100k_fine_grained_categories"
 
   # Callbacks
   early_stopping_patience: 200 
