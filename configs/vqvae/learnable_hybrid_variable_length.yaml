@@ -144,7 +144,7 @@ training:
   # Loss configuration - INHERITED
   normalize_mse: true
   reconstruction_weight: 1.0
-  category_reconstruction_weight: 0.15
+  category_reconstruction_weight: 0.0  # Disabled - focus on global reconstruction
   vq_weight: 0.8
   orthogonality_weight: 0.125
   informativeness_weight: 0.01
