@@ -150,7 +150,7 @@ training:
   informativeness_weight: 0.01
   entropy_weight: 0.05  # Reduced from 0.25 - was 40x recon contribution
   topo_weight: 0.5
-  topo_samples: 256  # Reduced from 2048 - was capped at batch_size (1024) anyway, 16x faster
+  topo_samples: 512  # Reduced from 2048 - 50% batch coverage, 4x faster
 
   # ┌─────────────────────────────────────────────────────────────┐
   # │ OVERRIDE 2: Checkpoint directory for learnable variant     │
