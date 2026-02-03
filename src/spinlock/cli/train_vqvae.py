@@ -786,114 +786,61 @@ Output:
             )
 
             # Protect INITIAL features from cleaning if hybrid mode is enabled
-            # UPDATED: Only protect manual features, allow CNN embeddings to be cleaned
             if initial_info is not None:
                 initial_offset = initial_info["offset"]
-                manual_dim = initial_info["manual_dim"]
-                cnn_dim = initial_info["cnn_dim"]
+                # Use encoded_dim (hybrid encoded 166D) not manual_dim (raw 38D)
                 initial_dim = initial_info["encoded_dim"]
                 initial_end = initial_offset + initial_dim
 
-                # Split: manual features (protected) + CNN embeddings (cleaned)
-                manual_start = initial_offset
-                manual_end = initial_offset + manual_dim
-                cnn_start = manual_end
-                cnn_end = initial_end
+                # Extract INITIAL features before cleaning
+                initial_features = features[:, initial_offset:initial_end].copy()
+                initial_names = feature_names[initial_offset:initial_end] if feature_names else None
 
-                # Extract manual features for protection
-                manual_features = features[:, manual_start:manual_end].copy()
-                manual_names = feature_names[manual_start:manual_end] if feature_names else None
-
-                # CNN embeddings will be cleaned along with other features
+                # Remove INITIAL from features array for cleaning
                 features_for_cleaning = np.concatenate([
-                    features[:, :manual_start],
-                    features[:, cnn_start:cnn_end],  # Include CNN embeddings
+                    features[:, :initial_offset],
                     features[:, initial_end:]
                 ], axis=1)
                 names_for_cleaning = (
-                    (feature_names[:manual_start] +
-                     feature_names[cnn_start:cnn_end] +  # Include CNN names
-                     feature_names[initial_end:])
+                    feature_names[:initial_offset] + feature_names[initial_end:]
                     if feature_names else None
                 )
 
-                print(f"  Protected {manual_dim}D manual INITIAL features from cleaning")
-                print(f"  CNN embeddings ({cnn_dim}D) will be subject to feature cleaning")
+                print(f"  Protected {initial_dim}D INITIAL features (hybrid encoded) from cleaning")
 
-                # Clean features (including CNN embeddings, excluding manual)
-                cleaned_features, feature_mask_cleaned, cleaned_names = processor.clean(
+                # Clean non-INITIAL features
+                cleaned_features, feature_mask_non_initial, cleaned_names = processor.clean(
                     features_for_cleaning, names_for_cleaning
                 )
 
-                # Reconstruct full feature_mask
-                # Structure: [before_manual | manual (protected) | CNN (cleaned) | after_initial]
+                # Reconstruct full feature_mask including INITIAL features (all True for INITIAL)
+                # feature_mask maps original dimension → final cleaned dimension
                 feature_mask = np.zeros(features.shape[1], dtype=bool)
+                # Mark INITIAL features as kept (they were protected from cleaning)
+                feature_mask[initial_offset:initial_end] = True
+                # Insert non-INITIAL mask values
+                non_initial_indices = list(range(initial_offset)) + list(range(initial_end, features.shape[1]))
+                feature_mask[non_initial_indices] = feature_mask_non_initial
 
-                # Mark manual features as kept (protected)
-                feature_mask[manual_start:manual_end] = True
+                # Count how many features before INITIAL were removed
+                features_removed_before = sum(1 for i, kept in enumerate(feature_mask_non_initial) if not kept and i < initial_offset)
 
-                # Split the cleaned mask back into components
-                num_before = manual_start
-                num_cnn = cnn_dim
-                num_after = features.shape[1] - initial_end
-
-                # Map cleaned mask back to original positions
-                mask_before = feature_mask_cleaned[:num_before]
-                mask_cnn = feature_mask_cleaned[num_before:num_before+num_cnn]
-                mask_after = feature_mask_cleaned[num_before+num_cnn:]
-
-                # Assign to full mask
-                feature_mask[:manual_start] = mask_before
-                feature_mask[cnn_start:cnn_end] = mask_cnn  # CNN embeddings (cleaned)
-                feature_mask[initial_end:] = mask_after
-
-                # Extract cleaned CNN embeddings
-                cleaned_cnn_idx_start = num_before
-                cleaned_cnn_idx_end = num_before + mask_cnn.sum()
-                cleaned_cnn = cleaned_features[:, cleaned_cnn_idx_start:cleaned_cnn_idx_end]
-
-                # Count removals for offset adjustment
-                features_removed_before = sum(1 for i, kept in enumerate(mask_before) if not kept)
-
-                # Reconstruct: [cleaned_before | manual (protected) | cleaned_CNN | cleaned_after]
-                new_offset = manual_start - features_removed_before
-                cleaned_before = cleaned_features[:, :cleaned_cnn_idx_start]
-                cleaned_after = cleaned_features[:, cleaned_cnn_idx_end:]
-
+                # Reattach INITIAL features at the adjusted offset
+                new_offset = initial_offset - features_removed_before
                 features = np.concatenate([
-                    cleaned_before[:, :new_offset],
-                    manual_features,
-                    cleaned_cnn,
-                    cleaned_after
+                    cleaned_features[:, :new_offset],
+                    initial_features,
+                    cleaned_features[:, new_offset:]
                 ], axis=1)
 
                 # Update feature names
-                if cleaned_names and manual_names:
-                    # Split cleaned names back into components
-                    cleaned_names_before = cleaned_names[:new_offset]
-                    # CNN names are in cleaned_names after the before section
-                    num_cleaned_cnn = mask_cnn.sum()
-                    cleaned_names_cnn = cleaned_names[cleaned_cnn_idx_start:cleaned_cnn_idx_end]
-                    cleaned_names_after = cleaned_names[cleaned_cnn_idx_end:]
+                if cleaned_names and initial_names:
+                    feature_names = cleaned_names[:new_offset] + initial_names + cleaned_names[new_offset:]
 
-                    # Reconstruct: [before | manual | cleaned_CNN | after]
-                    feature_names = (
-                        cleaned_names_before +
-                        list(manual_names) +
-                        list(cleaned_names_cnn) +
-                        cleaned_names_after
-                    )
-
-                # Update initial_info with new dimensions
-                new_cnn_dim = mask_cnn.sum()  # CNN embeddings after cleaning
-                new_encoded_dim = manual_dim + new_cnn_dim
+                # Update initial_info with new offset (manual_dim and encoded_dim stay the same)
                 initial_info["offset"] = new_offset
-                initial_info["cnn_dim"] = new_cnn_dim
-                initial_info["encoded_dim"] = new_encoded_dim
 
                 print(f"  INITIAL offset adjusted: {initial_offset} → {new_offset}")
-                print(f"  CNN embeddings after cleaning: {cnn_dim}D → {new_cnn_dim}D ({cnn_dim - new_cnn_dim} removed)")
-                print(f"  Total initial features: {initial_dim}D → {new_encoded_dim}D")
 
                 # Store feature_mask for later use
                 self._feature_mask = feature_mask
