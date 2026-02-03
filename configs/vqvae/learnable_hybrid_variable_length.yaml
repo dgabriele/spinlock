@@ -64,7 +64,7 @@ model:
   commitment_cost: 0.1
   use_ema: true
   decay: 0.99
-  dropout: 0.35
+  dropout: 0.2  # Reduced from 0.35 - less aggressive regularization
   orthogonality_weight: 0.1
 
 # Feature Cleaning
@@ -83,16 +83,16 @@ feature_cleaning:
 
 # Training Configuration
 training:
-  batch_size: 1024
-  learning_rate: 0.001
+  batch_size: 512  # Reduced from 1024 - better generalization
+  learning_rate: 0.0005  # Reduced from 0.001 - stable fine convergence
   num_epochs: 1000
   optimizer: "adam"
 
   scheduler:
     type: "cosine"
     T_max: 1000
-    eta_min: 0.0001
-  warmup_epochs: 20
+    eta_min: 0.00005  # Reduced from 0.0001
+  warmup_epochs: 50  # Increased from 20 - stabilize learnable assignments
 
   # ┌─────────────────────────────────────────────────────────────┐
   # │ OVERRIDE 1: Enable learnable category assignments          │
@@ -146,9 +146,9 @@ training:
   reconstruction_weight: 1.0
   category_reconstruction_weight: 0.0  # Disabled - focus on global reconstruction
   vq_weight: 0.8
-  orthogonality_weight: 0.1  # Balanced reduction from 0.125 (0.05 was too aggressive)
+  orthogonality_weight: 0.125  # Revert to original - was working
   informativeness_weight: 0.01
-  entropy_weight: 0.1  # Balanced reduction from 0.25 (0.05 was too aggressive)
+  entropy_weight: 0.15  # Moderate reduction from 0.25
   topo_weight: 0.5
   topo_samples: 512  # Reduced from 2048 - 50% batch coverage, 4x faster
 
@@ -163,15 +163,11 @@ training:
   early_stopping_patience: 200
   early_stopping_min_delta: 0.01
 
-  # Dead code resets enabled:
-  # dead_code_reset_interval: 50
-  # dead_code_max_reset_fraction: 0.05
+  # Conservative dead code reset for codebook health
+  dead_code_reset_interval: 50
+  dead_code_max_reset_fraction: 0.03  # Only reset 3% at a time
 
-  # Disabled:
-  dead_code_reset_interval: 0
-  dead_code_max_reset_fraction: 0.0
-
-  val_every_n_epochs: 5
+  val_every_n_epochs: 2  # Increased frequency to catch best checkpoint
   use_torch_compile: true
 
 # ═══════════════════════════════════════════════════════════════
