@@ -621,8 +621,11 @@ class VQVAETrainer:
         avg_loss = total_loss / n_batches
         return avg_loss
 
-    def compute_metrics(self) -> Dict[str, Any]:
+    def compute_metrics(self, epoch: int = 0) -> Dict[str, Any]:
         """Compute validation metrics.
+
+        Args:
+            epoch: Current epoch number (for debug logging)
 
         Returns:
             Dict with utilization, reconstruction error (raw and normalized), topographic similarity, and detailed per-category metrics
@@ -672,11 +675,21 @@ class VQVAETrainer:
         if normalized_errors and self.group_indices:
             weighted_sum = 0.0
             total_features = 0
+
+            # DEBUG: Print per-category errors
+            if self.verbose and epoch % 50 == 1:  # Log every 50 epochs starting at epoch 1
+                logger.info("  DEBUG: Per-category normalized errors:")
+
             for cat_name, indices in self.group_indices.items():
                 norm_key = f"{cat_name}/reconstruction_error_normalized"
                 if norm_key in normalized_errors:
-                    weighted_sum += normalized_errors[norm_key] * len(indices)
+                    cat_error = normalized_errors[norm_key]
+                    weighted_sum += cat_error * len(indices)
                     total_features += len(indices)
+
+                    # DEBUG: Show which categories are high
+                    if self.verbose and epoch % 50 == 1:
+                        logger.info(f"    {cat_name}: {cat_error:.3f} ({len(indices)} features)")
 
             if total_features > 0:
                 overall_normalized_error = weighted_sum / total_features
@@ -688,10 +701,20 @@ class VQVAETrainer:
         if reconstruction_error > 0 and self.normalization_stats:
             # Compute global variance from all features
             all_variances = []
+
+            # DEBUG: Show category variances
+            if self.verbose and epoch % 50 == 1:
+                logger.info("  DEBUG: Category variances (used for normalization):")
+
             for cat_name, stats in self.normalization_stats.items():
                 # stats.std is per-feature std for this category
                 cat_variances = stats.std ** 2
                 all_variances.append(cat_variances)
+
+                # DEBUG: Show variance for each category
+                if self.verbose and epoch % 50 == 1:
+                    cat_mean_var = cat_variances.mean()
+                    logger.info(f"    {cat_name}: mean_var={cat_mean_var:.6f}, features={len(cat_variances)}")
 
             if all_variances:
                 # Concatenate all feature variances
@@ -1084,7 +1107,7 @@ class VQVAETrainer:
                     self.history["val_loss"].append(val_loss)
 
             # Compute metrics
-            metrics = self.compute_metrics()
+            metrics = self.compute_metrics(epoch=epoch)
             self.history["metrics"].append(metrics)
 
             epoch_time = time.time() - epoch_start
@@ -1251,7 +1274,7 @@ class VQVAETrainer:
                 self.scheduler.step()
 
         # Final metrics
-        final_metrics = self.compute_metrics()
+        final_metrics = self.compute_metrics(epoch=epoch)
         self.history["final_metrics"] = final_metrics
 
         elapsed = time.time() - start_time
