@@ -66,7 +66,7 @@ model:
   decay: 0.99
   dropout: 0.35
   orthogonality_weight: 0.1
-  informativeness_weight: 0.3
+  informativeness_weight: 0.1
 
 # Feature Cleaning
 feature_cleaning:
