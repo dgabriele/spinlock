@@ -223,16 +223,19 @@ def compute_normalized_reconstruction_error_per_category(
                 cat_target = target[:, indices]
                 cat_recon = reconstruction[:, indices]
 
-                # Raw MSE
-                raw_mse = F.mse_loss(cat_recon, cat_target)
+                # Raw MSE (per-sample)
+                raw_mse = F.mse_loss(cat_recon, cat_target, reduction='none').mean(dim=1)  # [B]
 
                 # Normalize by feature variance
                 stats = normalization_stats[cat_name]
                 std_tensor = torch.from_numpy(stats.std).float().to(device)
                 variance = (std_tensor ** 2).mean() + 1e-8
 
-                normalized_mse = raw_mse / variance
-                category_errors[cat_name].append(normalized_mse.item())
+                # Normalize each sample's MSE
+                normalized_mse = raw_mse / variance  # [B]
+
+                # Append per-sample normalized errors (not just batch average)
+                category_errors[cat_name].extend(normalized_mse.cpu().tolist())
 
     # Average per category
     result = {}
