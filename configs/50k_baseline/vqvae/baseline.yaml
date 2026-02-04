@@ -144,11 +144,7 @@ training:
   topo_weight: 0.3  # Reduced from 0.5 - less topographic constraint
   topo_samples: 512  # Reduced from 2048 - 50% batch coverage, 4x faster
 
-  # ┌─────────────────────────────────────────────────────────────┐
-  # │ OVERRIDE 2: Checkpoint directory for learnable variant     │
-  # │ Baseline: checkpoints/vqvae/100k_fine_grained_categories    │
-  # │ Learnable: checkpoints/vqvae/learnable_hybrid_vl            │
-  # └─────────────────────────────────────────────────────────────┘
+  # Checkpoint directory for 50k baseline training
   checkpoint_dir: "checkpoints/vqvae/50k_baseline"
 
   save_every: 25

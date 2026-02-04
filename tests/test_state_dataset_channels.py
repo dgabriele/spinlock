@@ -70,8 +70,8 @@ def test_dataset_different_realizations():
 
 
 def test_100k_baseline_dataset():
-    """Test 100k baseline dataset loads correctly."""
-    dataset_path = Path("datasets/100k_baseline_dev.h5")
+    """Test 50k baseline dataset loads correctly."""
+    dataset_path = Path("datasets/50k_baseline.h5")
     if not dataset_path.exists():
         pytest.skip("Dataset not found")
 
