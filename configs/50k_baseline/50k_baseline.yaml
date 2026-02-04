@@ -1,19 +1,19 @@
 version: "1.0"
 
 metadata:
-  name: "100k_baseline"
+  name: "50k_baseline"
   description: |
-    100K CNO dataset with 3 channels and per-channel independent IC generation.
+    50K CNO dataset with 3 channels and per-channel independent IC generation.
     Proper multi-channel structure: [N, M, C, H, W] where C=3.
     Based on cno_50k_3channel with per-channel IC diversity.
   author: "Spinlock Team"
   created: "2026-01-30"
   purpose: |
-    100,000 operators × 3 realizations, each with 3 channels
-    Expected time: ~8-10 days
+    50,000 operators × 3 realizations, each with 3 channels
+    (Originally configured for 100K, generation stopped at 50K completion)
     Grid: 64×64 (optimal for VQ-VAE compression)
     Features extracted from all 3 channels with proper cross-channel features
-    Dataset structure: [N, M, C, H, W] = [100000, 3, 3, 64, 64]
+    Dataset structure: [N, M, C, H, W] = [50000, 3, 3, 64, 64]
 
 # CRITICAL: Explicit channel specification
 num_channels: 3  # 3 independent field channels
@@ -96,7 +96,7 @@ parameter_space:
       choices: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
       description: "Mixing parameter for convex policy (persistence of previous state)"
 
-# Sampling configuration for 100K samples
+# Sampling configuration for 50K samples
 sampling:
   strategy: "sobol_stratified"
 
@@ -113,8 +113,8 @@ sampling:
     check_discrepancy: true
     check_correlation: true
 
-  total_samples: 100000  # 100K operators
-  batch_size: 8  # Increased for better GPU utilization (100000 / 8 = 12500 batches)
+  total_samples: 50000  # 50K operators
+  batch_size: 8  # Increased for better GPU utilization (50000 / 8 = 6250 batches)
 
 # Simulation configuration
 simulation:
@@ -190,7 +190,7 @@ simulation:
 
 # Dataset output configuration
 dataset:
-  output_path: "datasets/100k_baseline.h5"
+  output_path: "datasets/50k_baseline.h5"
 
   storage:
     compression: "lzf"  # Much faster than gzip (12x), minimal size increase
