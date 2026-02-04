@@ -47,13 +47,13 @@ model:
     afno_blocks: null
 
 training:
-  n_samples: 50000              # Full 50K dataset
+  n_samples: 25000              # Half dataset for generalization
   sampling_strategy: "sequential"
   batch_size: 2
   gradient_accumulation_steps: 4  # Effective batch size: 8
   epochs: 5                      # 5 epochs for baseline evaluation
   learning_rate: 1.0e-4
-  warmup_steps: 5625             # 1 epoch warmup (45000 train / 8 effective batch)
+  warmup_steps: 2812             # 1 epoch warmup (22500 train / 8 effective batch)
   weight_decay: 1.0e-4
   clip_grad: 1.0
 
@@ -86,8 +86,9 @@ seed: 42
 
 # Expected performance:
 # - 227M parameters (3x channels compared to single-channel baseline)
-# - ~5625 batches/epoch (45000 train samples / 8 effective batch)
+# - ~2812 batches/epoch (22500 train samples / 8 effective batch)
 # - Effective batch size: 8 (2×4 gradient accumulation)
 # - LR: 1e-4
 # - Target: L_traj < 1.0 (all 3 channels supervised via CNO)
-# - Dataset: Full 50K baseline (45K train, 5K val with 10% split)
+# - Dataset: 25K from 50K baseline (22.5K train, 2.5K val with 10% split)
+# - Rationale: Sparse world view for generalization, refined downstream
