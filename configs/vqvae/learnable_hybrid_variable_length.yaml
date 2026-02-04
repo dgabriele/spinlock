@@ -146,10 +146,10 @@ training:
   reconstruction_weight: 1.0
   category_reconstruction_weight: 0.0  # Disabled - focus on global reconstruction
   vq_weight: 0.8
-  orthogonality_weight: 0.125  # Revert to original - was working
-  informativeness_weight: 0.01
-  entropy_weight: 0.15  # Moderate reduction from 0.25
-  topo_weight: 0.5
+  orthogonality_weight: 0.05  # Aggressive reduction - allow recon to dominate
+  informativeness_weight: 0.0  # Disabled - self-stabilizing metric, no validated downstream benefit
+  entropy_weight: 0.0  # Disabled - entropy naturally settles at ~2.0 regardless of weight
+  topo_weight: 0.3  # Reduced from 0.5 - less topographic constraint
   topo_samples: 512  # Reduced from 2048 - 50% batch coverage, 4x faster
 
   # ┌─────────────────────────────────────────────────────────────┐
