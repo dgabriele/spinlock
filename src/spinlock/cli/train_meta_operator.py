@@ -921,25 +921,31 @@ Output:
         # Create LR scheduler with optional warmup
         from torch.optim.lr_scheduler import LinearLR, SequentialLR
 
+        # Calculate total training steps (scheduler steps per batch, not per epoch)
+        batches_per_epoch = len(train_loader)
+        total_epochs = config["training"]["epochs"]
+        total_steps = batches_per_epoch * total_epochs
+
         warmup_steps = config["training"].get("warmup_steps", 0)
         if warmup_steps > 0:
-            # Warmup: LR ramps from 0.1x to 1.0x over warmup_steps
+            # Warmup: LR ramps from 0.1x to 1.0x over warmup_steps (batches)
             warmup = LinearLR(optimizer, start_factor=0.1, total_iters=warmup_steps)
-            # Cosine: LR decays from 1.0x to 0 over remaining epochs
-            total_epochs = config["training"]["epochs"]
+            # Cosine: LR decays from 1.0x to 0 over remaining steps (batches)
+            cosine_steps = max(1, total_steps - warmup_steps)
             cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
-                T_max=total_epochs - warmup_steps if warmup_steps < total_epochs else 1,
+                T_max=cosine_steps,
             )
             # Sequential: warmup first, then cosine
             scheduler = SequentialLR(optimizer, [warmup, cosine], milestones=[warmup_steps])
-            print(f"  ✓ LR schedule: {warmup_steps}-step warmup + cosine decay")
+            print(f"  ✓ LR schedule: {warmup_steps}-batch warmup + {cosine_steps}-batch cosine decay")
+            print(f"    Total: {total_steps} batches ({batches_per_epoch} batches/epoch × {total_epochs} epochs)")
         else:
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
-                T_max=config["training"]["epochs"],
+                T_max=total_steps,
             )
-            print(f"  ✓ LR schedule: cosine decay (no warmup)")
+            print(f"  ✓ LR schedule: {total_steps}-batch cosine decay (no warmup)")
 
         # Resume from checkpoint if specified
         start_epoch = 0
@@ -1052,8 +1058,7 @@ Output:
                 max_batches=max_val_batches,
             )
 
-            # Update scheduler
-            scheduler.step()
+            # Note: Scheduler is now stepped per-batch (inside _train_epoch)
             current_lr = scheduler.get_last_lr()[0]
 
             # Print epoch summary
@@ -1280,6 +1285,9 @@ Output:
                 torch.nn.utils.clip_grad_norm_(noa.parameters(), clip_grad)
                 optimizer.step()
                 optimizer.zero_grad()
+                # Step scheduler after optimizer step (per effective batch)
+                if scheduler is not None:
+                    scheduler.step()
 
             # Accumulate metrics
             total_loss += loss_output.total.item()
