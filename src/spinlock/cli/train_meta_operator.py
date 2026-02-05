@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
 import sys
+import os
 import warnings
 import yaml
 import time
@@ -26,6 +27,10 @@ import re
 import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
 
 # Force unbuffered output for real-time logging
 sys.stdout.reconfigure(line_buffering=True)
@@ -284,7 +289,7 @@ Output:
 
     def _launch_distributed_training(self, config: Dict[str, Any], args: Namespace) -> int:
         """Launch distributed training across multiple nodes."""
-        from spinlock.distributed import DistributedConfig, launch_distributed_training
+        from spinlock.distributed import DistributedConfig
 
         print("\n" + "="*70)
         print("Distributed Training Configuration")
@@ -300,10 +305,17 @@ Output:
         # Print distributed setup
         print(f"\nBackend: {dist_config.backend}")
         print(f"World size: {dist_config.world_size}")
-        print(f"Master: {dist_config.get_master_addr()}:{dist_config.master_port}")
-        print(f"\nNodes:")
-        for i, node in enumerate(dist_config.nodes):
-            print(f"  [{i}] {node.host}: {len(node.gpus)} GPU(s) {node.gpus}")
+
+        if dist_config.backend == "ssh":
+            print(f"Master: {dist_config.get_master_addr()}:{dist_config.master_port}")
+            print(f"\nNodes:")
+            for i, node in enumerate(dist_config.nodes):
+                print(f"  [{i}] {node.host}: {len(node.gpus)} GPU(s) {node.gpus}")
+        elif dist_config.backend == "salad":
+            print(f"Organization: {dist_config.salad.organization}")
+            print(f"Project: {dist_config.salad.project}")
+            print(f"GPU: {dist_config.salad.resources.gpu_class}")
+            print(f"Replicas: {dist_config.salad.resources.num_replicas}")
 
         print("\n" + "="*70 + "\n")
 
@@ -331,9 +343,16 @@ Output:
         if args.log_every != 10:
             script_args.extend(["--log-every", str(args.log_every)])
 
-        # Launch distributed training
+        # Launch based on backend type
         try:
-            launch_distributed_training(dist_config, script_path, script_args)
+            if dist_config.backend == "salad":
+                # Launch on Salad.com
+                from spinlock.distributed.salad.launcher import launch_salad_training
+                launch_salad_training(config, script_path, script_args)
+            else:
+                # Launch via SSH (existing launcher)
+                from spinlock.distributed import launch_distributed_training
+                launch_distributed_training(dist_config, script_path, script_args)
             return 0
         except KeyboardInterrupt:
             print("\n\nTraining interrupted by user", file=sys.stderr)
@@ -479,11 +498,61 @@ Output:
 
         print("=" * 70 + "\n")
 
+    def _sync_data_from_cloud(self, config: Dict[str, Any]) -> None:
+        """Sync dataset and checkpoints from cloud storage if on Salad."""
+        # Check if running on Salad (environment variable set by container)
+        if not os.environ.get("SALAD_MACHINE_ID"):
+            return  # Not on Salad, skip sync
+
+        print("[Salad] Detected Salad environment, syncing data from cloud...")
+
+        from spinlock.distributed.salad.storage import create_storage_backend, StorageManager
+
+        salad_config = config.get("distributed", {}).get("salad", {})
+        if not salad_config:
+            print("[Salad] No Salad config found, skipping sync")
+            return
+
+        # Initialize storage
+        storage_backend = create_storage_backend(salad_config["storage"])
+        storage = StorageManager(storage_backend)
+
+        # Download dataset
+        dataset_path = Path(config["data"]["dataset_path"])
+        remote_dataset = salad_config["storage"]["dataset_path"]
+        storage.sync_dataset(remote_dataset, dataset_path)
+
+        print("[Salad] ✓ Data sync complete")
+
+    def _sync_checkpoint_to_cloud(self, config: Dict[str, Any], checkpoint_path: Path) -> None:
+        """Upload checkpoint to cloud storage if on Salad."""
+        if not os.environ.get("SALAD_MACHINE_ID"):
+            return
+
+        print("[Salad] Uploading checkpoint to cloud...")
+
+        from spinlock.distributed.salad.storage import create_storage_backend, StorageManager
+
+        salad_config = config.get("distributed", {}).get("salad", {})
+        if not salad_config:
+            return
+
+        storage_backend = create_storage_backend(salad_config["storage"])
+        storage = StorageManager(storage_backend)
+
+        remote_path = f"{salad_config['storage']['checkpoint_path']}/{checkpoint_path.name}"
+        storage.sync_checkpoint(checkpoint_path, remote_path)
+
+        print("[Salad] ✓ Checkpoint uploaded")
+
     def _run_training(self, config: Dict[str, Any], args: Namespace) -> int:
         """Execute training pipeline."""
         from spinlock.noa import NOABackbone, CNOReplayer
         from spinlock.noa.losses import MSELedLoss
         from spinlock.operators.state_dataset import NOAStateDataset
+
+        # Sync data from cloud if on Salad
+        self._sync_data_from_cloud(config)
 
         device = config.get("device", "cuda")
         seed = config.get("seed", 42)
@@ -1555,3 +1624,6 @@ Output:
         }
 
         torch.save(checkpoint, path)
+
+        # Upload to cloud storage if on Salad
+        self._sync_checkpoint_to_cloud(config, path)

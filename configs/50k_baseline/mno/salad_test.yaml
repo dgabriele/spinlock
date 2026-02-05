@@ -1,0 +1,121 @@
+# MNO Training on Salad.com - Single RTX 3060 (12GB) Test
+#
+# Purpose: Quick test before expensive multi-GPU run
+# Cost: ~$0.06/hr
+# Use: Validate containerization, data sync, monitoring
+#
+# Location: configs/50k_baseline/mno/salad_test.yaml
+
+# Model configuration (same as baseline)
+model:
+  spatial_dim: 64
+  in_channels: 3
+  out_channels: 3
+  base_channels: 40
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  param_conditioning: true
+  param_dim: 14
+  param_embed_dim: 128
+  token_conditioning: false
+
+  conditioning_mode: "film"
+
+  film:
+    enabled: true
+    embed_dim: 128
+    hidden_dim: 256
+    init_gamma: 1.0
+    init_beta: 0.0
+    post_norm: true
+    modulate_encoder: true
+    modulate_decoder: true
+    encoder_levels: null
+    decoder_levels: null
+    modulate_afno_post: false
+    afno_blocks: null
+
+# Training configuration (reduced for testing)
+training:
+  n_samples: 1000                    # Small subset for testing
+  sampling_strategy: "sequential"
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  epochs: 1                          # Single epoch test
+  learning_rate: 1.0e-4
+  warmup_steps: 100
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  timesteps: 256
+  bptt_window: 32
+
+  use_torch_compile: false
+  replayer_cache_size: 16
+
+  early_stopping_patience: 10
+
+# Loss configuration
+loss:
+  mode: "mse_led"
+  lambda_traj: 1.0
+  lambda_ic: 0.3
+
+# Data configuration
+data:
+  dataset_path: "datasets/50k_baseline.h5"
+  config: "configs/50k_baseline/50k_baseline.yaml"
+  val_split: 0.2
+  num_workers: 4
+
+# Checkpointing
+checkpointing:
+  save_dir: "checkpoints/mno/salad_test"
+  save_every: 1
+  keep_best: true
+
+# Distributed configuration - SALAD.COM (single GPU test)
+distributed:
+  enabled: false  # Single GPU, no distribution needed
+
+  salad:
+    enabled: true
+    api_key: "${SALAD_API_KEY}"
+    organization: "your-org-name"    # Update with your Salad org
+    project: "spinlock-training"
+
+    container:
+      image: "psilogon/spinlock:latest"
+      registry_auth:
+        username: "${DOCKER_USERNAME}"
+        password: "${DOCKER_PASSWORD}"
+
+    resources:
+      gpu_class: "rtx_3060"           # Cheapest option for testing
+      num_replicas: 1                  # Single GPU
+      cpu: 4
+      memory: 12288                    # 12 GB RAM
+      storage: 10737418240             # 10 GB storage
+
+    storage:
+      backend: "minio"
+      endpoint_url: "${MINIO_ENDPOINT}"
+      bucket: "spinlock-training"
+      dataset_path: "datasets/50k_baseline.h5"
+      checkpoint_path: "checkpoints/mno/salad_test"
+      use_ssl: false
+      credentials:
+        aws_access_key_id: "${MINIO_ACCESS_KEY}"
+        aws_secret_access_key: "${MINIO_SECRET_KEY}"
+
+    networking:
+      coordination_backend: "env"
+      master_port: 29500
+
+    monitoring:
+      log_streaming: true
+      poll_interval: 30
+
+device: "cuda"
+seed: 42

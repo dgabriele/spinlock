@@ -1,0 +1,123 @@
+# MNO Training on Salad.com - 4× RTX 4070
+#
+# Target: Fast, cost-effective distributed training
+# Cost: $0.28/hr compute (4× $0.07/hr) + $0 storage (local MinIO)
+# Total: ~$4.48 for 16-hour training run
+# Expected speedup: ~4× over single GPU
+#
+# Location: configs/50k_baseline/mno/salad_4x4070.yaml
+
+# Model configuration (same as baseline)
+model:
+  spatial_dim: 64
+  in_channels: 3
+  out_channels: 3
+  base_channels: 40
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  param_conditioning: true
+  param_dim: 14
+  param_embed_dim: 128
+  token_conditioning: false
+
+  conditioning_mode: "film"
+
+  film:
+    enabled: true
+    embed_dim: 128
+    hidden_dim: 256
+    init_gamma: 1.0
+    init_beta: 0.0
+    post_norm: true
+    modulate_encoder: true
+    modulate_decoder: true
+    encoder_levels: null
+    decoder_levels: null
+    modulate_afno_post: false
+    afno_blocks: null
+
+# Training configuration
+training:
+  n_samples: 20000
+  sampling_strategy: "sequential"
+  batch_size: 2                      # Per GPU
+  gradient_accumulation_steps: 4    # Effective batch size: 8 per GPU
+  epochs: 5
+  learning_rate: 1.0e-4
+  warmup_steps: 2000
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  timesteps: 256
+  bptt_window: 32
+
+  use_torch_compile: false
+  replayer_cache_size: 16
+
+  early_stopping_patience: 10
+
+# Loss configuration
+loss:
+  mode: "mse_led"
+  lambda_traj: 1.0
+  lambda_ic: 0.3
+
+# Data configuration (will be downloaded from MinIO)
+data:
+  dataset_path: "datasets/50k_baseline.h5"
+  config: "configs/50k_baseline/50k_baseline.yaml"
+  val_split: 0.2
+  num_workers: 4
+
+# Checkpointing (will be uploaded to MinIO)
+checkpointing:
+  save_dir: "checkpoints/mno/salad_4x4070"
+  save_every: 1
+  keep_best: true
+
+# Distributed configuration - SALAD.COM
+distributed:
+  enabled: true
+  backend: "salad"  # Use Salad.com launcher
+
+  salad:
+    enabled: true
+    api_key: "${SALAD_API_KEY}"      # From .env file
+    organization: "your-org-name"    # Update with your Salad org
+    project: "spinlock-training"
+
+    container:
+      image: "psilogon/spinlock:latest"  # Your Docker Hub image
+      registry_auth:
+        username: "${DOCKER_USERNAME}"   # From .env
+        password: "${DOCKER_PASSWORD}"   # From .env
+
+    resources:
+      gpu_class: "rtx_4070"          # GPU type
+      num_replicas: 4                 # 4× GPUs for distributed training
+      cpu: 4                          # vCPUs per replica
+      memory: 16384                   # 16 GB RAM per replica
+      storage: 21474836480            # 20 GB ephemeral storage
+
+    storage:
+      backend: "minio"                   # Local MinIO (S3-compatible)
+      endpoint_url: "${MINIO_ENDPOINT}"  # http://YOUR_PUBLIC_IP:9000 from .env
+      bucket: "spinlock-training"
+      dataset_path: "datasets/50k_baseline.h5"
+      checkpoint_path: "checkpoints/mno/salad_4x4070"
+      use_ssl: false                     # Set true if using HTTPS
+      credentials:
+        aws_access_key_id: "${MINIO_ACCESS_KEY}"
+        aws_secret_access_key: "${MINIO_SECRET_KEY}"
+
+    networking:
+      coordination_backend: "env"     # Simple env-based coordination
+      master_port: 29500
+
+    monitoring:
+      log_streaming: true
+      poll_interval: 30
+
+device: "cuda"
+seed: 42

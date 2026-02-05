@@ -2,9 +2,19 @@
 Distributed training support for Spinlock.
 
 Enables multi-node, multi-GPU training using PyTorch DistributedDataParallel.
+Now includes Salad.com cloud GPU platform support.
 """
 
-from .config import DistributedConfig, NodeConfig
+from .config import (
+    DistributedConfig,
+    NodeConfig,
+    SaladConfig,
+    SaladResourceConfig,
+    SaladStorageConfig,
+    SaladNetworkingConfig,
+    SaladContainerConfig,
+    SaladMonitoringConfig,
+)
 from .setup import (
     setup_process_group,
     cleanup_process_group,
@@ -20,6 +30,12 @@ __all__ = [
     # Config
     "DistributedConfig",
     "NodeConfig",
+    "SaladConfig",
+    "SaladResourceConfig",
+    "SaladStorageConfig",
+    "SaladNetworkingConfig",
+    "SaladContainerConfig",
+    "SaladMonitoringConfig",
     # Setup
     "setup_process_group",
     "cleanup_process_group",
