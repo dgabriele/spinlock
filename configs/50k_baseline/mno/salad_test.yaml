@@ -82,7 +82,7 @@ distributed:
   salad:
     enabled: true
     api_key: "${SALAD_API_KEY}"
-    organization: "your-org-name"    # Update with your Salad org
+    organization: "spinlock"
     project: "spinlock-training"
 
     container:

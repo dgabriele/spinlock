@@ -86,7 +86,7 @@ distributed:
   salad:
     enabled: true
     api_key: "${SALAD_API_KEY}"      # From .env file
-    organization: "your-org-name"    # Update with your Salad org
+    organization: "spinlock"
     project: "spinlock-training"
 
     container:
