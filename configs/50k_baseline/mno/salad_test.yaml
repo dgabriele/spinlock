@@ -96,7 +96,7 @@ distributed:
       num_replicas: 1                  # Single GPU
       cpu: 4
       memory: 12288                    # 12 GB RAM
-      storage: 10737418240             # 10 GB storage
+      storage: 32212254720             # 30 GB storage (dataset=22GB + overhead)
 
     storage:
       backend: "minio"

@@ -100,7 +100,7 @@ distributed:
       num_replicas: 4                 # 4× GPUs for distributed training
       cpu: 4                          # vCPUs per replica
       memory: 16384                   # 16 GB RAM per replica
-      storage: 21474836480            # 20 GB ephemeral storage
+      storage: 32212254720            # 30 GB ephemeral storage (dataset=22GB + checkpoints=5GB + overhead=3GB)
 
     storage:
       backend: "minio"                   # Local MinIO (S3-compatible)
