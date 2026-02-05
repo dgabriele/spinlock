@@ -1,0 +1,109 @@
+TRAJECTORY COMPLETION EXPERIMENT - FILE MANIFEST
+================================================
+
+Created: 2026-02-05
+Total Files: 27 (24 code + 3 docs)
+Total Lines: ~1,600 (code + docs)
+
+SHARED INFRASTRUCTURE (experiments/common/)
+===========================================
+__init__.py
+config/__init__.py
+config/base.py                           (103 lines)
+config/loader.py                         (47 lines)
+models/__init__.py
+models/trained_vqvae.py                  (132 lines)
+models/trained_mno.py                    (49 lines)
+training/__init__.py
+training/trainer.py                      (101 lines)
+data/__init__.py
+data/trajectory_loader.py                (82 lines)
+visualization/__init__.py
+
+TRAJECTORY COMPLETION (experiments/trajectory_completion/)
+==========================================================
+__init__.py
+run_experiment.py                        (157 lines)
+data/__init__.py
+data/masking.py                          (116 lines)
+data/completion_dataset.py               (114 lines)
+models/__init__.py
+models/completion_model.py               (181 lines) [FIXED: position embeddings]
+training/__init__.py
+training/trainer.py                      (143 lines)
+evaluation/__init__.py
+evaluation/metrics.py                    (72 lines)
+evaluation/analysis.py                   (84 lines)
+visualization/__init__.py
+
+CONFIGURATIONS (experiments/trajectory_completion/baseline_50k/experiments/)
+===========================================================================
+baseline.yaml                            (baseline: 30% + 20%)
+extreme.yaml                             (stress test: 10% + 10%)
+coarse_only.yaml                         (hierarchical test: L0 only)
+ablation/no_temporal_hierarchy.yaml      (ablation: no guidance)
+ablation/random_masking.yaml             (ablation: random windows)
+
+DOCUMENTATION
+=============
+experiments/IMPLEMENTATION_SUMMARY.md    (comprehensive architecture doc)
+experiments/trajectory_completion/README.md  (full user guide)
+experiments/trajectory_completion/QUICKSTART.md  (quick reference)
+experiments/token_coverage/README.md     (placeholder for Week 3+)
+experiments/MANIFEST.txt                 (this file)
+
+TOKEN COVERAGE STUB (experiments/token_coverage/)
+=================================================
+__init__.py
+README.md                                (placeholder)
+
+VALIDATION PASSED
+=================
+✅ All Python files: Syntax valid (AST parse)
+✅ All imports: Load successfully (poetry run)
+✅ All configs: YAML valid, Pydantic validates
+✅ Masking: All strategies generate correct masks
+✅ Model: Forward pass executes, shapes correct
+✅ Architecture: Hierarchical guidance works
+
+BUG FIXES APPLIED
+=================
+• completion_model.py: Fixed position embedding size (line 68)
+  - Was: max_seq_len = len(num_tokens_per_level)  # Too small!
+  - Now: max_seq_len = 1000  # Accommodate full sequences
+
+READY FOR GPU TESTING
+=====================
+Prerequisites:
+  ✅ checkpoints/vqvae/50k_baseline/best_model.pt (838MB)
+  ✅ datasets/50k_baseline.h5
+  ✅ Poetry environment configured
+
+Next Steps:
+  1. Wait for GPU availability
+  2. Load VQ-VAE checkpoint
+  3. Run baseline experiment
+  4. Analyze results
+  5. Run ablation studies
+
+Quick Start Command:
+  poetry run python -m experiments.trajectory_completion.run_experiment \
+      --config experiments/trajectory_completion/baseline_50k/experiments/baseline.yaml
+
+DESIGN PRINCIPLES
+=================
+✅ DRY: Shared infrastructure in common/
+✅ Clean Abstraction: Config, Data, Model, Training separated
+✅ OOP: Inheritance, composition, encapsulation
+✅ Testability: Clear interfaces, reproducible seeds
+✅ Extensibility: Easy to add new experiments/models
+
+FUTURE WORK
+===========
+Week 3+:
+  • Token coverage analysis
+  • Zero-shot transfer experiments
+  • Inverse problem (tokens → parameters)
+  • Curriculum learning
+  • Multi-scale attention patterns
+

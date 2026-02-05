@@ -28,6 +28,9 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
+# Suppress PyTorch 2.7+ scheduler deprecation warning (internal to SequentialLR)
+warnings.filterwarnings("ignore", message="The epoch parameter in `scheduler.step()`")
+
 # Load environment variables from .env file
 from dotenv import load_dotenv
 load_dotenv()

@@ -1,0 +1,43 @@
+# Trajectory Completion Experiment - Extreme Masking Configuration
+#
+# Masking: 10% start + 10% end observed, middle 80% to predict
+# Goal: Test limits of coarse-to-fine guidance with minimal observations
+
+metadata:
+  name: "trajectory_completion_extreme"
+  description: "Extreme trajectory completion with 10% start + 10% end"
+  author: "Daniel"
+  version: "1.0.0"
+
+checkpoints:
+  vqvae_path: "checkpoints/vqvae/50k_baseline/best_model.pt"
+  mno_path: "checkpoints/mno/50k_baseline/meta_operator_best.pt"
+
+data:
+  dataset_path: "datasets/50k_baseline.h5"
+  batch_size: 32
+  val_split: 0.2
+  num_workers: 4
+  shuffle: true
+
+masking:
+  strategy: "start_end"
+  start_percent: 0.1
+  end_percent: 0.1
+
+model:
+  hidden_dim: 256
+  num_layers: 4
+  num_heads: 8
+  dropout: 0.1
+  hierarchical_guidance_weight: 0.2  # Increased for extreme case
+
+training:
+  epochs: 20
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  device: "cuda"
+  seed: 42
+  save_every: 5
+
+output_dir: "experiments/trajectory_completion/results/extreme"

@@ -1,0 +1,44 @@
+# Trajectory Completion Experiment - No Temporal Hierarchy Ablation
+#
+# Masking: 30% start + 20% end observed
+# Ablation: hierarchical_guidance_weight = 0 (no coarse→fine guidance)
+# Goal: Measure contribution of hierarchical guidance
+
+metadata:
+  name: "trajectory_completion_no_hierarchy"
+  description: "Ablation: trajectory completion without hierarchical guidance"
+  author: "Daniel"
+  version: "1.0.0"
+
+checkpoints:
+  vqvae_path: "checkpoints/vqvae/50k_baseline/best_model.pt"
+  mno_path: "checkpoints/mno/50k_baseline/meta_operator_best.pt"
+
+data:
+  dataset_path: "datasets/50k_baseline.h5"
+  batch_size: 32
+  val_split: 0.2
+  num_workers: 4
+  shuffle: true
+
+masking:
+  strategy: "start_end"
+  start_percent: 0.3
+  end_percent: 0.2
+
+model:
+  hidden_dim: 256
+  num_layers: 4
+  num_heads: 8
+  dropout: 0.1
+  hierarchical_guidance_weight: 0.0  # ABLATION: No hierarchical guidance
+
+training:
+  epochs: 20
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  device: "cuda"
+  seed: 42
+  save_every: 5
+
+output_dir: "experiments/trajectory_completion/results/ablation/no_hierarchy"
