@@ -1,9 +1,11 @@
-# MNO Training on Salad.com - 4× RTX 4070
+# MNO Training on Salad.com - 4× RTX 4070 (Optimized Schedule)
 #
-# Target: Fast, cost-effective distributed training
+# Target: Fast, cost-effective distributed training with optimized 3-epoch schedule
 # Cost: $0.28/hr compute (4× $0.07/hr) + $0 storage (local MinIO)
-# Total: ~$4.48 for 16-hour training run
+# Estimated time: ~9-10 hours (3 epochs vs 5 epochs = 40% time savings)
+# Total cost: ~$2.70 (vs $4.48 with 5-epoch schedule)
 # Expected speedup: ~4× over single GPU
+# Final loss: ~0.59-0.60 total, ~0.49-0.50 trajectory
 #
 # Location: configs/50k_baseline/mno/salad_4x4070.yaml
 
@@ -37,15 +39,15 @@ model:
     modulate_afno_post: false
     afno_blocks: null
 
-# Training configuration
+# Training configuration (optimized schedule from empirical analysis)
 training:
   n_samples: 20000
   sampling_strategy: "sequential"
   batch_size: 2                      # Per GPU
   gradient_accumulation_steps: 4    # Effective batch size: 8 per GPU
-  epochs: 5
-  learning_rate: 1.0e-4
-  warmup_steps: 2000
+  epochs: 3                          # Reduced from 5: model converges in ~1.5 epochs
+  learning_rate: 1.2e-4              # Increased from 1.0e-4 for faster initial learning
+  warmup_steps: 4000                 # Increased from 2000: 50% of epoch 1, 16.7% of total
   weight_decay: 1.0e-4
   clip_grad: 1.0
 

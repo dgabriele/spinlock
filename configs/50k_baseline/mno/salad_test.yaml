@@ -36,15 +36,15 @@ model:
     modulate_afno_post: false
     afno_blocks: null
 
-# Training configuration (reduced for testing)
+# Training configuration (reduced for testing, but with realistic schedule)
 training:
   n_samples: 1000                    # Small subset for testing
   sampling_strategy: "sequential"
   batch_size: 2
   gradient_accumulation_steps: 4
   epochs: 1                          # Single epoch test
-  learning_rate: 1.0e-4
-  warmup_steps: 100
+  learning_rate: 1.2e-4              # Match production peak LR
+  warmup_steps: 200                  # ~50% of epoch (400 batches total)
   weight_decay: 1.0e-4
   clip_grad: 1.0
 
