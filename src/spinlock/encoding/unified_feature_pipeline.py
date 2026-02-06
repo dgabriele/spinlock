@@ -123,33 +123,40 @@ class FamilyFeatureExtractor(nn.Module, ABC):
 
 
 class InitialFeatureExtractor(FamilyFeatureExtractor):
-    """INITIAL family: 14D manual features from IC."""
+    """INITIAL family: manual features from IC (per-channel)."""
 
-    def __init__(self, device: str = 'cuda'):
+    def __init__(self, device: str = 'cuda', in_channels: int = 3):
         """Initialize INITIAL feature extractor.
 
         Args:
             device: Device for computation
+            in_channels: Number of input channels (for computing feature dimension)
         """
         super().__init__('initial', encoder=None)  # No encoding for manual features
         from spinlock.features.initial.manual_extractors import InitialManualExtractor
         self.raw_extractor = InitialManualExtractor(device=device)
         self.device = device
+        self._in_channels = in_channels  # Store for feature_dim property
+
+    @property
+    def feature_dim(self) -> int:
+        """Output feature dimension (14 * in_channels)."""
+        return 14 * self._in_channels
 
     def extract_raw(self, trajectory: torch.Tensor, ic: torch.Tensor) -> torch.Tensor:
-        """Extract 14D manual features from IC.
+        """Extract manual features from IC (per-channel).
 
         Args:
             trajectory: [B, T, C, H, W] (unused, but kept for interface consistency)
             ic: [B, C, H, W] initial condition
 
         Returns:
-            [B, 14] manual features
+            [B, 14*C] manual features (per-channel)
         """
         # InitialManualExtractor expects [B, M, C, H, W], so add dimension
         ic_with_m = ic.unsqueeze(1)  # [B, 1, C, H, W]
-        features = self.raw_extractor.extract_all(ic_with_m)
-        return features.squeeze(1)  # [B, 14]
+        features = self.raw_extractor.extract_all(ic_with_m)  # [B, 1, 14*C]
+        return features.squeeze(1)  # [B, 14*C]
 
 
 class SummaryFeatureExtractor(FamilyFeatureExtractor):
@@ -172,6 +179,13 @@ class SummaryFeatureExtractor(FamilyFeatureExtractor):
         self.raw_extractor = SummaryExtractor(device=device, config=config)
         self.device = device
         self.expected_raw_dim = 360  # Expected dimension before encoding
+
+    @property
+    def feature_dim(self) -> int:
+        """Output feature dimension after encoding."""
+        if self.encoder is None:
+            return self.expected_raw_dim
+        return getattr(self.encoder, 'output_dim', 128)  # Default to 128 if no output_dim
 
     def extract_raw(self, trajectory: torch.Tensor, ic: torch.Tensor) -> torch.Tensor:
         """Extract summary features (variable dimension).
@@ -241,6 +255,13 @@ class TemporalFeatureExtractor(FamilyFeatureExtractor):
         self.device = device
         self.expected_raw_dim = 63  # Expected per-timestep feature dimension
 
+    @property
+    def feature_dim(self) -> int:
+        """Output feature dimension after encoding."""
+        if self.encoder is None:
+            return self.expected_raw_dim
+        return getattr(self.encoder, 'output_dim', 128)  # Default to 128 if no output_dim
+
     def extract_raw(self, trajectory: torch.Tensor, ic: torch.Tensor) -> torch.Tensor:
         """Extract per-timestep features [B, T, D].
 
@@ -307,6 +328,13 @@ class PyramidTemporalFeatureExtractor(FamilyFeatureExtractor):
         self.device = device
         self.expected_raw_dim = 63
 
+    @property
+    def feature_dim(self) -> int:
+        """Output feature dimension after encoding."""
+        if self.encoder is None:
+            return self.expected_raw_dim
+        return getattr(self.encoder, 'output_dim', 320)  # Default to 320 for pyramid
+
     def extract_raw(self, trajectory: torch.Tensor, ic: torch.Tensor) -> torch.Tensor:
         """Extract per-timestep features [B, T, D].
 
@@ -351,13 +379,13 @@ class UnifiedFeaturePipeline(nn.Module):
     IDENTICAL feature extraction, encoding, and normalization.
 
     Features are organized into families:
-    - INITIAL: 14D manual features from initial condition
-    - SUMMARY: 360D→128D encoded aggregated features (optional)
+    - INITIAL: manual features from initial condition (14*C, where C=num_channels)
+    - SUMMARY: aggregated features, optionally encoded (optional)
     - TEMPORAL: per-timestep features, encoded via:
-        - TemporalCNNEncoder → 128D, or
-        - PyramidTemporalEncoder → sum(level_dims) (e.g., 320D)
+        - TemporalCNNEncoder, or
+        - PyramidTemporalEncoder
 
-    Total output dimension is computed dynamically from extractors.
+    Total output dimension is computed dynamically by querying extractors' feature_dim properties.
     """
 
     def __init__(
@@ -381,12 +409,10 @@ class UnifiedFeaturePipeline(nn.Module):
     @property
     def feature_dim(self) -> int:
         """Total feature dimension, computed dynamically from extractors."""
-        dim = 14  # INITIAL is always 14D
+        dim = self.initial.feature_dim  # Query from extractor (14*C for C channels)
         if self.summary is not None:
-            summary_dim = self.summary.encoder.output_dim if self.summary.encoder else 128
-            dim += summary_dim
-        temporal_dim = self.temporal.encoder.output_dim if self.temporal.encoder else 128
-        dim += temporal_dim
+            dim += self.summary.feature_dim  # Query from extractor
+        dim += self.temporal.feature_dim  # Query from extractor
         return dim
 
     def forward(
@@ -403,16 +429,16 @@ class UnifiedFeaturePipeline(nn.Module):
             normalize: Whether to apply normalization
 
         Returns:
-            Features [B, 270D] = 14D + 128D + 128D (3-family)
-            OR [B, 142D] = 14D + 128D (2-family, no summary)
+            Features [B, D] where D = initial_dim + temporal_dim (+ summary_dim if enabled)
+            Dimension is computed dynamically from extractors.
         """
         # Extract per-family raw features
-        initial_raw = self.initial.extract_raw(trajectory, ic)      # [B, 14]
+        initial_raw = self.initial.extract_raw(trajectory, ic)      # [B, initial_dim]
         temporal_raw = self.temporal.extract_raw(trajectory, ic)    # [B, T, 63]
 
         # Encode per-family (INITIAL has no encoder, returns identity)
-        initial_encoded = self.initial.encode(initial_raw)          # [B, 14]
-        temporal_encoded = self.temporal.encode(temporal_raw)       # [B, 128]
+        initial_encoded = self.initial.encode(initial_raw)          # [B, initial_dim]
+        temporal_encoded = self.temporal.encode(temporal_raw)       # [B, temporal_dim]
 
         # Normalize per-family (optional)
         if normalize:
@@ -424,18 +450,18 @@ class UnifiedFeaturePipeline(nn.Module):
 
         # Handle summary family (optional for 2-family checkpoints)
         if self.summary is not None:
-            summary_raw = self.summary.extract_raw(trajectory, ic)      # [B, 360]
-            summary_encoded = self.summary.encode(summary_raw)          # [B, 128]
+            summary_raw = self.summary.extract_raw(trajectory, ic)      # [B, raw_dim]
+            summary_encoded = self.summary.encode(summary_raw)          # [B, summary_dim]
 
             if normalize:
                 summary_norm = self.summary.normalize(summary_encoded)
             else:
                 summary_norm = summary_encoded
 
-            # Concatenate: [B, 14] + [B, 128] + [B, 128] = [B, 270]
+            # Concatenate: initial + summary + temporal
             features = torch.cat([initial_norm, summary_norm, temporal_norm], dim=1)
         else:
-            # 2-family: [B, 14] + [B, 128] = [B, 142]
+            # 2-family: initial + temporal
             features = torch.cat([initial_norm, temporal_norm], dim=1)
 
         return features
@@ -457,8 +483,8 @@ class UnifiedFeaturePipeline(nn.Module):
         # Compute offsets dynamically from extractor output dims
         offset = 0
 
-        # INITIAL: always 14D
-        initial_dim = 14
+        # INITIAL: query dimension from extractor
+        initial_dim = self.initial.feature_dim
         initial_features = all_features[:, offset:offset + initial_dim]
         self.initial.normalization_stats = (
             initial_features.mean(dim=0),
@@ -466,9 +492,9 @@ class UnifiedFeaturePipeline(nn.Module):
         )
         offset += initial_dim
 
-        # SUMMARY (optional)
+        # SUMMARY (optional): query dimension from extractor
         if self.summary is not None:
-            summary_dim = self.summary.encoder.output_dim if self.summary.encoder else 128
+            summary_dim = self.summary.feature_dim
             summary_features = all_features[:, offset:offset + summary_dim]
             self.summary.normalization_stats = (
                 summary_features.mean(dim=0),
@@ -476,8 +502,8 @@ class UnifiedFeaturePipeline(nn.Module):
             )
             offset += summary_dim
 
-        # TEMPORAL (dimension depends on encoder: 128 for CNN, 320 for pyramid, etc.)
-        temporal_dim = self.temporal.encoder.output_dim if self.temporal.encoder else 128
+        # TEMPORAL: query dimension from extractor
+        temporal_dim = self.temporal.feature_dim
         temporal_features = all_features[:, offset:offset + temporal_dim]
         self.temporal.normalization_stats = (
             temporal_features.mean(dim=0),
@@ -525,7 +551,12 @@ class UnifiedFeaturePipeline(nn.Module):
         temporal_encoder = cls._load_encoder(checkpoint, 'temporal', device)
 
         # Create extractors
-        initial = InitialFeatureExtractor(device=device)
+        # Detect in_channels from initial config (default to 3 if not specified)
+        initial_config = families.get('initial', {})
+        initial_params = initial_config.get('encoder_params', {})
+        in_channels = initial_params.get('in_channels', 3)
+
+        initial = InitialFeatureExtractor(device=device, in_channels=in_channels)
         summary = SummaryFeatureExtractor(summary_encoder, device=device) if summary_encoder else None
 
         # Use pyramid extractor if encoder has per-level dims
@@ -583,6 +614,10 @@ class UnifiedFeaturePipeline(nn.Module):
             encoder = TemporalCNNEncoder(input_dim=input_dim, **encoder_config)
         elif encoder_type in ['pyramid_temporal', 'PyramidTemporalEncoder']:
             from spinlock.encoding.encoders.pyramid_temporal import PyramidTemporalEncoder
+            # Handle backwards compatibility: variable_length -> variable_length_config
+            if 'variable_length' in encoder_config:
+                encoder_config = encoder_config.copy()
+                encoder_config['variable_length_config'] = encoder_config.pop('variable_length')
             encoder = PyramidTemporalEncoder(input_dim=input_dim, **encoder_config)
         else:
             raise ValueError(f"Unknown encoder type: {encoder_type}")
@@ -671,7 +706,12 @@ class UnifiedFeaturePipeline(nn.Module):
         temporal_encoder = temporal_encoder.to(device)
 
         # Create extractors
-        initial = InitialFeatureExtractor(device=device)
+        # Detect in_channels from initial config (default to 3 if not specified)
+        initial_config = families_config.get('initial', {})
+        initial_params = initial_config.get('encoder_params', {})
+        in_channels = initial_params.get('in_channels', 3)
+
+        initial = InitialFeatureExtractor(device=device, in_channels=in_channels)
         summary = SummaryFeatureExtractor(summary_encoder, device=device)
 
         # Use pyramid extractor if encoder has per-level dims

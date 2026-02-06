@@ -33,8 +33,8 @@ def load_mno_checkpoint(checkpoint_path: str, device: str = "cuda") -> NOABackbo
 
     print(f"Loading MNO checkpoint from {checkpoint_path}")
 
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    # Load checkpoint (weights_only=False for compatibility with numpy objects)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # Get model config from checkpoint
     if "model_config" in checkpoint:
@@ -96,6 +96,9 @@ def load_vqvae_checkpoint(
     Returns:
         Loaded VQ-VAE model in eval mode
     """
+    from spinlock.encoding import CategoricalVQVAEConfig
+    from spinlock.encoding.learnable_assignment import PerFamilyAssignmentMatrix
+
     checkpoint_path = Path(checkpoint_path)
 
     if not checkpoint_path.exists():
@@ -103,41 +106,77 @@ def load_vqvae_checkpoint(
 
     print(f"Loading VQ-VAE checkpoint from {checkpoint_path}")
 
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    # Load checkpoint (weights_only=False for compatibility with numpy objects)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    # Get model config
-    if "model_config" in checkpoint:
-        config = checkpoint["model_config"]
-    elif "config" in checkpoint:
-        config = checkpoint["config"]
-    else:
-        raise ValueError("No model config found in VQ-VAE checkpoint")
+    config = checkpoint["config"]
+    model_config = checkpoint.get("model_config", config)
+    state_dict = checkpoint["model_state_dict"]
 
-    # Create model
-    vqvae = CategoricalHierarchicalVQVAE(
-        input_dim=config["input_dim"],
-        categories=config["categories"],
-        latent_dims=config["latent_dims"],
-        codebook_sizes=config["codebook_sizes"],
-        commitment_cost=config.get("commitment_cost", 0.25),
+    # Create VQ-VAE config
+    vqvae_config = CategoricalVQVAEConfig(
+        input_dim=model_config["input_dim"],
+        group_indices=model_config["group_indices"],
+        group_embedding_dim=model_config.get("group_embedding_dim", 512),
+        group_hidden_dim=model_config.get("group_hidden_dim", 2048),
+        levels=model_config.get("levels"),
     )
 
-    # Load state dict
-    if "model_state_dict" in checkpoint:
-        vqvae.load_state_dict(checkpoint["model_state_dict"])
-    elif "state_dict" in checkpoint:
-        vqvae.load_state_dict(checkpoint["state_dict"])
-    else:
-        vqvae.load_state_dict(checkpoint)
+    # Check if this checkpoint uses learnable assignments
+    has_learnable_assignment = config.get("learnable_assignment") is not None
+    assignment_matrix = None
 
-    # Move to device and set eval mode
+    if has_learnable_assignment:
+        # Extract assignment matrix structure from checkpoint
+        vqvae_prefix = "vqvae." if any(k.startswith("vqvae.") for k in state_dict.keys()) else ""
+        assignment_prefix = f"{vqvae_prefix}assignment_matrix.family_matrices."
+
+        # Find all family names and their shapes
+        feature_families = {}
+        categories_per_family = {}
+
+        for key in state_dict.keys():
+            if key.startswith(assignment_prefix) and key.endswith(".logits"):
+                # Extract family name: "vqvae.assignment_matrix.family_matrices.initial_cluster.logits" -> "initial_cluster"
+                family_name = key[len(assignment_prefix):-len(".logits")]
+                shape = state_dict[key].shape  # [num_features, num_categories]
+                num_features, num_categories = shape
+
+                # Create dummy feature indices (will be filled by load_state_dict)
+                feature_families[family_name] = list(range(num_features))
+                categories_per_family[family_name] = num_categories
+
+        # Renumber features globally to avoid overlap
+        global_offset = 0
+        for family_name in sorted(feature_families.keys()):
+            num_feats = len(feature_families[family_name])
+            feature_families[family_name] = list(range(global_offset, global_offset + num_feats))
+            global_offset += num_feats
+
+        assignment_matrix = PerFamilyAssignmentMatrix(
+            feature_families=feature_families,
+            categories_per_family=categories_per_family
+        )
+
+    # Handle torch.compile prefix if present
+    if any(k.startswith("vqvae.") for k in state_dict.keys()):
+        vqvae_state_dict = {
+            k.replace("vqvae.", ""): v
+            for k, v in state_dict.items()
+            if k.startswith("vqvae.")
+        }
+        vqvae = CategoricalHierarchicalVQVAE(vqvae_config, assignment_matrix=assignment_matrix)
+        vqvae.load_state_dict(vqvae_state_dict)
+    else:
+        vqvae = CategoricalHierarchicalVQVAE(vqvae_config, assignment_matrix=assignment_matrix)
+        vqvae.load_state_dict(state_dict)
+
     vqvae = vqvae.to(device)
     vqvae.eval()
 
-    print(f"  ✓ VQ-VAE loaded successfully")
-    print(f"    Input dim: {config['input_dim']}")
-    print(f"    Categories: {len(config['categories'])}")
+    mode = "learnable" if has_learnable_assignment else "static"
+    print(f"  ✓ VQ-VAE loaded (input_dim={model_config['input_dim']}, mode={mode})")
+    print(f"    Categories: {len(model_config['group_indices'])}")
     print(f"    Parameters: {sum(p.numel() for p in vqvae.parameters()):,}")
 
     return vqvae

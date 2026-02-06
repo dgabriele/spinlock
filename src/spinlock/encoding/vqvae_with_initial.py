@@ -63,6 +63,8 @@ class VQVAEWithInitial(nn.Module):
         initial_feature_count: int = 14,
         in_channels: int = 1,
         assignment_matrix: Optional[nn.Module] = None,
+        pretrained_cnn_path: Optional[str] = None,
+        use_final_batchnorm: bool = False,
     ):
         super().__init__()
 
@@ -77,6 +79,8 @@ class VQVAEWithInitial(nn.Module):
             cnn_embedding_dim=initial_cnn_dim,
             encode_manual=False,  # Pass through manual features
             in_channels=in_channels,
+            pretrained_cnn_path=pretrained_cnn_path,
+            use_final_batchnorm=use_final_batchnorm,
         )
 
         # Adjust VQ-VAE input dimension to account for CNN features

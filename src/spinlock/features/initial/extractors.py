@@ -6,8 +6,9 @@ Builds feature registry and coordinates extraction pipeline.
 """
 
 import torch
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Union
 from .manual_extractors import InitialManualExtractor
+from .ic_feature_extractors import InitialConditionsFeatureExtractor
 from .cnn_encoder import InitialCNNEncoder, InitialVAE
 from .config import InitialConfig
 from ..registry import FeatureRegistry
@@ -47,19 +48,31 @@ class InitialExtractor:
         self.device = device
 
         # Initialize manual extractor
-        self.manual_extractor: Optional[InitialManualExtractor] = None
+        self.manual_extractor: Optional[Union[InitialManualExtractor, InitialConditionsFeatureExtractor]] = None
         if config.manual.enabled:
-            self.manual_extractor = InitialManualExtractor(device=device)
+            if config.manual.use_statistical_features:
+                # Use new statistical IC feature extractor
+                self.manual_extractor = InitialConditionsFeatureExtractor(device=str(device))
+            else:
+                # Use old pattern-complexity feature extractor
+                self.manual_extractor = InitialManualExtractor(device=device)
 
         # Initialize CNN encoder or VAE
         self.cnn_encoder: Optional[torch.nn.Module] = None
         if config.cnn.enabled:
+            in_channels = config.cnn.in_channels
             if config.cnn.use_vae:
                 # Generative mode: VAE for bidirectional encoding/decoding
-                self.cnn_encoder = InitialVAE(embedding_dim=config.cnn.embedding_dim)
+                self.cnn_encoder = InitialVAE(
+                    embedding_dim=config.cnn.embedding_dim,
+                    in_channels=in_channels
+                )
             else:
                 # Analysis mode: Encoder only
-                self.cnn_encoder = InitialCNNEncoder(embedding_dim=config.cnn.embedding_dim)
+                self.cnn_encoder = InitialCNNEncoder(
+                    embedding_dim=config.cnn.embedding_dim,
+                    in_channels=in_channels
+                )
 
             self.cnn_encoder = self.cnn_encoder.to(device)
 
@@ -79,99 +92,147 @@ class InitialExtractor:
         """
         registry = FeatureRegistry(family_name="initial")
 
-        # Manual features (14 total when all enabled)
+        # Manual features
         if self.config.manual.enabled:
-            # Spatial (4)
-            if self.config.manual.include_spatial_cluster_count:
-                registry.register(
-                    "ic_spatial_cluster_count",
-                    "spatial",
-                    description="Number of spatial clusters (log-scaled)"
-                )
-            if self.config.manual.include_spatial_largest_cluster_frac:
-                registry.register(
-                    "ic_spatial_largest_cluster_frac",
-                    "spatial",
-                    description="Fraction of largest cluster to total active area"
-                )
-            if self.config.manual.include_spatial_autocorr:
-                registry.register(
-                    "ic_spatial_autocorr",
-                    "spatial",
-                    description="Spatial autocorrelation (Moran's I)"
-                )
-            if self.config.manual.include_spatial_centroid_dist:
-                registry.register(
-                    "ic_spatial_centroid_dist",
-                    "spatial",
-                    description="Distance of centroid from grid center"
-                )
+            if self.config.manual.use_statistical_features:
+                # Statistical IC features (distributional, spatial, energy)
+                # For C channels: C*10 + C*8 + C*2 + C*(C-1)/2
+                C = self.config.cnn.in_channels
 
-            # Spectral (3)
-            if self.config.manual.include_spectral_dominant_freq:
-                registry.register(
-                    "ic_spectral_dominant_freq",
-                    "spectral",
-                    description="Dominant frequency in power spectrum"
-                )
-            if self.config.manual.include_spectral_centroid:
-                registry.register(
-                    "ic_spectral_centroid",
-                    "spectral",
-                    description="Spectral centroid (weighted mean frequency)"
-                )
-            if self.config.manual.include_spectral_power_law_exp:
-                registry.register(
-                    "ic_spectral_power_law_exp",
-                    "spectral",
-                    description="Power law exponent (1/f^β behavior)"
-                )
+                # Distributional features (C*10)
+                dist_names = ['mean', 'std', 'min', 'max', 'median',
+                              'p05', 'p25', 'p75', 'p95', 'skewness', 'kurtosis']
+                for c in range(C):
+                    for name in dist_names:
+                        registry.register(
+                            f"ic_dist_{name}_ch{c}",
+                            "distributional",
+                            description=f"Channel {c} {name}"
+                        )
 
-            # Information (4)
-            if self.config.manual.include_info_entropy:
-                registry.register(
-                    "ic_info_entropy",
-                    "information",
-                    description="Shannon entropy (histogram-based)"
-                )
-            if self.config.manual.include_info_local_entropy_var:
-                registry.register(
-                    "ic_info_local_entropy_var",
-                    "information",
-                    description="Variance of local patch entropies"
-                )
-            if self.config.manual.include_info_lz_complexity:
-                registry.register(
-                    "ic_info_lz_complexity",
-                    "information",
-                    description="Approximate Lempel-Ziv complexity"
-                )
-            if self.config.manual.include_info_predictability:
-                registry.register(
-                    "ic_info_predictability",
-                    "information",
-                    description="Predictability via autocorrelation"
-                )
+                # Spatial features (C*8)
+                spatial_names = ['grad_x_mean', 'grad_x_std', 'grad_y_mean', 'grad_y_std',
+                                'laplacian_mean', 'laplacian_std', 'com_x', 'com_y']
+                for c in range(C):
+                    for name in spatial_names:
+                        registry.register(
+                            f"ic_spatial_{name}_ch{c}",
+                            "spatial",
+                            description=f"Channel {c} {name}"
+                        )
 
-            # Morphological (3)
-            if self.config.manual.include_morph_density:
-                registry.register(
-                    "ic_morph_density",
-                    "morphological",
-                    description="Density (fraction of high-valued pixels)"
-                )
-            if self.config.manual.include_morph_radial_gradient:
-                registry.register(
-                    "ic_morph_radial_gradient",
-                    "morphological",
-                    description="Average gradient magnitude (edge strength)"
-                )
-            if self.config.manual.include_morph_symmetry:
-                registry.register(
-                    "ic_morph_symmetry",
-                    "morphological",
-                    description="4-fold rotational symmetry score"
-                )
+                # Energy features (C*2)
+                energy_names = ['l2_norm', 'l1_norm']
+                for c in range(C):
+                    for name in energy_names:
+                        registry.register(
+                            f"ic_energy_{name}_ch{c}",
+                            "energy",
+                            description=f"Channel {c} {name}"
+                        )
+
+                # Cross-channel correlations (C*(C-1)/2)
+                for i in range(C):
+                    for j in range(i + 1, C):
+                        registry.register(
+                            f"ic_corr_ch{i}_ch{j}",
+                            "cross_channel",
+                            description=f"Correlation between channel {i} and {j}"
+                        )
+
+            else:
+                # Pattern-complexity features (14 per channel when all enabled)
+                # Spatial (4)
+                if self.config.manual.include_spatial_cluster_count:
+                    registry.register(
+                        "ic_spatial_cluster_count",
+                        "spatial",
+                        description="Number of spatial clusters (log-scaled)"
+                    )
+                if self.config.manual.include_spatial_largest_cluster_frac:
+                    registry.register(
+                        "ic_spatial_largest_cluster_frac",
+                        "spatial",
+                        description="Fraction of largest cluster to total active area"
+                    )
+                if self.config.manual.include_spatial_autocorr:
+                    registry.register(
+                        "ic_spatial_autocorr",
+                        "spatial",
+                        description="Spatial autocorrelation (Moran's I)"
+                    )
+                if self.config.manual.include_spatial_centroid_dist:
+                    registry.register(
+                        "ic_spatial_centroid_dist",
+                        "spatial",
+                        description="Distance of centroid from grid center"
+                    )
+
+                # Spectral (3)
+                if self.config.manual.include_spectral_dominant_freq:
+                    registry.register(
+                        "ic_spectral_dominant_freq",
+                        "spectral",
+                        description="Dominant frequency in power spectrum"
+                    )
+                if self.config.manual.include_spectral_centroid:
+                    registry.register(
+                        "ic_spectral_centroid",
+                        "spectral",
+                        description="Spectral centroid (weighted mean frequency)"
+                    )
+                if self.config.manual.include_spectral_power_law_exp:
+                    registry.register(
+                        "ic_spectral_power_law_exp",
+                        "spectral",
+                        description="Power law exponent (1/f^β behavior)"
+                    )
+
+                # Information (4)
+                if self.config.manual.include_info_entropy:
+                    registry.register(
+                        "ic_info_entropy",
+                        "information",
+                        description="Shannon entropy (histogram-based)"
+                    )
+                if self.config.manual.include_info_local_entropy_var:
+                    registry.register(
+                        "ic_info_local_entropy_var",
+                        "information",
+                        description="Variance of local patch entropies"
+                    )
+                if self.config.manual.include_info_lz_complexity:
+                    registry.register(
+                        "ic_info_lz_complexity",
+                        "information",
+                        description="Approximate Lempel-Ziv complexity"
+                    )
+                if self.config.manual.include_info_predictability:
+                    registry.register(
+                        "ic_info_predictability",
+                        "information",
+                        description="Predictability via autocorrelation"
+                    )
+
+                # Morphological (3)
+                if self.config.manual.include_morph_density:
+                    registry.register(
+                        "ic_morph_density",
+                        "morphological",
+                        description="Density (fraction of high-valued pixels)"
+                    )
+                if self.config.manual.include_morph_radial_gradient:
+                    registry.register(
+                        "ic_morph_radial_gradient",
+                        "morphological",
+                        description="Average gradient magnitude (edge strength)"
+                    )
+                if self.config.manual.include_morph_symmetry:
+                    registry.register(
+                        "ic_morph_symmetry",
+                        "morphological",
+                        description="4-fold rotational symmetry score"
+                    )
 
         # CNN features (embedding_dim total, typically 28)
         if self.config.cnn.enabled:
@@ -213,7 +274,12 @@ class InitialExtractor:
         # Extract manual features [B, M, D_manual]
         manual_features = None
         if self.manual_extractor is not None:
-            manual_features = self.manual_extractor.extract_all(ics)
+            if isinstance(self.manual_extractor, InitialConditionsFeatureExtractor):
+                # IC feature extractor can handle [B, M, C, H, W] via forward()
+                manual_features = self.manual_extractor(ics)
+            else:
+                # Pattern-complexity extractor uses extract_all()
+                manual_features = self.manual_extractor.extract_all(ics)
             outputs['manual'] = manual_features
 
         # Extract CNN features

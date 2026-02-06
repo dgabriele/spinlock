@@ -143,18 +143,28 @@ class FeatureProcessor:
                 logger.info(f"   NaN rate: {100*nan_stats['nan_fraction']:.2f}%")
 
         # 4. Cap outliers
-        outlier_stats = self._get_outlier_stats_before(features)
-        features = self._cap_outliers(features)
+        if self.outlier_method in ("percentile", "iqr", "mad"):
+            outlier_stats = self._get_outlier_stats_before(features)
+            features = self._cap_outliers(features)
+        else:
+            # Skip outlier capping if method is None or invalid
+            outlier_stats = {'num_features_with_outliers': 0, 'total_outliers': 0}
 
         if self.verbose:
             if self.outlier_method == "percentile":
                 logger.info(f"\n4. Outlier capping (percentile: {self.percentile_range[0]}-{self.percentile_range[1]}%):")
+                logger.info(f"   Features with outliers: {outlier_stats['num_features_with_outliers']}")
+                logger.info(f"   Total outliers capped: {outlier_stats['total_outliers']}")
             elif self.outlier_method == "iqr":
                 logger.info(f"\n4. Outlier capping (IQR multiplier = {self.iqr_multiplier}):")
-            else:  # mad
+                logger.info(f"   Features with outliers: {outlier_stats['num_features_with_outliers']}")
+                logger.info(f"   Total outliers capped: {outlier_stats['total_outliers']}")
+            elif self.outlier_method == "mad":
                 logger.info(f"\n4. Outlier capping (MAD threshold = {self.mad_threshold}):")
-            logger.info(f"   Features with outliers: {outlier_stats['num_features_with_outliers']}")
-            logger.info(f"   Total outliers capped: {outlier_stats['total_outliers']}")
+                logger.info(f"   Features with outliers: {outlier_stats['num_features_with_outliers']}")
+                logger.info(f"   Total outliers capped: {outlier_stats['total_outliers']}")
+            else:
+                logger.info(f"\n4. Outlier capping: DISABLED (outlier_method={self.outlier_method})")
 
         # Combine masks
         combined_mask = variance_mask.copy()

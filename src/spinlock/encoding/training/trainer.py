@@ -571,8 +571,11 @@ class VQVAETrainer:
                     # Fixed-length path or legacy path
                     features = self._encode_variable_length_features(batch, self.device)
                     # Apply feature cleaning mask (non-variable-length mode)
+                    # Only apply if features haven't been cleaned yet (size mismatch)
                     if self.feature_mask_tensor is not None and self.temporal_encoder is None:
-                        features = features[:, self.feature_mask_tensor]
+                        # Check if features are already cleaned (match model input_dim)
+                        if features.shape[1] != self.model.config.input_dim:
+                            features = features[:, self.feature_mask_tensor]
 
                     # Forward pass (pass raw_ics if model supports hybrid INITIAL)
                     if raw_ics is not None and hasattr(self.model, 'initial_encoder'):

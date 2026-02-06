@@ -1,0 +1,19 @@
+                                                                                                                     
+  1. Update Salad configs with your organization name:                                                                 
+  vim configs/50k_baseline/mno/salad_4x4070.yaml                                                                       
+  vim configs/50k_baseline/mno/salad_test.yaml                                                                         
+  # Change: organization: "your-org-name"                                                                              
+  2. Add Docker Hub password to .env:                                                                                  
+  vim .env                                                                                                             
+  # Update: DOCKER_PASSWORD=<your_password>                                                                            
+  3. Build and push Docker images:                                                                                     
+  ./docker/build.sh all                                                                                                
+  docker login                                                                                                         
+  docker push psilogon/spinlock:latest                                                                                 
+  4. Run test (1 hour @ $0.06):                                                                                        
+  poetry run spinlock train-meta-operator \                                                                            
+    --config configs/50k_baseline/mno/salad_test.yaml                                                                  
+  5. Run production (16 hours @ $0.28/hr = $4.48):                                                                     
+  poetry run spinlock train-meta-operator \                                                                            
+    --config configs/50k_baseline/mno/salad_4x4070.yaml                                                                
+                                                                         

@@ -25,21 +25,21 @@ class InitialManualExtractor:
 
     def extract_all(self, ic: torch.Tensor) -> torch.Tensor:
         """
-        Extract all 14 manual features.
+        Extract all 14 manual features per channel.
 
         Args:
             ic: [B, M, C, H, W] initial conditions
 
         Returns:
-            [B, M, 14] manual features
+            [B, M, 14*C] manual features (per-channel)
         """
-        # Extract by category
+        # Extract by category (each returns [B, M, C] per feature)
         spatial = self.extract_spatial_features(ic)      # 4 features
         spectral = self.extract_spectral_features(ic)    # 3 features
         info = self.extract_information_features(ic)      # 4 features
         morph = self.extract_morphological_features(ic)  # 3 features
 
-        # Stack in order
+        # Stack in order: [B, M, C, 14]
         feature_list = [
             # Spatial (4)
             spatial['spatial_cluster_count'],
@@ -61,41 +61,44 @@ class InitialManualExtractor:
             morph['morph_symmetry']
         ]
 
-        # Stack to [B, M, 14]
+        # Stack to [B, M, C, 14]
         features = torch.stack(feature_list, dim=-1)
+
+        # Flatten channel dimension: [B, M, C, 14] -> [B, M, 14*C]
+        B, M, C, num_features = features.shape
+        features = features.view(B, M, C * num_features)
+
         return features
 
     def extract_spatial_features(self, ic: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        Extract spatial structure features.
+        Extract spatial structure features per channel.
 
         Args:
             ic: [B, M, C, H, W] initial conditions
 
         Returns:
-            Dictionary of features, each [B, M]
+            Dictionary of features, each [B, M, C]
         """
         B, M, C, H, W = ic.shape
 
-        # Squeeze channel dimension for processing
-        ic_2d = ic.squeeze(2)  # [B, M, H, W]
-
+        # Keep channel dimension: [B, M, C, H, W]
         # Binarize at median threshold for clustering analysis
-        ic_flat = ic_2d.view(B, M, -1)
-        median = ic_flat.median(dim=-1, keepdim=True).values.unsqueeze(-1)  # [B, M, 1, 1]
-        binary = (ic_2d > median).float()
+        ic_flat = ic.view(B, M, C, -1)  # [B, M, C, H*W]
+        median = ic_flat.median(dim=-1, keepdim=True).values.unsqueeze(-1)  # [B, M, C, 1, 1]
+        binary = (ic > median).float()  # [B, M, C, H, W]
 
         # Feature 1: Cluster count (approximate via connected components)
-        cluster_count = self._count_clusters_approx(binary)  # [B, M]
+        cluster_count = self._count_clusters_approx(binary)  # [B, M, C]
 
         # Feature 2: Largest cluster fraction
-        largest_cluster_frac = self._largest_cluster_fraction(binary)  # [B, M]
+        largest_cluster_frac = self._largest_cluster_fraction(binary)  # [B, M, C]
 
         # Feature 3: Spatial autocorrelation (Moran's I approximation)
-        spatial_autocorr = self._moran_i_approx(ic_2d)  # [B, M]
+        spatial_autocorr = self._moran_i_approx(ic)  # [B, M, C]
 
         # Feature 4: Centroid distance from center (localization measure)
-        centroid_dist = self._centroid_distance(ic_2d)  # [B, M]
+        centroid_dist = self._centroid_distance(ic)  # [B, M, C]
 
         return {
             'spatial_cluster_count': cluster_count,
@@ -106,29 +109,29 @@ class InitialManualExtractor:
 
     def extract_spectral_features(self, ic: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        Extract spectral (frequency domain) features.
+        Extract spectral (frequency domain) features per channel.
 
         Args:
             ic: [B, M, C, H, W] initial conditions
 
         Returns:
-            Dictionary of features, each [B, M]
+            Dictionary of features, each [B, M, C]
         """
         B, M, C, H, W = ic.shape
-        ic_2d = ic.squeeze(2)  # [B, M, H, W]
 
+        # Keep channel dimension: [B, M, C, H, W]
         # 2D FFT - rfft2 for real inputs
-        fft = torch.fft.rfft2(ic_2d)  # [B, M, H, W//2+1]
+        fft = torch.fft.rfft2(ic)  # [B, M, C, H, W//2+1]
         power = torch.abs(fft) ** 2
 
         # Feature 5: Dominant frequency (peak in power spectrum)
-        dominant_freq = self._dominant_frequency(power)  # [B, M]
+        dominant_freq = self._dominant_frequency(power)  # [B, M, C]
 
         # Feature 6: Spectral centroid (weighted mean frequency)
-        spectral_centroid = self._spectral_centroid(power)  # [B, M]
+        spectral_centroid = self._spectral_centroid(power)  # [B, M, C]
 
         # Feature 7: Power law exponent (1/f^β behavior)
-        power_law_exp = self._estimate_power_law(power)  # [B, M]
+        power_law_exp = self._estimate_power_law(power)  # [B, M, C]
 
         return {
             'spectral_dominant_freq': dominant_freq,
@@ -138,28 +141,28 @@ class InitialManualExtractor:
 
     def extract_information_features(self, ic: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        Extract information-theoretic features.
+        Extract information-theoretic features per channel.
 
         Args:
             ic: [B, M, C, H, W] initial conditions
 
         Returns:
-            Dictionary of features, each [B, M]
+            Dictionary of features, each [B, M, C]
         """
         B, M, C, H, W = ic.shape
-        ic_2d = ic.squeeze(2)  # [B, M, H, W]
 
+        # Keep channel dimension: [B, M, C, H, W]
         # Feature 8: Shannon entropy (histogram-based)
-        entropy = self._shannon_entropy(ic_2d)  # [B, M]
+        entropy = self._shannon_entropy(ic)  # [B, M, C]
 
         # Feature 9: Local entropy variance (spatial non-uniformity)
-        local_entropy_var = self._local_entropy_variance(ic_2d)  # [B, M]
+        local_entropy_var = self._local_entropy_variance(ic)  # [B, M, C]
 
         # Feature 10: Approximate LZ complexity (via compression proxy)
-        lz_complexity = self._lz_complexity_approx(ic_2d)  # [B, M]
+        lz_complexity = self._lz_complexity_approx(ic)  # [B, M, C]
 
         # Feature 11: Predictability score (autocorrelation decay)
-        predictability = self._predictability_score(ic_2d)  # [B, M]
+        predictability = self._predictability_score(ic)  # [B, M, C]
 
         return {
             'info_entropy': entropy,
@@ -170,27 +173,27 @@ class InitialManualExtractor:
 
     def extract_morphological_features(self, ic: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        Extract morphological (shape/density) features.
+        Extract morphological (shape/density) features per channel.
 
         Args:
             ic: [B, M, C, H, W] initial conditions
 
         Returns:
-            Dictionary of features, each [B, M]
+            Dictionary of features, each [B, M, C]
         """
         B, M, C, H, W = ic.shape
-        ic_2d = ic.squeeze(2)  # [B, M, H, W]
 
+        # Keep channel dimension: [B, M, C, H, W]
         # Feature 12: Density (fraction of high-valued pixels)
-        ic_flat = ic_2d.view(B, M, -1)
-        median = ic_flat.median(dim=-1, keepdim=True).values
-        density = (ic_flat > median).float().mean(dim=-1)  # [B, M]
+        ic_flat = ic.view(B, M, C, -1)  # [B, M, C, H*W]
+        median = ic_flat.median(dim=-1, keepdim=True).values  # [B, M, C, 1]
+        density = (ic_flat > median).float().mean(dim=-1)  # [B, M, C]
 
         # Feature 13: Radial gradient strength (edge detection)
-        radial_gradient = self._radial_gradient_strength(ic_2d)  # [B, M]
+        radial_gradient = self._radial_gradient_strength(ic)  # [B, M, C]
 
         # Feature 14: Symmetry score (4-fold rotational symmetry)
-        symmetry = self._symmetry_score(ic_2d)  # [B, M]
+        symmetry = self._symmetry_score(ic)  # [B, M, C]
 
         return {
             'morph_density': density,
@@ -207,22 +210,25 @@ class InitialManualExtractor:
         Approximate cluster count via local maxima in erosion-dilation.
 
         Args:
-            binary: [B, M, H, W] binary mask
+            binary: [B, M, C, H, W] binary mask
 
         Returns:
-            [B, M] cluster counts
+            [B, M, C] cluster counts
         """
-        B, M, H, W = binary.shape
+        B, M, C, H, W = binary.shape
+
+        # Reshape to process all channels: [B*M*C, 1, H, W]
+        binary_flat = binary.view(B * M * C, 1, H, W)
 
         # Use max pooling as erosion approximation
-        eroded = -F.max_pool2d(-binary, kernel_size=3, stride=1, padding=1)
+        eroded = -F.max_pool2d(-binary_flat, kernel_size=3, stride=1, padding=1)
 
         # Count connected regions via number of local peaks
         # Use max pooling to find local maxima
         local_max = F.max_pool2d(eroded, kernel_size=5, stride=1, padding=2)
         peaks = (eroded == local_max) & (eroded > 0.5)
 
-        cluster_count = peaks.view(B, M, -1).sum(dim=-1).float()
+        cluster_count = peaks.view(B, M, C, -1).sum(dim=-1).float()
 
         # Normalize by grid size (log scale)
         cluster_count = torch.log1p(cluster_count)
@@ -234,20 +240,24 @@ class InitialManualExtractor:
         Approximate largest cluster as fraction of total active pixels.
 
         Args:
-            binary: [B, M, H, W] binary mask
+            binary: [B, M, C, H, W] binary mask
 
         Returns:
-            [B, M] largest cluster fractions
+            [B, M, C] largest cluster fractions
         """
-        B, M, H, W = binary.shape
+        B, M, C, H, W = binary.shape
+
+        # Reshape to process all channels: [B*M*C, 1, H, W]
+        binary_flat = binary.view(B * M * C, 1, H, W)
 
         # Use max pooling with large kernel to find largest connected region
         # Larger kernel → more connectivity
-        dilated = F.max_pool2d(binary, kernel_size=11, stride=1, padding=5)
+        dilated = F.max_pool2d(binary_flat, kernel_size=11, stride=1, padding=5)
+        dilated = dilated.view(B, M, C, H, W)
 
         # Fraction of dilated area to total active area
-        total_active = binary.view(B, M, -1).sum(dim=-1)
-        largest_region = dilated.view(B, M, -1).sum(dim=-1)
+        total_active = binary.view(B, M, C, -1).sum(dim=-1)
+        largest_region = dilated.view(B, M, C, -1).sum(dim=-1)
 
         frac = largest_region / (total_active + 1e-6)
         return frac.clamp(0, 1)
@@ -257,15 +267,15 @@ class InitialManualExtractor:
         Approximate Moran's I (spatial autocorrelation).
 
         Args:
-            ic: [B, M, H, W]
+            ic: [B, M, C, H, W]
 
         Returns:
-            [B, M] autocorrelation scores
+            [B, M, C] autocorrelation scores
         """
-        B, M, H, W = ic.shape
+        B, M, C, H, W = ic.shape
 
         # Compute mean
-        mean = ic.view(B, M, -1).mean(dim=-1, keepdim=True).unsqueeze(-1)  # [B, M, 1, 1]
+        mean = ic.view(B, M, C, -1).mean(dim=-1, keepdim=True).unsqueeze(-1)  # [B, M, C, 1, 1]
 
         # Centered values
         centered = ic - mean
@@ -278,13 +288,13 @@ class InitialManualExtractor:
         kernel = kernel.view(1, 1, 3, 3) / 4.0  # Normalize
 
         # Compute spatial lag
-        centered_flat = centered.view(B * M, 1, H, W)
-        spatial_lag = F.conv2d(centered_flat, kernel, padding=1)  # [B*M, 1, H, W]
-        spatial_lag = spatial_lag.view(B, M, H, W)
+        centered_flat = centered.view(B * M * C, 1, H, W)
+        spatial_lag = F.conv2d(centered_flat, kernel, padding=1)  # [B*M*C, 1, H, W]
+        spatial_lag = spatial_lag.view(B, M, C, H, W)
 
         # Moran's I: correlation between value and spatial lag
-        numerator = (centered * spatial_lag).view(B, M, -1).sum(dim=-1)
-        denominator = (centered ** 2).view(B, M, -1).sum(dim=-1)
+        numerator = (centered * spatial_lag).view(B, M, C, -1).sum(dim=-1)
+        denominator = (centered ** 2).view(B, M, C, -1).sum(dim=-1)
 
         moran_i = numerator / (denominator + 1e-6)
         return moran_i.clamp(-1, 1)
@@ -294,26 +304,26 @@ class InitialManualExtractor:
         Distance of centroid from grid center.
 
         Args:
-            ic: [B, M, H, W]
+            ic: [B, M, C, H, W]
 
         Returns:
-            [B, M] centroid distances (normalized)
+            [B, M, C] centroid distances (normalized)
         """
-        B, M, H, W = ic.shape
+        B, M, C, H, W = ic.shape
 
         # Create coordinate grids
-        y_coords = torch.linspace(0, 1, H, device=ic.device).view(1, 1, H, 1)
-        x_coords = torch.linspace(0, 1, W, device=ic.device).view(1, 1, 1, W)
+        y_coords = torch.linspace(0, 1, H, device=ic.device).view(1, 1, 1, H, 1)
+        x_coords = torch.linspace(0, 1, W, device=ic.device).view(1, 1, 1, 1, W)
 
         # Weight coordinates by IC values (use absolute values)
         weights = torch.abs(ic)
-        total_weight = weights.view(B, M, -1).sum(dim=-1, keepdim=True).unsqueeze(-1)  # [B, M, 1, 1]
+        total_weight = weights.view(B, M, C, -1).sum(dim=-1, keepdim=True).unsqueeze(-1)  # [B, M, C, 1, 1]
 
         # Compute weighted centroid
-        # Squeeze only spatial dims (last two), keep B and M dims
-        total_weight_bm = total_weight.squeeze(-1).squeeze(-1)  # [B, M]
-        cy = (weights * y_coords).view(B, M, -1).sum(dim=-1) / (total_weight_bm + 1e-6)
-        cx = (weights * x_coords).view(B, M, -1).sum(dim=-1) / (total_weight_bm + 1e-6)
+        # Squeeze only spatial dims (last two), keep B, M, C dims
+        total_weight_bmc = total_weight.squeeze(-1).squeeze(-1)  # [B, M, C]
+        cy = (weights * y_coords).view(B, M, C, -1).sum(dim=-1) / (total_weight_bmc + 1e-6)
+        cx = (weights * x_coords).view(B, M, C, -1).sum(dim=-1) / (total_weight_bmc + 1e-6)
 
         # Distance from center (0.5, 0.5)
         dist = torch.sqrt((cy - 0.5)**2 + (cx - 0.5)**2)
@@ -332,16 +342,16 @@ class InitialManualExtractor:
         Find dominant frequency (peak in power spectrum).
 
         Args:
-            power: [B, M, H, W//2+1] power spectrum
+            power: [B, M, C, H, W//2+1] power spectrum
 
         Returns:
-            [B, M] dominant frequency (normalized)
+            [B, M, C] dominant frequency (normalized)
         """
-        B, M, H, W_half = power.shape
+        B, M, C, H, W_half = power.shape
 
         # Find peak location
-        power_flat = power.view(B, M, -1)
-        peak_idx = power_flat.argmax(dim=-1)  # [B, M]
+        power_flat = power.view(B, M, C, -1)
+        peak_idx = power_flat.argmax(dim=-1)  # [B, M, C]
 
         # Convert to normalized frequency [0, 1]
         total_bins = H * W_half
@@ -354,22 +364,22 @@ class InitialManualExtractor:
         Spectral centroid (weighted mean frequency).
 
         Args:
-            power: [B, M, H, W//2+1] power spectrum
+            power: [B, M, C, H, W//2+1] power spectrum
 
         Returns:
-            [B, M] spectral centroids
+            [B, M, C] spectral centroids
         """
-        B, M, H, W_half = power.shape
+        B, M, C, H, W_half = power.shape
 
         # Create frequency axis
         freqs = torch.arange(H * W_half, dtype=power.dtype, device=power.device)
-        freqs = freqs.view(1, 1, -1)  # [1, 1, H*W_half]
+        freqs = freqs.view(1, 1, 1, -1)  # [1, 1, 1, H*W_half]
 
         # Flatten power
-        power_flat = power.view(B, M, -1)  # [B, M, H*W_half]
+        power_flat = power.view(B, M, C, -1)  # [B, M, C, H*W_half]
 
         # Weighted average
-        total_power = power_flat.sum(dim=-1, keepdim=True)  # [B, M, 1]
+        total_power = power_flat.sum(dim=-1, keepdim=True)  # [B, M, C, 1]
         centroid = (power_flat * freqs).sum(dim=-1) / (total_power.squeeze(-1) + 1e-6)
 
         # Normalize
@@ -382,12 +392,12 @@ class InitialManualExtractor:
         Estimate power law exponent β in 1/f^β.
 
         Args:
-            power: [B, M, H, W//2+1] power spectrum
+            power: [B, M, C, H, W//2+1] power spectrum
 
         Returns:
-            [B, M] power law exponents
+            [B, M, C] power law exponents
         """
-        B, M, H, W_half = power.shape
+        B, M, C, H, W_half = power.shape
 
         # Radial profile: bin by distance from origin
         # Create radial distance map
@@ -398,23 +408,23 @@ class InitialManualExtractor:
 
         # Average power in radial bins
         # Simple approach: log-log fit of power vs frequency
-        power_flat = power.view(B, M, -1)  # [B, M, H*W_half]
+        power_flat = power.view(B, M, C, -1)  # [B, M, C, H*W_half]
         k_flat = k_radial.view(-1)  # [H*W_half]
 
         # Remove DC component (k=0)
         valid_mask = k_flat > 0
         k_valid = k_flat[valid_mask]
-        power_valid = power_flat[:, :, valid_mask]  # [B, M, N_valid]
+        power_valid = power_flat[:, :, :, valid_mask]  # [B, M, C, N_valid]
 
         # Log-log coordinates
         log_k = torch.log(k_valid + 1e-8)  # [N_valid]
-        log_power = torch.log(power_valid + 1e-8)  # [B, M, N_valid]
+        log_power = torch.log(power_valid + 1e-8)  # [B, M, C, N_valid]
 
         # Linear regression slope (simple mean-based estimator)
         # β = -d(log P)/d(log k)
         # Approximate as correlation
         mean_log_k = log_k.mean()
-        mean_log_power = log_power.mean(dim=-1, keepdim=True)  # [B, M, 1]
+        mean_log_power = log_power.mean(dim=-1, keepdim=True)  # [B, M, C, 1]
 
         numerator = ((log_k - mean_log_k) * (log_power - mean_log_power)).sum(dim=-1)
         denominator = ((log_k - mean_log_k) ** 2).sum()
@@ -432,16 +442,16 @@ class InitialManualExtractor:
         Shannon entropy via histogram.
 
         Args:
-            ic: [B, M, H, W]
+            ic: [B, M, C, H, W]
             num_bins: Number of histogram bins
 
         Returns:
-            [B, M] entropy values
+            [B, M, C] entropy values
         """
-        B, M, H, W = ic.shape
+        B, M, C, H, W = ic.shape
 
         # Normalize to [0, 1]
-        ic_flat = ic.view(B, M, -1)  # [B, M, H*W]
+        ic_flat = ic.view(B, M, C, -1)  # [B, M, C, H*W]
         ic_min = ic_flat.min(dim=-1, keepdim=True).values
         ic_max = ic_flat.max(dim=-1, keepdim=True).values
         ic_norm = (ic_flat - ic_min) / (ic_max - ic_min + 1e-8)
@@ -451,13 +461,14 @@ class InitialManualExtractor:
         entropy_list = []
         for b in range(B):
             for m in range(M):
-                hist = torch.histc(ic_norm[b, m], bins=num_bins, min=0, max=1)
-                prob = hist / (H * W)
-                prob = prob[prob > 0]  # Remove zeros
-                ent = -(prob * torch.log2(prob + 1e-8)).sum()
-                entropy_list.append(ent)
+                for c in range(C):
+                    hist = torch.histc(ic_norm[b, m, c], bins=num_bins, min=0, max=1)
+                    prob = hist / (H * W)
+                    prob = prob[prob > 0]  # Remove zeros
+                    ent = -(prob * torch.log2(prob + 1e-8)).sum()
+                    entropy_list.append(ent)
 
-        entropy = torch.tensor(entropy_list, device=ic.device).view(B, M)
+        entropy = torch.tensor(entropy_list, device=ic.device).view(B, M, C)
 
         # Normalize by max entropy (log2(num_bins))
         entropy = entropy / np.log2(num_bins)
@@ -469,27 +480,27 @@ class InitialManualExtractor:
         Variance of local patch entropies.
 
         Args:
-            ic: [B, M, H, W]
+            ic: [B, M, C, H, W]
             patch_size: Size of local patches
 
         Returns:
-            [B, M] local entropy variances
+            [B, M, C] local entropy variances
         """
-        B, M, H, W = ic.shape
+        B, M, C, H, W = ic.shape
 
         # Extract patches
-        patches = F.unfold(ic.view(B * M, 1, H, W),
+        patches = F.unfold(ic.view(B * M * C, 1, H, W),
                           kernel_size=patch_size,
-                          stride=patch_size // 2)  # [B*M, patch_size^2, num_patches]
+                          stride=patch_size // 2)  # [B*M*C, patch_size^2, num_patches]
 
         num_patches = patches.shape[-1]
-        patches = patches.view(B, M, patch_size * patch_size, num_patches)
+        patches = patches.view(B, M, C, patch_size * patch_size, num_patches)
 
         # Compute entropy for each patch (simplified: just variance as proxy)
-        patch_entropy = patches.var(dim=2)  # [B, M, num_patches]
+        patch_entropy = patches.var(dim=3)  # [B, M, C, num_patches]
 
         # Variance of patch entropies
-        local_ent_var = patch_entropy.var(dim=-1)  # [B, M]
+        local_ent_var = patch_entropy.var(dim=-1)  # [B, M, C]
 
         return local_ent_var
 
@@ -498,20 +509,20 @@ class InitialManualExtractor:
         Approximate LZ complexity via discrete derivative count.
 
         Args:
-            ic: [B, M, H, W]
+            ic: [B, M, C, H, W]
 
         Returns:
-            [B, M] complexity scores
+            [B, M, C] complexity scores
         """
-        B, M, H, W = ic.shape
+        B, M, C, H, W = ic.shape
 
         # Binarize
-        ic_flat = ic.view(B, M, -1)
+        ic_flat = ic.view(B, M, C, -1)
         median = ic_flat.median(dim=-1, keepdim=True).values
         binary = (ic_flat > median).float()
 
         # Count transitions (approximate complexity)
-        transitions = (binary[:, :, 1:] != binary[:, :, :-1]).float().sum(dim=-1)
+        transitions = (binary[:, :, :, 1:] != binary[:, :, :, :-1]).float().sum(dim=-1)
 
         # Normalize by length
         complexity = transitions / (H * W)
@@ -523,12 +534,12 @@ class InitialManualExtractor:
         Predictability via autocorrelation decay.
 
         Args:
-            ic: [B, M, H, W]
+            ic: [B, M, C, H, W]
 
         Returns:
-            [B, M] predictability scores
+            [B, M, C] predictability scores
         """
-        B, M, H, W = ic.shape
+        B, M, C, H, W = ic.shape
 
         # Compute autocorrelation at lag 1 (horizontal)
         ic_shifted = torch.roll(ic, shifts=1, dims=-1)
@@ -537,9 +548,9 @@ class InitialManualExtractor:
         ic_centered = ic - ic.mean(dim=(-2, -1), keepdim=True)
         ic_shifted_centered = ic_shifted - ic_shifted.mean(dim=(-2, -1), keepdim=True)
 
-        numerator = (ic_centered * ic_shifted_centered).view(B, M, -1).sum(dim=-1)
-        denominator = torch.sqrt((ic_centered ** 2).view(B, M, -1).sum(dim=-1) *
-                                (ic_shifted_centered ** 2).view(B, M, -1).sum(dim=-1))
+        numerator = (ic_centered * ic_shifted_centered).view(B, M, C, -1).sum(dim=-1)
+        denominator = torch.sqrt((ic_centered ** 2).view(B, M, C, -1).sum(dim=-1) *
+                                (ic_shifted_centered ** 2).view(B, M, C, -1).sum(dim=-1))
 
         autocorr = numerator / (denominator + 1e-6)
 
@@ -557,12 +568,12 @@ class InitialManualExtractor:
         Radial gradient strength (edge detection).
 
         Args:
-            ic: [B, M, H, W]
+            ic: [B, M, C, H, W]
 
         Returns:
-            [B, M] gradient strengths
+            [B, M, C] gradient strengths
         """
-        B, M, H, W = ic.shape
+        B, M, C, H, W = ic.shape
 
         # Sobel filters for gradients
         sobel_x = torch.tensor([[-1, 0, 1],
@@ -576,16 +587,16 @@ class InitialManualExtractor:
         sobel_y = sobel_y.view(1, 1, 3, 3)
 
         # Compute gradients
-        ic_flat = ic.view(B * M, 1, H, W)
+        ic_flat = ic.view(B * M * C, 1, H, W)
         grad_x = F.conv2d(ic_flat, sobel_x, padding=1)
         grad_y = F.conv2d(ic_flat, sobel_y, padding=1)
 
         # Gradient magnitude
         grad_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2)
-        grad_mag = grad_mag.view(B, M, H, W)
+        grad_mag = grad_mag.view(B, M, C, H, W)
 
         # Average gradient strength
-        gradient_strength = grad_mag.view(B, M, -1).mean(dim=-1)
+        gradient_strength = grad_mag.view(B, M, C, -1).mean(dim=-1)
 
         return gradient_strength
 
@@ -594,12 +605,12 @@ class InitialManualExtractor:
         4-fold rotational symmetry score.
 
         Args:
-            ic: [B, M, H, W]
+            ic: [B, M, C, H, W]
 
         Returns:
-            [B, M] symmetry scores
+            [B, M, C] symmetry scores
         """
-        B, M, H, W = ic.shape
+        B, M, C, H, W = ic.shape
 
         # Rotate 90, 180, 270 degrees
         ic_90 = torch.rot90(ic, k=1, dims=(-2, -1))
@@ -612,9 +623,9 @@ class InitialManualExtractor:
         def corr(ic1, ic2):
             ic1_c = ic1 - ic1.mean(dim=(-2, -1), keepdim=True)
             ic2_c = ic2 - ic2.mean(dim=(-2, -1), keepdim=True)
-            num = (ic1_c * ic2_c).reshape(B, M, -1).sum(dim=-1)
-            denom = torch.sqrt((ic1_c ** 2).reshape(B, M, -1).sum(dim=-1) *
-                             (ic2_c ** 2).reshape(B, M, -1).sum(dim=-1))
+            num = (ic1_c * ic2_c).reshape(B, M, C, -1).sum(dim=-1)
+            denom = torch.sqrt((ic1_c ** 2).reshape(B, M, C, -1).sum(dim=-1) *
+                             (ic2_c ** 2).reshape(B, M, C, -1).sum(dim=-1))
             return num / (denom + 1e-6)
 
         corr_90 = corr(ic, ic_90)

@@ -95,7 +95,7 @@ class InitialCNNEncoder(nn.Module):
         Stage 1: ResBlock(32→64, s=2)
         Stage 2: ResBlock(64→128, s=2)
         Stage 3: ResBlock(128→256, s=2)
-        Output: AdaptiveAvgPool(1×1) → Linear(256→embedding_dim) → BatchNorm1d
+        Output: AdaptiveAvgPool(1×1) → Linear(256→embedding_dim)
 
     Spatial resolution progression (for 128×128 input):
         128×128 → 64×64 (conv1) → 32×32 (maxpool) →
@@ -106,18 +106,21 @@ class InitialCNNEncoder(nn.Module):
     Output: [B*M, embedding_dim] learned features
     """
 
-    def __init__(self, embedding_dim: int = 28):
+    def __init__(self, embedding_dim: int = 28, in_channels: int = 3):
         """
         Args:
             embedding_dim: Output embedding dimensionality
+            in_channels: Number of input channels (e.g., 3 for C0, C1, C2)
         """
         super().__init__()
 
         self.embedding_dim = embedding_dim
+        self.in_channels = in_channels
 
         # Stage 0: Initial convolution
+        # Stage 0: Initial convolution
         self.conv1 = nn.Conv2d(
-            1, 32,
+            in_channels, 32,
             kernel_size=7, stride=2, padding=3, bias=False
         )
         self.bn1 = nn.BatchNorm2d(32)
@@ -136,7 +139,8 @@ class InitialCNNEncoder(nn.Module):
         # Global pooling and embedding projection
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(256, embedding_dim)
-        self.bn_out = nn.BatchNorm1d(embedding_dim)
+        # No BatchNorm - preserve variance for VQ-VAE
+        self.bn_out = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -163,9 +167,8 @@ class InitialCNNEncoder(nn.Module):
         x = self.avgpool(x)         # [B*M, 256, 1, 1]
         x = torch.flatten(x, 1)     # [B*M, 256]
 
-        # Embedding projection with normalization
+        # Embedding projection (no normalization to preserve variance)
         x = self.fc(x)              # [B*M, embedding_dim]
-        x = self.bn_out(x)          # Normalize embeddings
 
         return x
 
@@ -207,7 +210,6 @@ class InitialCNNEncoder(nn.Module):
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         x = self.fc(x)
-        x = self.bn_out(x)
         features['embedding'] = x
 
         return features
@@ -226,14 +228,16 @@ class InitialCNNDecoder(nn.Module):
           construct ICs from embeddings.
     """
 
-    def __init__(self, embedding_dim: int = 28):
+    def __init__(self, embedding_dim: int = 28, out_channels: int = 3):
         """
         Args:
             embedding_dim: Input embedding dimensionality
+            out_channels: Number of output channels (e.g., 3 for C0, C1, C2)
         """
         super().__init__()
 
         self.embedding_dim = embedding_dim
+        self.out_channels = out_channels
 
         # Project embedding to spatial features
         self.fc = nn.Linear(embedding_dim, 256 * 4 * 4)
@@ -265,8 +269,8 @@ class InitialCNNDecoder(nn.Module):
             nn.ReLU(inplace=True)
         )
 
-        # Final 1×1 conv to get single channel
-        self.final_conv = nn.Conv2d(32, 1, kernel_size=1)
+        # Final 1×1 conv to get output channels
+        self.final_conv = nn.Conv2d(32, out_channels, kernel_size=1)
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """
@@ -313,24 +317,26 @@ class InitialVAE(nn.Module):
     Loss: reconstruction + KL divergence
     """
 
-    def __init__(self, embedding_dim: int = 28):
+    def __init__(self, embedding_dim: int = 28, in_channels: int = 3):
         """
         Args:
             embedding_dim: Latent code dimensionality
+            in_channels: Number of input channels (e.g., 3 for C0, C1, C2)
         """
         super().__init__()
 
         self.embedding_dim = embedding_dim
+        self.in_channels = in_channels
 
         # Encoder (deterministic backbone)
-        self.encoder_backbone = InitialCNNEncoder(embedding_dim=256)
+        self.encoder_backbone = InitialCNNEncoder(embedding_dim=256, in_channels=in_channels)
 
         # VAE heads for μ and log_σ²
         self.fc_mu = nn.Linear(256, embedding_dim)
         self.fc_logvar = nn.Linear(256, embedding_dim)
 
         # Decoder
-        self.decoder = InitialCNNDecoder(embedding_dim=embedding_dim)
+        self.decoder = InitialCNNDecoder(embedding_dim=embedding_dim, out_channels=in_channels)
 
     def encode(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """

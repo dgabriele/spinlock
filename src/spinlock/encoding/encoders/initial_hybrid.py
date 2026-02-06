@@ -50,6 +50,7 @@ class InitialHybridEncoder(BaseEncoder):
         manual_output_dim: int = 14,
         in_channels: int = 1,
         use_final_batchnorm: bool = False,
+        pretrained_cnn_path: str = None,
     ):
         super().__init__()
 
@@ -84,7 +85,48 @@ class InitialHybridEncoder(BaseEncoder):
             use_final_batchnorm=use_final_batchnorm,
         )
 
+        # Load pre-trained weights if provided
+        if pretrained_cnn_path:
+            self._load_pretrained_cnn(pretrained_cnn_path)
+
         self._output_dim = self._manual_output_dim + cnn_embedding_dim
+
+    def _load_pretrained_cnn(self, checkpoint_path: str):
+        """Load pre-trained CNN encoder weights from checkpoint.
+
+        Args:
+            checkpoint_path: Path to .pt checkpoint file containing encoder weights
+        """
+        import os
+
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Pre-trained checkpoint not found: {checkpoint_path}")
+
+        print(f"Loading pre-trained CNN encoder from: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+        # The checkpoint contains 'encoder_state_dict' key from pre-training
+        if 'encoder_state_dict' in checkpoint:
+            state_dict = checkpoint['encoder_state_dict']
+            embedding_dim = checkpoint.get('embedding_dim', None)
+
+            # Verify embedding dimension matches
+            if embedding_dim and embedding_dim != self.cnn_embedding_dim:
+                raise ValueError(
+                    f"Pre-trained embedding_dim ({embedding_dim}) does not match "
+                    f"config embedding_dim ({self.cnn_embedding_dim})"
+                )
+
+            # Load weights
+            self.cnn_encoder.load_state_dict(state_dict)
+            print(f"✓ Loaded pre-trained CNN encoder (embedding_dim={self.cnn_embedding_dim})")
+
+            if 'val_loss' in checkpoint:
+                print(f"  Pre-training val_loss: {checkpoint['val_loss']:.6f}")
+            if 'epoch' in checkpoint:
+                print(f"  Pre-training epoch: {checkpoint['epoch']}")
+        else:
+            raise KeyError(f"Checkpoint does not contain 'encoder_state_dict' key")
 
     def forward(
         self,

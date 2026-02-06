@@ -1715,6 +1715,7 @@ Output:
             encode_manual=encoder_params.get("encode_manual", False),
             in_channels=initial_info["in_channels"],
             use_final_batchnorm=encoder_params.get("use_final_batchnorm", False),
+            pretrained_cnn_path=initial_info.get("pretrained_cnn_path"),
         )
         encoder = encoder.to(device)
         encoder.eval()
@@ -1800,6 +1801,8 @@ Output:
         manual_dim = family_features.shape[1]
         encoder_params = family_config.get("encoder_params", {})
         cnn_dim = encoder_params.get("cnn_embedding_dim", 28)
+        pretrained_cnn_path = encoder_params.get("pretrained_cnn_path", None)
+        use_final_batchnorm = encoder_params.get("use_final_batchnorm", False)
 
         initial_info = {
             "offset": 0,  # Will be updated by caller
@@ -1807,6 +1810,8 @@ Output:
             "cnn_dim": cnn_dim,
             "in_channels": raw_ics.shape[1],
             "encoded_dim": manual_dim,  # Will be updated after encoding
+            "pretrained_cnn_path": pretrained_cnn_path,
+            "use_final_batchnorm": use_final_batchnorm,
         }
 
         print(f"  {feature_family}: Hybrid mode - {manual_dim}D manual + raw ICs {raw_ics.shape}")
@@ -2598,7 +2603,23 @@ Output:
     def _normalize_features(
         self, features: np.ndarray, group_indices: Dict[str, list], config: Dict[str, Any]
     ) -> tuple:
-        """Normalize features per category."""
+        """Normalize features per category or globally.
+
+        Normalization modes:
+        1. Per-category (default): Compute mean/std separately for each category's features.
+           - Pro: Each category normalized to same scale
+           - Con: If clustering groups similar features, within-category std is tiny
+
+        2. Global: Compute mean/std on ALL features before category assignment.
+           - Pro: Preserves natural variance differences between features
+           - Con: Categories may have different scales (but that's informative)
+
+        Config options:
+        - per_category_normalization: bool (default: True)
+        - global_normalization: bool (default: False)
+        - If both False: No normalization (return unnormalized features)
+        - If both True: Global stats are computed but per-category are used (backward compat warning)
+        """
         from spinlock.encoding import (
             compute_normalization_stats,
             compute_robust_normalization_stats,
@@ -2607,25 +2628,80 @@ Output:
         )
         import numpy as np
 
-        # Get normalization method from config (default: standard)
+        # Get normalization config
         normalization_method = config.get("normalization_method", "standard")
+        per_category_norm = config.get("per_category_normalization", True)
+        global_norm = config.get("global_normalization", False)
+
+        # Validate config
+        if global_norm and per_category_norm:
+            print("WARNING: Both global_normalization and per_category_normalization are True.")
+            print("         Using per-category normalization (set per_category_normalization=False for global).")
+            global_norm = False
 
         normalized = features.copy()
         stats_dict = {}
 
-        for category, indices in group_indices.items():
-            cat_features = features[:, indices]
+        # Mode 1: Global normalization (compute stats on all features)
+        if global_norm and not per_category_norm:
+            print("  Using GLOBAL normalization (stats computed on all features before clustering)")
 
+            # Compute global stats on ALL features
             if normalization_method == "mad":
-                # Use robust MAD-based normalization
-                stats = compute_robust_normalization_stats(cat_features)
-                normalized[:, indices] = apply_robust_normalization(cat_features, stats)
+                global_stats = compute_robust_normalization_stats(features)
+                normalized = apply_robust_normalization(features, global_stats)
             else:
-                # Use standard mean/std normalization
-                stats = compute_normalization_stats(cat_features)
-                normalized[:, indices] = apply_standard_normalization(cat_features, stats)
+                global_stats = compute_normalization_stats(features)
+                normalized = apply_standard_normalization(features, global_stats)
 
-            stats_dict[category] = stats
+            # Store per-category slices of the global stats for compatibility
+            # (trainer expects stats_dict[category] for each category)
+            for category, indices in group_indices.items():
+                # Extract per-feature stats for this category's features
+                if normalization_method == "mad":
+                    from spinlock.encoding import RobustNormalizationStats
+                    stats_dict[category] = RobustNormalizationStats(
+                        median=global_stats.median[indices],
+                        mad=global_stats.mad[indices]
+                    )
+                else:
+                    from spinlock.encoding import NormalizationStats
+                    stats_dict[category] = NormalizationStats(
+                        mean=global_stats.mean[indices],
+                        std=global_stats.std[indices]
+                    )
+
+        # Mode 2: Per-category normalization (current default behavior)
+        elif per_category_norm:
+            print("  Using PER-CATEGORY normalization (stats computed per category)")
+
+            for category, indices in group_indices.items():
+                cat_features = features[:, indices]
+
+                if normalization_method == "mad":
+                    # Use robust MAD-based normalization
+                    stats = compute_robust_normalization_stats(cat_features)
+                    normalized[:, indices] = apply_robust_normalization(cat_features, stats)
+                else:
+                    # Use standard mean/std normalization
+                    stats = compute_normalization_stats(cat_features)
+                    normalized[:, indices] = apply_standard_normalization(cat_features, stats)
+
+                stats_dict[category] = stats
+
+        # Mode 3: No normalization
+        else:
+            print("  WARNING: Both per_category_normalization and global_normalization are False.")
+            print("           Returning UNNORMALIZED features. This may cause training issues.")
+
+            # Still need to create dummy stats for compatibility
+            for category, indices in group_indices.items():
+                cat_features = features[:, indices]
+                if normalization_method == "mad":
+                    stats = compute_robust_normalization_stats(cat_features)
+                else:
+                    stats = compute_normalization_stats(cat_features)
+                stats_dict[category] = stats
 
         return normalized, stats_dict
 
@@ -2812,6 +2888,8 @@ Output:
                 initial_feature_count=initial_info["encoded_dim"],  # Use encoded_dim (270D) instead of manual_dim (14D)
                 in_channels=initial_info["in_channels"],
                 assignment_matrix=assignment_matrix,
+                pretrained_cnn_path=initial_info.get("pretrained_cnn_path"),
+                use_final_batchnorm=initial_info.get("use_final_batchnorm", False),
             )
             if verbose:
                 print("Using VQVAEWithInitial for end-to-end INITIAL CNN training")

@@ -16,6 +16,14 @@ class InitialManualConfig(BaseModel):
     """
     enabled: bool = True
 
+    use_statistical_features: bool = Field(
+        default=True,
+        description="Use statistical IC features (distributional, spatial, energy) "
+                    "instead of pattern complexity features. Statistical features "
+                    "preserve natural variance and provide reconstruction-relevant "
+                    "information for VQ-VAE."
+    )
+
     # Spatial features (4)
     include_spatial_cluster_count: bool = True
     include_spatial_largest_cluster_frac: bool = True
@@ -50,6 +58,12 @@ class InitialCNNConfig(BaseModel):
     enabled: bool = True
 
     # Architecture
+    in_channels: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Number of input channels (e.g., 3 for channels C0, C1, C2)"
+    )
     embedding_dim: int = Field(
         default=28,
         ge=8,
@@ -70,6 +84,11 @@ class InitialCNNConfig(BaseModel):
     pretrained: bool = Field(
         default=False,
         description="Load pretrained weights (if available)"
+    )
+    pretrained_path: Optional[str] = Field(
+        default=None,
+        description="Path to pretrained encoder checkpoint (.pt file). "
+                    "If pretrained=True, this path will be used to load encoder weights."
     )
     freeze_encoder: bool = Field(
         default=False,
@@ -173,7 +192,9 @@ class InitialConfig(BaseModel):
                 self.manual.include_morph_radial_gradient,
                 self.manual.include_morph_symmetry,
             ]
-            count += sum(manual_features)
+            # Manual features are per-channel: 14 * C
+            base_manual_count = sum(manual_features)
+            count += base_manual_count * self.cnn.in_channels
 
         if self.cnn.enabled:
             count += self.cnn.embedding_dim
