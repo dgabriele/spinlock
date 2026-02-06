@@ -521,10 +521,10 @@ If you use Spinlock in your research, please cite:
 
 ```bibtex
 @software{spinlock2026,
-  title = {Spinlock: Foundation for Neural Operator Agent Research},
-  author = {Your Name},
+  title = {Spinlock: Generative Pre-training Framework for Neural Operator Systems},
+  author = {Daniel Gabriele},
   year = {2026},
-  url = {https://github.com/yourusername/spinlock}
+  url = {https://github.com/dgabriele/spinlock}
 }
 ```
 
