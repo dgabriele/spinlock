@@ -1,0 +1,211 @@
+# VQ Tokenizer Configuration - MNO 100K Dataset
+#
+# Train VQ tokenizer on MNO-generated rollouts (100k) using:
+# - Pretrained CNN encoder (checkpoints/cnn_pretrained.pt)
+# - PyramidTemporalEncoder (random init, proven effective)
+#
+# This config is IDENTICAL to vqvae_50k.yaml except for dataset_path,
+# ensuring fair comparison between CNO-trained and MNO-trained tokenizers.
+#
+# Purpose: Train tokenizer on MNO distribution for semantic grounding architecture.
+# Expected: ~0.01-0.02 reconstruction MSE on MNO rollouts (vs 297x with CNO tokenizer)
+
+# ═══════════════════════════════════════════════════════════════
+# Dataset
+# ═══════════════════════════════════════════════════════════════
+
+dataset_path: "datasets/mno_rollouts_100k.h5"  # MNO-generated rollouts
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  # Initial condition encoder (CNN + optional manual features)
+  initial:
+    variant: "hybrid"  # or "cnn" for CNN-only
+    manual_dim: 42  # Manual feature dimension (if encode_manual=True)
+    cnn_embedding_dim: 384  # CNN output dimension (matches pretrained checkpoint)
+    in_channels: 3  # Auto-detected from data at runtime
+    pretrained_cnn_path: "checkpoints/cnn_pretrained.pt"  # USE PRETRAINED!
+    use_final_batchnorm: false
+    encode_manual: false  # Set to true to include manual features
+
+  # Temporal encoder (PyramidTemporalEncoder)
+  temporal:
+    variant: "pyramid"
+    level_dims: [32, 64, 96, 128]  # Pyramid level dimensions (total: 320D)
+    downsample_factors: [1, 2, 4, 8]  # Pyramid downsample factors
+    variable_length: true  # Support variable-length trajectories
+    min_timesteps: 16
+    max_timesteps: 256
+    adaptive_pyramid: true  # Adapt pyramid to sequence length
+
+  # Projection layers
+  embedding_dim: 64  # Target embedding dimension per feature
+  hidden_dim: 128  # Hidden dimension for projection
+  dropout: 0.1  # Dropout probability
+  use_layer_norm: true  # Use layer normalization
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer Configuration
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  # NOTE: num_embeddings (codebook size) is computed adaptively per quantizer
+  # using v1's formula: base_tokens = log2(category_size) * 5
+  # with dataset-aware minimums and hierarchical progression (L0 > L1 > L2)
+  # Do NOT specify num_embeddings in config - it will be ignored!
+
+  embedding_dim: 64  # Embedding dimension (matches encoder.embedding_dim)
+  commitment_cost: 0.45  # Commitment loss weight (matches v1 for better utilization)
+  use_ema: true  # Use exponential moving average for codebook updates
+  ema_decay: 0.99  # EMA decay rate
+  epsilon: 1.0e-5  # Small constant for numerical stability
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchical Quantization Configuration
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3  # Number of hierarchical levels
+  compression_ratios: "0.5:1.0:1.5"  # Compression ratios per level
+  min_latent_dim: 4  # Minimum latent dimension
+  max_latent_dim: 64  # Maximum latent dimension
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Grouping Configuration (Optional)
+# ═══════════════════════════════════════════════════════════════
+
+grouping:
+  # Automatic feature grouping via hierarchical clustering + gradient refinement
+  preprocessing:
+    method: "mad"  # Median absolute deviation normalization
+    clip_outliers: false
+
+  clustering:
+    linkage_method: "ward"
+    distance_metric: "correlation"
+    k_selection_method: "silhouette"  # Automatic K selection
+    min_groups: 8
+    max_groups: 20
+    use_gpu: true  # Use CuPy acceleration if available
+
+  gradient:
+    num_epochs: 500
+    learning_rate: 0.01
+    temperature_start: 1.0
+    temperature_end: 0.5
+    orthogonality_weight: 1.0  # Minimize inter-group correlation
+    informativeness_weight: 1.0  # Maximize per-group variance
+    orthogonality_target: 0.15  # Stop early if reached
+    device: "auto"
+
+  splitting:
+    enabled: false  # Disable recursive splitting for now
+    max_group_size: 40
+
+  skip_gradient_refinement: false  # Enable refinement
+  random_seed: 42
+
+# ═══════════════════════════════════════════════════════════════
+# Training Configuration
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 1000
+  batch_size: 256
+  learning_rate: 0.001
+  val_split: 0.1  # 10% validation split
+  val_every_n_epochs: 5  # Validate every 5 epochs
+
+  # Optimizer
+  optimizer: "adam"
+  weight_decay: 0.0
+  gradient_clip_norm: 1.0  # Clip gradients for stability
+
+  # Learning rate scheduler
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 10
+
+  # Early stopping
+  early_stopping_patience: 50
+  early_stopping_min_delta: 0.0001
+
+  # Dead code reset (disabled - EMA handles this naturally)
+  dead_code_reset_interval: 999999  # Effectively disabled
+  dead_code_threshold: 0.0  # Disabled
+
+  # Hardware
+  device: "auto"  # Auto-detect CUDA
+  compile_model: false  # Set to true for torch.compile optimization
+
+# ═══════════════════════════════════════════════════════════════
+# Loss Configuration
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  reconstruction_weight: 1.0  # Primary objective: reconstruction quality
+  orthogonality_weight: 0.1  # Encourage orthogonal code embeddings
+  informativeness_weight: 0.1  # Encourage informative codes
+  topographic_weight: 0.2  # Topographic organization (preserve topology in codebook)
+  normalize_reconstruction: true  # Normalize reconstruction loss
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization Configuration
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "none"  # Disabled - normalization reduced codebook diversity
+  clip_std_multiplier: null  # Optional: clip outliers at N*std
+
+# ═══════════════════════════════════════════════════════════════
+# System Configuration
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 42
+verbose: true
+log_level: "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR"
+
+# ═══════════════════════════════════════════════════════════════
+# Expected Performance
+# ═══════════════════════════════════════════════════════════════
+#
+# MNO Tokenizer Training (100k MNO rollouts):
+#   - Dataset: MNO-generated rollouts (not CNO ground truth)
+#   - Initial encoder: Pretrained CNN (1.8% pretrain error on CNO)
+#   - Temporal encoder: Random init (proven to reach 0.02 MSE)
+#   - Expected reconstruction: < 0.02 MSE on MNO rollouts (vs 297x with CNO tokenizer!)
+#   - Target utilization: > 15% codebook usage
+#
+# Key Difference from CNO Tokenizer:
+#   - CNO tokenizer trained on CNO ground truth → 0.01 MSE on CNO, 297x on MNO
+#   - MNO tokenizer trained on MNO distribution → target <2x MSE on MNO
+#
+# Purpose:
+#   Enable semantic grounding architecture:
+#   - MNO tokenizer: Fast, accurate compression of MNO rollouts
+#   - CNO tokenizer: Physics-grounded semantic reference
+#   - Alignment layer: Maps MNO tokens → CNO semantic space
+#
+# Training command:
+#   # First, generate the dataset:
+#   poetry run spinlock generate-mno-dataset \
+#     --mno-checkpoint checkpoints/mno/50k_baseline/meta_operator_best.pt \
+#     --num-rollouts 100000 \
+#     --batch-size 128 \
+#     --output datasets/mno_rollouts_100k.h5
+#
+#   # Then, train the tokenizer:
+#   poetry run spinlock train-vq-tokenizer \
+#     --config configs/vqvae_mno_100k.yaml \
+#     --output checkpoints/vqvae/mno_100k
+#
+# Validation:
+#   # Validate MNO tokenizer on MNO rollouts (should pass <2x threshold)
+#   poetry run spinlock validate-mno-vqvae \
+#     --mno-checkpoint checkpoints/mno/50k_baseline/meta_operator_best.pt \
+#     --vqvae-checkpoint checkpoints/vqvae/mno_100k/vq_tokenizer_best.pt \
+#     --dataset datasets/mno_rollouts_100k.h5 \
+#     --num-samples 1000

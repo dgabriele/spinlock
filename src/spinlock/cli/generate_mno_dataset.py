@@ -147,9 +147,25 @@ Examples:
         parser.add_argument(
             "--num-realizations",
             type=int,
-            default=8,
+            default=3,
             metavar="M",
-            help="Number of realizations per operator (default: 8)",
+            help="Number of realizations per operator (default: 3, matches CNO datasets)",
+        )
+
+        parser.add_argument(
+            "--num-channels",
+            type=int,
+            default=3,
+            metavar="C",
+            help="Number of channels in rollouts (default: 3)",
+        )
+
+        parser.add_argument(
+            "--num-params",
+            type=int,
+            default=14,
+            metavar="P",
+            help="Number of operator parameters (default: 14)",
         )
 
         parser.add_argument(
@@ -202,6 +218,8 @@ Examples:
             generator = MNORolloutDatasetGenerator(
                 mno_checkpoint=args.mno_checkpoint,
                 num_realizations=args.num_realizations,
+                num_channels=args.num_channels,
+                num_params=args.num_params,
                 rollout_steps=args.rollout_steps,
                 device=args.device
             )

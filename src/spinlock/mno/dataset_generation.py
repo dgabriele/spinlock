@@ -51,6 +51,7 @@ from tqdm import tqdm
 from spinlock.mno.validation_utils import load_mno_checkpoint
 from spinlock.mno.feature_extraction import MNOFeatureExtractor
 from spinlock.features.initial.manual_extractors import InitialManualExtractor
+from spinlock.dataset.generators import InputFieldGenerator
 
 
 class MNORolloutDatasetGenerator:
@@ -65,6 +66,9 @@ class MNORolloutDatasetGenerator:
     6. Extract initial features via InitialManualExtractor
     7. Save to HDF5 with checkpointing
 
+    IC Type Distribution (matches CNO datasets - cno_50k_v3_1.yaml):
+        Ensures apples-to-apples comparison between MNO and CNO tokenizers.
+
     Example:
         generator = MNORolloutDatasetGenerator(
             mno_checkpoint="checkpoints/mno/50k_baseline/meta_operator_best.pt",
@@ -78,10 +82,42 @@ class MNORolloutDatasetGenerator:
         )
     """
 
+    # IC Type Configuration (CNO Distribution - matches cno_50k_v3_1.yaml)
+    # DO NOT MODIFY - ensures consistency with CNO datasets for fair comparison
+    IC_TYPE_CONFIG = [
+        # Gaussian Random Fields: 25% total (5 variance levels @ 5% each)
+        (0.05, 'gaussian_random_field', {'length_scale': 0.05, 'variance': 0.25}),
+        (0.10, 'gaussian_random_field', {'length_scale': 0.05, 'variance': 0.5}),
+        (0.15, 'gaussian_random_field', {'length_scale': 0.05, 'variance': 1.0}),
+        (0.20, 'gaussian_random_field', {'length_scale': 0.05, 'variance': 2.0}),
+        (0.25, 'gaussian_random_field', {'length_scale': 0.05, 'variance': 4.0}),
+
+        # Band-limited noise: 25% total (3 bands @ ~8.33% each)
+        (0.3333, 'multiscale_grf', {'scales': [0.30, 0.35, 0.40], 'variance': 1.0}),
+        (0.4166, 'multiscale_grf', {'scales': [0.08, 0.10, 0.12], 'variance': 1.0}),
+        (0.50, 'multiscale_grf', {'scales': [0.02, 0.025, 0.03], 'variance': 1.0}),
+
+        # Structured (sinusoids): 25%
+        (0.75, 'structured', {
+            'num_modes': 1,
+            'wavelength_range': [8.0, 64.0],
+            'amplitude_range': [0.5, 2.0]
+        }),
+
+        # Localized (blobs): 25%
+        (1.00, 'localized', {
+            'num_blobs': 5,
+            'min_width': 5.0,
+            'max_width': 15.0
+        }),
+    ]
+
     def __init__(
         self,
         mno_checkpoint: Path,
-        num_realizations: int = 8,
+        num_realizations: int = 3,
+        num_channels: int = 3,
+        num_params: int = 14,
         rollout_steps: int = 256,
         device: str = "cuda"
     ):
@@ -89,12 +125,16 @@ class MNORolloutDatasetGenerator:
 
         Args:
             mno_checkpoint: Path to trained MNO checkpoint
-            num_realizations: Number of realizations per operator (default: 8)
+            num_realizations: Number of realizations per operator (default: 3, matches CNO datasets)
+            num_channels: Number of channels in rollouts (default: 3)
+            num_params: Number of operator parameters (default: 14)
             rollout_steps: Number of timesteps in rollouts (default: 256)
             device: Torch device for inference
         """
         self.device = torch.device(device)
         self.num_realizations = num_realizations
+        self.num_channels = num_channels
+        self.num_params = num_params
         self.rollout_steps = rollout_steps
 
         # Load MNO checkpoint
@@ -107,6 +147,13 @@ class MNORolloutDatasetGenerator:
         self.temporal_extractor = MNOFeatureExtractor(device=str(device))
         self.initial_extractor = InitialManualExtractor(device=self.device)
 
+        # Initialize IC generator (uses same method as CNO datasets)
+        self.ic_generator = InputFieldGenerator(
+            grid_size=64,
+            num_channels=self.num_channels,
+            device=self.device
+        )
+
         # Probe feature dimensions
         self._probe_feature_dimensions()
 
@@ -117,7 +164,7 @@ class MNORolloutDatasetGenerator:
         # Probe temporal extractor
         dims = self.temporal_extractor.probe_dimensions(
             timesteps=self.rollout_steps,
-            channels=1,
+            channels=self.num_channels,
             height=64,
             width=64,
             batch_size=1
@@ -126,7 +173,7 @@ class MNORolloutDatasetGenerator:
         print(f"  Temporal feature dimension: {self.temporal_dim}")
 
         # Probe initial extractor
-        dummy_ic = torch.randn(1, self.num_realizations, 1, 64, 64, device=self.device)
+        dummy_ic = torch.randn(1, self.num_realizations, self.num_channels, 64, 64, device=self.device)
         initial_features = self.initial_extractor.extract_all(dummy_ic)
         self.initial_dim = initial_features.shape[-1]
         print(f"  Initial feature dimension: {self.initial_dim}")
@@ -172,7 +219,7 @@ class MNORolloutDatasetGenerator:
             # Create datasets (fixed size)
             fields_ds = inputs_grp.create_dataset(
                 'fields',
-                shape=(num_rollouts, self.num_realizations, 1, 64, 64),
+                shape=(num_rollouts, self.num_realizations, self.num_channels, 64, 64),
                 dtype='float32',
                 compression='gzip',
                 compression_opts=4
@@ -180,7 +227,7 @@ class MNORolloutDatasetGenerator:
 
             params_ds = params_grp.create_dataset(
                 'params',
-                shape=(num_rollouts, 12),  # 12 operator parameters
+                shape=(num_rollouts, self.num_params),
                 dtype='float32',
                 compression='gzip',
                 compression_opts=4
@@ -204,7 +251,7 @@ class MNORolloutDatasetGenerator:
 
             rollouts_ds = rollouts_grp.create_dataset(
                 'mno',
-                shape=(num_rollouts, self.num_realizations, self.rollout_steps, 1, 64, 64),
+                shape=(num_rollouts, self.num_realizations, self.rollout_steps, self.num_channels, 64, 64),
                 dtype='float32',
                 compression='gzip',
                 compression_opts=4
@@ -305,58 +352,82 @@ class MNORolloutDatasetGenerator:
             batch_size: Number of parameter vectors to sample
 
         Returns:
-            Parameter tensor [B, 12]
+            Parameter tensor [B, num_params] in [0, 1] range (unit-scaled)
         """
         # Use Sobol sequence for better parameter space coverage
-        sobol_engine = torch.quasirandom.SobolEngine(dimension=12, scramble=True)
-        params_unit = sobol_engine.draw(batch_size)  # [B, 12] in [0, 1]
+        sobol_engine = torch.quasirandom.SobolEngine(dimension=self.num_params, scramble=True)
+        params_unit = sobol_engine.draw(batch_size)  # [B, num_params] in [0, 1]
 
-        # Map to parameter ranges (example ranges - adjust based on your operators)
-        # These are typical ranges for diffusion-reaction systems
-        param_ranges = torch.tensor([
-            [0.001, 0.1],   # diffusion coefficient 1
-            [0.001, 0.1],   # diffusion coefficient 2
-            [0.01, 1.0],    # reaction rate 1
-            [0.01, 1.0],    # reaction rate 2
-            [-1.0, 1.0],    # parameter 5
-            [-1.0, 1.0],    # parameter 6
-            [0.1, 2.0],     # parameter 7
-            [0.1, 2.0],     # parameter 8
-            [-0.5, 0.5],    # parameter 9
-            [-0.5, 0.5],    # parameter 10
-            [0.5, 2.0],     # parameter 11
-            [0.5, 2.0],     # parameter 12
-        ], device=self.device)
+        # Return unit-scaled parameters (matches existing dataset format)
+        # The MNO model should handle the parameter scaling internally
+        return params_unit.to(self.device)
 
-        # Linearly map [0, 1] to parameter ranges
-        params = params_unit.to(self.device) * (param_ranges[:, 1] - param_ranges[:, 0]) + param_ranges[:, 0]
+    def _sample_ic_type(self) -> tuple[str, dict]:
+        """Sample an IC type from CNO distribution.
 
-        return params
+        Uses IC_TYPE_CONFIG class constant to ensure consistency with CNO datasets.
+
+        Returns:
+            Tuple of (ic_type, config_dict)
+        """
+        rand = torch.rand(1).item()
+
+        # Weighted sampling from IC_TYPE_CONFIG
+        for threshold, ic_type, config in self.IC_TYPE_CONFIG:
+            if rand < threshold:
+                return ic_type, config
+
+        # Fallback (should never reach here if IC_TYPE_CONFIG is properly configured)
+        raise RuntimeError("IC type sampling failed - check IC_TYPE_CONFIG")
+
+    def _generate_single_ic(self) -> torch.Tensor:
+        """Generate a single initial condition sampled from CNO distribution.
+
+        Returns:
+            Single IC [C, H, W]
+        """
+        ic_type, config = self._sample_ic_type()
+
+        # Generate IC [1, C, H, W] and remove batch dimension
+        ic = self.ic_generator.generate_batch(
+            batch_size=1,
+            field_type=ic_type,
+            **config
+        )[0]  # [C, H, W]
+
+        return ic
 
     def _generate_initial_conditions(self, params: torch.Tensor) -> torch.Tensor:
-        """Generate stochastic initial conditions from parameters.
+        """Generate stochastic initial conditions matching CNO dataset distribution.
+
+        Uses exact same IC type distribution as CNO datasets (cno_50k_v3_1.yaml):
+        - 25% Gaussian Random Fields (5 variance levels: 0.25, 0.5, 1.0, 2.0, 4.0)
+        - 25% Band-limited noise (low/mid/high frequency)
+        - 25% Structured (sinusoids)
+        - 25% Localized (blobs)
 
         Args:
-            params: Parameter vectors [B, 12]
+            params: Parameter vectors [B, num_params]
 
         Returns:
             Initial conditions [B, M, C, H, W]
         """
         batch_size = params.shape[0]
 
-        # Generate M realizations per parameter set
-        # Use Gaussian random fields with parameter-dependent statistics
+        # Generate M realizations for each sample in batch
         ics_list = []
-        for _ in range(self.num_realizations):
-            # Base random field
-            ic = torch.randn(batch_size, 1, 64, 64, device=self.device)
 
-            # Apply parameter-dependent scaling (example)
-            # In practice, you might use more sophisticated IC generation
-            scale = params[:, 0:1].unsqueeze(-1).unsqueeze(-1)  # [B, 1, 1, 1]
-            ic = ic * scale
+        for m in range(self.num_realizations):
+            batch_ics = []
 
-            ics_list.append(ic.unsqueeze(1))  # [B, 1, C, H, W]
+            for b in range(batch_size):
+                # Sample IC type and generate
+                ic = self._generate_single_ic()  # [C, H, W]
+                batch_ics.append(ic)
+
+            # Stack into batch [B, C, H, W]
+            batch_ic_tensor = torch.stack(batch_ics, dim=0)
+            ics_list.append(batch_ic_tensor.unsqueeze(1))  # [B, 1, C, H, W]
 
         # Concatenate realizations: [B, M, C, H, W]
         ics = torch.cat(ics_list, dim=1)
