@@ -116,6 +116,10 @@ class VQTokenizer:
                 "group_indices must be provided or config.grouping must be set"
             )
 
+        # Normalize features if configured (AFTER grouping, as it needs group_indices)
+        if self.config.normalization.method != "none":
+            features = self._normalize_features(features)
+
         # Verify CNN pretraining if needed
         if "initial" in features:
             self._verify_cnn_pretraining()
@@ -381,10 +385,6 @@ class VQTokenizer:
 
         if N is not None:
             logger.info(f"Validated features: N={N} operators (aggregated across M realizations)")
-
-        # Normalize features if configured
-        if self.config.normalization.method != "none":
-            features = self._normalize_features(features)
 
         return features
 
