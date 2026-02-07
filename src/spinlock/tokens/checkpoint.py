@@ -4,10 +4,62 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 import torch
+from pydantic import BaseModel, Field
 
 from .config import TokenizerConfig
 
 logger = logging.getLogger(__name__)
+
+
+class TokenizerCheckpoint(BaseModel):
+    """Pydantic schema for VQTokenizer checkpoint data.
+
+    Provides type-safe access to checkpoint contents with validation.
+    """
+    model_state_dict: Dict[str, Any] = Field(
+        description="PyTorch model state dict"
+    )
+    config: TokenizerConfig = Field(
+        description="Tokenizer configuration"
+    )
+    group_indices: Dict[str, list[int]] = Field(
+        description="Feature group indices mapping"
+    )
+    normalization_stats: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Feature normalization statistics"
+    )
+    temporal_input_dim: Optional[int] = Field(
+        default=None,
+        description="Temporal feature input dimension"
+    )
+    initial_input_dim: Optional[int] = Field(
+        default=None,
+        description="Initial feature input dimension"
+    )
+    optimizer_state_dict: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optimizer state dict (training only)"
+    )
+    epoch: Optional[int] = Field(
+        default=None,
+        description="Training epoch number"
+    )
+    val_loss: Optional[float] = Field(
+        default=None,
+        description="Validation loss"
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional metadata (training history, etc.)"
+    )
+    version: str = Field(
+        default="v2",
+        description="Checkpoint format version"
+    )
+
+    class Config:
+        arbitrary_types_allowed = True  # Allow torch tensors in state_dict
 
 
 def save_checkpoint(
@@ -20,6 +72,8 @@ def save_checkpoint(
     epoch: Optional[int] = None,
     val_loss: Optional[float] = None,
     metadata: Optional[Dict] = None,
+    temporal_input_dim: Optional[int] = None,
+    initial_input_dim: Optional[int] = None,
 ):
     """Save tokenizer checkpoint in V2 format."""
     path = Path(path)
@@ -30,6 +84,8 @@ def save_checkpoint(
         'config': config.model_dump(),
         'group_indices': group_indices,
         'normalization_stats': normalization_stats,
+        'temporal_input_dim': temporal_input_dim,
+        'initial_input_dim': initial_input_dim,
         'version': 'v2',
     }
 
@@ -46,32 +102,49 @@ def save_checkpoint(
     logger.info(f"Checkpoint saved to {path}")
 
 
-def load_checkpoint(path: Path) -> Dict[str, Any]:
-    """Load tokenizer checkpoint."""
+def load_checkpoint(path: Path) -> TokenizerCheckpoint:
+    """Load tokenizer checkpoint with Pydantic validation.
+
+    Args:
+        path: Path to checkpoint file
+
+    Returns:
+        TokenizerCheckpoint with validated, type-safe data
+
+    Raises:
+        FileNotFoundError: If checkpoint doesn't exist
+        ValueError: If checkpoint version is not v2
+        ValidationError: If checkpoint data is invalid
+    """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
-    checkpoint = torch.load(path, map_location='cpu')
+    raw_checkpoint = torch.load(path, map_location='cpu', weights_only=False)
 
-    version = checkpoint.get('version', 'v1')
+    version = raw_checkpoint.get('version', 'v1')
     if version != 'v2':
         raise ValueError(
             f"Checkpoint version {version} not supported. Use V2 checkpoints only."
         )
 
-    config = TokenizerConfig(**checkpoint['config'])
+    # Parse config as TokenizerConfig
+    config = TokenizerConfig(**raw_checkpoint['config'])
 
-    return {
-        'model_state_dict': checkpoint['model_state_dict'],
-        'config': config,
-        'group_indices': checkpoint['group_indices'],
-        'normalization_stats': checkpoint.get('normalization_stats'),
-        'optimizer_state_dict': checkpoint.get('optimizer_state_dict'),
-        'epoch': checkpoint.get('epoch'),
-        'val_loss': checkpoint.get('val_loss'),
-        'metadata': checkpoint.get('metadata', {}),
-    }
+    # Build TokenizerCheckpoint with validation
+    return TokenizerCheckpoint(
+        model_state_dict=raw_checkpoint['model_state_dict'],
+        config=config,
+        group_indices=raw_checkpoint['group_indices'],
+        normalization_stats=raw_checkpoint.get('normalization_stats'),
+        temporal_input_dim=raw_checkpoint.get('temporal_input_dim'),
+        initial_input_dim=raw_checkpoint.get('initial_input_dim'),
+        optimizer_state_dict=raw_checkpoint.get('optimizer_state_dict'),
+        epoch=raw_checkpoint.get('epoch'),
+        val_loss=raw_checkpoint.get('val_loss'),
+        metadata=raw_checkpoint.get('metadata', {}),
+        version=version,
+    )
 
 
 def verify_pretrained_cnn(checkpoint_path: Path, embedding_dim: int) -> Dict:
@@ -86,7 +159,7 @@ def verify_pretrained_cnn(checkpoint_path: Path, embedding_dim: int) -> Dict:
             f"    --output {checkpoint_path}"
         )
 
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
     if 'encoder_state_dict' not in checkpoint:
         raise ValueError("Invalid CNN checkpoint: missing 'encoder_state_dict'")

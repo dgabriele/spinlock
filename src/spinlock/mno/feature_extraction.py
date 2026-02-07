@@ -1,6 +1,6 @@
-"""NOA Feature Extraction - Extract SUMMARY and TEMPORAL features from rollouts.
+"""MNO Feature Extraction - Extract SUMMARY and TEMPORAL features from rollouts.
 
-This module provides feature extraction for NOA training on real data.
+This module provides feature extraction for MNO training on real data.
 Uses the same extractors (SummaryExtractor) that generated the dataset features.
 
 Key insight:
@@ -18,7 +18,7 @@ NaN Handling:
 Documentation:
     - Feature extraction overview: docs/features/ (multiple files)
     - VQ-VAE multi-family encoders: docs/vqvae/multi-family-encoders.md
-    - NOA architecture: docs/noa-architecture.md
+    - MNO architecture: docs/MNO_ARCHITECTURE.md
 """
 
 import torch
@@ -28,14 +28,14 @@ if TYPE_CHECKING:
     from spinlock.features.preprocessing import FeaturePreprocessor
 
 
-class NOAFeatureExtractor:
-    """Extract SUMMARY and TEMPORAL features from NOA rollouts.
+class MNOFeatureExtractor:
+    """Extract SUMMARY and TEMPORAL features from MNO rollouts.
 
     Uses SummaryExtractor internally - this is the SAME extractor that generated
     the dataset features, ensuring compatibility.
 
     Architecture:
-        NOA rollout [B, T, C, H, W] → SummaryExtractor → {
+        MNO rollout [B, T, C, H, W] → SummaryExtractor → {
             'per_timestep': [B, T, D_temporal]   → This IS TEMPORAL
             'per_trajectory': [B, M, D_summary]  → This IS SUMMARY (per realization)
         } → FeaturePreprocessor (if provided) → {
@@ -50,7 +50,7 @@ class NOAFeatureExtractor:
         device: str = "cuda",
         preprocessor: Optional['FeaturePreprocessor'] = None,
     ):
-        """Initialize NOA feature extractor.
+        """Initialize MNO feature extractor.
 
         Args:
             device: Computation device
@@ -87,10 +87,10 @@ class NOAFeatureExtractor:
         rollouts: torch.Tensor,
         return_raw: bool = False,
     ) -> Dict[str, torch.Tensor]:
-        """Extract SUMMARY and TEMPORAL features from NOA rollouts.
+        """Extract SUMMARY and TEMPORAL features from MNO rollouts.
 
         Args:
-            rollouts: NOA output [B, T, C, H, W] or [B, M, T, C, H, W] for multi-realization
+            rollouts: MNO output [B, T, C, H, W] or [B, M, T, C, H, W] for multi-realization
             return_raw: If True, also return raw extractor outputs
 
         Returns:
@@ -127,7 +127,7 @@ class NOAFeatureExtractor:
 
         # Apply preprocessing if provided (clean NaN features)
         if self.preprocessor is not None:
-            # Use 'summary_per_trajectory' since NOA extracts per single trajectory (M=1)
+            # Use 'summary_per_trajectory' since MNO extracts per single trajectory (M=1)
             summary_features = self.preprocessor.clean_features(
                 summary_features, 'summary_per_trajectory'
             )

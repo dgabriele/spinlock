@@ -588,4 +588,6 @@ class VQTokenizerTrainer:
             epoch=epoch,
             val_loss=val_loss,
             metadata={'training_history': self.training_history},
+            temporal_input_dim=self.model.temporal_input_dim,
+            initial_input_dim=self.model.initial_input_dim,
         )

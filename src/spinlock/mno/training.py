@@ -468,7 +468,7 @@ class NOARealDataTrainer:
     """Trainer for NOA Phase 1 on real data with proper feature extraction.
 
     Uses:
-    - NOAFeatureExtractor (SummaryExtractor internally) for feature extraction
+    - MNOFeatureExtractor (SummaryExtractor internally) for feature extraction
     - NOARealDataset for ground-truth features from HDF5
     - SUMMARY + TEMPORAL MSE losses
 
@@ -476,7 +476,7 @@ class NOARealDataTrainer:
 
     Args:
         noa: NOA backbone model
-        feature_extractor: NOAFeatureExtractor instance (or created automatically)
+        feature_extractor: MNOFeatureExtractor instance (or created automatically)
         summary_weight: Weight for SUMMARY MSE loss
         temporal_weight: Weight for TEMPORAL MSE loss
         learning_rate: Learning rate for optimizer
@@ -484,7 +484,7 @@ class NOARealDataTrainer:
         device: Device to train on
 
     Example:
-        >>> from spinlock.mno import NOABackbone, NOARealDataset, NOAFeatureExtractor
+        >>> from spinlock.mno import NOABackbone, NOARealDataset, MNOFeatureExtractor
         >>> noa = NOABackbone(in_channels=1, out_channels=1, base_channels=32)
         >>> dataset = NOARealDataset("datasets/100k_full_features.h5", n_samples=1000)
         >>> trainer = NOARealDataTrainer(noa, device="cuda")
@@ -494,20 +494,20 @@ class NOARealDataTrainer:
     def __init__(
         self,
         noa: NOABackbone,
-        feature_extractor: Optional["NOAFeatureExtractor"] = None,
+        feature_extractor: Optional["MNOFeatureExtractor"] = None,
         summary_weight: float = 1.0,
         temporal_weight: float = 1.0,
         learning_rate: float = 1e-4,
         weight_decay: float = 0.01,
         device: str = "cuda",
     ):
-        from .feature_extraction import NOAFeatureExtractor
+        from .feature_extraction import MNOFeatureExtractor
 
         self.device = device
         self.noa = noa.to(device)
 
         # Create feature extractor if not provided
-        self.feature_extractor = feature_extractor or NOAFeatureExtractor(device=device)
+        self.feature_extractor = feature_extractor or MNOFeatureExtractor(device=device)
 
         self.summary_weight = summary_weight
         self.temporal_weight = temporal_weight

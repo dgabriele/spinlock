@@ -164,7 +164,7 @@ class EpisodeRunner:
                 if extract_features_fn is not None:
                     features = extract_features_fn(u_current)
                 else:
-                    # TODO: Integrate with NOAFeatureExtractor for per-timestep extraction
+                    # TODO: Integrate with MNOFeatureExtractor for per-timestep extraction
                     # For now, extract_features_fn must be provided by caller
                     raise NotImplementedError(
                         "extract_features_fn must be provided. "

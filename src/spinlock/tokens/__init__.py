@@ -39,7 +39,12 @@ from .model import JointHierarchicalVQVAE
 from .trainer import VQTokenizerTrainer
 from .losses import VQVAELoss
 
-from .checkpoint import save_checkpoint, load_checkpoint, verify_pretrained_cnn
+from .checkpoint import (
+    save_checkpoint,
+    load_checkpoint,
+    verify_pretrained_cnn,
+    TokenizerCheckpoint,
+)
 
 from .pretraining import CNNPretrainer
 
@@ -68,6 +73,7 @@ __all__ = [
     "save_checkpoint",
     "load_checkpoint",
     "verify_pretrained_cnn",
+    "TokenizerCheckpoint",
 
     # Pretraining
     "CNNPretrainer",

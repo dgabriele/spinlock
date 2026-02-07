@@ -233,13 +233,21 @@ class VQTokenizer:
 
         checkpoint = load_checkpoint(checkpoint_path)
 
-        config = checkpoint['config']
-        group_indices = checkpoint['group_indices']
-        normalization_stats = checkpoint.get('normalization_stats')
+        # Type-safe access via Pydantic schema
+        config = checkpoint.config
+        group_indices = checkpoint.group_indices
+        normalization_stats = checkpoint.normalization_stats
+        temporal_input_dim = checkpoint.temporal_input_dim
+        initial_input_dim = checkpoint.initial_input_dim
 
-        # Create model
-        model = JointHierarchicalVQVAE(config, group_indices)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        # Create model with saved dimensions
+        model = JointHierarchicalVQVAE(
+            config,
+            group_indices,
+            temporal_input_dim=temporal_input_dim,
+            initial_input_dim=initial_input_dim,
+        )
+        model.load_state_dict(checkpoint.model_state_dict)
         model.eval()
 
         # Create tokenizer

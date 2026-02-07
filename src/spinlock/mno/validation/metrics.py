@@ -1,6 +1,6 @@
 """Metrics computation for MNO-VQ-VAE validation."""
 
-from typing import Dict
+from typing import Dict, Union
 import torch
 import numpy as np
 
@@ -12,7 +12,7 @@ class ValidationMetrics:
     def compute(
         features_original: torch.Tensor,
         features_reconstructed: torch.Tensor,
-        tokens: torch.Tensor,
+        tokens: Union[torch.Tensor, Dict[str, torch.Tensor]],
         cno_baseline_error: float,
         config
     ) -> Dict[str, float]:
@@ -22,7 +22,7 @@ class ValidationMetrics:
         Args:
             features_original: [N, D] Original MNO features
             features_reconstructed: [N, D] Reconstructed features from tokens
-            tokens: [N, T] Token indices
+            tokens: Token indices - either [N, T] tensor (V1) or dict of tensors (V2)
             cno_baseline_error: CNO reconstruction error from VQ-VAE training
             config: ValidationConfig
 
@@ -70,9 +70,16 @@ class ValidationMetrics:
         metrics['mean_correlation'] = np.mean(correlations) if correlations else 0.0
         metrics['median_correlation'] = np.median(correlations) if correlations else 0.0
 
-        # Token statistics
-        metrics['unique_tokens'] = len(torch.unique(tokens))
-        metrics['token_entropy'] = ValidationMetrics._compute_token_entropy(tokens)
+        # Token statistics (handle both V1 tensor and V2 dict formats)
+        if isinstance(tokens, dict):
+            # V2 format: concatenate all token indices
+            all_tokens = torch.cat([t.flatten() for t in tokens.values()])
+            metrics['unique_tokens'] = len(torch.unique(all_tokens))
+            metrics['token_entropy'] = ValidationMetrics._compute_token_entropy(all_tokens)
+        else:
+            # V1 format: single tensor
+            metrics['unique_tokens'] = len(torch.unique(tokens))
+            metrics['token_entropy'] = ValidationMetrics._compute_token_entropy(tokens)
 
         # Per-level token accuracy (placeholder for future ground truth comparison)
         metrics['per_level_token_accuracy'] = {}
@@ -85,16 +92,17 @@ class ValidationMetrics:
         Compute Shannon entropy of token distribution.
 
         Args:
-            tokens: [N, T] Token indices
+            tokens: Token indices (already flattened or [N, T] to be flattened)
 
         Returns:
             Shannon entropy in bits
         """
-        # Flatten all tokens
-        tokens_flat = tokens.flatten()
+        # Flatten if needed
+        if tokens.ndim > 1:
+            tokens = tokens.flatten()
 
         # Count occurrences
-        unique, counts = torch.unique(tokens_flat, return_counts=True)
+        unique, counts = torch.unique(tokens, return_counts=True)
         probs = counts.float() / counts.sum()
 
         # Shannon entropy

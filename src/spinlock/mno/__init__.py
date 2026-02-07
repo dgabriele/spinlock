@@ -1,6 +1,6 @@
-"""NOA (Neural Operator Agent) - Neural Operator Agent Implementation.
+"""MNO (Meta Neural Operator) - Neural Operator Implementation.
 
-This module implements the NOA architecture with two training paradigms:
+This module implements the MNO architecture with two training paradigms:
 
 MSE-led (Physics First):
     - Trajectory matching (L_traj) as primary loss
@@ -36,7 +36,7 @@ from .losses import MSELedLoss, VQLedLoss
 from .perceptual_losses import VQVAEPerceptualLoss, FeatureProjector, NOALoss
 
 # Feature extraction
-from .feature_extraction import NOAFeatureExtractor
+from .feature_extraction import MNOFeatureExtractor
 
 # Datasets
 from .dataset import NOARealDataset, NOARealDatasetStreaming
@@ -68,7 +68,7 @@ __all__ = [
     "MSELedLoss",
     "VQLedLoss",
     # Feature extraction (real data)
-    "NOAFeatureExtractor",
+    "MNOFeatureExtractor",
     # Datasets
     "NOARealDataset",
     "NOARealDatasetStreaming",
