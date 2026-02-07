@@ -114,7 +114,7 @@ class JointHierarchicalVQVAE(nn.Module):
             for level_idx in range(num_levels):
                 quantizer_key = f"{family_cat}_L{level_idx}"
                 latent_dim = self._get_latent_dim(family_cat, level_idx)
-                num_embeddings = self._get_num_embeddings(latent_dim)  # Adaptive!
+                num_embeddings = self._get_num_embeddings(family_cat, level_idx)  # Adaptive!
 
                 self.quantizers[quantizer_key] = VectorQuantizer(
                     num_embeddings=num_embeddings,
@@ -255,63 +255,106 @@ class JointHierarchicalVQVAE(nn.Module):
             dropout=config.encoder.dropout,
         )
 
-    def _get_latent_dim(self, family_cat: str, level_idx: int) -> int:
-        """Compute latent dimension for a family-category-level.
+    def _get_latent_dim(self, family_cat: str, level_idx: int, n_samples: int = 50000) -> int:
+        """Compute latent dimension using v1's adaptive formula.
 
-        Uses compression ratios to scale based on feature count.
+        Formula: latent_dim = category_size × base_expansion × level_multiplier × token_factor
 
         Args:
             family_cat: Family-category key
             level_idx: Hierarchy level index
+            n_samples: Number of samples in dataset
 
         Returns:
             Latent dimension for this level
         """
-        config = self.config.hierarchy
+        import numpy as np
+
         category_feature_count = len(self.group_indices[family_cat])
 
-        # Parse compression ratios
-        ratios = [float(r) for r in config.compression_ratios.split(':')]
-        if level_idx >= len(ratios):
-            raise ValueError(
-                f"Level {level_idx} exceeds compression_ratios length {len(ratios)}"
-            )
+        # Compute num_tokens for this level (needed for token_factor)
+        num_tokens = self._get_num_embeddings(family_cat, level_idx, n_samples)
 
-        # Compute latent dim
-        latent_dim = int(category_feature_count * ratios[level_idx])
+        # Adaptive expansion based on category size
+        # V1 formula: 1.0 + 0.8 * ((dim / 100.0) ** 0.7)
+        base_expansion = 1.0 + 0.8 * ((category_feature_count / 100.0) ** 0.7)
 
-        # Clamp to min/max
-        latent_dim = max(config.min_latent_dim, latent_dim)
-        latent_dim = min(config.max_latent_dim, latent_dim)
+        # Level progression: geometric decay (L0 → L1 → L2)
+        level_multiplier = 0.5**level_idx
+
+        # Token scaling (gentle log scaling)
+        token_factor = max(1.0, np.log2(num_tokens) / 20.0)
+
+        # Compute base value
+        latent_dim_float = (
+            category_feature_count * base_expansion * level_multiplier * token_factor
+        )
+
+        # Round to multiple of 4 (GPU alignment)
+        latent_dim = int(np.ceil(latent_dim_float / 4.0)) * 4
+
+        # Dataset-aware minimum capacity (L0 only)
+        if level_idx == 0 and n_samples > 1000:
+            # Minimum scales with dataset size
+            min_latent_dim = int(np.ceil(np.log10(n_samples) * 12 / 4.0)) * 4
+            # Cap at reasonable maximum
+            min_latent_dim = min(64, max(8, min_latent_dim))
+            latent_dim = max(min_latent_dim, latent_dim)
+        else:
+            # L1 and L2: preserve standard minimum (8D)
+            latent_dim = max(8, latent_dim)
+
+        # Enforce monotonicity: ensure L0 >= L1 >= L2 (will be done after all dims computed)
+        # For now, just clamp to config limits
+        latent_dim = max(self.config.hierarchy.min_latent_dim, latent_dim)
+        latent_dim = min(self.config.hierarchy.max_latent_dim, latent_dim)
 
         return latent_dim
 
-    def _get_num_embeddings(self, latent_dim: int) -> int:
-        """Compute adaptive codebook size based on latent dimension.
+    def _get_num_embeddings(self, family_cat: str, level_idx: int, n_samples: int = 50000) -> int:
+        """Compute adaptive codebook size using v1's formula.
 
-        Scales codebook size with latent dimension to avoid overcapacity.
-        Formula based on v1: num_tokens ≈ log2(latent_dim) * 5
+        Scales codebook size with category dimension and dataset size.
+        Implements hierarchical progression: L0 > L1 > L2
 
         Args:
-            latent_dim: Latent dimension for this quantizer
+            family_cat: Family-category key (e.g., "temporal_group_1")
+            level_idx: Hierarchy level index (0, 1, 2)
+            n_samples: Number of samples in dataset (for dataset-aware minimum)
 
         Returns:
             Number of codebook embeddings (codebook size)
         """
         import numpy as np
 
-        # Base formula: scale with log of dimension
-        base_tokens = int(np.log2(max(latent_dim, 2)) * 5)
+        # Get category feature count (NOT latent_dim!)
+        category_feature_count = len(self.group_indices[family_cat])
 
-        # Round to multiple of 4 for GPU efficiency
-        num_embeddings = (base_tokens // 4) * 4
+        # Base token count scales with category capacity
+        # V1 formula: base_tokens = log2(group_embedding_dim) * 5
+        base_tokens = int(np.log2(max(category_feature_count, 2)) * 5)
 
-        # Clamp to reasonable range
-        # Min: 8 codes (enough for very small latent dims)
-        # Max: 64 codes (sufficient for 64D latent space)
-        num_embeddings = max(8, min(64, num_embeddings))
+        # L0: Apply dataset-aware minimum
+        if level_idx == 0:
+            l0_tokens_float = base_tokens * 1.0
+            l0_tokens = (int(l0_tokens_float) // 4) * 4
 
-        return num_embeddings
+            # Dataset-aware minimum (v1 formula)
+            if n_samples > 1000:
+                min_tokens = min(28, max(5, int(np.sqrt(n_samples / 1000.0) * 4.8)))
+                l0_tokens = max(min_tokens, l0_tokens)
+
+            return l0_tokens
+
+        # L1 and L2: Geometric halving with minimum
+        level_multiplier = 0.5**level_idx
+        num_tokens_float = base_tokens * level_multiplier
+        num_tokens = int(num_tokens_float)
+
+        # L1 and L2: preserve standard minimum (6)
+        num_tokens = max(6, num_tokens)
+
+        return num_tokens
 
     def forward(
         self,
