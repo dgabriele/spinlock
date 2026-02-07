@@ -259,10 +259,17 @@ Output:
         print("=" * 80)
         print("Training Complete!")
         print("=" * 80)
-        print(f"Best epoch: {history.get('best_epoch', 'N/A')}")
-        print(f"Best val loss: {history.get('best_val_loss', 'N/A'):.6f}")
-        print(f"Final train loss: {history.get('final_train_loss', 'N/A'):.6f}")
-        print(f"Final val loss: {history.get('final_val_loss', 'N/A'):.6f}")
+
+        # Format metrics with proper handling for missing values
+        best_epoch = history.get('best_epoch', 'N/A')
+        best_val = history.get('best_val_loss')
+        final_train = history.get('final_train_loss')
+        final_val = history.get('final_val_loss')
+
+        print(f"Best epoch: {best_epoch}")
+        print(f"Best val loss: {best_val:.6f}" if best_val is not None else "Best val loss: N/A")
+        print(f"Final train loss: {final_train:.6f}" if final_train is not None else "Final train loss: N/A")
+        print(f"Final val loss: {final_val:.6f}" if final_val is not None else "Final val loss: N/A")
         print(f"Checkpoints saved to: {output_dir}")
         print("=" * 80)
 
