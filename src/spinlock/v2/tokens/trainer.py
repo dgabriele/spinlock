@@ -223,7 +223,8 @@ class VQTokenizerTrainer:
                         f" | Val Loss: {val_metrics['loss']:.6f} "
                         f"(recon={val_metrics['reconstruction']:.4f}, "
                         f"vq={val_metrics['vq']:.4f}, "
-                        f"topo={val_metrics['topographic']:.4f}, "
+                        f"topo={val_metrics['topographic']:.4f} "
+                        f"[pre={val_metrics['topo_pre']:.3f}, post={val_metrics['topo_post']:.3f}], "
                         f"util={util_pct:.1f}%, avg_codes={avg_codebook_size:.1f})"
                     )
                 logger.info(log_msg)
@@ -377,6 +378,7 @@ class VQTokenizerTrainer:
                 quantized_vectors=outputs.get('encodings'),
                 token_indices=outputs.get('token_indices'),
                 codebooks=codebooks,
+                latent_vectors=outputs.get('latents'),
             )
 
             loss = losses['total']
@@ -427,6 +429,8 @@ class VQTokenizerTrainer:
         total_ortho = 0.0
         total_info = 0.0
         total_topo = 0.0
+        total_topo_pre = 0.0
+        total_topo_post = 0.0
         total_perplexity = 0.0
         num_batches = 0
 
@@ -481,6 +485,7 @@ class VQTokenizerTrainer:
                     quantized_vectors=outputs.get('encodings'),
                     token_indices=outputs.get('token_indices'),
                     codebooks=codebooks,
+                    latent_vectors=outputs.get('latents'),
                 )
 
                 # Accumulate metrics
@@ -490,6 +495,8 @@ class VQTokenizerTrainer:
                 total_ortho += losses['orthogonality'].item()
                 total_info += losses['informativeness'].item()
                 total_topo += losses['topographic'].item()
+                total_topo_pre += losses['topo_pre']
+                total_topo_post += losses['topo_post']
                 total_perplexity += outputs['perplexity'].item()
                 num_batches += 1
 
@@ -500,6 +507,8 @@ class VQTokenizerTrainer:
             'orthogonality': total_ortho / num_batches,
             'informativeness': total_info / num_batches,
             'topographic': total_topo / num_batches,
+            'topo_pre': total_topo_pre / num_batches,
+            'topo_post': total_topo_post / num_batches,
             'perplexity': total_perplexity / num_batches,
         }
 

@@ -431,6 +431,7 @@ class JointHierarchicalVQVAE(nn.Module):
         vq_losses = []
         perplexities = []
         encodings_dict = {}
+        latents_dict = {}  # Pre-quantization latent vectors
 
         for family_cat, indices in self.group_indices.items():
             family, cat_name = family_cat.split('_', 1)
@@ -446,6 +447,9 @@ class JointHierarchicalVQVAE(nn.Module):
             for level_idx, latent in enumerate(latents):
                 quantizer_key = f"{family_cat}_L{level_idx}"
                 quantizer = self.quantizers[quantizer_key]
+
+                # Save pre-quantization latent
+                latents_dict[quantizer_key] = latent
 
                 quantized, encodings, losses = quantizer(latent)
 
@@ -477,6 +481,7 @@ class JointHierarchicalVQVAE(nn.Module):
             "vq_loss": total_vq_loss,
             "perplexity": avg_perplexity,
             "encodings": encodings_dict,
+            "latents": latents_dict,  # Pre-quantization latent vectors
             "token_indices": token_indices,
             "original_encoded": all_encoded,
         }

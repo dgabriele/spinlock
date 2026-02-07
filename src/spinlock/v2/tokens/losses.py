@@ -130,42 +130,84 @@ def compute_informativeness_loss(
 
 
 def compute_topographic_loss(
+    original: torch.Tensor,
+    latent_vectors: torch.Tensor,
     quantized_vectors: torch.Tensor,
-    token_indices: torch.Tensor,
-    codebook: torch.Tensor,
-) -> torch.Tensor:
-    """Compute topographic loss for spatial organization of codebook.
+    n_samples: int = 64,
+) -> tuple[torch.Tensor, Dict[str, float]]:
+    """Compute topographic similarity loss (PRE and POST quantization).
 
-    Encourages similar latent vectors to map to nearby codebook entries,
-    creating a smooth topographic organization.
+    Preserves topology at TWO stages (matching v1 approach):
+    1. PRE-quantization: Input → Latent (encoder quality)
+    2. POST-quantization: Latent → Code (VQ quality)
 
     Args:
-        quantized_vectors: Quantized latent vectors [B, D]
-        token_indices: Selected codebook indices [B]
-        codebook: Codebook embeddings [K, D]
+        original: Original features [B, D_in]
+        latent_vectors: Pre-quantization latent vectors [B, D_latent]
+        quantized_vectors: Post-quantization vectors [B, D_latent]
+        n_samples: Number of samples for pairwise distance computation
 
     Returns:
-        Scalar topographic loss
+        Tuple of (total_loss, metrics_dict) where metrics contains:
+            - topo_pre: Pre-quantization correlation [0, 1]
+            - topo_post: Post-quantization correlation [0, 1]
     """
-    batch_size = quantized_vectors.shape[0]
-    device = quantized_vectors.device
+    batch_size = original.shape[0]
+    device = original.device
 
-    # For each sample, compute distance in latent space vs codebook index space
-    latent_dists = torch.cdist(quantized_vectors, quantized_vectors, p=2)  # [B, B]
+    if batch_size < n_samples:
+        n_samples = batch_size
 
-    # Codebook index distances (L1 distance between indices)
-    index_dists = (
-        token_indices.unsqueeze(1) - token_indices.unsqueeze(0)
-    ).abs().float()  # [B, B]
+    # Sample random indices for efficiency
+    indices = torch.randperm(batch_size, device=device)[:n_samples]
+    sampled_original = original[indices]
+    sampled_latent = latent_vectors[indices]
+    sampled_quantized = quantized_vectors[indices]
 
-    # Normalize both distances to [0, 1]
-    latent_dists = latent_dists / (latent_dists.max() + 1e-8)
-    index_dists = index_dists / (index_dists.max() + 1e-8)
+    # Compute pairwise distances in input space
+    input_dists = torch.cdist(sampled_original, sampled_original, p=2)  # [n, n]
 
-    # Penalize mismatch between latent and index distances
-    loss = F.mse_loss(latent_dists, index_dists)
+    # Compute pairwise distances in PRE-quantization latent space
+    latent_dists = torch.cdist(sampled_latent, sampled_latent, p=2)  # [n, n]
 
-    return loss
+    # Compute pairwise distances in POST-quantization space
+    quantized_dists = torch.cdist(sampled_quantized, sampled_quantized, p=2)  # [n, n]
+
+    # Flatten for correlation computation
+    input_flat = input_dists.view(-1)
+    latent_flat = latent_dists.view(-1)
+    quantized_flat = quantized_dists.view(-1)
+
+    # PRE-quantization correlation (input → latent)
+    input_mean = input_flat.mean()
+    latent_mean = latent_flat.mean()
+    input_centered = input_flat - input_mean
+    latent_centered = latent_flat - latent_mean
+
+    pre_correlation = (input_centered * latent_centered).sum() / (
+        input_centered.norm() * latent_centered.norm() + 1e-8
+    )
+
+    # POST-quantization correlation (latent → quantized)
+    quantized_mean = quantized_flat.mean()
+    quantized_centered = quantized_flat - quantized_mean
+
+    post_correlation = (latent_centered * quantized_centered).sum() / (
+        latent_centered.norm() * quantized_centered.norm() + 1e-8
+    )
+
+    # Total loss: penalize low correlation (correlation in [0, 1], loss in [0, 2])
+    # Higher correlation = better topology preservation
+    pre_loss = 1.0 - pre_correlation
+    post_loss = 1.0 - post_correlation
+    total_loss = (pre_loss + post_loss) / 2.0
+
+    metrics = {
+        'topo_pre': pre_correlation.item(),
+        'topo_post': post_correlation.item(),
+    }
+
+    return total_loss, metrics
 
 
 class VQVAELoss:
@@ -194,6 +236,7 @@ class VQVAELoss:
         quantized_vectors: Optional[Dict[str, torch.Tensor]] = None,
         token_indices: Optional[Dict[str, torch.Tensor]] = None,
         codebooks: Optional[Dict[str, torch.Tensor]] = None,
+        latent_vectors: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
         """Compute total VQ-VAE loss.
 
@@ -205,6 +248,7 @@ class VQVAELoss:
             quantized_vectors: Optional dict of quantized vectors per category
             token_indices: Optional dict of token indices per category
             codebooks: Optional dict of codebook tensors per category
+            latent_vectors: Optional dict of pre-quantization latent vectors per category
 
         Returns:
             Dict with keys:
@@ -214,6 +258,8 @@ class VQVAELoss:
                 - orthogonality: Orthogonality loss component
                 - informativeness: Informativeness loss component
                 - topographic: Topographic loss component (if enabled)
+                - topo_pre: Pre-quantization correlation (if topographic enabled)
+                - topo_post: Post-quantization correlation (if topographic enabled)
         """
         # 1. Reconstruction loss
         recon_loss = compute_reconstruction_loss(
@@ -231,19 +277,36 @@ class VQVAELoss:
 
         # 5. Topographic loss (optional)
         topo_loss = torch.tensor(0.0, device=original.device)
+        topo_pre_corr = 0.0
+        topo_post_corr = 0.0
+
         if self.config.topographic_weight > 0:
-            if quantized_vectors and token_indices and codebooks:
-                topo_losses = []
-                for cat in quantized_vectors.keys():
-                    topo_losses.append(
-                        compute_topographic_loss(
-                            quantized_vectors[cat],
-                            token_indices[cat],
-                            codebooks[cat],
-                        )
+            if quantized_vectors and latent_vectors:
+                # Aggregate all categories' features for topology computation
+                # Concatenate along feature dimension to get full representation
+                all_latent = []
+                all_quantized = []
+
+                for cat in sorted(quantized_vectors.keys()):
+                    if cat in latent_vectors and cat in quantized_vectors:
+                        all_latent.append(latent_vectors[cat])
+                        all_quantized.append(quantized_vectors[cat])
+
+                if all_latent and all_quantized:
+                    # Concatenate to form full latent and quantized representations
+                    full_latent = torch.cat(all_latent, dim=1)  # [B, total_latent_dim]
+                    full_quantized = torch.cat(all_quantized, dim=1)  # [B, total_latent_dim]
+
+                    # Compute topographic loss with PRE and POST correlations
+                    topo_loss, topo_metrics = compute_topographic_loss(
+                        original=original,
+                        latent_vectors=full_latent,
+                        quantized_vectors=full_quantized,
+                        n_samples=64,
                     )
-                if topo_losses:
-                    topo_loss = torch.stack(topo_losses).mean()
+
+                    topo_pre_corr = topo_metrics['topo_pre']
+                    topo_post_corr = topo_metrics['topo_post']
 
         # Weighted combination
         total_loss = (
@@ -261,4 +324,6 @@ class VQVAELoss:
             "orthogonality": ortho_loss,
             "informativeness": info_loss,
             "topographic": topo_loss,
+            "topo_pre": topo_pre_corr,
+            "topo_post": topo_post_corr,
         }
