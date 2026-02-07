@@ -15,44 +15,65 @@ logger = logging.getLogger(__name__)
 
 
 class CNNDecoder(nn.Module):
-    """Decoder for CNN autoencoder.
+    """Adaptive decoder for CNN autoencoder.
 
-    Mirrors the InitialCNNEncoder architecture in reverse to reconstruct
-    the input initial conditions from the embedding.
+    Dynamically builds upsampling layers to match the encoder's downsampling,
+    mirroring the InitialCNNEncoder architecture in reverse.
 
     Args:
         embedding_dim: Input embedding dimension
-        out_channels: Output channels (default: 1 for grayscale ICs)
+        out_channels: Output channels
+        spatial_size: Output spatial size (must be power of 2, e.g., 32, 64, 128, 256)
     """
 
-    def __init__(self, embedding_dim: int, out_channels: int = 1):
+    def __init__(self, embedding_dim: int, out_channels: int, spatial_size: int):
         super().__init__()
 
-        # Reverse of InitialCNNEncoder
-        # Start from [B, embedding_dim] → [B, 256, 1, 1]
+        # Validate spatial_size is power of 2 and reasonable
+        import math
+        if spatial_size & (spatial_size - 1) != 0 or spatial_size < 16:
+            raise ValueError(f"spatial_size must be power of 2 and >= 16, got {spatial_size}")
+
+        self.spatial_size = spatial_size
+        self.out_channels = out_channels
+
+        # Project embedding to initial spatial feature map
         self.fc = nn.Linear(embedding_dim, 256)
 
-        # Spatial upsampling path
-        # [B, 256, 1, 1] → [B, 128, 4, 4] → [B, 64, 16, 16] → [B, 32, 64, 64] → [B, out_ch, 128, 128]
-        self.upsample = nn.Sequential(
-            # Stage 1: 1×1 → 4×4
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=4, padding=0, bias=False),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
+        # Calculate number of upsampling stages needed
+        # InitialCNNEncoder does: 4 stages of stride-2 downsampling = 16x reduction
+        # So we need log2(spatial_size/4) upsampling stages to reach target size
+        # Start from 4x4 and upsample to spatial_size
+        num_stages = int(math.log2(spatial_size // 4))
 
-            # Stage 2: 4×4 → 16×16
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=4, padding=0, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
+        # Build dynamic upsampling path
+        layers = []
+        in_ch = 256
+        current_size = 4
 
-            # Stage 3: 16×16 → 64×64
-            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=4, padding=0, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
+        # Channel progression (mirrors encoder in reverse): 256 → 128 → 64 → 32 → ...
+        channel_progression = [256, 128, 64, 32, 16]
 
-            # Stage 4: 64×64 → 128×128
-            nn.ConvTranspose2d(32, out_channels, kernel_size=3, stride=2, padding=1, output_padding=1, bias=True),
-        )
+        for stage in range(num_stages):
+            out_ch = channel_progression[min(stage + 1, len(channel_progression) - 1)]
+
+            # Last stage outputs to target channels
+            if stage == num_stages - 1:
+                out_ch = out_channels
+                layers.append(
+                    nn.ConvTranspose2d(in_ch, out_ch, kernel_size=4, stride=4, padding=0, bias=True)
+                )
+            else:
+                layers.extend([
+                    nn.ConvTranspose2d(in_ch, out_ch, kernel_size=4, stride=4, padding=0, bias=False),
+                    nn.BatchNorm2d(out_ch),
+                    nn.ReLU(inplace=True),
+                ])
+
+            in_ch = out_ch
+            current_size *= 4
+
+        self.upsample = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Decode embedding to image.
@@ -61,11 +82,16 @@ class CNNDecoder(nn.Module):
             x: Embedding [B, embedding_dim]
 
         Returns:
-            Reconstructed image [B, out_channels, 128, 128]
+            Reconstructed image [B, out_channels, spatial_size, spatial_size]
         """
         h = self.fc(x)  # [B, 256]
         h = h.view(-1, 256, 1, 1)  # [B, 256, 1, 1]
-        h = self.upsample(h)  # [B, out_channels, 128, 128]
+
+        # Initial 4x4 spatial expansion
+        h = nn.functional.interpolate(h, size=4, mode='nearest')  # [B, 256, 4, 4]
+
+        # Upsample to target size
+        h = self.upsample(h)  # [B, out_channels, spatial_size, spatial_size]
         return h
 
 
@@ -84,7 +110,7 @@ class CNNPretrainer:
         >>> pretrainer.train(ics, output_path="cnn_pretrained.pt")
     """
 
-    def __init__(self, config: PretrainingConfig):
+    def __init__(self, config: PretrainingConfig, in_channels: Optional[int] = None, spatial_size: int = 64):
         self.config = config
 
         # Determine device
@@ -93,16 +119,21 @@ class CNNPretrainer:
         else:
             self.device = torch.device(config.device)
 
+        # Use runtime-detected in_channels if provided, otherwise fall back to config
+        self.in_channels = in_channels if in_channels is not None else config.in_channels
+        self.spatial_size = spatial_size
+
         # Create encoder and decoder
         self.encoder = InitialCNNEncoder(
             embedding_dim=config.embedding_dim,
-            in_channels=config.in_channels,
+            in_channels=self.in_channels,
             use_final_batchnorm=config.use_final_batchnorm,
         ).to(self.device)
 
         self.decoder = CNNDecoder(
             embedding_dim=config.embedding_dim,
-            out_channels=config.in_channels,
+            out_channels=self.in_channels,
+            spatial_size=self.spatial_size,
         ).to(self.device)
 
         # Loss function

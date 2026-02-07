@@ -5,11 +5,11 @@
 # in the V2 VQ tokenizer.
 
 # Dataset
-dataset_path: "datasets/cno_50k_v3_1.h5"
+dataset_path: "datasets/50k_baseline.h5"
 
 # Model architecture
 embedding_dim: 256        # CNN output dimension (will be used in hybrid encoder)
-in_channels: 1            # Grayscale initial conditions
+in_channels: 1            # Default (will be auto-detected at runtime from data)
 use_final_batchnorm: false  # Better variance preservation without final BN
 
 # Training
