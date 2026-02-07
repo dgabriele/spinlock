@@ -9,6 +9,13 @@ This module handles:
 - Feature extraction (temporal + initial)
 - HDF5 saving with checkpointing for long runs
 
+TODO (Post-Task 4): Refactor to properly reuse DatasetGenerationPipeline components
+    - Import SummaryExtractor for features (currently using MNOFeatureExtractor)
+    - Import LocalHDF5Backend for storage (currently manual HDF5)
+    - Keep InputFieldGenerator for ICs (already done)
+    - Ensures 100% identical structure to CNO datasets
+    See: /tmp/mno_dataset_refactor_plan.md
+
 Architecture:
     MNORolloutDatasetGenerator:
         - Loads trained MNO checkpoint
