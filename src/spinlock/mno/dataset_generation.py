@@ -427,8 +427,13 @@ class MNORolloutDatasetGenerator:
         # Group by IC type for batched generation
         type_groups = {}
         for idx, (ic_type, config) in enumerate(ic_types_and_configs):
-            # Use tuple of config items for hashable key
-            config_key = (ic_type, tuple(sorted(config.items())))
+            # Use tuple of config items for hashable key (convert lists to tuples)
+            config_items = []
+            for k, v in sorted(config.items()):
+                if isinstance(v, list):
+                    v = tuple(v)  # Convert lists to tuples for hashing
+                config_items.append((k, v))
+            config_key = (ic_type, tuple(config_items))
             if config_key not in type_groups:
                 type_groups[config_key] = []
             type_groups[config_key].append(idx)

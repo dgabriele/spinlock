@@ -138,9 +138,9 @@ Examples:
         parser.add_argument(
             "--batch-size",
             type=int,
-            default=128,
+            default=16,
             metavar="N",
-            help="Batch size for generation (default: 128)",
+            help="Batch size for generation (default: 16, CNO uses 4)",
         )
 
         # Generation parameters
