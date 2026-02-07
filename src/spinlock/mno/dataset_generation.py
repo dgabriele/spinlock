@@ -148,6 +148,10 @@ class MNORolloutDatasetGenerator:
         self.mno = load_mno_checkpoint(str(mno_checkpoint), device=str(device))
         self.mno.eval()
 
+        # Compile MNO for faster generation
+        print("Compiling MNO model (first batch will be slow)...")
+        self.mno = torch.compile(self.mno, mode='default')
+
         # Initialize feature extractors
         print("Initializing feature extractors...")
         self.temporal_extractor = MNOFeatureExtractor(device=str(device))
