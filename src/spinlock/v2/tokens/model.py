@@ -468,12 +468,16 @@ class JointHierarchicalVQVAE(nn.Module):
         total_vq_loss = torch.stack(vq_losses).mean()
         avg_perplexity = torch.stack(perplexities).mean()
 
+        # Extract token indices for topographic loss
+        token_indices = self._get_token_indices(encodings_dict)
+
         return {
             "reconstructed": reconstructed,
             "quantized": all_quantized_cat,
             "vq_loss": total_vq_loss,
             "perplexity": avg_perplexity,
             "encodings": encodings_dict,
+            "token_indices": token_indices,
             "original_encoded": all_encoded,
         }
 
@@ -519,3 +523,26 @@ class JointHierarchicalVQVAE(nn.Module):
             tokens[quantizer_key] = token_indices
 
         return tokens
+
+    def _get_token_indices(self, encodings: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Extract token indices from quantized encodings.
+
+        Args:
+            encodings: Dict mapping quantizer_key → quantized vectors [B, latent_dim]
+
+        Returns:
+            Dict mapping quantizer_key → token indices [B]
+        """
+        token_indices = {}
+        for quantizer_key, quantizer in self.quantizers.items():
+            quantized = encodings[quantizer_key]
+            # Find nearest codebook entry
+            distances = torch.cdist(
+                quantized,
+                quantizer.embeddings.weight,
+                p=2.0
+            )
+            indices = distances.argmin(dim=1)  # [B]
+            token_indices[quantizer_key] = indices
+
+        return token_indices

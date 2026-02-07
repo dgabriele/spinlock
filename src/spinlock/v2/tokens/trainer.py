@@ -223,6 +223,7 @@ class VQTokenizerTrainer:
                         f" | Val Loss: {val_metrics['loss']:.6f} "
                         f"(recon={val_metrics['reconstruction']:.4f}, "
                         f"vq={val_metrics['vq']:.4f}, "
+                        f"topo={val_metrics['topographic']:.4f}, "
                         f"util={util_pct:.1f}%, avg_codes={avg_codebook_size:.1f})"
                     )
                 logger.info(log_msg)
@@ -362,11 +363,20 @@ class VQTokenizerTrainer:
             category_embeddings = self._extract_category_embeddings(outputs)
 
             # Compute loss
+            # Extract codebooks for topographic loss
+            codebooks = {
+                key: quantizer.embeddings.weight
+                for key, quantizer in self.model.quantizers.items()
+            }
+
             losses = self.loss_fn(
                 original=outputs['original_encoded'],
                 reconstructed=outputs['reconstructed'],
                 vq_loss=outputs['vq_loss'],
                 category_embeddings=category_embeddings,
+                quantized_vectors=outputs.get('encodings'),
+                token_indices=outputs.get('token_indices'),
+                codebooks=codebooks,
             )
 
             loss = losses['total']
@@ -416,6 +426,7 @@ class VQTokenizerTrainer:
         total_vq = 0.0
         total_ortho = 0.0
         total_info = 0.0
+        total_topo = 0.0
         total_perplexity = 0.0
         num_batches = 0
 
@@ -456,11 +467,20 @@ class VQTokenizerTrainer:
                 category_embeddings = self._extract_category_embeddings(outputs)
 
                 # Compute loss
+                # Extract codebooks for topographic loss
+                codebooks = {
+                    key: quantizer.embeddings.weight
+                    for key, quantizer in self.model.quantizers.items()
+                }
+
                 losses = self.loss_fn(
                     original=outputs['original_encoded'],
                     reconstructed=outputs['reconstructed'],
                     vq_loss=outputs['vq_loss'],
                     category_embeddings=category_embeddings,
+                    quantized_vectors=outputs.get('encodings'),
+                    token_indices=outputs.get('token_indices'),
+                    codebooks=codebooks,
                 )
 
                 # Accumulate metrics
@@ -469,6 +489,7 @@ class VQTokenizerTrainer:
                 total_vq += losses['vq'].item()
                 total_ortho += losses['orthogonality'].item()
                 total_info += losses['informativeness'].item()
+                total_topo += losses['topographic'].item()
                 total_perplexity += outputs['perplexity'].item()
                 num_batches += 1
 
@@ -478,6 +499,7 @@ class VQTokenizerTrainer:
             'vq': total_vq / num_batches,
             'orthogonality': total_ortho / num_batches,
             'informativeness': total_info / num_batches,
+            'topographic': total_topo / num_batches,
             'perplexity': total_perplexity / num_batches,
         }
 

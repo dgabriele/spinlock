@@ -145,7 +145,7 @@ loss:
   reconstruction_weight: 1.0  # Primary objective: reconstruction quality
   orthogonality_weight: 0.1  # Encourage orthogonal code embeddings
   informativeness_weight: 0.1  # Encourage informative codes
-  topographic_weight: 0.0  # Topographic organization (0=disabled)
+  topographic_weight: 0.2  # Topographic organization (preserve topology in codebook)
   normalize_reconstruction: true  # Normalize reconstruction loss
 
 # ═══════════════════════════════════════════════════════════════
