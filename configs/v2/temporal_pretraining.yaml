@@ -1,0 +1,58 @@
+# V2 Temporal Encoder Pretraining Configuration - PRODUCTION
+# Official config for pretraining PyramidTemporalEncoder via autoencoder reconstruction
+#
+# This temporal encoder will be used as the pretrained backbone for temporal features
+# in the V2 VQ tokenizer.
+#
+# FULL TRAINING: 250 epochs on 50k samples (~4-5 hours on GPU)
+# Expected final val loss: < 50 (conservative estimate based on test run trajectory)
+
+# Dataset
+dataset_path: "datasets/50k_baseline.h5"
+
+# Model architecture
+input_dim: 345                 # Temporal feature dimension (will be auto-detected at runtime from data)
+level_dims: [32, 64, 96, 128]  # Pyramid level dimensions (total: 320D output)
+downsample_factors: [1, 2, 4, 8]  # Pyramid downsample factors
+
+# Variable-length support
+variable_length: true          # Support variable-length sequences
+adaptive_pyramid: true         # Adaptive pyramid for variable lengths
+min_pyramid_length: 16         # Minimum sequence length for pyramid
+
+# Training (optimized for full run)
+num_epochs: 250                # Conservative estimate based on loss trajectory
+batch_size: 64                 # Smaller than CNN (128) due to sequences using more memory
+learning_rate: 1.0e-3          # Standard starting LR, will decay via cosine schedule
+val_split: 0.1                 # 5k validation samples
+weight_decay: 1.0e-4           # L2 regularization to prevent overfitting
+gradient_clip_norm: 1.0        # Critical for sequence models (prevents exploding gradients)
+
+# Augmentation (temporal-specific)
+use_temporal_dropout: true     # Random temporal dropout for robustness
+temporal_dropout_prob: 0.1     # 10% of valid timesteps masked (regularization)
+use_noise_injection: true      # Enable Gaussian noise for better generalization
+noise_std: 0.02                # Increased from 0.01 for stronger augmentation
+
+# Optimizer
+optimizer: "adamw"             # AdamW better with weight_decay
+
+# Learning rate scheduler
+use_scheduler: false  # Disabled - constant LR to avoid premature decay
+scheduler_type: "cosine"
+
+# Hardware
+device: "auto"                 # Will use CUDA if available
+
+# Logging
+log_every_n_epochs: 1          # Log every epoch for monitoring
+verbose: true
+
+# Output
+output_path: "checkpoints/v2/temporal_pretrained.pt"
+
+# Expected Results (based on test trajectory):
+# - Initial loss: ~300 (train), ~290 (val)
+# - Target loss: < 50 (val) after 250 epochs
+# - Checkpoint size: ~2.4 MB
+# - Training time: ~4-5 hours on CUDA GPU

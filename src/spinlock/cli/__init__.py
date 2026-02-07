@@ -24,6 +24,7 @@ from .compute_ground_truth_tokens import ComputeGroundTruthTokensCommand
 from .generate_noa_features import GenerateNOAFeaturesCommand
 from .diagnose_mno import DiagnoseMNOCommand
 from .validate_mno_vqvae import ValidateMNOVQVAECommand
+from .pretrain_temporal import PretrainTemporalCommand
 
 __all__ = [
     "CLICommand",
@@ -43,6 +44,7 @@ __all__ = [
     "GenerateNOAFeaturesCommand",
     "DiagnoseMNOCommand",
     "ValidateMNOVQVAECommand",
+    "PretrainTemporalCommand",
     "main",
 ]
 
@@ -98,6 +100,7 @@ For more help on a specific command:
         ComputeGroundTruthTokensCommand(),
         DiagnoseMNOCommand(),
         ValidateMNOVQVAECommand(),
+        PretrainTemporalCommand(),
     ]
 
     for command in commands:

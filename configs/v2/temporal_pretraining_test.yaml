@@ -1,0 +1,46 @@
+# V2 Temporal Encoder Pretraining Configuration - Test
+# Quick test config with reduced epochs
+
+# Dataset
+dataset_path: "datasets/50k_baseline.h5"
+
+# Model architecture
+input_dim: 345                 # Temporal feature dimension (will be auto-detected at runtime from data)
+level_dims: [32, 64, 96, 128]  # Pyramid level dimensions
+downsample_factors: [1, 2, 4, 8]  # Pyramid downsample factors
+
+# Variable-length support
+variable_length: true          # Support variable-length sequences
+adaptive_pyramid: true         # Adaptive pyramid for variable lengths
+min_pyramid_length: 16         # Minimum sequence length for pyramid
+
+# Training (reduced for testing)
+num_epochs: 5                  # Reduced from 100 for quick test
+batch_size: 64
+learning_rate: 1.0e-3
+val_split: 0.1
+weight_decay: 1.0e-4
+gradient_clip_norm: 1.0
+
+# Augmentation
+use_temporal_dropout: true
+temporal_dropout_prob: 0.1
+use_noise_injection: false
+noise_std: 0.01
+
+# Optimizer
+optimizer: "adamw"
+
+# Learning rate scheduler
+use_scheduler: true
+scheduler_type: "cosine"
+
+# Hardware
+device: "auto"
+
+# Logging
+log_every_n_epochs: 1
+verbose: true
+
+# Output
+output_path: "checkpoints/v2/temporal_pretrained_test.pt"
