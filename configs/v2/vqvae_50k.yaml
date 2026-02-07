@@ -149,7 +149,7 @@ loss:
 # ═══════════════════════════════════════════════════════════════
 
 normalization:
-  method: "per_category"  # Options: "per_category", "global", "none"
+  method: "none"  # Disabled - normalization reduced codebook diversity
   clip_std_multiplier: null  # Optional: clip outliers at N*std
 
 # ═══════════════════════════════════════════════════════════════
