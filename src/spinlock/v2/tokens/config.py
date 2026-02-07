@@ -129,50 +129,9 @@ class PretrainingConfig(BaseModel):
     batch_size: int = Field(default=128, ge=1)
     learning_rate: float = Field(default=1e-3, gt=0.0)
     val_split: float = Field(default=0.1, ge=0.0, le=0.5)
-    weight_decay: float = Field(default=0.0, ge=0.0)
-    use_augmentation: bool = Field(default=True, description="Random flips and rotations")
     optimizer: Literal["adam", "adamw"] = "adam"
     use_scheduler: bool = True
     scheduler_type: Literal["cosine", "step", "exponential"] = "cosine"
     device: Literal["cuda", "cpu", "auto"] = "auto"
-    log_every_n_epochs: int = Field(default=1, ge=1)
-    verbose: bool = True
-
-
-class TemporalPretrainingConfig(BaseModel):
-    """Temporal encoder pretraining configuration."""
-    # Model architecture
-    input_dim: int = Field(default=345, gt=0, description="Input feature dimension")
-    level_dims: List[int] = Field(default=[32, 64, 96, 128], description="Pyramid level dimensions")
-    downsample_factors: List[int] = Field(default=[1, 2, 4, 8], description="Pyramid downsample factors")
-
-    # Variable-length support
-    variable_length: bool = Field(default=True, description="Support variable-length sequences")
-    adaptive_pyramid: bool = Field(default=True, description="Adaptive pyramid for variable lengths")
-    min_pyramid_length: int = Field(default=16, ge=1, description="Minimum sequence length for pyramid")
-
-    # Training
-    num_epochs: int = Field(default=100, ge=1)
-    batch_size: int = Field(default=64, ge=1)
-    learning_rate: float = Field(default=1e-3, gt=0.0)
-    val_split: float = Field(default=0.1, ge=0.0, le=0.5)
-    weight_decay: float = Field(default=1e-4, ge=0.0)
-    gradient_clip_norm: Optional[float] = Field(default=1.0, gt=0.0)
-
-    # Augmentation
-    use_temporal_dropout: bool = Field(default=True, description="Random temporal dropout")
-    temporal_dropout_prob: float = Field(default=0.1, ge=0.0, le=1.0)
-    use_noise_injection: bool = Field(default=False, description="Add Gaussian noise")
-    noise_std: float = Field(default=0.01, gt=0.0)
-
-    # Optimizer
-    optimizer: Literal["adam", "adamw"] = "adamw"
-    use_scheduler: bool = True
-    scheduler_type: Literal["cosine", "step", "exponential"] = "cosine"
-
-    # Hardware
-    device: Literal["cuda", "cpu", "auto"] = "auto"
-
-    # Logging
     log_every_n_epochs: int = Field(default=1, ge=1)
     verbose: bool = True
