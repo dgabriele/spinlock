@@ -216,20 +216,9 @@ Output:
         except Exception as e:
             return self.error(f"Failed to create tokenizer: {e}")
 
-        # Resume from checkpoint if specified
+        # TODO: Add resume support later if needed
         if args.resume:
-            if not self.validate_file_exists(args.resume, "Checkpoint"):
-                return 1
-            logger.info(f"Resuming from checkpoint: {args.resume}")
-            try:
-                checkpoint = torch.load(args.resume, map_location="cpu")
-                tokenizer.load_state_dict(checkpoint["model_state_dict"])
-                start_epoch = checkpoint.get("epoch", 0) + 1
-                logger.info(f"Resumed from epoch {start_epoch}")
-            except Exception as e:
-                return self.error(f"Failed to load checkpoint: {e}")
-        else:
-            start_epoch = 0
+            logger.warning("Resume from checkpoint not yet implemented")
 
         # Determine output directory
         if args.output:
@@ -254,12 +243,11 @@ Output:
         logger.info("=" * 80)
 
         try:
-            with dataset.open():
-                history = tokenizer.train(
-                    dataset=dataset,
-                    output_dir=output_dir,
-                    start_epoch=start_epoch,
-                )
+            history = tokenizer.train(
+                dataset=dataset,
+                output_dir=output_dir,
+                checkpoint_prefix="vq_tokenizer",
+            )
         except KeyboardInterrupt:
             logger.warning("Training interrupted by user")
             return 130
