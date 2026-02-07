@@ -23,6 +23,7 @@ from .train_vq_tokenizer import TrainVQTokenizerCommand
 from .train_meta_operator import TrainMetaOperatorCommand
 from .compute_ground_truth_tokens import ComputeGroundTruthTokensCommand
 from .generate_noa_features import GenerateNOAFeaturesCommand
+from .generate_mno_dataset import GenerateMNODatasetCommand
 from .diagnose_mno import DiagnoseMNOCommand
 from .validate_mno_vqvae import ValidateMNOVQVAECommand
 
@@ -43,6 +44,7 @@ __all__ = [
     "TrainMetaOperatorCommand",
     "ComputeGroundTruthTokensCommand",
     "GenerateNOAFeaturesCommand",
+    "GenerateMNODatasetCommand",
     "DiagnoseMNOCommand",
     "ValidateMNOVQVAECommand",
     "main",
@@ -87,6 +89,7 @@ For more help on a specific command:
     commands = [
         GenerateCommand(),
         GenerateNOAFeaturesCommand(),
+        GenerateMNODatasetCommand(),
         CloudGenerateCommand(),
         InfoCommand(),
         ValidateCommand(),
