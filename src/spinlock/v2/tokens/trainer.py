@@ -473,7 +473,7 @@ class VQTokenizerTrainer:
                 # Compute loss
                 # Extract codebooks for topographic loss
                 codebooks = {
-                    key: quantizer.embeddings.weight
+                    key: quantizer.embedding.weight
                     for key, quantizer in self.model.quantizers.items()
                 }
 
