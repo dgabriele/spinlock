@@ -114,7 +114,7 @@ class JointHierarchicalVQVAE(nn.Module):
             for level_idx in range(num_levels):
                 quantizer_key = f"{family_cat}_L{level_idx}"
                 latent_dim = self._get_latent_dim(family_cat, level_idx)
-                num_embeddings = config.quantizer.num_embeddings
+                num_embeddings = self._get_num_embeddings(latent_dim)  # Adaptive!
 
                 self.quantizers[quantizer_key] = VectorQuantizer(
                     num_embeddings=num_embeddings,
@@ -285,6 +285,33 @@ class JointHierarchicalVQVAE(nn.Module):
         latent_dim = min(config.max_latent_dim, latent_dim)
 
         return latent_dim
+
+    def _get_num_embeddings(self, latent_dim: int) -> int:
+        """Compute adaptive codebook size based on latent dimension.
+
+        Scales codebook size with latent dimension to avoid overcapacity.
+        Formula based on v1: num_tokens ≈ log2(latent_dim) * 5
+
+        Args:
+            latent_dim: Latent dimension for this quantizer
+
+        Returns:
+            Number of codebook embeddings (codebook size)
+        """
+        import numpy as np
+
+        # Base formula: scale with log of dimension
+        base_tokens = int(np.log2(max(latent_dim, 2)) * 5)
+
+        # Round to multiple of 4 for GPU efficiency
+        num_embeddings = (base_tokens // 4) * 4
+
+        # Clamp to reasonable range
+        # Min: 8 codes (enough for very small latent dims)
+        # Max: 64 codes (sufficient for 64D latent space)
+        num_embeddings = max(8, min(64, num_embeddings))
+
+        return num_embeddings
 
     def forward(
         self,
