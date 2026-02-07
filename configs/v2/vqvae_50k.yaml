@@ -48,7 +48,11 @@ encoder:
 # ═══════════════════════════════════════════════════════════════
 
 quantizer:
-  num_embeddings: 512  # Codebook size (number of discrete codes)
+  # NOTE: num_embeddings (codebook size) is computed adaptively per quantizer
+  # using v1's formula: base_tokens = log2(category_size) * 5
+  # with dataset-aware minimums and hierarchical progression (L0 > L1 > L2)
+  # Do NOT specify num_embeddings in config - it will be ignored!
+
   embedding_dim: 64  # Embedding dimension (matches encoder.embedding_dim)
   commitment_cost: 0.45  # Commitment loss weight (matches v1 for better utilization)
   use_ema: true  # Use exponential moving average for codebook updates

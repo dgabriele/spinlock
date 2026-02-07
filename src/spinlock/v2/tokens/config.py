@@ -8,8 +8,16 @@ from spinlock.features.grouping.models import GroupingConfig
 
 
 class QuantizerConfig(BaseModel):
-    """Vector quantization configuration."""
-    num_embeddings: int = Field(default=512, gt=0, description="Codebook size")
+    """Vector quantization configuration.
+
+    Note: num_embeddings is computed adaptively per quantizer using v1's formula.
+    Do not specify in config - it will be ignored if provided.
+    """
+    num_embeddings: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description="Codebook size (auto-computed adaptively, do not set in config)"
+    )
     embedding_dim: int = Field(default=64, gt=0, description="Embedding dimension")
     commitment_cost: float = Field(default=0.25, ge=0.0)
     use_ema: bool = Field(default=True)
