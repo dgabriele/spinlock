@@ -1,0 +1,159 @@
+# V2 VQ Tokenizer Configuration - 50K Baseline
+#
+# Train VQ tokenizer on 50k_baseline.h5 using:
+# - Pretrained CNN encoder (checkpoints/v2/cnn_pretrained.pt)
+# - PyramidTemporalEncoder (random init, proven effective)
+#
+# Uses V2 Pydantic-based TokenizerConfig structure
+
+# ═══════════════════════════════════════════════════════════════
+# Dataset
+# ═══════════════════════════════════════════════════════════════
+
+dataset_path: "datasets/50k_baseline.h5"
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  # Initial condition encoder (CNN + optional manual features)
+  initial:
+    variant: "hybrid"  # or "cnn" for CNN-only
+    manual_dim: 42  # Manual feature dimension (if encode_manual=True)
+    cnn_embedding_dim: 256  # CNN output dimension
+    in_channels: 3  # Auto-detected from data at runtime
+    pretrained_cnn_path: "checkpoints/v2/cnn_pretrained.pt"  # USE PRETRAINED!
+    use_final_batchnorm: false
+    encode_manual: false  # Set to true to include manual features
+
+  # Temporal encoder (PyramidTemporalEncoder)
+  temporal:
+    variant: "pyramid"
+    level_dims: [32, 64, 96, 128]  # Pyramid level dimensions (total: 320D)
+    downsample_factors: [1, 2, 4, 8]  # Pyramid downsample factors
+    variable_length: true  # Support variable-length trajectories
+    min_timesteps: 16
+    max_timesteps: 256
+    adaptive_pyramid: true  # Adapt pyramid to sequence length
+
+  # Projection layers
+  embedding_dim: 64  # Target embedding dimension per feature
+  hidden_dim: 128  # Hidden dimension for projection
+  dropout: 0.1  # Dropout probability
+  use_layer_norm: true  # Use layer normalization
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer Configuration
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  num_embeddings: 512  # Codebook size (number of discrete codes)
+  embedding_dim: 64  # Embedding dimension (matches encoder.embedding_dim)
+  commitment_cost: 0.25  # Commitment loss weight
+  use_ema: true  # Use exponential moving average for codebook updates
+  ema_decay: 0.99  # EMA decay rate
+  epsilon: 1.0e-5  # Small constant for numerical stability
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchical Quantization Configuration
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3  # Number of hierarchical levels
+  compression_ratios: "0.5:1.0:1.5"  # Compression ratios per level
+  min_latent_dim: 4  # Minimum latent dimension
+  max_latent_dim: 64  # Maximum latent dimension
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Grouping Configuration (Optional)
+# ═══════════════════════════════════════════════════════════════
+
+grouping: null  # Set to GroupingConfig if using feature grouping
+
+# ═══════════════════════════════════════════════════════════════
+# Training Configuration
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 1000
+  batch_size: 256
+  learning_rate: 0.001
+  val_split: 0.1  # 10% validation split
+  val_every_n_epochs: 5  # Validate every 5 epochs
+
+  # Optimizer
+  optimizer: "adam"
+  weight_decay: 0.0
+  gradient_clip_norm: 1.0  # Clip gradients for stability
+
+  # Learning rate scheduler
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 10
+
+  # Early stopping
+  early_stopping_patience: 50
+  early_stopping_min_delta: 0.0001
+
+  # Dead code reset
+  dead_code_reset_interval: 10  # Check every 10 epochs
+  dead_code_threshold: 0.01  # Reset codes used <1% of time
+
+  # Hardware
+  device: "auto"  # Auto-detect CUDA
+  compile_model: false  # Set to true for torch.compile optimization
+
+# ═══════════════════════════════════════════════════════════════
+# Loss Configuration
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  reconstruction_weight: 1.0  # Primary objective: reconstruction quality
+  orthogonality_weight: 0.1  # Encourage orthogonal code embeddings
+  informativeness_weight: 0.1  # Encourage informative codes
+  topographic_weight: 0.0  # Topographic organization (0=disabled)
+  normalize_reconstruction: true  # Normalize reconstruction loss
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization Configuration
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "per_category"  # Options: "per_category", "global", "none"
+  clip_std_multiplier: null  # Optional: clip outliers at N*std
+
+# ═══════════════════════════════════════════════════════════════
+# System Configuration
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 42
+verbose: true
+log_level: "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR"
+
+# ═══════════════════════════════════════════════════════════════
+# Expected Performance
+# ═══════════════════════════════════════════════════════════════
+#
+# With pretrained CNN encoder:
+#   - Initial encoder: Better initialization (1.8% pretrain error)
+#   - Temporal encoder: Random init (proven to reach 0.02 MSE)
+#   - Expected reconstruction: < 0.02 MSE (98%+ quality)
+#   - Target utilization: > 15% codebook usage
+#
+# Training command:
+#   poetry run spinlock train-vqvae --config configs/v2/vqvae_50k.yaml
+#
+# Or using V2 API:
+#   poetry run python -c "
+#   from spinlock.v2.tokens import VQTokenizer
+#   from spinlock.v2.tokens.config import TokenizerConfig
+#   import yaml
+#
+#   with open('configs/v2/vqvae_50k.yaml') as f:
+#       config_dict = yaml.safe_load(f)
+#
+#   config = TokenizerConfig(**config_dict)
+#   tokenizer = VQTokenizer(config)
+#   # ... train ...
+#   "

@@ -19,6 +19,7 @@ from .visualize_vqvae import VisualizeVQVAECommand
 from .extract_features import ExtractFeaturesCommand
 from .analyze_features import AnalyzeFeaturesCommand
 from .train_vqvae import TrainVQVAECommand
+from .train_vq_tokenizer import TrainVQTokenizerCommand
 from .train_meta_operator import TrainMetaOperatorCommand
 from .compute_ground_truth_tokens import ComputeGroundTruthTokensCommand
 from .generate_noa_features import GenerateNOAFeaturesCommand
@@ -38,6 +39,7 @@ __all__ = [
     "ExtractFeaturesCommand",
     "AnalyzeFeaturesCommand",
     "TrainVQVAECommand",
+    "TrainVQTokenizerCommand",
     "TrainMetaOperatorCommand",
     "ComputeGroundTruthTokensCommand",
     "GenerateNOAFeaturesCommand",
@@ -94,6 +96,7 @@ For more help on a specific command:
         ExtractFeaturesCommand(),
         AnalyzeFeaturesCommand(),
         TrainVQVAECommand(),
+        TrainVQTokenizerCommand(),
         TrainMetaOperatorCommand(),
         ComputeGroundTruthTokensCommand(),
         DiagnoseMNOCommand(),
