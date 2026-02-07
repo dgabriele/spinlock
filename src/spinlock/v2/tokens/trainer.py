@@ -214,12 +214,16 @@ class VQTokenizerTrainer:
                 )
                 if (epoch + 1) % self.config.training.val_every_n_epochs == 0:
                     perplexity = val_metrics['perplexity']
-                    util_pct = (perplexity / self.config.quantizer.num_embeddings) * 100
+                    # Compute average codebook size across all quantizers
+                    total_codes = sum(q.num_embeddings for q in self.model.quantizers.values())
+                    num_quantizers = len(self.model.quantizers)
+                    avg_codebook_size = total_codes / num_quantizers if num_quantizers > 0 else 1
+                    util_pct = (perplexity / avg_codebook_size) * 100
                     log_msg += (
                         f" | Val Loss: {val_metrics['loss']:.6f} "
                         f"(recon={val_metrics['reconstruction']:.4f}, "
                         f"vq={val_metrics['vq']:.4f}, "
-                        f"util={util_pct:.1f}%)"
+                        f"util={util_pct:.1f}%, avg_codes={avg_codebook_size:.1f})"
                     )
                 logger.info(log_msg)
 
