@@ -97,11 +97,10 @@ class MNORolloutDatasetGenerator:
         (0.4166, 'multiscale_grf', {'scales': [0.08, 0.10, 0.12], 'variance': 1.0}),
         (0.50, 'multiscale_grf', {'scales': [0.02, 0.025, 0.03], 'variance': 1.0}),
 
-        # Structured (sinusoids): 25%
+        # Structured (geometric patterns): 25%
         (0.75, 'structured', {
-            'num_modes': 1,
-            'wavelength_range': [8.0, 64.0],
-            'amplitude_range': [0.5, 2.0]
+            'num_structures': 5,
+            'structure_types': ["circle", "stripe", "blob"]
         }),
 
         # Localized (blobs): 25%
