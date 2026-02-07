@@ -88,7 +88,7 @@ class EpisodeRunner:
     ):
         """Initialize episode runner.
 
-        MIGRATED: Now uses V2 VQTokenizer instead of V1 CategoricalHierarchicalVQVAE.
+        MIGRATED: Now uses VQTokenizer instead of V1 CategoricalHierarchicalVQVAE.
 
         Args:
             mno: Trained Meta-Neural Operator backbone

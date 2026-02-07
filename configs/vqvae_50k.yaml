@@ -1,10 +1,10 @@
-# V2 VQ Tokenizer Configuration - 50K Baseline
+# VQ Tokenizer Configuration - 50K Baseline
 #
 # Train VQ tokenizer on 50k_baseline.h5 using:
-# - Pretrained CNN encoder (checkpoints/v2/cnn_pretrained.pt)
+# - Pretrained CNN encoder (checkpoints/cnn_pretrained.pt)
 # - PyramidTemporalEncoder (random init, proven effective)
 #
-# Uses V2 Pydantic-based TokenizerConfig structure
+# Uses Pydantic-based TokenizerConfig structure
 
 # ═══════════════════════════════════════════════════════════════
 # Dataset
@@ -23,7 +23,7 @@ encoder:
     manual_dim: 42  # Manual feature dimension (if encode_manual=True)
     cnn_embedding_dim: 384  # CNN output dimension (matches pretrained checkpoint)
     in_channels: 3  # Auto-detected from data at runtime
-    pretrained_cnn_path: "checkpoints/v2/cnn_pretrained.pt"  # USE PRETRAINED!
+    pretrained_cnn_path: "checkpoints/cnn_pretrained.pt"  # USE PRETRAINED!
     use_final_batchnorm: false
     encode_manual: false  # Set to true to include manual features
 
@@ -175,15 +175,14 @@ log_level: "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR"
 #   - Target utilization: > 15% codebook usage
 #
 # Training command:
-#   poetry run spinlock train-vqvae --config configs/v2/vqvae_50k.yaml
+#   poetry run spinlock train-vq-tokenizer --config configs/vqvae_50k.yaml
 #
-# Or using V2 API:
+# Or using Python API:
 #   poetry run python -c "
-#   from spinlock.v2.tokens import VQTokenizer
-#   from spinlock.v2.tokens.config import TokenizerConfig
+#   from spinlock.tokens import VQTokenizer, TokenizerConfig
 #   import yaml
 #
-#   with open('configs/v2/vqvae_50k.yaml') as f:
+#   with open('configs/vqvae_50k.yaml') as f:
 #       config_dict = yaml.safe_load(f)
 #
 #   config = TokenizerConfig(**config_dict)

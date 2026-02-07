@@ -2,9 +2,9 @@
 
 ### BREAKING CHANGES - V2 Migration & Package Reorganization
 
-**VQ-VAE V2 VQTokenizer is now the primary system:**
+**VQ-VAE VQTokenizer is now the primary system:**
 - V1 VQ-VAE (`CategoricalHierarchicalVQVAE`) has been removed
-- V2 VQTokenizer moved from `spinlock.v2.tokens` → `spinlock.tokens`
+- VQTokenizer moved from `spinlock.v2.tokens` → `spinlock.tokens`
 - Use `spinlock train-vq-tokenizer` command (replaces `train-vqvae`)
 - Primary configs now in `configs/` (moved from `configs/v2/`)
 - Backward compatibility shims provide deprecation warnings for old imports

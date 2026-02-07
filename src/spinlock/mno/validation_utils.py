@@ -89,7 +89,7 @@ def load_vqvae_checkpoint(
 ) -> VQTokenizer:
     """Load trained VQ-VAE from checkpoint.
 
-    MIGRATED: Now uses V2 VQTokenizer instead of V1 CategoricalHierarchicalVQVAE.
+    MIGRATED: Now uses VQTokenizer instead of V1 CategoricalHierarchicalVQVAE.
 
     Args:
         checkpoint_path: Path to VQ-VAE checkpoint (.pt file)
@@ -111,7 +111,7 @@ def load_vqvae_checkpoint(
     # Quick check for V1 vs V2 checkpoint format
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
-    # V2 checkpoints have 'tokenizer_version' or use TokenizerConfig
+    # VQTokenizer checkpoints have 'tokenizer_version' or use TokenizerConfig
     is_v2 = (
         "tokenizer_version" in checkpoint or
         (isinstance(checkpoint.get("config"), dict) and
@@ -123,10 +123,10 @@ def load_vqvae_checkpoint(
             f"V1 VQ-VAE checkpoint format is no longer supported.\n"
             f"Checkpoint: {checkpoint_path}\n"
             f"\n"
-            f"Please retrain using the V2 VQTokenizer system:\n"
+            f"Please retrain using the VQTokenizer system:\n"
             f"  poetry run spinlock train-vq-tokenizer --config configs/vqvae_50k.yaml\n"
             f"\n"
-            f"V1 checkpoints (CategoricalHierarchicalVQVAE) were removed in the V2 migration."
+            f"V1 checkpoints (CategoricalHierarchicalVQVAE) are no longer supported."
         )
 
     # Load using VQTokenizer
@@ -239,7 +239,7 @@ def sample_initial_condition(
 def get_vqvae_num_categories_and_levels(vqvae: VQTokenizer) -> Tuple[int, int]:
     """Get number of categories and levels from VQTokenizer model.
 
-    MIGRATED: Now works with V2 VQTokenizer instead of V1 CategoricalHierarchicalVQVAE.
+    MIGRATED: Now works with VQTokenizer instead of V1 CategoricalHierarchicalVQVAE.
 
     Args:
         vqvae: VQTokenizer instance

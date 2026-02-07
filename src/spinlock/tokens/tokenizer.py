@@ -11,7 +11,7 @@ from typing import Dict, Optional, Any, Union
 import torch
 import numpy as np
 
-from spinlock.v2.data import SpinlockDataset
+from spinlock.data import SpinlockDataset
 from spinlock.features.grouping import create_grouper, GroupingConfig
 from spinlock.encoding.normalization import (
     compute_normalization_stats,

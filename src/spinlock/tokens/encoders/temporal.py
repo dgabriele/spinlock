@@ -1,6 +1,6 @@
-"""Temporal feature encoders for V2 tokenizer.
+"""Temporal feature encoders for tokenizer.
 
-Re-exports V1 temporal encoders for use in V2 tokens package.
+Re-exports V1 temporal encoders for use in tokens package.
 These encoders are well-designed and tested, no need to reimplement.
 
 Available encoders:

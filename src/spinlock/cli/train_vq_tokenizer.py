@@ -1,7 +1,7 @@
 """
-Train VQ Tokenizer command for Spinlock CLI (V2 system).
+Train VQ Tokenizer command for Spinlock CLI (system).
 
-Trains VQ tokenizer using the V2 Pydantic-based configuration system.
+Trains VQ tokenizer using the Pydantic-based configuration system.
 """
 
 from argparse import ArgumentParser, Namespace
@@ -14,7 +14,7 @@ from .base import CLICommand
 
 class TrainVQTokenizerCommand(CLICommand):
     """
-    Command to train VQ tokenizer using V2 configuration system.
+    Command to train VQ tokenizer using configuration system.
 
     Uses Pydantic-based TokenizerConfig with multi-family encoder architecture:
     - Initial encoder (CNN with optional pretrained weights)
@@ -28,14 +28,14 @@ class TrainVQTokenizerCommand(CLICommand):
 
     @property
     def help(self) -> str:
-        return "Train VQ tokenizer using V2 configuration system"
+        return "Train VQ tokenizer using configuration system"
 
     @property
     def description(self) -> str:
         return """
 Train VQ tokenizer for discrete representation learning.
 
-V2 Architecture:
+Architecture:
 - Multi-family encoders (initial + temporal)
 - Pretrained CNN support for initial encoder
 - PyramidTemporalEncoder for variable-length temporal sequences
@@ -43,7 +43,7 @@ V2 Architecture:
 - Flexible loss configuration (reconstruction, orthogonality, informativeness)
 
 Configuration:
-  Uses Pydantic-based TokenizerConfig (configs/v2/*.yaml)
+  Uses Pydantic-based TokenizerConfig (configs/*.yaml)
   - encoder: Initial and temporal encoder settings
   - quantizer: VQ codebook configuration
   - hierarchy: Multi-level quantization
@@ -52,22 +52,22 @@ Configuration:
 
 Examples:
   # Train with V2 config
-  spinlock train-vq-tokenizer --config configs/v2/vqvae_50k.yaml
+  spinlock train-vq-tokenizer --config configs/vqvae_50k.yaml
 
   # Override dataset path
   spinlock train-vq-tokenizer \\
-      --config configs/v2/vqvae_50k.yaml \\
+      --config configs/vqvae_50k.yaml \\
       --dataset datasets/custom.h5
 
   # Override training parameters
   spinlock train-vq-tokenizer \\
-      --config configs/v2/vqvae_50k.yaml \\
+      --config configs/vqvae_50k.yaml \\
       --epochs 500 \\
       --batch-size 128
 
   # Verbose logging
   spinlock train-vq-tokenizer \\
-      --config configs/v2/vqvae_50k.yaml \\
+      --config configs/vqvae_50k.yaml \\
       --verbose
 
 Output:
@@ -86,7 +86,7 @@ Output:
             type=Path,
             required=True,
             metavar="PATH",
-            help="Path to V2 tokenizer config YAML",
+            help="Path to tokenizer config YAML",
         )
 
         # Optional overrides
@@ -150,7 +150,7 @@ Output:
         """Execute the train-vq-tokenizer command."""
         import logging
         import torch
-        from spinlock.v2.data import SpinlockDataset
+        from spinlock.data import SpinlockDataset
         from spinlock.tokens import TokenizerConfig, VQTokenizer
 
         # Setup logging

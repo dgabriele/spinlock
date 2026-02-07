@@ -1,4 +1,4 @@
-"""Simple hierarchical projector for V2 tokens.
+"""Simple hierarchical projector for tokens.
 
 Projects category features to hierarchical latent representations.
 """
