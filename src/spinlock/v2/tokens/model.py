@@ -520,7 +520,7 @@ class JointHierarchicalVQVAE(nn.Module):
             # Find nearest codebook entry
             distances = torch.cdist(
                 quantized,
-                quantizer.embeddings.weight,
+                quantizer.embedding.weight,
                 p=2.0
             )
             token_indices = distances.argmin(dim=1)  # [B]
@@ -544,7 +544,7 @@ class JointHierarchicalVQVAE(nn.Module):
             # Find nearest codebook entry
             distances = torch.cdist(
                 quantized,
-                quantizer.embeddings.weight,
+                quantizer.embedding.weight,
                 p=2.0
             )
             indices = distances.argmin(dim=1)  # [B]
