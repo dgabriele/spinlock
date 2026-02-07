@@ -402,7 +402,7 @@ class MNORolloutDatasetGenerator:
         Uses exact same IC type distribution as CNO datasets (cno_50k_v3_1.yaml):
         - 25% Gaussian Random Fields (5 variance levels: 0.25, 0.5, 1.0, 2.0, 4.0)
         - 25% Band-limited noise (low/mid/high frequency)
-        - 25% Structured (sinusoids)
+        - 25% Structured (geometric patterns)
         - 25% Localized (blobs)
 
         Args:
@@ -412,24 +412,41 @@ class MNORolloutDatasetGenerator:
             Initial conditions [B, M, C, H, W]
         """
         batch_size = params.shape[0]
+        total_ics = batch_size * self.num_realizations
 
-        # Generate M realizations for each sample in batch
-        ics_list = []
+        # Sample IC types for all ICs at once (more efficient)
+        ic_types_and_configs = [self._sample_ic_type() for _ in range(total_ics)]
 
-        for m in range(self.num_realizations):
-            batch_ics = []
+        # Group by IC type for batched generation
+        type_groups = {}
+        for idx, (ic_type, config) in enumerate(ic_types_and_configs):
+            # Use tuple of config items for hashable key
+            config_key = (ic_type, tuple(sorted(config.items())))
+            if config_key not in type_groups:
+                type_groups[config_key] = []
+            type_groups[config_key].append(idx)
 
-            for b in range(batch_size):
-                # Sample IC type and generate
-                ic = self._generate_single_ic()  # [C, H, W]
-                batch_ics.append(ic)
+        # Generate all ICs in batched calls
+        all_ics = [None] * total_ics
 
-            # Stack into batch [B, C, H, W]
-            batch_ic_tensor = torch.stack(batch_ics, dim=0)
-            ics_list.append(batch_ic_tensor.unsqueeze(1))  # [B, 1, C, H, W]
+        for (ic_type, config_tuple), indices in type_groups.items():
+            config = dict(config_tuple)
+            group_size = len(indices)
 
-        # Concatenate realizations: [B, M, C, H, W]
-        ics = torch.cat(ics_list, dim=1)
+            # Generate batch of same IC type [group_size, C, H, W]
+            ics_batch = self.ic_generator.generate_batch(
+                batch_size=group_size,
+                field_type=ic_type,
+                **config
+            )
+
+            # Assign to correct positions
+            for i, idx in enumerate(indices):
+                all_ics[idx] = ics_batch[i]
+
+        # Stack and reshape: [B*M, C, H, W] -> [B, M, C, H, W]
+        all_ics_tensor = torch.stack(all_ics, dim=0)  # [B*M, C, H, W]
+        ics = all_ics_tensor.view(batch_size, self.num_realizations, self.num_channels, 64, 64)
 
         return ics
 
