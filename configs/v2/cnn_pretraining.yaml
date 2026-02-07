@@ -1,0 +1,36 @@
+# V2 CNN Pretraining Configuration
+# Official config for pretraining InitialCNNEncoder via autoencoder reconstruction
+#
+# This CNN will be used as the pretrained backbone for the initial features
+# in the V2 VQ tokenizer.
+
+# Dataset
+dataset_path: "datasets/cno_50k_v3_1.h5"
+
+# Model architecture
+embedding_dim: 256        # CNN output dimension (will be used in hybrid encoder)
+in_channels: 1            # Grayscale initial conditions
+use_final_batchnorm: false  # Better variance preservation without final BN
+
+# Training
+num_epochs: 50
+batch_size: 128
+learning_rate: 1.0e-3
+val_split: 0.1
+
+# Optimizer
+optimizer: "adam"
+
+# Learning rate scheduler
+use_scheduler: true
+scheduler_type: "cosine"
+
+# Hardware
+device: "auto"  # Will use CUDA if available
+
+# Logging
+log_every_n_epochs: 1
+verbose: true
+
+# Output
+output_path: "checkpoints/v2/cnn_pretrained.pt"
