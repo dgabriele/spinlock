@@ -37,22 +37,33 @@ class CNNDecoder(nn.Module):
         self.spatial_size = spatial_size
         self.out_channels = out_channels
 
+        # Determine initial feature map channels (should scale with embedding_dim)
+        # For 256-dim embedding → 256 channels, for 768-dim → 512 channels, etc.
+        self.initial_channels = min(512, max(256, embedding_dim // 3))
+
         # Project embedding to initial spatial feature map
-        self.fc = nn.Linear(embedding_dim, 256)
+        self.fc = nn.Linear(embedding_dim, self.initial_channels * 4 * 4)
 
-        # Calculate number of upsampling stages needed
-        # InitialCNNEncoder does: 4 stages of stride-2 downsampling = 16x reduction
-        # So we need log2(spatial_size/4) upsampling stages to reach target size
-        # Start from 4x4 and upsample to spatial_size
-        num_stages = int(math.log2(spatial_size // 4))
-
-        # Build dynamic upsampling path
-        layers = []
-        in_ch = 256
+        # Calculate number of 4x upsampling stages needed to go from 4x4 to target size
+        # E.g., for 64x64: 4x4 → 16x16 → 64x64 = 2 stages
+        #       for 256x256: 4x4 → 16x16 → 64x64 → 256x256 = 3 stages
         current_size = 4
+        num_stages = 0
+        while current_size < spatial_size:
+            current_size *= 4
+            num_stages += 1
 
-        # Channel progression (mirrors encoder in reverse): 256 → 128 → 64 → 32 → ...
-        channel_progression = [256, 128, 64, 32, 16]
+        if current_size != spatial_size:
+            raise ValueError(
+                f"Cannot build decoder: spatial_size {spatial_size} not reachable "
+                f"from 4x4 with 4x upsampling stages"
+            )
+
+        # Build upsampling layers
+        layers = []
+        in_ch = self.initial_channels
+        channel_progression = [self.initial_channels, self.initial_channels // 2, self.initial_channels // 4,
+                              self.initial_channels // 8, max(32, self.initial_channels // 16)]
 
         for stage in range(num_stages):
             out_ch = channel_progression[min(stage + 1, len(channel_progression) - 1)]
@@ -71,7 +82,6 @@ class CNNDecoder(nn.Module):
                 ])
 
             in_ch = out_ch
-            current_size *= 4
 
         self.upsample = nn.Sequential(*layers)
 
@@ -84,11 +94,8 @@ class CNNDecoder(nn.Module):
         Returns:
             Reconstructed image [B, out_channels, spatial_size, spatial_size]
         """
-        h = self.fc(x)  # [B, 256]
-        h = h.view(-1, 256, 1, 1)  # [B, 256, 1, 1]
-
-        # Initial 4x4 spatial expansion
-        h = nn.functional.interpolate(h, size=4, mode='nearest')  # [B, 256, 4, 4]
+        h = self.fc(x)  # [B, initial_channels * 4 * 4]
+        h = h.view(-1, self.initial_channels, 4, 4)  # [B, initial_channels, 4, 4]
 
         # Upsample to target size
         h = self.upsample(h)  # [B, out_channels, spatial_size, spatial_size]
@@ -112,6 +119,7 @@ class CNNPretrainer:
 
     def __init__(self, config: PretrainingConfig, in_channels: Optional[int] = None, spatial_size: int = 64):
         self.config = config
+        self.use_augmentation = config.use_augmentation
 
         # Determine device
         if config.device == "auto":
@@ -142,9 +150,13 @@ class CNNPretrainer:
         # Optimizer
         params = list(self.encoder.parameters()) + list(self.decoder.parameters())
         if config.optimizer == "adam":
-            self.optimizer = torch.optim.Adam(params, lr=config.learning_rate)
+            self.optimizer = torch.optim.Adam(
+                params, lr=config.learning_rate, weight_decay=config.weight_decay
+            )
         elif config.optimizer == "adamw":
-            self.optimizer = torch.optim.AdamW(params, lr=config.learning_rate)
+            self.optimizer = torch.optim.AdamW(
+                params, lr=config.learning_rate, weight_decay=config.weight_decay
+            )
         else:
             raise ValueError(f"Unknown optimizer: {config.optimizer}")
 
@@ -169,6 +181,7 @@ class CNNPretrainer:
         initial_conditions: torch.Tensor,
         output_path: Path,
         val_initial_conditions: Optional[torch.Tensor] = None,
+        normalization_stats: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """Train autoencoder and save encoder checkpoint.
 
@@ -261,12 +274,13 @@ class CNNPretrainer:
         checkpoint = {
             'encoder_state_dict': self.encoder.state_dict(),
             'embedding_dim': self.config.embedding_dim,
-            'in_channels': self.config.in_channels,
+            'in_channels': self.in_channels,
             'use_final_batchnorm': self.config.use_final_batchnorm,
             'epoch': best_epoch,
             'val_loss': best_val_loss,
             'train_losses': train_losses,
             'val_losses': val_losses,
+            'normalization_stats': normalization_stats,
         }
 
         torch.save(checkpoint, output_path)
@@ -280,6 +294,30 @@ class CNNPretrainer:
             'best_epoch': best_epoch,
             'best_val_loss': best_val_loss,
         }
+
+    def _augment(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply random flips and rotations for data augmentation.
+
+        Args:
+            x: Input batch [B, C, H, W]
+
+        Returns:
+            Augmented batch [B, C, H, W]
+        """
+        # Random horizontal flip (50% probability)
+        if torch.rand(1).item() > 0.5:
+            x = torch.flip(x, dims=[-1])
+
+        # Random vertical flip (50% probability)
+        if torch.rand(1).item() > 0.5:
+            x = torch.flip(x, dims=[-2])
+
+        # Random 90° rotation (0°, 90°, 180°, or 270°)
+        k = torch.randint(0, 4, (1,)).item()
+        if k > 0:
+            x = torch.rot90(x, k, dims=[-2, -1])
+
+        return x
 
     def _train_epoch(self, loader: DataLoader) -> float:
         """Run one training epoch.
@@ -298,6 +336,10 @@ class CNNPretrainer:
 
         for batch in loader:
             x = batch[0].to(self.device)  # [B, C, H, W]
+
+            # Apply augmentation (only during training)
+            if self.use_augmentation:
+                x = self._augment(x)
 
             # Forward pass
             embeddings = self.encoder(x)  # [B, embedding_dim]

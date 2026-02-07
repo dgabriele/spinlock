@@ -104,6 +104,13 @@ def main():
     ics_tensor = torch.from_numpy(ics).float()
     logger.info(f"Converted to tensor: {ics_tensor.shape}")
 
+    # Normalize data (standardize to mean=0, std=1)
+    mean = ics_tensor.mean()
+    std = ics_tensor.std()
+    ics_tensor = (ics_tensor - mean) / std
+    logger.info(f"Normalized data: mean={mean:.6f}, std={std:.6f}")
+    logger.info(f"After normalization: mean={ics_tensor.mean():.6f}, std={ics_tensor.std():.6f}")
+
     # Auto-detect in_channels and spatial_size from data
     _, in_channels, spatial_h, spatial_w = ics_tensor.shape
     if spatial_h != spatial_w:
@@ -122,6 +129,7 @@ def main():
     history = pretrainer.train(
         initial_conditions=ics_tensor,
         output_path=output_path,
+        normalization_stats={'mean': mean.item(), 'std': std.item()},
     )
 
     # Print results

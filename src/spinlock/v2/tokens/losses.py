@@ -70,12 +70,19 @@ def compute_orthogonality_loss(
             emb_i = category_embeddings[cat_i]  # [B, D_i]
             emb_j = category_embeddings[cat_j]  # [B, D_j]
 
-            # Normalize embeddings
-            emb_i_norm = F.normalize(emb_i, p=2, dim=1)
-            emb_j_norm = F.normalize(emb_j, p=2, dim=1)
+            # Flatten each category's embeddings across features
+            # Then compute correlation across batch dimension
+            emb_i_flat = emb_i.view(emb_i.size(0), -1)  # [B, D_i]
+            emb_j_flat = emb_j.view(emb_j.size(0), -1)  # [B, D_j]
 
-            # Compute correlation (cosine similarity)
-            corr = (emb_i_norm * emb_j_norm).sum(dim=1).abs().mean()
+            # Normalize across batch dimension for each feature
+            emb_i_norm = F.normalize(emb_i_flat, p=2, dim=0)  # Normalize across batch
+            emb_j_norm = F.normalize(emb_j_flat, p=2, dim=0)  # Normalize across batch
+
+            # Compute correlation between categories (average across features)
+            # For different dimensions, compute the correlation matrix and average
+            corr_matrix = torch.matmul(emb_i_norm.t(), emb_j_norm)  # [D_i, D_j]
+            corr = corr_matrix.abs().mean()
             correlations.append(corr)
 
     if not correlations:

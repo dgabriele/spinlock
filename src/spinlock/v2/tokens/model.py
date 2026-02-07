@@ -63,11 +63,15 @@ class JointHierarchicalVQVAE(nn.Module):
         self,
         config: TokenizerConfig,
         group_indices: Dict[str, List[int]],
+        temporal_input_dim: Optional[int] = None,
+        initial_input_dim: Optional[int] = None,
     ):
         super().__init__()
 
         self.config = config
         self.group_indices = group_indices
+        self.temporal_input_dim = temporal_input_dim
+        self.initial_input_dim = initial_input_dim
 
         # Parse families from group_indices keys
         self.families = self._parse_families(group_indices)
@@ -164,10 +168,14 @@ class JointHierarchicalVQVAE(nn.Module):
                         "min_pyramid_length": config.encoder.temporal.min_timesteps,
                     }
 
-                # Input dim is determined by dataset - placeholder for now
-                # Will be set during first forward pass or explicitly configured
+                # Determine input dimension
+                if self.temporal_input_dim is None:
+                    raise ValueError(
+                        "temporal_input_dim must be provided for pyramid encoder"
+                    )
+
                 self.temporal_encoder = PyramidTemporalEncoder(
-                    input_dim=1,  # Placeholder - will be overridden
+                    input_dim=self.temporal_input_dim,
                     level_dims=config.encoder.temporal.level_dims,
                     downsample_factors=config.encoder.temporal.downsample_factors,
                     variable_length_config=vl_config,
@@ -175,12 +183,20 @@ class JointHierarchicalVQVAE(nn.Module):
                 self.temporal_dim = sum(config.encoder.temporal.level_dims)
 
             elif config.encoder.temporal.variant == "mean":
-                self.temporal_encoder = TemporalMeanEncoder(input_dim=1)
-                self.temporal_dim = 1  # Will be overridden
+                if self.temporal_input_dim is None:
+                    raise ValueError(
+                        "temporal_input_dim must be provided for mean encoder"
+                    )
+                self.temporal_encoder = TemporalMeanEncoder(input_dim=self.temporal_input_dim)
+                self.temporal_dim = self.temporal_input_dim
 
             elif config.encoder.temporal.variant == "cnn":
+                if self.temporal_input_dim is None:
+                    raise ValueError(
+                        "temporal_input_dim must be provided for CNN encoder"
+                    )
                 self.temporal_encoder = TemporalCNNEncoder(
-                    input_dim=1,
+                    input_dim=self.temporal_input_dim,
                     embedding_dim=config.encoder.embedding_dim,
                 )
                 self.temporal_dim = config.encoder.embedding_dim
@@ -361,10 +377,13 @@ class JointHierarchicalVQVAE(nn.Module):
                 quantizer_key = f"{family_cat}_L{level_idx}"
                 quantizer = self.quantizers[quantizer_key]
 
-                quantized, vq_loss, perplexity, _ = quantizer(latent)
+                quantized, encodings, losses = quantizer(latent)
 
                 all_quantized.append(quantized)
-                vq_losses.append(vq_loss)
+                vq_losses.append(losses['loss'])
+                # Compute perplexity from encodings
+                avg_probs = encodings.mean(dim=0)
+                perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
                 perplexities.append(perplexity)
 
                 encodings_dict[quantizer_key] = quantized

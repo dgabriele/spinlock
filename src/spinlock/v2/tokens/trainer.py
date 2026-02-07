@@ -161,6 +161,7 @@ class VQTokenizerTrainer:
         logger.info(f"  Val batches: {len(val_loader)}")
 
         # Training loop
+        val_loss = None  # Initialize for final checkpoint saving
         for epoch in range(self.config.training.num_epochs):
             # Train
             train_metrics = self._train_epoch(train_loader, epoch)
@@ -212,7 +213,14 @@ class VQTokenizerTrainer:
                     f"LR: {lr:.6f}"
                 )
                 if (epoch + 1) % self.config.training.val_every_n_epochs == 0:
-                    log_msg += f" | Val Loss: {val_metrics['loss']:.6f}"
+                    perplexity = val_metrics['perplexity']
+                    util_pct = (perplexity / self.config.quantizer.num_embeddings) * 100
+                    log_msg += (
+                        f" | Val Loss: {val_metrics['loss']:.6f} "
+                        f"(recon={val_metrics['reconstruction']:.4f}, "
+                        f"vq={val_metrics['vq']:.4f}, "
+                        f"util={util_pct:.1f}%)"
+                    )
                 logger.info(log_msg)
 
         # Save final checkpoint
@@ -238,18 +246,28 @@ class VQTokenizerTrainer:
         Returns:
             Tuple of (train_loader, val_loader)
         """
-        # Collect all tensors
+        # Collect all tensors and track their order
         tensors = []
+        tensor_map = {}  # Maps tensor type to batch index
+
         if temporal_features is not None:
+            tensor_map['temporal_features'] = len(tensors)
             tensors.append(temporal_features)
         if initial_manual is not None:
+            tensor_map['initial_manual'] = len(tensors)
             tensors.append(initial_manual)
         if initial_raw is not None:
+            tensor_map['initial_raw'] = len(tensors)
             tensors.append(initial_raw)
         if temporal_mask is not None:
+            tensor_map['temporal_mask'] = len(tensors)
             tensors.append(temporal_mask)
         if temporal_lengths is not None:
+            tensor_map['temporal_lengths'] = len(tensors)
             tensors.append(temporal_lengths)
+
+        # Store tensor map for batch unpacking
+        self.tensor_map = tensor_map
 
         # Create dataset
         dataset = TensorDataset(*tensors)
@@ -305,12 +323,27 @@ class VQTokenizerTrainer:
         num_batches = 0
 
         for batch in loader:
-            # Unpack batch (order matches _create_dataloaders)
-            temporal_feats = batch[0].to(self.device) if len(batch) > 0 else None
-            initial_man = batch[1].to(self.device) if len(batch) > 1 else None
-            initial_r = batch[2].to(self.device) if len(batch) > 2 else None
-            temp_mask = batch[3].to(self.device) if len(batch) > 3 else None
-            temp_lens = batch[4].to(self.device) if len(batch) > 4 else None
+            # Unpack batch using tensor_map to handle variable tensor order
+            temporal_feats = (
+                batch[self.tensor_map['temporal_features']].to(self.device)
+                if 'temporal_features' in self.tensor_map else None
+            )
+            initial_man = (
+                batch[self.tensor_map['initial_manual']].to(self.device)
+                if 'initial_manual' in self.tensor_map else None
+            )
+            initial_r = (
+                batch[self.tensor_map['initial_raw']].to(self.device)
+                if 'initial_raw' in self.tensor_map else None
+            )
+            temp_mask = (
+                batch[self.tensor_map['temporal_mask']].to(self.device)
+                if 'temporal_mask' in self.tensor_map else None
+            )
+            temp_lens = (
+                batch[self.tensor_map['temporal_lengths']].to(self.device)
+                if 'temporal_lengths' in self.tensor_map else None
+            )
 
             # Forward pass
             outputs = self.model(
@@ -384,12 +417,27 @@ class VQTokenizerTrainer:
 
         with torch.no_grad():
             for batch in loader:
-                # Unpack batch
-                temporal_feats = batch[0].to(self.device) if len(batch) > 0 else None
-                initial_man = batch[1].to(self.device) if len(batch) > 1 else None
-                initial_r = batch[2].to(self.device) if len(batch) > 2 else None
-                temp_mask = batch[3].to(self.device) if len(batch) > 3 else None
-                temp_lens = batch[4].to(self.device) if len(batch) > 4 else None
+                # Unpack batch using tensor_map to handle variable tensor order
+                temporal_feats = (
+                    batch[self.tensor_map['temporal_features']].to(self.device)
+                    if 'temporal_features' in self.tensor_map else None
+                )
+                initial_man = (
+                    batch[self.tensor_map['initial_manual']].to(self.device)
+                    if 'initial_manual' in self.tensor_map else None
+                )
+                initial_r = (
+                    batch[self.tensor_map['initial_raw']].to(self.device)
+                    if 'initial_raw' in self.tensor_map else None
+                )
+                temp_mask = (
+                    batch[self.tensor_map['temporal_mask']].to(self.device)
+                    if 'temporal_mask' in self.tensor_map else None
+                )
+                temp_lens = (
+                    batch[self.tensor_map['temporal_lengths']].to(self.device)
+                    if 'temporal_lengths' in self.tensor_map else None
+                )
 
                 # Forward pass
                 outputs = self.model(
@@ -455,9 +503,9 @@ class VQTokenizerTrainer:
         threshold = self.config.training.dead_code_threshold
 
         for name, quantizer in self.model.quantizers.items():
-            if hasattr(quantizer, 'cluster_size') and quantizer.use_ema:
+            if hasattr(quantizer, 'ema_cluster_size') and quantizer.use_ema:
                 # EMA quantizers track cluster sizes
-                cluster_sizes = quantizer.cluster_size.data
+                cluster_sizes = quantizer.ema_cluster_size.data
                 total_usage = cluster_sizes.sum()
 
                 if total_usage > 0:
@@ -473,17 +521,17 @@ class VQTokenizerTrainer:
                                 random_live = live_indices[
                                     torch.randint(0, len(live_indices), (1,))
                                 ]
-                                quantizer.embeddings.weight.data[dead_idx] = (
-                                    quantizer.embeddings.weight.data[random_live]
+                                quantizer.embedding.weight.data[dead_idx] = (
+                                    quantizer.embedding.weight.data[random_live]
                                     + torch.randn_like(
-                                        quantizer.embeddings.weight.data[random_live]
+                                        quantizer.embedding.weight.data[random_live]
                                     ) * 0.01
                                 )
-                                quantizer.cluster_size.data[dead_idx] = (
-                                    quantizer.cluster_size.data[random_live] * 0.5
+                                quantizer.ema_cluster_size.data[dead_idx] = (
+                                    quantizer.ema_cluster_size.data[random_live] * 0.5
                                 )
 
-                        logger.debug(f"Reset {num_dead} dead codes in {name}")
+                        logger.info(f"Reset {num_dead} dead codes in {name}")
 
     def _save_checkpoint(
         self, path: Path, epoch: int, val_loss: Optional[float]
