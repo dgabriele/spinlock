@@ -247,7 +247,6 @@ Output:
         logger.info("Starting VQ Tokenizer Training")
         logger.info("=" * 80)
         logger.info(f"Dataset: {dataset_path}")
-        logger.info(f"Samples: {len(dataset)}")
         logger.info(f"Epochs: {config.training.num_epochs}")
         logger.info(f"Batch size: {config.training.batch_size}")
         logger.info(f"Learning rate: {config.training.learning_rate}")
