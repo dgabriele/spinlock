@@ -5,8 +5,8 @@ import torch
 import sys
 sys.path.insert(0, '/home/daniel/projects/spinlock/src')
 
-from spinlock.noa.vqvae_alignment import VQVAEAlignmentLoss
-from spinlock.noa.losses.vq_led import VQLedLoss
+from spinlock.mno.vqvae_alignment import VQVAEAlignmentLoss
+from spinlock.mno.losses.vq_led import VQLedLoss
 
 print("=" * 60)
 print("Testing VQ-Led Latent Loss Implementation")

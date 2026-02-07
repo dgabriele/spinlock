@@ -24,7 +24,7 @@ class NOAReplayer:
             noa_checkpoint_path: Path to Stage 1 meta-operator checkpoint
             device: Device to run on (default: cuda)
         """
-        from spinlock.noa import NOABackbone
+        from spinlock.mno import NOABackbone
 
         checkpoint = torch.load(noa_checkpoint_path, map_location=device)
 

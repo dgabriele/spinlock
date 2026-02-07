@@ -127,7 +127,7 @@ reconstructed = model.decode_from_tokens(tokens)  # [batch, 156]
 
 ```python
 import torch
-from spinlock.noa.uafno import create_noa_backbone
+from spinlock.mno.uafno import create_noa_backbone
 
 # Load checkpoint
 checkpoint = torch.load("checkpoints/noa/10k_baseline/meta_operator_best.pt")

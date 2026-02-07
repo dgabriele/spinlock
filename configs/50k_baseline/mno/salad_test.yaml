@@ -18,7 +18,6 @@ model:
   param_conditioning: true
   param_dim: 14
   param_embed_dim: 128
-  token_conditioning: false
 
   conditioning_mode: "film"
 

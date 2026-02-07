@@ -11,8 +11,8 @@ from pathlib import Path
 import torch
 
 from spinlock.v2.data import SpinlockDataset
-from spinlock.v2.tokens.config import PretrainingConfig
-from spinlock.v2.tokens.pretraining import CNNPretrainer
+from spinlock.tokens import PretrainingConfig
+from spinlock.tokens.pretraining import CNNPretrainer
 
 
 # Custom formatter for concise logging

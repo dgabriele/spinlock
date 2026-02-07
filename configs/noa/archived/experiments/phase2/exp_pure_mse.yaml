@@ -18,7 +18,6 @@ model:
   encoder_levels: 3
   modes: 16
   afno_blocks: 4
-  token_conditioning: false      # DISABLED - no token complexity
 
 training:
   n_samples: 1000

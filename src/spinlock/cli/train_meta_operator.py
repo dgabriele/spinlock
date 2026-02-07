@@ -550,8 +550,8 @@ Output:
 
     def _run_training(self, config: Dict[str, Any], args: Namespace) -> int:
         """Execute training pipeline."""
-        from spinlock.noa import NOABackbone, CNOReplayer
-        from spinlock.noa.losses import MSELedLoss
+        from spinlock.mno import NOABackbone, CNOReplayer
+        from spinlock.mno.losses import MSELedLoss
         from spinlock.operators.state_dataset import NOAStateDataset
 
         # Sync data from cloud if on Salad
@@ -779,7 +779,7 @@ Output:
         timesteps = config["training"]["timesteps"]
         bptt_window = config["training"].get("bptt_window")
 
-        from spinlock.noa import TruncatedBPTT
+        from spinlock.mno import TruncatedBPTT
 
         if bptt_window is not None and bptt_window < timesteps:
             if rank == 0:
@@ -824,7 +824,7 @@ Output:
                 return self.error("VQ-led mode requires vqvae.checkpoint path")
 
             print(f"  Loading VQ-VAE alignment from: {vqvae_checkpoint}")
-            from spinlock.noa.vqvae_alignment import VQVAEAlignmentLoss
+            from spinlock.mno.vqvae_alignment import VQVAEAlignmentLoss
 
             vqvae_alignment = VQVAEAlignmentLoss.from_checkpoint(
                 vqvae_path=vqvae_checkpoint,
@@ -836,7 +836,7 @@ Output:
             print(f"  ✓ VQ-VAE alignment loaded")
 
             # Create VQ-led loss
-            from spinlock.noa.losses.vq_led import VQLedLoss
+            from spinlock.mno.losses.vq_led import VQLedLoss
 
             loss_fn = VQLedLoss(
                 lambda_recon=config["loss"].get("lambda_recon", 1.0),

@@ -9,7 +9,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from spinlock.noa import NOABackbone
+from spinlock.mno import NOABackbone
 
 def test_bptt_window(checkpoint_path: str, window_size: int, device: str = "cuda"):
     """Test gradient stability with a given BPTT window size.

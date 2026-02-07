@@ -91,7 +91,7 @@ poetry run spinlock train-vqvae \
 ### 4. Deploy End-to-End
 
 ```python
-from spinlock.noa.backbone import NOABackbone
+from spinlock.mno.backbone import NOABackbone
 from spinlock.encoding.unified_feature_pipeline import UnifiedFeaturePipeline
 import torch
 
@@ -503,7 +503,7 @@ grep "codebook_util" checkpoints/vqvae/noa_distribution_100k/training.log | tail
 
 ```python
 import torch
-from spinlock.noa.backbone import NOABackbone
+from spinlock.mno.backbone import NOABackbone
 from pathlib import Path
 
 # Load NOA

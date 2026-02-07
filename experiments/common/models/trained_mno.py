@@ -17,7 +17,7 @@ class TrainedMNO:
 
     def _load_checkpoint(self) -> None:
         """Load MNO checkpoint."""
-        from spinlock.noa.backbone import MetaOperator
+        from spinlock.mno.backbone import MetaOperator
 
         checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
 

@@ -3,7 +3,7 @@
 
 import torch
 import yaml
-from spinlock.noa.backbone import NOABackbone
+from spinlock.mno.backbone import NOABackbone
 
 checkpoint_path = "checkpoints/experiments/phase2/exp2b_token_baseline/meta_operator_best.pt"
 config_path = "configs/noa/experiments/phase2/exp2b_token_baseline.yaml"

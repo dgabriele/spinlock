@@ -19,10 +19,10 @@ from spinlock.encoding.normalization import (
     NormalizationStats,
 )
 
-from .config import TokenizerConfig
-from .model import JointHierarchicalVQVAE
-from .trainer import VQTokenizerTrainer
-from .checkpoint import load_checkpoint, verify_pretrained_cnn
+from spinlock.tokens.config import TokenizerConfig
+from spinlock.tokens.model import JointHierarchicalVQVAE
+from spinlock.tokens.trainer import VQTokenizerTrainer
+from spinlock.tokens.checkpoint import load_checkpoint, verify_pretrained_cnn
 
 logger = logging.getLogger(__name__)
 

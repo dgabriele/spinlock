@@ -22,7 +22,6 @@ model:
   encoder_levels: 3
   modes: 16                      # Keep same as v1
   afno_blocks: 4                 # Keep same as v1
-  token_conditioning: false      # DISABLED - pure MSE training
 
 training:
   n_samples: 2000                # Increased from 1000 (more training data)

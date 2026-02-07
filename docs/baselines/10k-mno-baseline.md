@@ -261,7 +261,7 @@ spinlock train-meta-operator \
 
 ```python
 import torch
-from spinlock.noa.uafno import create_noa_backbone
+from spinlock.mno.uafno import create_noa_backbone
 
 # Load trained MNO
 checkpoint = torch.load("checkpoints/noa/10k_baseline/meta_operator_best.pt")

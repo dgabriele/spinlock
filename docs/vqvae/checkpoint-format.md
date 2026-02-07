@@ -196,7 +196,7 @@ vqvae.eval()
 ### Loading with Normalization Stats
 
 ```python
-from spinlock.noa.vqvae_alignment import VQVAEAlignmentLoss
+from spinlock.mno.vqvae_alignment import VQVAEAlignmentLoss
 
 # Load VQ-VAE with alignment (includes normalization)
 alignment = VQVAEAlignmentLoss.from_checkpoint(

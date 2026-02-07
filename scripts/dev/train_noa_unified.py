@@ -48,14 +48,14 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from spinlock.noa import (
+from spinlock.mno import (
     NOABackbone,
     CNOReplayer,
     VQVAEAlignmentLoss,
     BaseNOALoss,
     LossOutput,
 )
-from spinlock.noa.losses import MSELedLoss, VQLedLoss
+from spinlock.mno.losses import MSELedLoss, VQLedLoss
 
 
 class NOAStateDataset(Dataset):

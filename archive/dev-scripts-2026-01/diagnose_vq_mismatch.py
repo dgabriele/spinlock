@@ -14,8 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, '/home/daniel/projects/spinlock/src')
 
-from spinlock.noa.vqvae_alignment import VQVAEAlignmentLoss
-from spinlock.noa import NOABackbone, CNOReplayer
+from spinlock.mno.vqvae_alignment import VQVAEAlignmentLoss
+from spinlock.mno import NOABackbone, CNOReplayer
 import h5py
 
 print("=" * 70)

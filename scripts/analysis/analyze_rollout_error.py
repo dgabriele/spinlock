@@ -14,8 +14,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from spinlock.noa.backbone import NOABackbone
-from spinlock.noa.cno_replay import CNOReplayer
+from spinlock.mno.backbone import NOABackbone
+from spinlock.mno.cno_replay import CNOReplayer
 
 
 def load_checkpoint(checkpoint_path: str, config_path: str, device: torch.device):

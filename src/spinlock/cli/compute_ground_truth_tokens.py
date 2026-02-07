@@ -152,7 +152,7 @@ Examples:
 
     def execute(self, args: Namespace) -> int:
         """Execute ground-truth token computation."""
-        from spinlock.noa import CNOReplayer, AlignedFeatureExtractor
+        from spinlock.mno import CNOReplayer, AlignedFeatureExtractor
         from spinlock.encoding.categorical_vqvae import CategoricalHierarchicalVQVAE
         from spinlock.encoding import CategoricalVQVAEConfig
 

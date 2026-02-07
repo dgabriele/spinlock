@@ -7,7 +7,7 @@ to verify distribution alignment between MNO outputs and VQ-VAE tokenization.
 """
 
 from pathlib import Path
-from spinlock.noa.validation import MNOVQVAEValidator, ValidationConfig, ValidationReport
+from spinlock.mno.validation import MNOVQVAEValidator, ValidationConfig, ValidationReport
 
 
 def main():

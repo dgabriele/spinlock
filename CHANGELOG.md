@@ -1,3 +1,72 @@
+## [Unreleased] - 2026-02-07
+
+### BREAKING CHANGES - V2 Migration & Package Reorganization
+
+**VQ-VAE V2 VQTokenizer is now the primary system:**
+- V1 VQ-VAE (`CategoricalHierarchicalVQVAE`) has been removed
+- V2 VQTokenizer moved from `spinlock.v2.tokens` → `spinlock.tokens`
+- Use `spinlock train-vq-tokenizer` command (replaces `train-vqvae`)
+- Primary configs now in `configs/` (moved from `configs/v2/`)
+- Backward compatibility shims provide deprecation warnings for old imports
+
+**NOA package renamed to MNO:**
+- `spinlock.noa` → `spinlock.mno` (Meta-Neural Operator)
+- All imports automatically updated across codebase
+- Tests moved: `tests/noa/` → `tests/mno/`
+- Backward compatibility shim available with deprecation warning
+
+**Token conditioning removed from MNO:**
+- `token_embedding.py` deleted
+- MNO no longer conditions on discrete VQ tokens
+- Simplified architecture focuses on parameter conditioning only
+
+### Migration Guide
+
+**For VQ-VAE users:**
+```python
+# Old (V1)
+from spinlock.encoding import CategoricalHierarchicalVQVAE
+model = CategoricalHierarchicalVQVAE(config)
+
+# New (V2)
+from spinlock.tokens import VQTokenizer, TokenizerConfig
+tokenizer = VQTokenizer(config)
+tokenizer.train(dataset, output_dir="checkpoints/")
+```
+
+**For MNO users:**
+```python
+# Old
+from spinlock.noa import NOABackbone
+
+# New
+from spinlock.mno import NOABackbone
+```
+
+**For CLI users:**
+```bash
+# Old
+spinlock train-vqvae --config configs/v1_config.yaml
+
+# New
+spinlock train-vq-tokenizer --config configs/vqvae_50k.yaml
+```
+
+### Deprecation Timeline
+
+- Backward compatibility shims will be maintained for 6 months
+- Warnings will be shown when using deprecated import paths
+- After 6 months, old imports will be removed entirely
+
+### Files Requiring Attention
+
+Some integration points still reference V1 code and need updates:
+- `src/spinlock/mno/validation_utils.py` - Update to use VQTokenizer
+- `src/spinlock/mno/episode.py` - Update type hints
+- `src/spinlock/cli/compute_ground_truth_tokens.py` - Rewrite for V2
+
+---
+
 # Changelog
 
 All notable changes to the Spinlock project will be documented in this file.

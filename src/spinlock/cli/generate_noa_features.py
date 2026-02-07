@@ -300,7 +300,7 @@ Examples:
         Returns:
             Exit code (0 for success)
         """
-        from spinlock.noa.generation_pipeline import NOAFeatureGenerationPipeline
+        from spinlock.mno.generation_pipeline import NOAFeatureGenerationPipeline
 
         print("\n" + "=" * 70)
         print("MNO FEATURE GENERATION")

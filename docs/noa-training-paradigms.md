@@ -43,7 +43,7 @@ Loss = λ_traj × L_traj + λ_commit × L_commit + λ_latent × L_latent
 ### Code Example
 
 ```python
-from spinlock.noa.losses import MSELedLoss
+from spinlock.mno.losses import MSELedLoss
 
 loss_fn = MSELedLoss(
     lambda_traj=1.0,      # Primary: trajectory matching
@@ -104,7 +104,7 @@ A "wrong" rollout by traditional metrics (high L_traj) could represent a **novel
 ### Code Example
 
 ```python
-from spinlock.noa.losses import VQLedLoss
+from spinlock.mno.losses import VQLedLoss
 
 loss_fn = VQLedLoss(
     lambda_recon=1.0,     # Primary: VQ reconstruction

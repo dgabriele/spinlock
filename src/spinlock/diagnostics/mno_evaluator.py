@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from tqdm import tqdm
 
-from spinlock.noa.backbone import NOABackbone
-from spinlock.noa.validation_utils import load_mno_checkpoint
-from spinlock.noa.cno_replay import CNOReplayer
+from spinlock.mno.backbone import NOABackbone
+from spinlock.mno.validation_utils import load_mno_checkpoint
+from spinlock.mno.cno_replay import CNOReplayer
 from spinlock.diagnostics.metrics import (
     compute_physics_metrics,
     compute_error_growth_stats,

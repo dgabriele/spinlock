@@ -50,7 +50,7 @@ spinlock validate-mno-vqvae \
 ### Programmatic Usage
 
 ```python
-from spinlock.noa.validation import MNOVQVAEValidator, ValidationConfig
+from spinlock.mno.validation import MNOVQVAEValidator, ValidationConfig
 
 # Create validator
 config = ValidationConfig(num_samples=50, batch_size=4)
@@ -183,8 +183,8 @@ Based on current MNO training metrics:
 
 The validator leverages existing infrastructure:
 
-- `load_mno_checkpoint()`: From `spinlock.noa.validation_utils`
-- `load_vqvae_checkpoint()`: From `spinlock.noa.validation_utils`
+- `load_mno_checkpoint()`: From `spinlock.mno.validation_utils`
+- `load_vqvae_checkpoint()`: From `spinlock.mno.validation_utils`
 - `UnifiedFeaturePipeline`: From `spinlock.encoding.unified_feature_pipeline`
 - VQ-VAE inference: From `spinlock.encoding.categorical_vqvae`
 

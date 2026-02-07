@@ -151,8 +151,7 @@ Output:
         import logging
         import torch
         from spinlock.v2.data import SpinlockDataset
-        from spinlock.v2.tokens.config import TokenizerConfig
-        from spinlock.v2.tokens.tokenizer import VQTokenizer
+        from spinlock.tokens import TokenizerConfig, VQTokenizer
 
         # Setup logging
         logging.basicConfig(

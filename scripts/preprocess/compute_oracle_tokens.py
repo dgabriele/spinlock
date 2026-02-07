@@ -22,7 +22,7 @@ import torch
 from tqdm import tqdm
 from pathlib import Path
 
-from spinlock.noa import CNOReplayer, AlignedFeatureExtractor
+from spinlock.mno import CNOReplayer, AlignedFeatureExtractor
 from spinlock.encoding.categorical_vqvae import CategoricalHierarchicalVQVAE
 from spinlock.encoding import CategoricalVQVAEConfig
 

@@ -40,10 +40,10 @@ from typing import List, Dict, Tuple
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from spinlock.perturbations import ImpulsePerturbationFactory
-from spinlock.noa.behavioral_encoding import BehavioralSignature, BehavioralEncoder
-from spinlock.noa.episode import EpisodeRunner
-from spinlock.noa.early_stopping import StandardStoppingPolicy
-from spinlock.noa.validation_utils import (
+from spinlock.mno.behavioral_encoding import BehavioralSignature, BehavioralEncoder
+from spinlock.mno.episode import EpisodeRunner
+from spinlock.mno.early_stopping import StandardStoppingPolicy
+from spinlock.mno.validation_utils import (
     load_mno_checkpoint,
     load_vqvae_checkpoint,
     sample_initial_condition,

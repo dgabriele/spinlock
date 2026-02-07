@@ -19,13 +19,13 @@ The `TruncatedBPTT` wrapper has been abstracted from the archived training scrip
 ### Module Location
 
 ```python
-from spinlock.noa import TruncatedBPTT
+from spinlock.mno import TruncatedBPTT
 ```
 
 ### Basic Usage
 
 ```python
-from spinlock.noa import NOABackbone, TruncatedBPTT
+from spinlock.mno import NOABackbone, TruncatedBPTT
 
 # Create NOA model
 noa = NOABackbone(
@@ -79,7 +79,7 @@ for batch in dataloader:
 
 Add to imports (around line 30):
 ```python
-from spinlock.noa import NOABackbone, TruncatedBPTT
+from spinlock.mno import NOABackbone, TruncatedBPTT
 ```
 
 ### Step 2: Add Config Parameters

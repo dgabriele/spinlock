@@ -22,8 +22,8 @@ import torch
 from pathlib import Path
 from tqdm import tqdm
 
-from spinlock.noa import NOABackbone
-from spinlock.noa.vqvae_alignment import AlignedFeatureExtractor
+from spinlock.mno import NOABackbone
+from spinlock.mno.vqvae_alignment import AlignedFeatureExtractor
 
 
 def compute_stats(features_list, group_indices):

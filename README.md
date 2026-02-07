@@ -153,7 +153,7 @@ See [CNO-Trained Architecture](docs/noa-architecture.md) for complete implementa
 - **Multi-Modal Features**: INITIAL (16D), SUMMARY (18D), TEMPORAL (variable)
 - **VQ-VAE Tokenization**: Automatic category discovery, hierarchical 3-level encoding, adaptive compression
 - **CNO-Trained Components**: VQ-VAE and MNO both train independently on CNO ground truth
-- **CLI Commands**: `spinlock generate`, `spinlock train-meta-operator`, `spinlock train-vqvae`
+- **CLI Commands**: `spinlock generate`, `spinlock train-meta-operator`, `spinlock train-vq-tokenizer`
 
 See [docs/architecture.md](docs/architecture.md) for comprehensive system design and [docs/noa-architecture.md](docs/noa-architecture.md) for CNO-trained components.
 
@@ -291,17 +291,17 @@ poetry run spinlock visualize-dataset \
 
 ```bash
 # Standard static assignment (default, fast)
-poetry run spinlock train-vqvae \
+poetry run spinlock train-vq-tokenizer \
     --config configs/vqvae/baseline_vqvae_variable_length.yaml \
     --epochs 500
 
 # Learnable assignment (gradient-based categories)
-poetry run spinlock train-vqvae \
+poetry run spinlock train-vq-tokenizer \
     --config configs/vqvae/learnable_hybrid_variable_length.yaml \
     --epochs 1000
 
 # Enable torch.compile for speedup
-poetry run spinlock train-vqvae \
+poetry run spinlock train-vq-tokenizer \
     --config configs/vqvae/baseline_vqvae_variable_length.yaml \
     --compile \
     --epochs 500

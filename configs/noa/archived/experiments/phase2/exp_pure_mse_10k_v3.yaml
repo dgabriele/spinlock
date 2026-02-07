@@ -25,7 +25,6 @@ model:
   param_conditioning: true    # Condition on 14D parameter vector θ
   param_dim: 14               # dt, alpha + 12 other params
   param_embed_dim: 64         # MLP projection dimension
-  token_conditioning: false   # No behavioral tokens
 
 training:
   n_samples: 10000            # Use all 10K samples

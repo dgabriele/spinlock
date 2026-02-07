@@ -25,7 +25,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from spinlock.noa import NOABackbone, NOARealDataset, NOAFeatureExtractor
+from spinlock.mno import NOABackbone, NOARealDataset, NOAFeatureExtractor
 from spinlock.features import FeaturePreprocessor
 
 

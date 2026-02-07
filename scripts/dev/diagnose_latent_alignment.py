@@ -32,7 +32,7 @@ from torch.utils.data import DataLoader
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from spinlock.noa import NOABackbone, CNOReplayer, VQVAEAlignmentLoss
+from spinlock.mno import NOABackbone, CNOReplayer, VQVAEAlignmentLoss
 from spinlock.features.storage import HDF5FeatureDataset
 
 

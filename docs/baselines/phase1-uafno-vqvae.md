@@ -125,7 +125,7 @@ L = L_traj + λ₁ * L_latent + λ₂ * L_commit
 ### Implementation Details
 
 ```python
-from spinlock.noa import VQVAEAlignmentLoss
+from spinlock.mno import VQVAEAlignmentLoss
 
 # Load frozen VQ-VAE alignment module
 alignment = VQVAEAlignmentLoss.from_checkpoint(
@@ -200,7 +200,7 @@ The NOA produces auxiliary outputs aligned with Phase 0 feature families:
 The CNOReplayer reconstructs CNO operators from parameter vectors, enabling state-level supervision without storing full trajectories:
 
 ```python
-from spinlock.noa import CNOReplayer
+from spinlock.mno import CNOReplayer
 
 # Create replayer from config
 replayer = CNOReplayer.from_config(

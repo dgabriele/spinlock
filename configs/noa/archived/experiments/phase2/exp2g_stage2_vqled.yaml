@@ -24,7 +24,6 @@ model:
 
   # Token conditioning parameters (needed for checkpoint loading, but tokens not used)
   # The model architecture must match exp2f to load the checkpoint
-  token_conditioning: true   # Keep enabled to load checkpoint
   token_embed_dim: 64
   vqvae_checkpoint: "checkpoints/production/100k_3family_v2/best_model.pt"
   # NOTE: Tokens will NOT be passed during training - model must self-regulate

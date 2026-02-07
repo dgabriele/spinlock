@@ -27,9 +27,9 @@ import time
 # Add src to path for imports
 sys.path.insert(0, "/home/daniel/projects/spinlock/src")
 
-from spinlock.noa.backbone import NOABackbone
-from spinlock.noa.losses import VQVAEPerceptualLoss, FeatureProjector, NOALoss
-from spinlock.noa.training import (
+from spinlock.mno.backbone import NOABackbone
+from spinlock.mno.losses import VQVAEPerceptualLoss, FeatureProjector, NOALoss
+from spinlock.mno.training import (
     NOAPhase1Trainer,
     NOADatasetWithFeatures,
     extract_trajectory_features,

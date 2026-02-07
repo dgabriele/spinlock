@@ -27,8 +27,8 @@ import time
 # Add src to path for imports
 sys.path.insert(0, "/home/daniel/projects/spinlock/src")
 
-from spinlock.noa.backbone import NOABackbone
-from spinlock.noa.training import (
+from spinlock.mno.backbone import NOABackbone
+from spinlock.mno.training import (
     NOAPhase1Trainer,
     NOADataset,
     NOADatasetWithFeatures,

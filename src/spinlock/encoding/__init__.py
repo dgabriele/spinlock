@@ -45,7 +45,8 @@ Usage:
     >>> history = trainer.train(epochs=500)
 """
 
-from .categorical_vqvae import CategoricalHierarchicalVQVAE, CategoricalVQVAEConfig
+# V1 VQ-VAE removed - use spinlock.tokens.VQTokenizer instead
+# from .categorical_vqvae import CategoricalHierarchicalVQVAE, CategoricalVQVAEConfig
 from .learnable_assignment import LearnableAssignmentConfig
 from .category_assignment import CategoryAssignment, DynamicCategoryAssignment
 from .clustering_assignment import (
@@ -86,7 +87,8 @@ from .latent_dim_defaults import (
 )
 from .grouped_feature_extractor import GroupedFeatureExtractor, GroupMLP
 from .categorical_projector import CategoricalProjector
-from .training import VQVAETrainer, EarlyStopping, DeadCodeReset, Checkpointer
+# V1 training removed - use spinlock.tokens.VQTokenizerTrainer instead
+# from .training import VQVAETrainer, EarlyStopping, DeadCodeReset, Checkpointer
 from .unified_feature_pipeline import (
     UnifiedFeaturePipeline,
     FamilyFeatureExtractor,
@@ -96,9 +98,9 @@ from .unified_feature_pipeline import (
 )
 
 __all__ = [
-    # Main model
-    "CategoricalHierarchicalVQVAE",
-    "CategoricalVQVAEConfig",
+    # Main model (V1 removed - use spinlock.tokens.VQTokenizer)
+    # "CategoricalHierarchicalVQVAE",
+    # "CategoricalVQVAEConfig",
     # Learnable assignment
     "LearnableAssignmentConfig",
     # Category assignment
@@ -143,11 +145,11 @@ __all__ = [
     "GroupedFeatureExtractor",
     "GroupMLP",
     "CategoricalProjector",
-    # Training
-    "VQVAETrainer",
-    "EarlyStopping",
-    "DeadCodeReset",
-    "Checkpointer",
+    # Training (V1 removed - use spinlock.tokens.VQTokenizerTrainer)
+    # "VQVAETrainer",
+    # "EarlyStopping",
+    # "DeadCodeReset",
+    # "Checkpointer",
     # Unified feature pipeline
     "UnifiedFeaturePipeline",
     "FamilyFeatureExtractor",

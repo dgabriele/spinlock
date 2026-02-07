@@ -1008,7 +1008,7 @@ class NOABackbone(nn.Module):
 **Add VQ-Led Losses:**
 
 ```python
-from spinlock.noa.losses import VQLedLoss
+from spinlock.mno.losses import VQLedLoss
 
 loss_fn = VQLedLoss(
     lambda_recon=1.0,      # Primary: VQ reconstruction

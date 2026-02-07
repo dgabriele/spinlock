@@ -14,9 +14,9 @@ import sys
 
 sys.path.insert(0, '/home/daniel/projects/spinlock/src')
 
-from spinlock.noa.losses import MSELedLoss
-from spinlock.noa.vqvae_alignment import VQVAEAlignmentLoss
-from spinlock.noa import NOABackbone
+from spinlock.mno.losses import MSELedLoss
+from spinlock.mno.vqvae_alignment import VQVAEAlignmentLoss
+from spinlock.mno import NOABackbone
 
 print("=" * 70)
 print("MSE-Led Latent Loss Test")

@@ -35,7 +35,7 @@ from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score, davies_bouldin_score
 
 from spinlock.encoding import CategoricalHierarchicalVQVAE, CategoricalVQVAEConfig
-from spinlock.noa.vqvae_alignment import AlignedFeatureExtractor
+from spinlock.mno.vqvae_alignment import AlignedFeatureExtractor
 
 logging.basicConfig(
     level=logging.INFO,

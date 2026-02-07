@@ -34,7 +34,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from spinlock.noa.cno_replay import CNOReplayer
+from spinlock.mno.cno_replay import CNOReplayer
 from spinlock.features.summary.extractors import SummaryExtractor
 from spinlock.features.summary.config import SummaryConfig
 

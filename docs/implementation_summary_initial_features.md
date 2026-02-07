@@ -258,7 +258,7 @@ grep "initial.*variance" logs/training.log
 ### Full Validation (After 700 epochs):
 ```python
 # Compare reconstruction errors
-from spinlock.noa.validation_utils import compute_category_errors
+from spinlock.mno.validation_utils import compute_category_errors
 
 errors = compute_category_errors(model, val_loader)
 print(errors['initial'])  # Target: < 10 (vs 136-696 before)

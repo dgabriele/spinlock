@@ -27,7 +27,6 @@ model:
   param_conditioning: true    # Condition on 14D parameter vector theta
   param_dim: 14               # dt, alpha + 12 other params
   param_embed_dim: 128        # MLP projection dimension (increased for temporal conditioning)
-  token_conditioning: false   # No behavioral tokens
 
   # FiLM conditioning mode (replaces concatenation)
   conditioning_mode: "film"   # "concat" | "film" | "both"

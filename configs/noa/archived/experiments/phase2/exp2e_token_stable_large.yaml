@@ -14,7 +14,6 @@ model:
   afno_blocks: 4
 
   # Token conditioning (with runtime parameter detection)
-  token_conditioning: true
   token_embed_dim: 64
   vqvae_checkpoint: "checkpoints/production/100k_full_features/best_model.pt"
 

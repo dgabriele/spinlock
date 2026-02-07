@@ -13,7 +13,6 @@ model:
 
   # Token conditioning (NEW)
   # num_tokens and codebook_sizes are auto-determined at runtime from VQ-VAE checkpoint
-  token_conditioning: true
   token_embed_dim: 64       # Embedding dimension after projection (optional, default: 64)
   vqvae_checkpoint: "checkpoints/production/100k_full_features/best_model.pt"
 

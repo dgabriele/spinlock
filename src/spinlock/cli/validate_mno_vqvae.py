@@ -4,9 +4,9 @@ from pathlib import Path
 import argparse
 
 from spinlock.cli.base import CLICommand
-from spinlock.noa.validation.mno_vqvae_validator import MNOVQVAEValidator
-from spinlock.noa.validation.config import ValidationConfig
-from spinlock.noa.validation.report import ValidationReport
+from spinlock.mno.validation.mno_vqvae_validator import MNOVQVAEValidator
+from spinlock.mno.validation.config import ValidationConfig
+from spinlock.mno.validation.report import ValidationReport
 
 
 class ValidateMNOVQVAECommand(CLICommand):

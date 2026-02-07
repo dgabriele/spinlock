@@ -255,7 +255,7 @@ model:
 ### Code Reference
 
 ```python
-from spinlock.noa.backbone import NOABackbone
+from spinlock.mno.backbone import NOABackbone
 
 # FiLM-conditioned MNO
 model = NOABackbone(
@@ -992,7 +992,7 @@ checkpointing:
 
 ```python
 import torch
-from spinlock.noa.backbone import NOABackbone
+from spinlock.mno.backbone import NOABackbone
 
 # Create token-conditioned MNO
 model = NOABackbone(

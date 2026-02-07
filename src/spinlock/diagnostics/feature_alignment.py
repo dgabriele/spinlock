@@ -13,7 +13,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Any
 
-from spinlock.noa.vqvae_alignment import AlignedFeatureExtractor
+from spinlock.mno.vqvae_alignment import AlignedFeatureExtractor
 
 
 def extract_features_from_rollouts(
@@ -87,7 +87,7 @@ def tokenize_features(
             - perplexity: Token perplexity (float)
             - per_category_mse: Per-category reconstruction MSE (dict)
     """
-    from spinlock.noa.vqvae_alignment import VQVAEAlignmentLoss
+    from spinlock.mno.vqvae_alignment import VQVAEAlignmentLoss
 
     # Resolve checkpoint path
     checkpoint_path = Path(vqvae_checkpoint_path)

@@ -25,7 +25,7 @@ import sys
 import h5py
 import torch
 import numpy as np
-from spinlock.noa.cno_replay import CNOReplayer
+from spinlock.mno.cno_replay import CNOReplayer
 
 sample_idx = {sample_idx}
 

@@ -26,8 +26,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from spinlock.noa import NOABackbone, CNOReplayer, VQVAEAlignmentLoss
-from spinlock.noa.losses import MSELedLoss, VQLedLoss
+from spinlock.mno import NOABackbone, CNOReplayer, VQVAEAlignmentLoss
+from spinlock.mno.losses import MSELedLoss, VQLedLoss
 import h5py
 from torch.utils.data import Dataset
 
