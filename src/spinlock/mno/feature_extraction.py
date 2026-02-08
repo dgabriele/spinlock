@@ -67,6 +67,7 @@ class MNOFeatureExtractor:
         self.summary_extractor = SummaryExtractor(
             device=self.device,
             config=summary_config,
+            use_batch_mode=True,
         )
 
         # Dimensions determined on first extraction
@@ -87,7 +88,11 @@ class MNOFeatureExtractor:
         rollouts: torch.Tensor,
         return_raw: bool = False,
     ) -> Dict[str, torch.Tensor]:
-        """Extract SUMMARY and TEMPORAL features from MNO rollouts.
+        """Extract TEMPORAL features from MNO rollouts (matches CNO dataset config).
+
+        NOTE: This only extracts TEMPORAL (per-timestep) features, NOT SUMMARY features.
+        CNO datasets use features.temporal.enabled=True but don't extract summary features.
+        We must match this for apples-to-apples comparison.
 
         Args:
             rollouts: MNO output [B, T, C, H, W] or [B, M, T, C, H, W] for multi-realization
@@ -95,10 +100,14 @@ class MNOFeatureExtractor:
 
         Returns:
             Dictionary with:
-                'summary': [B, D_summary] - per-trajectory SUMMARY features (cleaned if preprocessor)
-                'temporal': [B, T, D_temporal] - per-timestep TEMPORAL features (cleaned if preprocessor)
-                'raw' (optional): Full extractor output dictionary
+                'temporal': [B, T, D_temporal] - per-timestep TEMPORAL features
+                'raw' (optional): Raw tensor output from extractor
         """
+        # CRITICAL: Reset extractor state to prevent accumulation across batches
+        if hasattr(self.summary_extractor, 'temporal_extractor'):
+            if hasattr(self.summary_extractor.temporal_extractor, 'reset'):
+                self.summary_extractor.temporal_extractor.reset()
+
         # Handle both single-realization [B, T, C, H, W] and multi-realization [B, M, T, C, H, W]
         if rollouts.dim() == 5:
             B, T, C, H, W = rollouts.shape
@@ -111,42 +120,31 @@ class MNOFeatureExtractor:
         else:
             raise ValueError(f"Expected 5D or 6D tensor, got {rollouts.dim()}D")
 
-        # Extract features using SummaryExtractor
-        result = self.summary_extractor.extract_all(trajectories)
+        # Extract ONLY temporal features using extract_per_timestep (faster, GPU-accelerated)
+        # This skips the CPU-bound summary feature computation
+        temporal_features = self.summary_extractor.extract_per_timestep(trajectories)  # [B, T, D]
 
         # Initialize dimensions on first call
         if not self._initialized:
-            self._initialize_dimensions(result)
-
-        # TEMPORAL features: per_timestep [B, T, D_temporal]
-        temporal_features = result['per_timestep']
-
-        # SUMMARY features: per_trajectory [B, 1, D_summary] → [B, D_summary]
-        per_trajectory = result['per_trajectory']
-        summary_features = per_trajectory.squeeze(1)
+            self._temporal_dim = temporal_features.shape[-1]
+            self._per_trajectory_dim = None  # Not computing summary features
+            self._initialized = True
 
         # Apply preprocessing if provided (clean NaN features)
         if self.preprocessor is not None:
-            # Use 'summary_per_trajectory' since MNO extracts per single trajectory (M=1)
-            summary_features = self.preprocessor.clean_features(
-                summary_features, 'summary_per_trajectory'
-            )
             temporal_features = self.preprocessor.clean_features(
                 temporal_features, 'temporal'
             )
 
         # Replace any remaining NaN values with 0
-        # This handles cases where std() produces NaN for M=1 realizations
-        summary_features = torch.nan_to_num(summary_features, nan=0.0)
         temporal_features = torch.nan_to_num(temporal_features, nan=0.0)
 
         output = {
-            'summary': summary_features,
             'temporal': temporal_features,
         }
 
         if return_raw:
-            output['raw'] = result
+            output['raw'] = temporal_features
 
         return output
 
@@ -183,7 +181,6 @@ class MNOFeatureExtractor:
         Returns:
             Dictionary with dimension info:
                 'temporal_dim': Per-timestep feature dimension
-                'per_trajectory_dim': Per-trajectory summary dimension
                 'timesteps': Number of timesteps
         """
         dummy = torch.randn(
@@ -194,6 +191,5 @@ class MNOFeatureExtractor:
 
         return {
             'temporal_dim': result['temporal'].shape[-1],
-            'per_trajectory_dim': result['summary'].shape[-1],
             'timesteps': timesteps,
         }

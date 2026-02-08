@@ -49,15 +49,17 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
         >>> print(f"Feature dimensions: {features.shape}")  # [100, 256, D]
     """
 
-    def __init__(self, device: torch.device, config: Optional[Any] = None):
+    def __init__(self, device: torch.device, config: Optional[Any] = None, use_batch_mode: bool = True):
         """Initialize temporal feature orchestrator.
 
         Args:
             device: Torch device
             config: TemporalFeatureConfig (optional)
+            use_batch_mode: If True, use batch-parallel temporal extraction (GPU-optimized)
         """
         self.device = device
         self.config = config
+        self.use_batch_mode = use_batch_mode
 
         # Initialize sub-extractors
         self.spatial_extractor = SpatialFeatureExtractor(device=device)
@@ -65,21 +67,35 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
         self.cross_channel_extractor = CrossChannelFeatureExtractor(device=device)
 
         # Enhanced temporal extractor with configurable windows
+        window_size = 5
+        short_window = 5
+        medium_window = 20
+        long_window = 50
+
         if config is not None and hasattr(config, 'temporal'):
-            self.temporal_extractor = TemporalFeatureExtractor(
+            window_size = getattr(config.temporal, 'window_size', 5)
+            short_window = getattr(config.temporal, 'short_window', 5)
+            medium_window = getattr(config.temporal, 'medium_window', 20)
+            long_window = getattr(config.temporal, 'long_window', 50)
+
+        # Create sequential extractor (for validation/fallback)
+        self.temporal_extractor = TemporalFeatureExtractor(
+            device=device,
+            window_size=window_size,
+            short_window=short_window,
+            medium_window=medium_window,
+            long_window=long_window,
+        )
+
+        # Create batch-parallel extractor if requested
+        if use_batch_mode:
+            from spinlock.features.temporal.temporal_batch import BatchParallelTemporalExtractor
+            self.temporal_extractor_batch = BatchParallelTemporalExtractor(
                 device=device,
-                window_size=getattr(config.temporal, 'window_size', 5),
-                short_window=getattr(config.temporal, 'short_window', 5),
-                medium_window=getattr(config.temporal, 'medium_window', 20),
-                long_window=getattr(config.temporal, 'long_window', 50),
-            )
-        else:
-            self.temporal_extractor = TemporalFeatureExtractor(
-                device=device,
-                window_size=5,
-                short_window=5,
-                medium_window=20,
-                long_window=50,
+                window_size=window_size,
+                short_window=short_window,
+                medium_window=medium_window,
+                long_window=long_window,
             )
 
     def extract_per_timestep(self, trajectories: torch.Tensor) -> torch.Tensor:
@@ -175,21 +191,27 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 cross = cross.flatten(start_dim=2)
 
         # Extract enhanced temporal features (130D)
-        # Process timestep by timestep to maintain history
-        temporal_features = []
-        self.temporal_extractor.reset()  # Reset history buffers
+        if self.use_batch_mode:
+            # NEW: Batch-parallel path (GPU-only, fast)
+            # Process entire trajectory at once: [N, T, C, H, W] → [N, T, D]
+            temporal = self.temporal_extractor_batch.extract_batch(fields)
+        else:
+            # OLD: Sequential path (for validation/backward compat)
+            # Process timestep by timestep to maintain history
+            temporal_features = []
+            self.temporal_extractor.reset()  # Reset history buffers
 
-        for t in range(T):
-            # Get all samples at timestep t: [N, C, H, W]
-            u_t = fields[:, t, :, :, :]
+            for t in range(T):
+                # Get all samples at timestep t: [N, C, H, W]
+                u_t = fields[:, t, :, :, :]
 
-            # Extract temporal features: [N, 130]
-            temporal_t = self.temporal_extractor.extract(u_t)
+                # Extract temporal features: [N, 130]
+                temporal_t = self.temporal_extractor.extract(u_t)
 
-            temporal_features.append(temporal_t)
+                temporal_features.append(temporal_t)
 
-        # Stack: [T, N, 130] → [N, T, 130]
-        temporal = torch.stack(temporal_features, dim=0).transpose(0, 1)
+            # Stack: [T, N, 130] → [N, T, 130]
+            temporal = torch.stack(temporal_features, dim=0).transpose(0, 1)
 
         # Now all features are [N, T, D_i], concatenate along last dimension
         features = torch.cat([spatial, spectral, cross, temporal], dim=-1)

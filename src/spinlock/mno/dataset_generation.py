@@ -48,17 +48,21 @@ Usage:
     )
 """
 
+import gc
 import h5py
 import torch
 import numpy as np
 from pathlib import Path
 from typing import Optional, Dict
 from tqdm import tqdm
+import time
 
 from spinlock.mno.validation_utils import load_mno_checkpoint
 from spinlock.mno.feature_extraction import MNOFeatureExtractor
 from spinlock.features.initial.manual_extractors import InitialManualExtractor
 from spinlock.dataset.generators import InputFieldGenerator
+from spinlock.utils.profiler import PerformanceProfiler
+from spinlock.utils.async_hdf5_writer import AsyncHDF5Writer
 
 
 class MNORolloutDatasetGenerator:
@@ -125,7 +129,8 @@ class MNORolloutDatasetGenerator:
         num_channels: int = 3,
         num_params: int = 14,
         rollout_steps: int = 256,
-        device: str = "cuda"
+        device: str = "cuda",
+        enable_profiling: bool = False
     ):
         """Initialize MNO rollout dataset generator.
 
@@ -136,21 +141,23 @@ class MNORolloutDatasetGenerator:
             num_params: Number of operator parameters (default: 14)
             rollout_steps: Number of timesteps in rollouts (default: 256)
             device: Torch device for inference
+            enable_profiling: Whether to enable performance profiling (default: False)
         """
         self.device = torch.device(device)
         self.num_realizations = num_realizations
         self.num_channels = num_channels
         self.num_params = num_params
         self.rollout_steps = rollout_steps
+        self.profiler = PerformanceProfiler() if enable_profiling else None
 
         # Load MNO checkpoint
         print(f"Loading MNO checkpoint: {mno_checkpoint}")
         self.mno = load_mno_checkpoint(str(mno_checkpoint), device=str(device))
         self.mno.eval()
 
-        # Compile MNO for faster generation
-        print("Compiling MNO model (first batch will be slow)...")
-        self.mno = torch.compile(self.mno, mode='default')
+        # Compile MNO for faster generation (DISABLED - causes memory accumulation)
+        # print("Compiling MNO model (first batch will be slow)...")
+        # self.mno = torch.compile(self.mno, mode='default')
 
         # Initialize feature extractors
         print("Initializing feature extractors...")
@@ -217,81 +224,133 @@ class MNORolloutDatasetGenerator:
         print(f"Checkpoint interval: {checkpoint_interval}")
         print(f"{'='*60}\n")
 
-        # Create HDF5 file with dataset structure
+        # Create HDF5 file with dataset structure (matches CNO structure exactly)
         with h5py.File(output_path, 'w') as f:
-            # Create dataset groups
+            # Create dataset groups (match CNO structure)
             inputs_grp = f.create_group('inputs')
             params_grp = f.create_group('parameters')
             features_grp = f.create_group('features')
+            rollouts_grp = f.create_group('rollouts')  # MNO-specific (for alignment analysis)
+
+            # Feature subgroups (match CNO structure)
+            temporal_grp = features_grp.create_group('temporal')
             initial_grp = features_grp.create_group('initial')
-            rollouts_grp = f.create_group('rollouts')
+            initial_agg_grp = initial_grp.create_group('aggregated')
+
+            # NOTE: CNO has features/architecture/aggregated/features for parameter encoding
+            # MNO doesn't need this since we store raw parameters in parameters/params
 
             # Create datasets (fixed size)
+            # Use compression level 1 for faster writes (good balance of speed vs size)
             fields_ds = inputs_grp.create_dataset(
                 'fields',
                 shape=(num_rollouts, self.num_realizations, self.num_channels, 64, 64),
                 dtype='float32',
-                compression='gzip',
-                compression_opts=4
+                compression='lzf',
+                chunks=(batch_size, self.num_realizations, self.num_channels, 64, 64)
             )
 
             params_ds = params_grp.create_dataset(
                 'params',
                 shape=(num_rollouts, self.num_params),
                 dtype='float32',
-                compression='gzip',
-                compression_opts=4
+                compression='lzf',
+                chunks=(batch_size, self.num_params)
             )
 
-            temporal_ds = features_grp.create_dataset(
-                'temporal',
+            # Match CNO structure: features/temporal/features (not features/temporal)
+            temporal_ds = temporal_grp.create_dataset(
+                'features',
                 shape=(num_rollouts, self.rollout_steps, self.temporal_dim),
                 dtype='float32',
-                compression='gzip',
-                compression_opts=4
+                compression='lzf',
+                chunks=(batch_size, self.rollout_steps, self.temporal_dim)
             )
 
-            initial_ds = initial_grp.create_dataset(
-                'aggregated',
+            # Match CNO structure: features/initial/aggregated/features
+            initial_ds = initial_agg_grp.create_dataset(
+                'features',
                 shape=(num_rollouts, self.initial_dim),
                 dtype='float32',
-                compression='gzip',
-                compression_opts=4
+                compression='lzf',
+                chunks=(batch_size, self.initial_dim)
             )
 
+            # MNO-specific: Store full rollouts for alignment analysis
+            # (CNO has store_trajectories=false, but we need rollouts for semantic grounding)
             rollouts_ds = rollouts_grp.create_dataset(
                 'mno',
                 shape=(num_rollouts, self.num_realizations, self.rollout_steps, self.num_channels, 64, 64),
                 dtype='float32',
-                compression='gzip',
-                compression_opts=4
+                compression='lzf',
+                chunks=(batch_size, self.num_realizations, self.rollout_steps, self.num_channels, 64, 64)
             )
 
-            # Generate in batches
+            # Prepare datasets dictionary for async writer
+            datasets = {
+                'fields': fields_ds,
+                'params': params_ds,
+                'temporal_features': temporal_ds,
+                'initial_features': initial_ds,
+                'rollouts': rollouts_ds
+            }
+
+            # Generate in batches with async writes
             num_batches = (num_rollouts + batch_size - 1) // batch_size
 
-            with tqdm(total=num_rollouts, desc="Generating rollouts") as pbar:
-                for batch_idx in range(num_batches):
-                    start_idx = batch_idx * batch_size
-                    end_idx = min(start_idx + batch_size, num_rollouts)
-                    current_batch_size = end_idx - start_idx
+            with AsyncHDF5Writer(f, datasets, queue_size=4) as writer:
+                with tqdm(total=num_rollouts, desc="Generating rollouts") as pbar:
+                    for batch_idx in range(num_batches):
+                        start_idx = batch_idx * batch_size
+                        end_idx = min(start_idx + batch_size, num_rollouts)
+                        current_batch_size = end_idx - start_idx
 
-                    # Generate batch
-                    batch_data = self._generate_batch(current_batch_size)
+                        # DEBUG: Timing
+                        t_start = time.time()
 
-                    # Save to HDF5
-                    fields_ds[start_idx:end_idx] = batch_data['fields']
-                    params_ds[start_idx:end_idx] = batch_data['params']
-                    temporal_ds[start_idx:end_idx] = batch_data['temporal_features']
-                    initial_ds[start_idx:end_idx] = batch_data['initial_features']
-                    rollouts_ds[start_idx:end_idx] = batch_data['rollouts']
+                        # Generate batch (GPU computation)
+                        t_gen_start = time.time()
+                        batch_data = self._generate_batch(current_batch_size)
+                        t_gen = time.time() - t_gen_start
 
-                    pbar.update(current_batch_size)
+                        # Submit write (async - happens in background)
+                        t_write_start = time.time()
+                        if self.profiler:
+                            with self.profiler.profile("7_hdf5_write"):
+                                writer.submit(start_idx, end_idx, batch_data)
+                        else:
+                            writer.submit(start_idx, end_idx, batch_data)
+                        t_write = time.time() - t_write_start
 
-                    # Periodic checkpoint (flush to disk)
-                    if end_idx % checkpoint_interval == 0:
-                        f.flush()
-                        print(f"\n  Checkpoint: {end_idx}/{num_rollouts} rollouts saved")
+                        # Explicit memory cleanup to prevent accumulation
+                        t_gc_start = time.time()
+                        del batch_data
+                        gc.collect()
+                        t_gc = time.time() - t_gc_start
+
+                        t_cache_start = time.time()
+                        if batch_idx % 2 == 0:
+                            torch.cuda.empty_cache()
+                        t_cache = time.time() - t_cache_start
+
+                        t_total = time.time() - t_start
+
+                        # Print timing breakdown
+                        if batch_idx % 10 == 0:
+                            print(f"\nBatch {batch_idx}: gen={t_gen:.2f}s write={t_write:.2f}s gc={t_gc:.2f}s cache={t_cache:.2f}s total={t_total:.2f}s")
+
+                        pbar.update(current_batch_size)
+
+                        # Print profiling summary after first batch
+                        if self.profiler and batch_idx == 0:
+                            print("\n")
+                            self.profiler.print_summary()
+                            print("\nContinuing generation...\n")
+
+                        # Periodic checkpoint (flush to disk)
+                        if end_idx % checkpoint_interval == 0:
+                            writer.flush()
+                            print(f"\n  Checkpoint: {end_idx}/{num_rollouts} rollouts saved")
 
         print(f"\n{'='*60}")
         print(f"Dataset generation complete!")
@@ -313,47 +372,101 @@ class MNORolloutDatasetGenerator:
                 - initial_features: [B, D_i] initial features
                 - rollouts: [B, M, T, C, H, W] full MNO rollouts
         """
+        _t_start = time.time()
         with torch.no_grad():
             # Sample parameters via Sobol sequence
-            params = self._sample_parameters(batch_size)  # [B, 12]
+            if self.profiler:
+                with self.profiler.profile("1_parameter_sampling"):
+                    params = self._sample_parameters(batch_size)
+            else:
+                params = self._sample_parameters(batch_size)
 
             # Generate initial conditions from parameters
-            # For stochastic operators, we need M realizations
-            ics = self._generate_initial_conditions(params)  # [B, M, C, H, W]
+            if self.profiler:
+                with self.profiler.profile("2_ic_generation"):
+                    ics = self._generate_initial_conditions(params)
+            else:
+                ics = self._generate_initial_conditions(params)
 
-            # Generate MNO rollouts for all realizations
-            rollouts_list = []
-            for m in range(self.num_realizations):
-                # Get ICs for this realization
-                ic_m = ics[:, m, :, :, :]  # [B, C, H, W]
+            # Generate MNO rollouts for all realizations (batched for efficiency)
+            # Instead of 3 sequential rollouts, batch all realizations together
+            if self.profiler:
+                with self.profiler.profile("3_mno_rollout_generation"):
+                    # Reshape: [B, M, C, H, W] -> [B*M, C, H, W]
+                    ics_flat = ics.view(-1, self.num_channels, 64, 64)
 
-                # Generate rollout
-                rollout_m = self.mno.rollout(
-                    ic_m,
+                    # Replicate params for each realization: [B, P] -> [B*M, P]
+                    params_repeated = params.unsqueeze(1).repeat(1, self.num_realizations, 1).view(-1, self.num_params)
+
+                    # Single batched rollout for all realizations
+                    rollouts_flat = self.mno.rollout(
+                        ics_flat,
+                        steps=self.rollout_steps,
+                        return_all_steps=True,
+                        params=params_repeated
+                    )[:, 1:, ...]  # [B*M, T, C, H, W]
+
+                    # Reshape back: [B*M, T, C, H, W] -> [B, M, T, C, H, W]
+                    rollouts = rollouts_flat.view(batch_size, self.num_realizations, self.rollout_steps, self.num_channels, 64, 64)
+            else:
+                # Reshape: [B, M, C, H, W] -> [B*M, C, H, W]
+                ics_flat = ics.view(-1, self.num_channels, 64, 64)
+
+                # Replicate params for each realization: [B, P] -> [B*M, P]
+                params_repeated = params.unsqueeze(1).repeat(1, self.num_realizations, 1).view(-1, self.num_params)
+
+                # Single batched rollout for all realizations
+                rollouts_flat = self.mno.rollout(
+                    ics_flat,
                     steps=self.rollout_steps,
                     return_all_steps=True,
-                    params=params
-                )[:, 1:, ...]  # Remove IC from output: [B, T, C, H, W]
+                    params=params_repeated
+                )[:, 1:, ...]  # [B*M, T, C, H, W]
 
-                rollouts_list.append(rollout_m.unsqueeze(1))  # [B, 1, T, C, H, W]
+                # Reshape back: [B*M, T, C, H, W] -> [B, M, T, C, H, W]
+                rollouts = rollouts_flat.view(batch_size, self.num_realizations, self.rollout_steps, self.num_channels, 64, 64)
 
-            # Concatenate all realizations: [B, M, T, C, H, W]
-            rollouts = torch.cat(rollouts_list, dim=1)
+            _t_rollout = time.time() - _t_start
 
-            # Extract temporal features (aggregate across realizations)
-            # MNOFeatureExtractor expects [B, M, T, C, H, W]
-            temporal_features = self._extract_temporal_features(rollouts)  # [B, T, D_t]
+            # Extract temporal features
+            _t_temp_start = time.time()
+            if self.profiler:
+                with self.profiler.profile("4_temporal_feature_extraction"):
+                    temporal_features = self._extract_temporal_features(rollouts)
+            else:
+                temporal_features = self._extract_temporal_features(rollouts)
 
-            # Extract initial features (aggregate across realizations)
-            initial_features = self._extract_initial_features(ics)  # [B, D_i]
+            _t_temp = time.time() - _t_temp_start
 
-            return {
-                'fields': ics.cpu().numpy(),
-                'params': params.cpu().numpy(),
-                'temporal_features': temporal_features.cpu().numpy(),
-                'initial_features': initial_features.cpu().numpy(),
-                'rollouts': rollouts.cpu().numpy()
+            # Extract initial features
+            _t_init_start = time.time()
+            if self.profiler:
+                with self.profiler.profile("5_initial_feature_extraction"):
+                    initial_features = self._extract_initial_features(ics)
+            else:
+                initial_features = self._extract_initial_features(ics)
+
+            _t_init = time.time() - _t_init_start
+            _t_total_gen = time.time() - _t_start
+
+            # DEBUG: Print component timing
+            if not hasattr(self, '_batch_count'):
+                self._batch_count = 0
+            if self._batch_count % 5 == 0:
+                print(f"  [Batch {self._batch_count}] rollout={_t_rollout:.2f}s temp_features={_t_temp:.2f}s init_features={_t_init:.2f}s total={_t_total_gen:.2f}s")
+            self._batch_count += 1
+
+            # Return tensors directly - async writer will handle .cpu().numpy() in background
+            # This keeps the main thread on GPU and offloads CPU conversion to writer thread
+            result = {
+                'fields': ics,
+                'params': params,
+                'temporal_features': temporal_features,
+                'initial_features': initial_features,
+                'rollouts': rollouts
             }
+
+            return result
 
     def _sample_parameters(self, batch_size: int) -> torch.Tensor:
         """Sample operator parameters via Sobol sequence.
