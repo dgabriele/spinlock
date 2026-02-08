@@ -83,13 +83,13 @@ Output Structure:
         parameters/params: [N, 12]       # Operator parameters
         features/temporal: [N, T, D_t]   # Temporal features
         features/initial/aggregated: [N, D_i]  # Initial features
-        rollouts/mno: [N, M, T, C, H, W]  # Full trajectories
+        rollouts/mno: [N, M, T, C, H, W]  # Full trajectories (optional, use --store-rollouts)
 
 Performance:
     With batch_size=128 on a modern GPU:
     - ~36 rollouts/sec (including feature extraction)
     - 100k rollouts: ~45 minutes
-    - Dataset size: ~40GB (with compression)
+    - Dataset size: ~7GB (with compression)
 
 Examples:
     # Standard 100k dataset for production tokenizer
@@ -193,9 +193,44 @@ Examples:
             help="Device for computation (default: cuda)",
         )
 
+        parser.add_argument(
+            "--profile",
+            action="store_true",
+            help="Enable performance profiling (prints breakdown after first batch)",
+        )
+
+        parser.add_argument(
+            "--store-rollouts",
+            action="store_true",
+            default=False,
+            help="Store full rollouts in HDF5 (WARNING: uses ~180x more disk space! For 100K samples: features-only=~7GB, with-rollouts=~1.2TB). Default: False (features only)",
+        )
+
+        parser.add_argument(
+            "--enable-expandable-segments",
+            action="store_true",
+            default=True,
+            help="Enable PyTorch expandable memory segments to reduce fragmentation (default: True)",
+        )
+
+        parser.add_argument(
+            "--disable-expandable-segments",
+            action="store_false",
+            dest="enable_expandable_segments",
+            help="Disable PyTorch expandable memory segments",
+        )
+
     def execute(self, args: Namespace) -> int:
         """Execute the generate-mno-dataset command."""
+        import os
         from spinlock.mno.dataset_generation import MNORolloutDatasetGenerator
+
+        # Configure PyTorch CUDA memory allocator
+        if args.enable_expandable_segments:
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+            print("  CUDA memory: Using expandable segments (reduces fragmentation)")
+        else:
+            print("  CUDA memory: Using default allocator")
 
         # Validate MNO checkpoint exists
         if not self.validate_file_exists(args.mno_checkpoint, "MNO checkpoint"):
@@ -221,7 +256,9 @@ Examples:
                 num_channels=args.num_channels,
                 num_params=args.num_params,
                 rollout_steps=args.rollout_steps,
-                device=args.device
+                device=args.device,
+                enable_profiling=args.profile,
+                store_rollouts=args.store_rollouts
             )
 
             # Generate dataset

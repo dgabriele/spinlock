@@ -32,8 +32,8 @@ Output HDF5 Structure:
         features/
             temporal: [N, T, D_t]  # MNO temporal features (aggregated across M)
             initial/aggregated: [N, D_i]  # Initial manual features (aggregated)
-        rollouts/
-            mno: [N, M, T, C, H, W]  # Full MNO trajectories (for alignment analysis)
+        rollouts/  # Optional (only if --store-rollouts flag used)
+            mno: [N, M, T, C, H, W]  # Full MNO trajectories (WARNING: ~180x more disk space!)
 
 Usage:
     generator = MNORolloutDatasetGenerator(
@@ -130,7 +130,8 @@ class MNORolloutDatasetGenerator:
         num_params: int = 14,
         rollout_steps: int = 256,
         device: str = "cuda",
-        enable_profiling: bool = False
+        enable_profiling: bool = False,
+        store_rollouts: bool = False
     ):
         """Initialize MNO rollout dataset generator.
 
@@ -142,12 +143,14 @@ class MNORolloutDatasetGenerator:
             rollout_steps: Number of timesteps in rollouts (default: 256)
             device: Torch device for inference
             enable_profiling: Whether to enable performance profiling (default: False)
+            store_rollouts: Whether to store full rollouts (default: False, saves ~180x disk space)
         """
         self.device = torch.device(device)
         self.num_realizations = num_realizations
         self.num_channels = num_channels
         self.num_params = num_params
         self.rollout_steps = rollout_steps
+        self.store_rollouts = store_rollouts
         self.profiler = PerformanceProfiler() if enable_profiling else None
 
         # Load MNO checkpoint
@@ -155,9 +158,9 @@ class MNORolloutDatasetGenerator:
         self.mno = load_mno_checkpoint(str(mno_checkpoint), device=str(device))
         self.mno.eval()
 
-        # Compile MNO for faster generation (DISABLED - causes memory accumulation)
-        # print("Compiling MNO model (first batch will be slow)...")
-        # self.mno = torch.compile(self.mno, mode='default')
+        # Compile MNO for faster generation (enabled for production runs)
+        print("Compiling MNO model (first batch will be slow)...")
+        self.mno = torch.compile(self.mno, mode='default')
 
         # Initialize feature extractors
         print("Initializing feature extractors...")
@@ -276,24 +279,30 @@ class MNORolloutDatasetGenerator:
                 chunks=(batch_size, self.initial_dim)
             )
 
-            # MNO-specific: Store full rollouts for alignment analysis
-            # (CNO has store_trajectories=false, but we need rollouts for semantic grounding)
-            rollouts_ds = rollouts_grp.create_dataset(
-                'mno',
-                shape=(num_rollouts, self.num_realizations, self.rollout_steps, self.num_channels, 64, 64),
-                dtype='float32',
-                compression='lzf',
-                chunks=(batch_size, self.num_realizations, self.rollout_steps, self.num_channels, 64, 64)
-            )
-
             # Prepare datasets dictionary for async writer
             datasets = {
                 'fields': fields_ds,
                 'params': params_ds,
                 'temporal_features': temporal_ds,
                 'initial_features': initial_ds,
-                'rollouts': rollouts_ds
             }
+
+            # Optionally store full rollouts (WARNING: uses ~180x more disk space!)
+            # For 100K samples: features-only = ~7GB, with rollouts = ~1.2TB
+            # Only enable this if you specifically need raw trajectories for analysis
+            if self.store_rollouts:
+                print("  WARNING: Storing full rollouts (this will use ~180x more disk space)")
+                print("  100K samples: features-only = ~7GB, with rollouts = ~1.2TB")
+                rollouts_ds = rollouts_grp.create_dataset(
+                    'mno',
+                    shape=(num_rollouts, self.num_realizations, self.rollout_steps, self.num_channels, 64, 64),
+                    dtype='float32',
+                    compression='lzf',
+                    chunks=(batch_size, self.num_realizations, self.rollout_steps, self.num_channels, 64, 64)
+                )
+                datasets['rollouts'] = rollouts_ds
+            else:
+                print("  Storing features only (not full rollouts) - saves ~180x disk space")
 
             # Generate in batches with async writes
             num_batches = (num_rollouts + batch_size - 1) // batch_size
@@ -463,8 +472,11 @@ class MNORolloutDatasetGenerator:
                 'params': params,
                 'temporal_features': temporal_features,
                 'initial_features': initial_features,
-                'rollouts': rollouts
             }
+
+            # Only include rollouts if requested (saves ~180x disk space when disabled)
+            if self.store_rollouts:
+                result['rollouts'] = rollouts
 
             return result
 
