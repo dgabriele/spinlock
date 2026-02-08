@@ -1,0 +1,61 @@
+# Ablation: Coarse-Only Masking Strategy
+# Test hierarchical inference: predict L1+L2 from L0 only
+
+# Dataset paths
+dataset:
+  path: "datasets/cno_100k.h5"
+  tokenizer_checkpoint: "checkpoints/vqvae/vq_tokenizer_best.pt"
+  cache_tokens: true
+  device: "cuda"
+
+# Masking strategy (changed from baseline)
+masking:
+  strategy: "coarse_only"  # Keep only L0, mask L1+L2
+  mask_probability: 0.5  # Not used for coarse_only
+  seed: 42
+
+# Diffusion schedule (same as baseline)
+diffusion:
+  num_timesteps: 50
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule_type: "cosine"
+
+# Denoising network (same as baseline)
+model:
+  hidden_dim: 256
+  num_layers: 6
+  num_heads: 8
+  dropout: 0.1
+  use_hierarchical_guidance: true
+  hierarchical_guidance_weight: 0.1
+
+# Training (same as baseline)
+training:
+  batch_size: 64
+  num_epochs: 30
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  gradient_clip_norm: 1.0
+
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 2
+    min_lr: 1.0e-6
+
+  val_batch_size: 128
+  val_frequency: 1
+  val_samples: 5
+
+  checkpoint_frequency: 5
+  save_best: true
+  log_frequency: 50
+  use_wandb: false
+
+# Output
+output:
+  dir: "experiments/diffusion/results/coarse_only"
+  checkpoint_prefix: "diffusion_coarse_only"
+
+device: "cuda"
+seed: 42
