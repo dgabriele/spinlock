@@ -1,0 +1,70 @@
+# Curriculum Learning Configuration
+# Staged training: COARSE_ONLY → HIERARCHICAL → RANDOM
+
+dataset:
+  path: "datasets/cno_100k.h5"
+  tokenizer_checkpoint: "checkpoints/vqvae/vq_tokenizer_best.pt"
+  cache_tokens: true
+  device: "cuda"
+
+# Curriculum stages
+curriculum:
+  stages:
+    - name: "stage1_coarse"
+      strategy: "coarse_only"
+      num_epochs: 10
+      learning_rate: null  # Use global LR
+      mask_probability: null  # Use default 0.5
+
+    - name: "stage2_hierarchical"
+      strategy: "hierarchical"
+      num_epochs: 10
+      learning_rate: null
+      mask_probability: null
+
+    - name: "stage3_random"
+      strategy: "random"
+      num_epochs: 10
+      learning_rate: null
+      mask_probability: 0.5
+
+diffusion:
+  num_timesteps: 50
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule_type: "cosine"
+
+model:
+  hidden_dim: 256
+  num_layers: 6
+  num_heads: 8
+  dropout: 0.1
+  use_hierarchical_guidance: true
+  hierarchical_guidance_weight: 0.1
+
+training:
+  batch_size: 64
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  gradient_clip_norm: 1.0
+
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 2
+    min_lr: 1.0e-6
+
+  val_batch_size: 128
+  val_frequency: 1
+  val_samples: 5
+
+  checkpoint_frequency: 5
+  save_best: true
+  log_frequency: 50
+  use_wandb: false
+
+output:
+  dir: "experiments/diffusion/results/curriculum_learning"
+  checkpoint_prefix: "diffusion_curriculum"
+
+device: "cuda"
+seed: 42

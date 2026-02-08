@@ -1,0 +1,62 @@
+# Mixed Training Configuration
+# Sample from multiple masking strategies per batch
+
+dataset:
+  path: "datasets/cno_100k.h5"
+  tokenizer_checkpoint: "checkpoints/vqvae/vq_tokenizer_best.pt"
+  cache_tokens: true
+  device: "cuda"
+
+# Mixed masking (replaces single masking.strategy)
+masking:
+  type: "mixed"  # Use MixedMaskGenerator
+  strategies:
+    - strategy: "random"
+      weight: 0.5  # 50% of batches
+    - strategy: "coarse_only"
+      weight: 0.3  # 30% of batches
+    - strategy: "hierarchical"
+      weight: 0.2  # 20% of batches
+  seed: 42
+
+diffusion:
+  num_timesteps: 50
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule_type: "cosine"
+
+model:
+  hidden_dim: 256
+  num_layers: 6
+  num_heads: 8
+  dropout: 0.1
+  use_hierarchical_guidance: true
+  hierarchical_guidance_weight: 0.1
+
+training:
+  batch_size: 64
+  num_epochs: 30
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  gradient_clip_norm: 1.0
+
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 2
+    min_lr: 1.0e-6
+
+  val_batch_size: 128
+  val_frequency: 1
+  val_samples: 5
+
+  checkpoint_frequency: 5
+  save_best: true
+  log_frequency: 50
+  use_wandb: false
+
+output:
+  dir: "experiments/diffusion/results/mixed_training"
+  checkpoint_prefix: "diffusion_mixed"
+
+device: "cuda"
+seed: 42
