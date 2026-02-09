@@ -3,7 +3,7 @@
 import logging
 import time
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -13,6 +13,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from experiments.diffusion.models import DiscreteD3PM, DenoisingNetwork
+from experiments.diffusion.config import DiffusionExperimentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class DiffusionTrainer:
         denoising_network: DenoisingNetwork instance
         train_loader: Training dataloader
         val_loader: Validation dataloader
-        config: Training configuration dict
+        config: Training configuration (DiffusionExperimentConfig)
         output_dir: Directory for checkpoints and logs
         device: Device for training
 
@@ -47,7 +48,7 @@ class DiffusionTrainer:
         denoising_network: DenoisingNetwork,
         train_loader: DataLoader,
         val_loader: DataLoader,
-        config: Dict[str, Any],
+        config: DiffusionExperimentConfig,
         output_dir: Path,
         device: str = "cuda",
     ):
@@ -85,7 +86,7 @@ class DiffusionTrainer:
         }
 
         # Optional wandb logging
-        self.use_wandb = config.get('training', {}).get('use_wandb', False)
+        self.use_wandb = config.training.use_wandb
         if self.use_wandb:
             try:
                 import wandb
@@ -98,9 +99,8 @@ class DiffusionTrainer:
 
     def _create_optimizer(self) -> torch.optim.Optimizer:
         """Create AdamW optimizer."""
-        training_config = self.config['training']
-        lr = training_config['learning_rate']
-        weight_decay = training_config['weight_decay']
+        lr = self.config.training.learning_rate
+        weight_decay = self.config.training.weight_decay
 
         optimizer = AdamW(
             self.denoiser.parameters(),
@@ -114,15 +114,14 @@ class DiffusionTrainer:
 
     def _create_scheduler(self) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
         """Create learning rate scheduler with warmup."""
-        training_config = self.config['training']
-        lr_config = training_config.get('lr_scheduler', {})
+        lr_config = self.config.training.lr_scheduler
 
-        if lr_config.get('type') != 'cosine':
+        if lr_config.type != 'cosine':
             return None
 
-        warmup_epochs = lr_config.get('warmup_epochs', 2)
-        min_lr = lr_config.get('min_lr', 1e-6)
-        num_epochs = training_config['num_epochs']
+        warmup_epochs = lr_config.warmup_epochs
+        min_lr = lr_config.min_lr
+        num_epochs = self.config.training.num_epochs
 
         # Warmup scheduler
         warmup_scheduler = LinearLR(
@@ -167,7 +166,7 @@ class DiffusionTrainer:
             train_metrics = self.train_epoch()
 
             # Validate
-            if epoch % self.config['training']['val_frequency'] == 0:
+            if epoch % self.config.training.val_frequency == 0:
                 val_metrics = self.validate()
 
                 # Log
@@ -196,13 +195,13 @@ class DiffusionTrainer:
                     })
 
                 # Save best model
-                if self.config['training']['save_best'] and val_metrics['loss'] < self.best_val_loss:
+                if self.config.training.save_best and val_metrics['loss'] < self.best_val_loss:
                     self.best_val_loss = val_metrics['loss']
                     self.save_checkpoint(is_best=True)
                     logger.info(f"New best model saved (val_loss={self.best_val_loss:.4f})")
 
             # Periodic checkpoint
-            if epoch % self.config['training']['checkpoint_frequency'] == 0:
+            if epoch % self.config.training.checkpoint_frequency == 0:
                 self.save_checkpoint(is_best=False)
 
         logger.info("Training complete")
@@ -244,10 +243,10 @@ class DiffusionTrainer:
             loss.backward()
 
             # Gradient clipping
-            if self.config['training'].get('gradient_clip_norm'):
+            if self.config.training.gradient_clip_norm:
                 nn.utils.clip_grad_norm_(
                     self.denoiser.parameters(),
-                    self.config['training']['gradient_clip_norm']
+                    self.config.training.gradient_clip_norm
                 )
 
             self.optimizer.step()
@@ -262,7 +261,7 @@ class DiffusionTrainer:
             self.global_step += 1
 
             # Log
-            if batch_idx % self.config['training']['log_frequency'] == 0:
+            if batch_idx % self.config.training.log_frequency == 0:
                 logger.info(
                     f"Epoch {self.current_epoch}, Batch {batch_idx}/{len(self.train_loader)}: "
                     f"loss={loss.item():.4f}, lr={self.optimizer.param_groups[0]['lr']:.6f}"
@@ -411,7 +410,7 @@ class DiffusionTrainer:
             'history': self.history,
         }
 
-        prefix = self.config['output']['checkpoint_prefix']
+        prefix = self.config.output.checkpoint_prefix
 
         if is_best:
             path = self.output_dir / f"{prefix}_best.pt"
