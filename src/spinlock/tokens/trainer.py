@@ -228,7 +228,9 @@ class VQTokenizerTrainer:
                         f"vq={val_metrics['vq']:.4f}, "
                         f"topo={val_metrics['topographic']:.4f} "
                         f"[pre={val_metrics['topo_pre']:.3f}, post={val_metrics['topo_post']:.3f}], "
-                        f"util={util_pct:.1f}%, avg_codes={avg_codebook_size:.1f})"
+                        f"util_epoch={util_pct:.1f}%, "
+                        f"util_embed={val_metrics['embedding_utilization']:.1f}%, "
+                        f"avg_codes={avg_codebook_size:.1f})"
                     )
                 logger.info(log_msg)
 
@@ -517,6 +519,9 @@ class VQTokenizerTrainer:
                 total_perplexity += outputs['perplexity'].item()
                 num_batches += 1
 
+        # Compute embedding-based utilization (true codebook diversity)
+        embed_util = self._compute_embedding_utilization()
+
         return {
             'loss': total_loss / num_batches,
             'reconstruction': total_recon / num_batches,
@@ -527,6 +532,7 @@ class VQTokenizerTrainer:
             'topo_pre': total_topo_pre / num_batches,
             'topo_post': total_topo_post / num_batches,
             'perplexity': total_perplexity / num_batches,
+            'embedding_utilization': embed_util,
         }
 
     def _extract_category_embeddings(
@@ -549,6 +555,36 @@ class VQTokenizerTrainer:
             category_embeddings[family_cat] = cat_emb
 
         return category_embeddings
+
+    def _compute_embedding_utilization(self) -> float:
+        """Compute true codebook utilization based on non-zero embeddings.
+
+        This measures the percentage of codebook entries with non-negligible
+        norms, which reflects actual learned diversity (not just epoch-wise
+        selection rate).
+
+        Returns:
+            Average utilization percentage across all quantizers
+        """
+        utilizations = []
+
+        for name, quantizer in self.model.quantizers.items():
+            # Get embedding weights
+            embeddings = quantizer.embedding.weight  # [num_embeddings, embedding_dim]
+
+            # Compute norms
+            norms = torch.norm(embeddings, dim=1)
+
+            # Count non-zero embeddings (threshold to avoid numerical issues)
+            num_active = (norms > 1e-6).sum().item()
+            num_total = embeddings.shape[0]
+
+            # Utilization for this quantizer
+            util = (num_active / num_total) * 100
+            utilizations.append(util)
+
+        # Return average across all quantizers
+        return sum(utilizations) / len(utilizations) if utilizations else 0.0
 
     def _reset_dead_codes(self):
         """Reset dead codebook entries that are rarely used."""
