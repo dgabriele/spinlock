@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 import torch
-import yaml
 from torch.utils.data import DataLoader, random_split
 
 # Add parent directories to path
@@ -14,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from spinlock.tokens.tokenizer import VQTokenizer
+from experiments.common.config.loader import load_experiment_config
+from config import DiffusionExperimentConfig
 from models import DiscreteD3PM, DiffusionSchedule, DenoisingNetwork
 from data import (
     HierarchicalMaskGenerator,
@@ -27,11 +28,7 @@ from training import DiffusionTrainer
 logger = logging.getLogger(__name__)
 
 
-def load_config(config_path: Path) -> dict:
-    """Load configuration from YAML file."""
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
-    return config
+# Config loading now handled by load_experiment_config from common.config.loader
 
 
 def extract_vocab_sizes_and_info(tokenizer_path: Path) -> tuple[dict, dict]:
@@ -115,36 +112,33 @@ def extract_vocab_sizes_from_pretokenized(tokenized_path: Path) -> tuple[dict, d
     return vocab_sizes, category_level_info
 
 
-def create_datasets(config: dict, mask_generator: HierarchicalMaskGenerator):
+def create_datasets(config: DiffusionExperimentConfig, mask_generator: HierarchicalMaskGenerator):
     """Create train and validation datasets."""
-    dataset_config = config['dataset']
-
     # Check if using pre-tokenized data
-    if dataset_config.get('use_pretokenized', False):
+    if config.dataset.use_pretokenized:
         logger.info("Using pre-tokenized dataset (fast mode)")
         full_dataset = PretokenizedDiffusionDataset(
-            tokenized_dataset_path=Path(dataset_config['tokenized_path']),
+            tokenized_dataset_path=config.dataset.tokenized_path,
             mask_generator=mask_generator,
         )
     else:
         logger.info("Using on-the-fly tokenization (slow mode)")
         full_dataset = DiffusionCompletionDataset(
-            dataset_path=Path(dataset_config['path']),
-            tokenizer_checkpoint=Path(dataset_config['tokenizer_checkpoint']),
+            dataset_path=config.dataset.path,
+            tokenizer_checkpoint=config.dataset.tokenizer_checkpoint,
             mask_generator=mask_generator,
-            cache_tokens=dataset_config.get('cache_tokens', True),
-            max_cache_size=dataset_config.get('max_cache_size', None),
-            device=dataset_config.get('device', 'cpu'),
+            cache_tokens=config.dataset.cache_tokens,
+            max_cache_size=config.dataset.max_cache_size,
+            device=config.dataset.device,
         )
 
     # Split into train/val
-    val_split = config['training'].get('val_split', 0.1)
-    val_size = int(len(full_dataset) * val_split)
+    val_size = int(len(full_dataset) * config.training.val_split)
     train_size = len(full_dataset) - val_size
 
     train_dataset, val_dataset = random_split(
         full_dataset, [train_size, val_size],
-        generator=torch.Generator().manual_seed(config.get('seed', 42))
+        generator=torch.Generator().manual_seed(config.seed)
     )
 
     logger.info(f"Datasets created: train={len(train_dataset)}, val={len(val_dataset)}")
@@ -152,13 +146,13 @@ def create_datasets(config: dict, mask_generator: HierarchicalMaskGenerator):
     return train_dataset, val_dataset
 
 
-def create_dataloaders(train_dataset, val_dataset, config: dict):
+def create_dataloaders(train_dataset, val_dataset, config: DiffusionExperimentConfig):
     """Create train and validation dataloaders."""
-    num_workers = config['training'].get('num_workers', 0)  # Default to 0 to avoid CUDA multiprocessing issues
+    num_workers = config.training.num_workers
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config['training']['batch_size'],
+        batch_size=config.training.batch_size,
         shuffle=True,
         collate_fn=collate_dict_batch,
         num_workers=num_workers,
@@ -167,7 +161,7 @@ def create_dataloaders(train_dataset, val_dataset, config: dict):
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=config['training'].get('val_batch_size', 128),
+        batch_size=config.training.val_batch_size,
         shuffle=False,
         collate_fn=collate_dict_batch,
         num_workers=num_workers,
@@ -179,33 +173,33 @@ def create_dataloaders(train_dataset, val_dataset, config: dict):
 
 def main(args):
     """Main training entry point."""
-    # Load config
+    # Load and validate config
     logger.info(f"Loading config from {args.config}")
-    config = load_config(args.config)
+    config = load_experiment_config(args.config, DiffusionExperimentConfig)
 
     # Set seed
-    torch.manual_seed(config.get('seed', 42))
+    torch.manual_seed(config.seed)
 
     # Extract vocab sizes
-    if config['dataset'].get('use_pretokenized', False):
+    if config.dataset.use_pretokenized:
         logger.info("Extracting vocab sizes from pre-tokenized dataset")
         vocab_sizes, category_level_info = extract_vocab_sizes_from_pretokenized(
-            Path(config['dataset']['tokenized_path'])
+            config.dataset.tokenized_path
         )
     else:
         logger.info("Extracting vocab sizes from tokenizer")
         vocab_sizes, category_level_info = extract_vocab_sizes_and_info(
-            Path(config['dataset']['tokenizer_checkpoint'])
+            config.dataset.tokenizer_checkpoint
         )
 
     # Create mask generator
-    logger.info(f"Creating mask generator: strategy={config['masking']['strategy']}")
+    logger.info(f"Creating mask generator: strategy={config.masking.strategy}")
     mask_generator = HierarchicalMaskGenerator(
-        strategy=MaskingStrategy(config['masking']['strategy']),
+        strategy=MaskingStrategy(config.masking.strategy),
         vocab_sizes=vocab_sizes,
         category_level_info=category_level_info,
-        mask_probability=config['masking'].get('mask_probability', 0.5),
-        seed=config['masking'].get('seed', 42),
+        mask_probability=config.masking.mask_probability,
+        seed=config.masking.seed,
     )
 
     # Create datasets
@@ -219,25 +213,24 @@ def main(args):
     # Create diffusion model
     logger.info("Creating discrete D3PM diffusion model")
     diffusion_schedule = DiffusionSchedule(
-        num_timesteps=config['diffusion']['num_timesteps'],
-        beta_start=config['diffusion']['beta_start'],
-        beta_end=config['diffusion']['beta_end'],
-        schedule_type=config['diffusion']['schedule_type'],
+        num_timesteps=config.diffusion.num_timesteps,
+        beta_start=config.diffusion.beta_start,
+        beta_end=config.diffusion.beta_end,
+        schedule_type=config.diffusion.schedule_type,
     )
     diffusion = DiscreteD3PM(vocab_sizes, diffusion_schedule, category_level_info)
 
     # Create denoising network
     logger.info("Creating denoising network")
-    model_config = config['model']
     denoiser = DenoisingNetwork(
         vocab_sizes=vocab_sizes,
         category_level_info=category_level_info,
-        hidden_dim=model_config['hidden_dim'],
-        num_layers=model_config['num_layers'],
-        num_heads=model_config['num_heads'],
-        dropout=model_config['dropout'],
-        use_hierarchical_guidance=model_config['use_hierarchical_guidance'],
-        hierarchical_guidance_weight=model_config.get('hierarchical_guidance_weight', 0.1),
+        hidden_dim=config.model.hidden_dim,
+        num_layers=config.model.num_layers,
+        num_heads=config.model.num_heads,
+        dropout=config.model.dropout,
+        use_hierarchical_guidance=config.model.use_hierarchical_guidance,
+        hierarchical_guidance_weight=config.model.hierarchical_guidance_weight,
     )
 
     # Log model size
@@ -252,8 +245,8 @@ def main(args):
         train_loader=train_loader,
         val_loader=val_loader,
         config=config,
-        output_dir=Path(config['output']['dir']),
-        device=config.get('device', 'cuda'),
+        output_dir=config.output.dir,
+        device=config.device,
     )
 
     # Load checkpoint if resuming
@@ -262,8 +255,8 @@ def main(args):
         trainer.load_checkpoint(Path(args.resume))
 
     # Train
-    logger.info(f"Starting training for {config['training']['num_epochs']} epochs")
-    history = trainer.train(num_epochs=config['training']['num_epochs'])
+    logger.info(f"Starting training for {config.training.num_epochs} epochs")
+    history = trainer.train(num_epochs=config.training.num_epochs)
 
     # Save final checkpoint
     trainer.save_checkpoint(is_best=False)
