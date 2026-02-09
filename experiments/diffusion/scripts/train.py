@@ -2,23 +2,28 @@
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 import torch
 import yaml
 from torch.utils.data import DataLoader, random_split
 
+# Add parent directories to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from spinlock.tokens.tokenizer import VQTokenizer
-from experiments.diffusion.models import DiscreteD3PM, DiffusionSchedule, DenoisingNetwork
-from experiments.diffusion.data import (
+from models import DiscreteD3PM, DiffusionSchedule, DenoisingNetwork
+from data import (
     HierarchicalMaskGenerator,
     MaskingStrategy,
     DiffusionCompletionDataset,
+    PretokenizedDiffusionDataset,
     collate_dict_batch,
 )
-from experiments.diffusion.training import DiffusionTrainer
+from training import DiffusionTrainer
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -67,18 +72,70 @@ def extract_vocab_sizes_and_info(tokenizer_path: Path) -> tuple[dict, dict]:
     return vocab_sizes, category_level_info
 
 
+def extract_vocab_sizes_from_pretokenized(tokenized_path: Path) -> tuple[dict, dict]:
+    """Extract vocab sizes from pre-tokenized dataset.
+
+    Args:
+        tokenized_path: Path to pre-tokenized HDF5 file
+
+    Returns:
+        Tuple of (vocab_sizes, category_level_info)
+    """
+    import h5py
+
+    vocab_sizes = {}
+    category_level_info = {}
+
+    with h5py.File(tokenized_path, 'r') as f:
+        tokens_group = f['tokens']
+
+        for key in tokens_group.keys():
+            # Get vocab size from max token value + 1
+            tokens = tokens_group[key][:]
+            vocab_size = int(tokens.max()) + 1
+            vocab_sizes[key] = vocab_size
+
+            # Parse key: "family_category_Ll" → {family, category, level}
+            parts = key.split('_')
+            family = parts[0]  # "temporal" or "initial"
+            level = int(parts[-1][1:])  # "L0" → 0
+            category = '_'.join(parts[1:-1])  # "group_1"
+
+            category_level_info[key] = {
+                'family': family,
+                'category': category,
+                'level': level,
+            }
+
+    logger.info(
+        f"Extracted vocab sizes from pre-tokenized dataset: {len(vocab_sizes)} category-levels, "
+        f"sizes={list(set(vocab_sizes.values()))}"
+    )
+
+    return vocab_sizes, category_level_info
+
+
 def create_datasets(config: dict, mask_generator: HierarchicalMaskGenerator):
     """Create train and validation datasets."""
     dataset_config = config['dataset']
 
-    # Create full dataset
-    full_dataset = DiffusionCompletionDataset(
-        dataset_path=Path(dataset_config['path']),
-        tokenizer_checkpoint=Path(dataset_config['tokenizer_checkpoint']),
-        mask_generator=mask_generator,
-        cache_tokens=dataset_config.get('cache_tokens', True),
-        device=dataset_config.get('device', 'cpu'),
-    )
+    # Check if using pre-tokenized data
+    if dataset_config.get('use_pretokenized', False):
+        logger.info("Using pre-tokenized dataset (fast mode)")
+        full_dataset = PretokenizedDiffusionDataset(
+            tokenized_dataset_path=Path(dataset_config['tokenized_path']),
+            mask_generator=mask_generator,
+        )
+    else:
+        logger.info("Using on-the-fly tokenization (slow mode)")
+        full_dataset = DiffusionCompletionDataset(
+            dataset_path=Path(dataset_config['path']),
+            tokenizer_checkpoint=Path(dataset_config['tokenizer_checkpoint']),
+            mask_generator=mask_generator,
+            cache_tokens=dataset_config.get('cache_tokens', True),
+            max_cache_size=dataset_config.get('max_cache_size', None),
+            device=dataset_config.get('device', 'cpu'),
+        )
 
     # Split into train/val
     val_split = config['training'].get('val_split', 0.1)
@@ -97,13 +154,15 @@ def create_datasets(config: dict, mask_generator: HierarchicalMaskGenerator):
 
 def create_dataloaders(train_dataset, val_dataset, config: dict):
     """Create train and validation dataloaders."""
+    num_workers = config['training'].get('num_workers', 0)  # Default to 0 to avoid CUDA multiprocessing issues
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['training']['batch_size'],
         shuffle=True,
         collate_fn=collate_dict_batch,
-        num_workers=config['training'].get('num_workers', 4),
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=True if num_workers > 0 else False,  # Only pin memory with workers
     )
 
     val_loader = DataLoader(
@@ -111,8 +170,8 @@ def create_dataloaders(train_dataset, val_dataset, config: dict):
         batch_size=config['training'].get('val_batch_size', 128),
         shuffle=False,
         collate_fn=collate_dict_batch,
-        num_workers=config['training'].get('num_workers', 4),
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=True if num_workers > 0 else False,
     )
 
     return train_loader, val_loader
@@ -127,11 +186,17 @@ def main(args):
     # Set seed
     torch.manual_seed(config.get('seed', 42))
 
-    # Extract vocab sizes from tokenizer
-    logger.info("Extracting vocab sizes from tokenizer")
-    vocab_sizes, category_level_info = extract_vocab_sizes_and_info(
-        Path(config['dataset']['tokenizer_checkpoint'])
-    )
+    # Extract vocab sizes
+    if config['dataset'].get('use_pretokenized', False):
+        logger.info("Extracting vocab sizes from pre-tokenized dataset")
+        vocab_sizes, category_level_info = extract_vocab_sizes_from_pretokenized(
+            Path(config['dataset']['tokenized_path'])
+        )
+    else:
+        logger.info("Extracting vocab sizes from tokenizer")
+        vocab_sizes, category_level_info = extract_vocab_sizes_and_info(
+            Path(config['dataset']['tokenizer_checkpoint'])
+        )
 
     # Create mask generator
     logger.info(f"Creating mask generator: strategy={config['masking']['strategy']}")

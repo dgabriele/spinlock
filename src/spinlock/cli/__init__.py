@@ -22,6 +22,7 @@ from .train_vqvae import TrainVQVAECommand
 from .train_vq_tokenizer import TrainVQTokenizerCommand
 from .train_meta_operator import TrainMetaOperatorCommand
 from .compute_ground_truth_tokens import ComputeGroundTruthTokensCommand
+from .pretokenize_dataset import PretokenizeDatasetCommand
 from .generate_noa_features import GenerateNOAFeaturesCommand
 from .generate_mno_dataset import GenerateMNODatasetCommand
 from .diagnose_mno import DiagnoseMNOCommand
@@ -43,6 +44,7 @@ __all__ = [
     "TrainVQTokenizerCommand",
     "TrainMetaOperatorCommand",
     "ComputeGroundTruthTokensCommand",
+    "PretokenizeDatasetCommand",
     "GenerateNOAFeaturesCommand",
     "GenerateMNODatasetCommand",
     "DiagnoseMNOCommand",
@@ -102,6 +104,7 @@ For more help on a specific command:
         TrainVQTokenizerCommand(),
         TrainMetaOperatorCommand(),
         ComputeGroundTruthTokensCommand(),
+        PretokenizeDatasetCommand(),
         DiagnoseMNOCommand(),
         ValidateMNOVQVAECommand(),
     ]

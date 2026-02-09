@@ -136,7 +136,11 @@ class DenoisingNetwork(nn.Module):
             batch_first=True,
             norm_first=True,  # Pre-LN for better stability
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers,
+            enable_nested_tensor=False  # Disable nested tensor (incompatible with norm_first=True)
+        )
 
         # Hierarchical guidance projection
         if use_hierarchical_guidance:

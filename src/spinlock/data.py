@@ -91,19 +91,25 @@ class _FeatureGroup:
     @property
     def temporal(self):
         """Access temporal features dataset."""
-        if 'temporal' in self._group:
+        # Handle nested structure first (new format): features/temporal/features
+        if 'temporal/features' in self._group:
+            return _Dataset(self._group['temporal/features'])
+        # Handle flat structure (legacy format): features/temporal
+        elif 'temporal' in self._group:
             return _Dataset(self._group['temporal'])
         return None
 
     @property
     def initial(self):
         """Access initial features dataset."""
-        if 'initial' in self._group or 'initial/aggregated' in self._group:
-            # Try aggregated first (preferred)
-            if 'initial/aggregated' in self._group:
-                return _Dataset(self._group['initial/aggregated'])
-            elif 'initial' in self._group:
-                return _Dataset(self._group['initial'])
+        # Handle nested structure first (new format): features/initial/aggregated/features
+        if 'initial/aggregated/features' in self._group:
+            return _Dataset(self._group['initial/aggregated/features'])
+        # Handle flat structure (legacy formats)
+        elif 'initial/aggregated' in self._group:
+            return _Dataset(self._group['initial/aggregated'])
+        elif 'initial' in self._group:
+            return _Dataset(self._group['initial'])
         return None
 
 

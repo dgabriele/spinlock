@@ -17,7 +17,6 @@ from experiments.diffusion.data import (
     collate_dict_batch,
 )
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 

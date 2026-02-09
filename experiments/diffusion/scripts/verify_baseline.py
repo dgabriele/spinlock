@@ -5,21 +5,25 @@ Checks that all components are working before starting full training.
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 import torch
 import yaml
 
+# Add parent directories to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from spinlock.tokens.tokenizer import VQTokenizer
-from experiments.diffusion.models import DiscreteD3PM, DiffusionSchedule, DenoisingNetwork
-from experiments.diffusion.data import (
+from models import DiscreteD3PM, DiffusionSchedule, DenoisingNetwork
+from data import (
     HierarchicalMaskGenerator,
     MaskingStrategy,
     DiffusionCompletionDataset,
     collate_dict_batch,
 )
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 

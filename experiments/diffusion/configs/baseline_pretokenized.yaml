@@ -1,13 +1,11 @@
-# Baseline Discrete Diffusion Configuration
+# Baseline Discrete Diffusion Configuration (Pre-Tokenized)
 # 50-step diffusion with RANDOM masking strategy
+# Uses pre-tokenized dataset for fast training
 
 # Dataset paths
 dataset:
-  path: "datasets/50k_baseline.h5"  # Path to CNO dataset (50K baseline)
-  tokenizer_checkpoint: "checkpoints/vqvae/vq_tokenizer_best.pt"  # VQTokenizer v2 checkpoint
-  cache_tokens: true  # Enable LRU caching
-  max_cache_size: 5000  # LRU cache size (5K samples ~= 3-4GB RAM)
-  device: "cuda"  # Device for tokenization
+  tokenized_path: "datasets/50k_baseline_tokenized.h5"  # Pre-tokenized dataset
+  use_pretokenized: true  # Use pre-tokenized data (fast)
 
 # Masking strategy
 masking:
@@ -33,9 +31,9 @@ model:
 
 # Training
 training:
-  batch_size: 32  # Reduced from 64 to fit in 6GB GPU memory
+  batch_size: 32  # Can increase with pre-tokenized data
   num_epochs: 30
-  num_workers: 0  # Disable multiprocessing to avoid CUDA fork issues
+  num_workers: 0  # Keep 0 to avoid multiprocessing issues
   learning_rate: 1.0e-4
   weight_decay: 1.0e-5
   gradient_clip_norm: 1.0
@@ -61,8 +59,8 @@ training:
 
 # Output
 output:
-  dir: "experiments/diffusion/results/baseline_50steps"
-  checkpoint_prefix: "diffusion_baseline"
+  dir: "experiments/diffusion/results/baseline_50steps_pretokenized"
+  checkpoint_prefix: "diffusion_baseline_pretokenized"
 
 # Device
 device: "cuda"
