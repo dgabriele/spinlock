@@ -122,6 +122,7 @@ class VQTokenizerTrainer:
         temporal_features: Optional[torch.Tensor] = None,
         initial_manual: Optional[torch.Tensor] = None,
         initial_raw: Optional[torch.Tensor] = None,
+        theta_features: Optional[torch.Tensor] = None,
         temporal_mask: Optional[torch.Tensor] = None,
         temporal_lengths: Optional[torch.Tensor] = None,
         output_dir: Path = Path("checkpoints"),
@@ -133,6 +134,7 @@ class VQTokenizerTrainer:
             temporal_features: Temporal sequences [N, T, D_t] (optional)
             initial_manual: Manual initial features [N, D_i] (optional)
             initial_raw: Raw initial conditions [N, C, H, W] (optional)
+            theta_features: Operator parameters [N, param_dim] (optional)
             temporal_mask: Validity mask for temporal [N, T] (optional)
             temporal_lengths: Actual sequence lengths [N] (optional)
             output_dir: Directory to save checkpoints
@@ -149,6 +151,7 @@ class VQTokenizerTrainer:
             temporal_features,
             initial_manual,
             initial_raw,
+            theta_features,
             temporal_mask,
             temporal_lengths,
         )
@@ -241,6 +244,7 @@ class VQTokenizerTrainer:
         temporal_features: Optional[torch.Tensor],
         initial_manual: Optional[torch.Tensor],
         initial_raw: Optional[torch.Tensor],
+        theta_features: Optional[torch.Tensor],
         temporal_mask: Optional[torch.Tensor],
         temporal_lengths: Optional[torch.Tensor],
     ) -> Tuple[DataLoader, DataLoader]:
@@ -262,6 +266,9 @@ class VQTokenizerTrainer:
         if initial_manual is not None:
             tensor_map['initial_manual'] = len(tensors)
             tensors.append(initial_manual)
+        if theta_features is not None:
+            tensor_map['theta_features'] = len(tensors)
+            tensors.append(theta_features)
         if initial_raw is not None:
             tensor_map['initial_raw'] = len(tensors)
             tensors.append(initial_raw)
@@ -342,6 +349,10 @@ class VQTokenizerTrainer:
                 batch[self.tensor_map['initial_raw']].to(self.device)
                 if 'initial_raw' in self.tensor_map else None
             )
+            theta_feats = (
+                batch[self.tensor_map['theta_features']].to(self.device)
+                if 'theta_features' in self.tensor_map else None
+            )
             temp_mask = (
                 batch[self.tensor_map['temporal_mask']].to(self.device)
                 if 'temporal_mask' in self.tensor_map else None
@@ -356,6 +367,7 @@ class VQTokenizerTrainer:
                 temporal_features=temporal_feats,
                 initial_manual=initial_man,
                 initial_raw=initial_r,
+                theta_features=theta_feats,
                 temporal_mask=temp_mask,
                 temporal_lengths=temp_lens,
             )
@@ -449,6 +461,10 @@ class VQTokenizerTrainer:
                     batch[self.tensor_map['initial_raw']].to(self.device)
                     if 'initial_raw' in self.tensor_map else None
                 )
+                theta_feats = (
+                    batch[self.tensor_map['theta_features']].to(self.device)
+                    if 'theta_features' in self.tensor_map else None
+                )
                 temp_mask = (
                     batch[self.tensor_map['temporal_mask']].to(self.device)
                     if 'temporal_mask' in self.tensor_map else None
@@ -463,6 +479,7 @@ class VQTokenizerTrainer:
                     temporal_features=temporal_feats,
                     initial_manual=initial_man,
                     initial_raw=initial_r,
+                    theta_features=theta_feats,
                     temporal_mask=temp_mask,
                     temporal_lengths=temp_lens,
                 )

@@ -22,10 +22,12 @@ from .factory import create_grouper, FeatureFamily
 from .base import FeatureGrouper
 from .temporal import TemporalFeatureGrouper
 from .initial import InitialFeatureGrouper
+from .theta import ThetaFeatureGrouper
 from .models import (
     GroupingConfig,
     TemporalGroupingConfig,
     InitialGroupingConfig,
+    ThetaGroupingConfig,
     ClusteringParams,
     GradientParams,
     PreprocessingParams,
@@ -45,10 +47,12 @@ __all__ = [
     "FeatureGrouper",
     "TemporalFeatureGrouper",
     "InitialFeatureGrouper",
+    "ThetaFeatureGrouper",
     # Configuration models
     "GroupingConfig",
     "TemporalGroupingConfig",
     "InitialGroupingConfig",
+    "ThetaGroupingConfig",
     "ClusteringParams",
     "GradientParams",
     "PreprocessingParams",

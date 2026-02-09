@@ -160,6 +160,7 @@ class VQTokenizer:
             temporal_features=features.get("temporal"),
             initial_manual=features.get("initial_manual"),
             initial_raw=features.get("initial_raw"),
+            theta_features=features.get("theta"),
             temporal_mask=features.get("temporal_mask"),
             temporal_lengths=features.get("temporal_lengths"),
             output_dir=output_dir,
@@ -174,6 +175,7 @@ class VQTokenizer:
         temporal_features: Optional[torch.Tensor] = None,
         initial_manual: Optional[torch.Tensor] = None,
         initial_raw: Optional[torch.Tensor] = None,
+        theta_features: Optional[torch.Tensor] = None,
         temporal_mask: Optional[torch.Tensor] = None,
         temporal_lengths: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
@@ -183,6 +185,7 @@ class VQTokenizer:
             temporal_features: Temporal sequences [B, T, D_t] (optional)
             initial_manual: Manual initial features [B, D_i] (optional)
             initial_raw: Raw initial conditions [B, C, H, W] (optional)
+            theta_features: Operator parameters [B, param_dim] (optional)
             temporal_mask: Validity mask for temporal [B, T] (optional)
             temporal_lengths: Actual sequence lengths [B] (optional)
 
@@ -190,11 +193,12 @@ class VQTokenizer:
             Dict mapping "family_category_Ll" → token indices [B]
 
         Example:
-            >>> tokens = tokenizer.tokenize(temporal_features=x_t, initial_raw=x_i)
+            >>> tokens = tokenizer.tokenize(temporal_features=x_t, initial_raw=x_i, theta_features=theta)
             >>> # tokens = {
             >>> #   "temporal_group_1_L0": [B],
             >>> #   "temporal_group_1_L1": [B],
             >>> #   "initial_group_1_L0": [B],
+            >>> #   "theta_group_1_L0": [B],
             >>> #   ...
             >>> # }
         """
@@ -208,6 +212,7 @@ class VQTokenizer:
                 temporal_features=temporal_features,
                 initial_manual=initial_manual,
                 initial_raw=initial_raw,
+                theta_features=theta_features,
                 temporal_mask=temporal_mask,
                 temporal_lengths=temporal_lengths,
             )
@@ -372,6 +377,17 @@ class VQTokenizer:
                 features['initial_manual'] = None
                 features['initial_raw'] = None
 
+            # Theta parameters (operator parameters)
+            # Note: These are stored at /parameters/params as [N, 14] in [0,1] unit hypercube
+            if 'parameters' in dataset._file and 'params' in dataset._file['parameters']:
+                params = dataset._file['parameters/params'][:]  # [N, 14]
+                features['theta'] = torch.from_numpy(params).float()
+                logger.info(f"Loaded theta parameters with shape: {features['theta'].shape}")
+            else:
+                features['theta'] = None
+                # Only warn if theta is needed (check if config will use it)
+                # We'll validate in model forward pass if actually needed
+
         # Validate operator-level shapes (no M dimension)
         N = None
         for name, feat in features.items():
@@ -450,6 +466,13 @@ class VQTokenizer:
             )
             stats_dict.update(initial_stats)
 
+        # Normalize theta features
+        if features.get('theta') is not None:
+            normalized['theta'], theta_stats = self._normalize_theta_features(
+                features['theta']
+            )
+            stats_dict.update(theta_stats)
+
         # Pass through features that are not normalized
         normalized['initial_raw'] = features.get('initial_raw')  # CNN handles its own norm
         normalized['temporal_mask'] = features.get('temporal_mask')
@@ -517,6 +540,33 @@ class VQTokenizer:
         elif self.config.normalization.method == "global":
             return self._normalize_global(
                 initial, initial, initial_categories
+            )
+        else:
+            raise ValueError(f"Unknown normalization method: {self.config.normalization.method}")
+
+    def _normalize_theta_features(
+        self, theta: torch.Tensor
+    ) -> tuple[torch.Tensor, Dict[str, NormalizationStats]]:
+        """Normalize theta (parameter) features [N, param_dim].
+
+        Args:
+            theta: Operator parameters [N, param_dim] in [0,1] range
+
+        Returns:
+            Tuple of (normalized_theta, stats_dict)
+        """
+        # Get theta categories from group_indices
+        theta_categories = self._filter_categories_by_prefix('theta_')
+
+        # Apply normalization based on method
+        # For 2D features, no temporal aggregation needed
+        if self.config.normalization.method == "per_category":
+            return self._normalize_per_category(
+                theta, theta, theta_categories
+            )
+        elif self.config.normalization.method == "global":
+            return self._normalize_global(
+                theta, theta, theta_categories
             )
         else:
             raise ValueError(f"Unknown normalization method: {self.config.normalization.method}")
@@ -682,6 +732,23 @@ class VQTokenizer:
             # Convert to expected format
             for group_name, group in result.groups.items():
                 group_indices[f"initial_{group_name}"] = group.feature_indices
+
+        # Theta grouping
+        if features.get('theta') is not None:
+            theta = features['theta'].numpy()  # [N, param_dim]
+
+            # Get feature names
+            theta_names = [f"theta_{i}" for i in range(theta.shape[1])]
+
+            # Create grouper
+            grouper = create_grouper("theta", config=self.config.grouping)
+
+            # Group features
+            result = grouper.group_features(theta, theta_names)
+
+            # Convert to expected format
+            for group_name, group in result.groups.items():
+                group_indices[f"theta_{group_name}"] = group.feature_indices
 
         logger.info(f"Feature grouping complete: {len(group_indices)} groups")
         return group_indices

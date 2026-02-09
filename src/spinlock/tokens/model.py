@@ -23,6 +23,7 @@ from .encoders import (
     InitialCNNEncoder,
     InitialHybridEncoder,
 )
+from .encoders.theta import ThetaMLPEncoder
 from .config import TokenizerConfig, HierarchyConfig
 from .projector import HierarchicalProjector
 
@@ -80,12 +81,13 @@ class JointHierarchicalVQVAE(nn.Module):
         # Total input dimension (after encoding)
         self.temporal_dim = 0
         self.initial_dim = 0
+        self.theta_dim = 0
 
         # Create family encoders
         self._create_encoders()
 
         # Compute total encoded dimension
-        total_encoded_dim = self.temporal_dim + self.initial_dim
+        total_encoded_dim = self.temporal_dim + self.initial_dim + self.theta_dim
 
         # Create categorical projectors (one per family-category)
         self.projectors = nn.ModuleDict()
@@ -96,6 +98,8 @@ class JointHierarchicalVQVAE(nn.Module):
             if family == "temporal":
                 cat_dim = len(indices)  # Feature count in this category
             elif family == "initial":
+                cat_dim = len(indices)
+            elif family == "theta":
                 cat_dim = len(indices)
             else:
                 raise ValueError(f"Unknown family: {family}")
@@ -227,6 +231,24 @@ class JointHierarchicalVQVAE(nn.Module):
                 self.initial_dim = config.encoder.initial.cnn_embedding_dim
             else:
                 raise ValueError(f"Unknown initial variant: {config.encoder.initial.variant}")
+
+        # Theta encoder
+        if "theta" in self.families:
+            theta_cfg = config.encoder.theta
+            if theta_cfg is None:
+                raise ValueError("Theta family enabled but theta encoder config missing")
+
+            if theta_cfg.variant == "mlp":
+                self.theta_encoder = ThetaMLPEncoder(
+                    param_dim=theta_cfg.param_dim,
+                    hidden_dim=theta_cfg.hidden_dim,
+                    output_dim=theta_cfg.output_dim,
+                    dropout=theta_cfg.dropout,
+                    use_layer_norm=theta_cfg.use_layer_norm,
+                )
+                self.theta_dim = theta_cfg.output_dim
+            else:
+                raise ValueError(f"Unknown theta encoder variant: {theta_cfg.variant}")
 
     def _create_projector(
         self, family_cat: str, category_dim: int
@@ -361,6 +383,7 @@ class JointHierarchicalVQVAE(nn.Module):
         temporal_features: Optional[torch.Tensor] = None,
         initial_manual: Optional[torch.Tensor] = None,
         initial_raw: Optional[torch.Tensor] = None,
+        theta_features: Optional[torch.Tensor] = None,
         temporal_mask: Optional[torch.Tensor] = None,
         temporal_lengths: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
@@ -370,6 +393,7 @@ class JointHierarchicalVQVAE(nn.Module):
             temporal_features: Temporal sequences [B, T, D_t] (required if temporal family exists)
             initial_manual: Manual initial features [B, D_i_manual] (required if initial_hybrid)
             initial_raw: Raw initial conditions [B, C, H, W] (required if initial_hybrid)
+            theta_features: Operator parameters [B, param_dim] (required if theta family exists)
             temporal_mask: Validity mask for temporal [B, T] (optional)
             temporal_lengths: Actual sequence lengths [B] (optional)
 
@@ -381,10 +405,15 @@ class JointHierarchicalVQVAE(nn.Module):
                 - perplexity: Average codebook perplexity
                 - encodings: Dict of per-family-category-level encodings
         """
-        batch_size = (
-            temporal_features.shape[0] if temporal_features is not None
-            else initial_manual.shape[0]
-        )
+        # Determine batch size from available inputs
+        if temporal_features is not None:
+            batch_size = temporal_features.shape[0]
+        elif initial_manual is not None:
+            batch_size = initial_manual.shape[0]
+        elif theta_features is not None:
+            batch_size = theta_features.shape[0]
+        else:
+            raise ValueError("At least one feature input must be provided")
 
         # Encode families
         encoded = {}
@@ -419,6 +448,14 @@ class JointHierarchicalVQVAE(nn.Module):
                 init_encoded = self.initial_encoder(initial_raw)
 
             encoded["initial"] = init_encoded
+
+        if "theta" in self.families:
+            if theta_features is None:
+                raise ValueError("theta_features required for theta family")
+
+            # Encode theta parameters
+            theta_encoded = self.theta_encoder(theta_features)
+            encoded["theta"] = theta_encoded
 
         # Concatenate all encoded features
         all_encoded = []
@@ -491,6 +528,7 @@ class JointHierarchicalVQVAE(nn.Module):
         temporal_features: Optional[torch.Tensor] = None,
         initial_manual: Optional[torch.Tensor] = None,
         initial_raw: Optional[torch.Tensor] = None,
+        theta_features: Optional[torch.Tensor] = None,
         temporal_mask: Optional[torch.Tensor] = None,
         temporal_lengths: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
@@ -507,6 +545,7 @@ class JointHierarchicalVQVAE(nn.Module):
             temporal_features=temporal_features,
             initial_manual=initial_manual,
             initial_raw=initial_raw,
+            theta_features=theta_features,
             temporal_mask=temporal_mask,
             temporal_lengths=temporal_lengths,
         )

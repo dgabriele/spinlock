@@ -1,0 +1,100 @@
+# VQ Tokenizer Configuration with Theta (Parameter) Support
+# Based on tokenizer_baseline.yaml with theta family added
+
+# Encoder configuration
+encoder:
+  # Temporal encoder (for trajectory sequences)
+  temporal:
+    variant: "pyramid"
+    level_dims: [32, 64, 96, 128]
+    downsample_factors: [1, 2, 4, 8]
+    variable_length: true
+    min_timesteps: 16
+    max_timesteps: 256
+    adaptive_pyramid: true
+
+  # Initial condition encoder
+  initial:
+    variant: "hybrid"
+    manual_dim: 42
+    cnn_embedding_dim: 256
+    in_channels: 3
+    encode_manual: false
+    use_final_batchnorm: false
+    pretrained_cnn_path: null
+
+  # Theta (parameter) encoder
+  theta:
+    variant: "mlp"
+    param_dim: 14
+    hidden_dim: 64
+    output_dim: 32
+    dropout: 0.1
+    use_layer_norm: true
+
+  # General encoder settings
+  embedding_dim: 64
+  hidden_dim: 128
+  dropout: 0.1
+  use_layer_norm: true
+
+# Vector quantization configuration
+quantizer:
+  # Note: num_embeddings computed adaptively per quantizer
+  embedding_dim: 64
+  commitment_cost: 0.25
+  use_ema: true
+  ema_decay: 0.99
+  epsilon: 1.0e-05
+
+# Hierarchical quantization configuration
+hierarchy:
+  num_levels: 3
+  compression_ratios: "0.5:1.0:1.5"
+  min_latent_dim: 4
+  max_latent_dim: 64
+
+# Feature grouping configuration
+grouping:
+  method: "correlation"
+  correlation_threshold: 0.85
+  min_group_size: 3
+  max_group_size: 50
+
+# Loss configuration
+loss:
+  reconstruction_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topographic_weight: 0.0
+  normalize_reconstruction: true
+
+# Training configuration
+training:
+  num_epochs: 50
+  batch_size: 256
+  learning_rate: 0.001
+  val_split: 0.2
+  val_every_n_epochs: 5
+  optimizer: "adam"
+  weight_decay: 0.0
+  gradient_clip_norm: null
+  use_scheduler: false
+  scheduler_type: "cosine"
+  warmup_epochs: 0
+  early_stopping_patience: 20
+  early_stopping_min_delta: 0.0001
+  dead_code_reset_interval: 10
+  dead_code_threshold: 0.01
+  device: "auto"
+  compile_model: false
+
+# Normalization configuration
+normalization:
+  method: "per_category"
+  clip_std_multiplier: null
+
+# Miscellaneous
+random_seed: 42
+verbose: true
+log_level: "INFO"

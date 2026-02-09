@@ -1,0 +1,78 @@
+# Smoke Test Config: Theta-Only VQ Tokenizer
+# Purpose: Verify theta encoding works end-to-end (10 epochs)
+
+# Encoder configuration - THETA ONLY
+encoder:
+  theta:
+    variant: "mlp"
+    param_dim: 14
+    hidden_dim: 64
+    output_dim: 32
+    dropout: 0.1
+    use_layer_norm: true
+
+  # Minimal settings for unused encoders (will be ignored)
+  embedding_dim: 64
+  hidden_dim: 128
+  dropout: 0.1
+  use_layer_norm: true
+
+# Vector quantization configuration
+quantizer:
+  embedding_dim: 64
+  commitment_cost: 0.25
+  use_ema: true
+  ema_decay: 0.99
+  epsilon: 1.0e-05
+
+# Hierarchical quantization configuration
+hierarchy:
+  num_levels: 3
+  compression_ratios: "0.5:1.0:1.5"
+  min_latent_dim: 4
+  max_latent_dim: 64
+
+# Feature grouping configuration (single group for theta)
+grouping:
+  method: "correlation"
+  correlation_threshold: 0.85
+  min_group_size: 1  # Allow small groups for theta
+  max_group_size: 20
+
+# Loss configuration
+loss:
+  reconstruction_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topographic_weight: 0.0
+  normalize_reconstruction: true
+
+# Training configuration - SMOKE TEST (10 epochs)
+training:
+  num_epochs: 10
+  batch_size: 128  # Smaller batch for quick iterations
+  learning_rate: 0.001
+  val_split: 0.2
+  val_every_n_epochs: 2  # Validate more frequently
+  optimizer: "adam"
+  weight_decay: 0.0
+  gradient_clip_norm: null
+  use_scheduler: false
+  scheduler_type: "cosine"
+  warmup_epochs: 0
+  early_stopping_patience: 10
+  early_stopping_min_delta: 0.0001
+  dead_code_reset_interval: 5
+  dead_code_threshold: 0.01
+  device: "auto"
+  compile_model: false
+
+# Normalization configuration
+normalization:
+  method: "per_category"
+  clip_std_multiplier: null
+
+# Miscellaneous
+random_seed: 42
+verbose: true
+log_level: "INFO"

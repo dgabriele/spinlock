@@ -47,10 +47,45 @@ class TemporalEncoderConfig(BaseModel):
     adaptive_pyramid: bool = True
 
 
+class ThetaEncoderConfig(BaseModel):
+    """Configuration for theta (parameter) encoder."""
+
+    variant: Literal["mlp"] = Field(
+        default="mlp",
+        description="Encoder variant (currently only MLP supported)"
+    )
+    param_dim: int = Field(
+        default=14,
+        ge=1,
+        description="Dimensionality of input parameters"
+    )
+    hidden_dim: int = Field(
+        default=64,
+        gt=0,
+        description="Hidden layer size"
+    )
+    output_dim: int = Field(
+        default=32,
+        gt=0,
+        description="Output embedding dimensionality"
+    )
+    dropout: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=1.0,
+        description="Dropout probability"
+    )
+    use_layer_norm: bool = Field(
+        default=True,
+        description="Whether to apply LayerNorm"
+    )
+
+
 class EncoderConfig(BaseModel):
     """Multi-family encoder configuration."""
     initial: InitialEncoderConfig = Field(default_factory=InitialEncoderConfig)
     temporal: TemporalEncoderConfig = Field(default_factory=TemporalEncoderConfig)
+    theta: Optional[ThetaEncoderConfig] = None
     embedding_dim: int = Field(default=64, gt=0)
     hidden_dim: int = Field(default=128, gt=0)
     dropout: float = Field(default=0.1, ge=0.0, le=1.0)

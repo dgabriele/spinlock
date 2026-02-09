@@ -122,6 +122,19 @@ class InitialGroupingConfig(GroupingConfig):
     min_samples_required: int = 50  # Fewer samples OK for initial
 
 
+class ThetaGroupingConfig(GroupingConfig):
+    """Theta (parameter) features use a single group for all parameters."""
+    clustering: ClusteringParams = Field(
+        default_factory=lambda: ClusteringParams(
+            min_groups=1,
+            max_groups=1,
+            linkage_method=LinkageMethod.WARD,
+        )
+    )
+    min_samples_required: int = 50  # Same as initial
+    skip_gradient_refinement: bool = True  # No need to refine single group
+
+
 class FeatureGroup(BaseModel):
     """A single feature group."""
     name: str

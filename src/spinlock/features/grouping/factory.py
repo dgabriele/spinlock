@@ -5,9 +5,10 @@ from typing import Literal, Optional
 from .base import FeatureGrouper
 from .temporal import TemporalFeatureGrouper
 from .initial import InitialFeatureGrouper
+from .theta import ThetaFeatureGrouper
 from .models import GroupingConfig
 
-FeatureFamily = Literal["temporal", "initial"]
+FeatureFamily = Literal["temporal", "initial", "theta"]
 
 
 def create_grouper(
@@ -28,16 +29,18 @@ def create_grouper(
         >>> grouper = create_grouper("temporal")
         >>> result = grouper.group_features(features, feature_names)
     """
-    from .models import TemporalGroupingConfig, InitialGroupingConfig
+    from .models import TemporalGroupingConfig, InitialGroupingConfig, ThetaGroupingConfig
 
     grouper_map = {
         "temporal": TemporalFeatureGrouper,
         "initial": InitialFeatureGrouper,
+        "theta": ThetaFeatureGrouper,
     }
 
     config_map = {
         "temporal": TemporalGroupingConfig,
         "initial": InitialGroupingConfig,
+        "theta": ThetaGroupingConfig,
     }
 
     if family not in grouper_map:
