@@ -27,6 +27,7 @@ from .generate_noa_features import GenerateNOAFeaturesCommand
 from .generate_mno_dataset import GenerateMNODatasetCommand
 from .diagnose_mno import DiagnoseMNOCommand
 from .validate_mno_vqvae import ValidateMNOVQVAECommand
+from .visualize_diffusion_inpainting import VisualizeDiffusionInpaintingCommand
 
 __all__ = [
     "CLICommand",
@@ -49,6 +50,7 @@ __all__ = [
     "GenerateMNODatasetCommand",
     "DiagnoseMNOCommand",
     "ValidateMNOVQVAECommand",
+    "VisualizeDiffusionInpaintingCommand",
     "main",
 ]
 
@@ -107,6 +109,7 @@ For more help on a specific command:
         PretokenizeDatasetCommand(),
         DiagnoseMNOCommand(),
         ValidateMNOVQVAECommand(),
+        VisualizeDiffusionInpaintingCommand(),
     ]
 
     for command in commands:
