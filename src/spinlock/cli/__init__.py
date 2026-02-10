@@ -25,7 +25,6 @@ from .compute_ground_truth_tokens import ComputeGroundTruthTokensCommand
 from .pretokenize_dataset import PretokenizeDatasetCommand
 from .generate_noa_features import GenerateNOAFeaturesCommand
 from .generate_mno_dataset import GenerateMNODatasetCommand
-from .generate_qbm_dataset import GenerateQBMDatasetCommand
 from .diagnose_mno import DiagnoseMNOCommand
 from .validate_mno_vqvae import ValidateMNOVQVAECommand
 from .visualize_diffusion_inpainting import VisualizeDiffusionInpaintingCommand
@@ -50,7 +49,6 @@ __all__ = [
     "PretokenizeDatasetCommand",
     "GenerateNOAFeaturesCommand",
     "GenerateMNODatasetCommand",
-    "GenerateQBMDatasetCommand",
     "DiagnoseMNOCommand",
     "ValidateMNOVQVAECommand",
     "VisualizeDiffusionInpaintingCommand",
@@ -98,7 +96,6 @@ For more help on a specific command:
         GenerateCommand(),
         GenerateNOAFeaturesCommand(),
         GenerateMNODatasetCommand(),
-        GenerateQBMDatasetCommand(),
         CloudGenerateCommand(),
         InfoCommand(),
         ValidateCommand(),

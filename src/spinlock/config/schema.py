@@ -128,7 +128,7 @@ class ArrayParameter(ParameterSpec):
 
 
 # =============================================================================
-# U-AFNO Parameter Space
+# Operator-Specific Parameter Spaces
 # =============================================================================
 
 
@@ -166,6 +166,50 @@ class UAFNOParameterSpace(BaseModel):
     )
 
 
+class QBMParameterSpace(BaseModel):
+    """
+    Parameter space configuration for Quantum Brownian Motion (QBM) simulations.
+
+    Defines the Sobol-sampable hyperparameters for QBM physics:
+    - gamma: Bath coupling strength (environmental decoherence)
+    - kT: Temperature (energy units)
+    - mass: Particle mass
+    - potential_type: Type of potential landscape
+    - potential_params: Potential-specific parameters
+    - dt: Time step for split-operator evolution
+    - domain_size: Physical size of simulation domain
+    """
+
+    gamma: ContinuousParameter = Field(
+        default_factory=lambda: ContinuousParameter(bounds=(0.0001, 0.1), log_scale=True),
+        description="Bath coupling strength (decoherence rate)"
+    )
+    kT: ContinuousParameter = Field(
+        default_factory=lambda: ContinuousParameter(bounds=(0.01, 10.0), log_scale=True),
+        description="Temperature in energy units"
+    )
+    mass: ContinuousParameter = Field(
+        default_factory=lambda: ContinuousParameter(bounds=(0.1, 10.0)),
+        description="Particle mass"
+    )
+    potential_type: ChoiceParameter = Field(
+        default_factory=lambda: ChoiceParameter(
+            choices=["harmonic", "double_well", "quartic", "random"],
+            weights=[0.4, 0.3, 0.2, 0.1]
+        ),
+        description="Type of potential energy landscape"
+    )
+    # Potential-specific parameters (generic, scaled based on type)
+    potential_strength: ContinuousParameter = Field(
+        default_factory=lambda: ContinuousParameter(bounds=(0.1, 5.0)),
+        description="Overall potential strength"
+    )
+    potential_width: ContinuousParameter = Field(
+        default_factory=lambda: ContinuousParameter(bounds=(0.05, 0.3)),
+        description="Characteristic width/correlation length"
+    )
+
+
 # =============================================================================
 # Parameter Space Configuration
 # =============================================================================
@@ -194,8 +238,9 @@ class ParameterSpace(BaseModel):
         IntegerParameter, ContinuousParameter, ChoiceParameter, BooleanParameter
     ]] = Field(default_factory=dict)  # Optional for backward compatibility
 
-    # U-AFNO specific parameter space (optional, only when operator_type="u_afno")
+    # Operator-specific parameter spaces (optional, based on operator_type)
     u_afno: Optional[UAFNOParameterSpace] = None
+    qbm: Optional[QBMParameterSpace] = None
 
     @property
     def total_dimensions(self) -> int:
@@ -429,9 +474,9 @@ class SimulationConfig(BaseModel):
     extract_operator_features: bool = Field(default=False)
 
     # Operator architecture type
-    operator_type: Literal["cnn", "u_afno"] = Field(
+    operator_type: Literal["cnn", "u_afno", "qbm"] = Field(
         default="cnn",
-        description="Neural operator architecture: 'cnn' for convolutional, 'u_afno' for U-Net+AFNO"
+        description="Operator type: 'cnn' for convolutional, 'u_afno' for U-Net+AFNO, 'qbm' for Quantum Brownian Motion"
     )
 
 

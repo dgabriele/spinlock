@@ -1,0 +1,130 @@
+version: "1.0"
+
+metadata:
+  name: "qbm_1k_test"
+  description: "Quantum Brownian Motion test dataset (1K samples)"
+  created_by: "Claude Code"
+  tags:
+    - quantum
+    - brownian_motion
+    - caldeira_leggett
+    - test
+
+# Parameter space (12D for QBM)
+parameter_space:
+  # Architecture params (minimal for QBM - just base_channels)
+  architecture:
+    base_channels:
+      type: choice
+      choices: [24, 48]
+      weights: [0.5, 0.5]
+      description: "Feature dimension for U-AFNO (not used by QBM but required for schema)"
+
+    activation:
+      type: choice
+      choices: ["gelu"]
+      description: "Activation function (not used by QBM)"
+
+  # Stochastic params (not used by QBM but required for schema)
+  stochastic:
+    noise_level:
+      type: continuous
+      bounds: [0.0, 0.1]
+      description: "Not used by QBM"
+
+  # QBM physics parameters
+  operator:
+    gamma:
+      type: continuous
+      bounds: [0.0001, 0.1]
+      log_scale: true
+      description: "Bath coupling strength (decoherence rate)"
+
+    kT:
+      type: continuous
+      bounds: [0.01, 10.0]
+      log_scale: true
+      description: "Temperature in energy units"
+
+    mass:
+      type: continuous
+      bounds: [0.1, 10.0]
+      description: "Particle mass"
+
+    potential_type:
+      type: choice
+      choices: ["harmonic", "double_well", "quartic", "random"]
+      weights: [0.4, 0.3, 0.2, 0.1]
+      description: "Type of potential energy landscape"
+
+    potential_strength:
+      type: continuous
+      bounds: [0.1, 5.0]
+      description: "Overall potential strength/frequency"
+
+    potential_width:
+      type: continuous
+      bounds: [0.05, 0.3]
+      description: "Characteristic width or correlation length"
+
+  # Evolution parameters (for time-dependent dynamics)
+  evolution: {}
+
+# Sampling configuration
+sampling:
+  strategy: "sobol_stratified"
+  sobol:
+    scramble: true
+    seed: 42
+  total_samples: 1000
+  batch_size: 2  # Conservative for GPU memory
+
+# Simulation configuration
+simulation:
+  device: "cuda"
+  operator_type: "qbm"  # KEY: This tells pipeline to use QBM instead of neural operators
+
+  # Initial condition generation (quantum ICs generated automatically)
+  input_generation:
+    method: "sampled"  # QBM generates quantum ICs internally
+
+  precision: "float32"
+  num_realizations: 3
+  num_timesteps: 256  # QBM evolution steps
+
+  extract_operator_features: false
+
+  # Performance settings
+  performance:
+    compile: false
+    partition_by_architecture: false  # No operators to partition
+    warmup_templates: false
+
+# Dataset storage
+dataset:
+  output_path: "./datasets/qbm_1k_test.h5"
+  storage:
+    compression: "gzip"
+    compression_level: 4
+    store_trajectories: false  # Features only (saves space)
+
+# Features configuration
+features:
+  temporal:
+    enabled: true
+    extractors: ["summary"]
+
+  summary:
+    summary_mode: "manual"  # Use manual features for QBM
+
+  initial:
+    enabled: true
+
+# Logging
+logging:
+  level: "INFO"
+  format: "plain"
+  metrics:
+    track_gpu_memory: true
+    track_sampling_time: true
+    track_simulation_time: true
