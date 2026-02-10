@@ -38,8 +38,10 @@ Example:
 
 from spinlock.mno.losses.mse_led import MSELedLoss
 from spinlock.mno.losses.vq_led import VQLedLoss
+from spinlock.mno.losses.parameter_sensitive import ParameterSensitiveLoss
 
 __all__ = [
     "MSELedLoss",
     "VQLedLoss",
+    "ParameterSensitiveLoss",
 ]

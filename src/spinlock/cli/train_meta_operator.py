@@ -847,6 +847,34 @@ Output:
             print(f"  ✓ VQ-led loss (L_recon={config['loss'].get('lambda_recon', 1.0)}, "
                   f"L_commit={config['loss'].get('lambda_commit', 0.5)}, "
                   f"L_traj={config['loss'].get('lambda_traj', 0.3)})")
+        elif loss_mode == "mse_led_param_sensitive":
+            # MSE-led + parameter sensitivity losses
+            from spinlock.mno.losses import ParameterSensitiveLoss
+
+            loss_config = config["loss"]
+            loss_fn = ParameterSensitiveLoss(
+                lambda_traj=loss_config.get("lambda_traj", 1.0),
+                lambda_ic=loss_config.get("lambda_ic", 0.3),
+                lambda_param_recon=loss_config.get("lambda_param_recon", 0.5),
+                lambda_contrastive=loss_config.get("lambda_contrastive", 0.3),
+                lambda_sensitivity=loss_config.get("lambda_param_sensitivity", 0.2),
+                # Parameter reconstruction config
+                param_recon_hidden_dim=loss_config.get("param_recon", {}).get("hidden_dim", 128),
+                param_recon_num_layers=loss_config.get("param_recon", {}).get("num_layers", 2),
+                # Contrastive config
+                contrastive_temperature=loss_config.get("contrastive", {}).get("temperature", 0.1),
+                # Sensitivity config
+                sensitivity_epsilon=loss_config.get("sensitivity", {}).get("epsilon", 0.01),
+                sensitivity_target_ratio=loss_config.get("sensitivity", {}).get("target_ratio", 0.1),
+            )
+            # Move loss to device (contains learnable parameters)
+            loss_fn = loss_fn.to(device)
+            print(f"  ✓ Parameter-sensitive loss:")
+            print(f"    L_traj={loss_config.get('lambda_traj', 1.0)}, "
+                  f"L_ic={loss_config.get('lambda_ic', 0.3)}")
+            print(f"    L_param_recon={loss_config.get('lambda_param_recon', 0.5)}, "
+                  f"L_contrastive={loss_config.get('lambda_contrastive', 0.3)}, "
+                  f"L_sensitivity={loss_config.get('lambda_param_sensitivity', 0.2)}")
         else:
             # MSE-led (pure physics, no VQ)
             loss_fn = MSELedLoss(
@@ -984,11 +1012,34 @@ Output:
         print(f"  ✓ Dataset loaded: {len(train_dataset)} train, {len(val_dataset)} val")
 
         # Create optimizer and scheduler
-        optimizer = torch.optim.AdamW(
-            noa.parameters(),
-            lr=config["training"]["learning_rate"],
-            weight_decay=config["training"].get("weight_decay", 1e-6),
-        )
+        # Check if FiLM learning rate multiplier is configured
+        film_lr_multiplier = config["training"].get("film_lr_multiplier", 1.0)
+        base_lr = config["training"]["learning_rate"]
+        weight_decay = config["training"].get("weight_decay", 1e-6)
+
+        if film_lr_multiplier != 1.0:
+            # Separate parameter groups for FiLM vs other parameters
+            film_params = []
+            other_params = []
+
+            for name, param in noa.named_parameters():
+                if 'film' in name.lower():
+                    film_params.append(param)
+                else:
+                    other_params.append(param)
+
+            optimizer = torch.optim.AdamW([
+                {'params': other_params, 'lr': base_lr},
+                {'params': film_params, 'lr': base_lr * film_lr_multiplier},
+            ], weight_decay=weight_decay)
+
+            print(f"  ✓ FiLM parameters get {film_lr_multiplier}x learning rate ({base_lr * film_lr_multiplier:.2e})")
+        else:
+            optimizer = torch.optim.AdamW(
+                noa.parameters(),
+                lr=base_lr,
+                weight_decay=weight_decay,
+            )
 
         # Create LR scheduler with optional warmup
         from torch.optim.lr_scheduler import LinearLR, SequentialLR
@@ -1339,6 +1390,7 @@ Output:
                     target_trajectory=target_states,
                     ic=ic,
                     noa=noa,
+                    params=params,  # For parameter-sensitive losses
                 )
             except Exception as e:
                 print(f"  Warning: Loss computation failed: {e}")
@@ -1558,6 +1610,7 @@ Output:
                         target_trajectory=target_states,
                         ic=ic,
                         noa=noa,
+                        params=params,  # For parameter-sensitive losses
                     )
                 except Exception:
                     continue

@@ -1,0 +1,74 @@
+# Docker ignore file for spinlock project
+# Exclude large files and directories that aren't needed in containers
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+
+# Datasets (downloaded from cloud storage)
+datasets/
+*.h5
+*.hdf5
+
+# Checkpoints (will be uploaded/downloaded from cloud storage)
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Experiment results (generated during training, not needed in base image)
+experiments/*/results/
+experiments/diffusion/results/
+experiments/clustering_comparison/results/
+
+# Visualizations
+visualizations/
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.*
+*.log
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Tests
+tests/
+test_*.py
+
+# Scripts (not needed in container)
+scripts/
+
+# Temporary files
+tmp/
+temp/
+.cache/

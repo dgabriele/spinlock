@@ -23,4 +23,4 @@ export NCCL_DEBUG=INFO
 
 # Run training command
 echo "[Salad] Starting training (Rank $RANK/$WORLD_SIZE)..."
-exec python -m spinlock.cli "$@"
+exec poetry run spinlock "$@"

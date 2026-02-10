@@ -28,6 +28,7 @@ from .generate_mno_dataset import GenerateMNODatasetCommand
 from .diagnose_mno import DiagnoseMNOCommand
 from .validate_mno_vqvae import ValidateMNOVQVAECommand
 from .visualize_diffusion_inpainting import VisualizeDiffusionInpaintingCommand
+from .train_token_to_rollout_vae import TrainTokenToRolloutVAECommand
 
 __all__ = [
     "CLICommand",
@@ -51,6 +52,7 @@ __all__ = [
     "DiagnoseMNOCommand",
     "ValidateMNOVQVAECommand",
     "VisualizeDiffusionInpaintingCommand",
+    "TrainTokenToRolloutVAECommand",
     "main",
 ]
 
@@ -110,6 +112,7 @@ For more help on a specific command:
         DiagnoseMNOCommand(),
         ValidateMNOVQVAECommand(),
         VisualizeDiffusionInpaintingCommand(),
+        TrainTokenToRolloutVAECommand(),
     ]
 
     for command in commands:

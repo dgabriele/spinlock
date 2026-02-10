@@ -1,0 +1,17 @@
+{
+  "num_samples": 1,
+  "mask_strategy": "temporal",
+  "mask_ratio": 0.5,
+  "num_diffusion_steps": 10,
+  "metrics": {
+    "mean_token_accuracy": 1.0,
+    "std_token_accuracy": 0.0,
+    "total_masked_tokens": 48,
+    "mean_masked_per_sample": 48.0
+  },
+  "sample_indices": [
+    33553
+  ],
+  "diffusion_checkpoint": "experiments/diffusion/results/baseline_50steps_pretokenized/diffusion_baseline_pretokenized_best.pt",
+  "tokenizer_checkpoint": "checkpoints/vqvae/vq_tokenizer_best.pt"
+}

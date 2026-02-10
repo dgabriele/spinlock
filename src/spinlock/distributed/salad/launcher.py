@@ -97,17 +97,17 @@ class SaladLauncher:
         for rank in range(world_size):
             print(f"[SaladLauncher] Creating container group for rank {rank}...")
 
-            # Build container spec
-            spec = build_training_container_spec(self.config, rank, world_size)
+            # Build container spec (returns SDK model object)
+            container_group_request = build_training_container_spec(self.config, rank, world_size, self.job_id)
 
             # Create container group via Salad API
             group_name = f"{self.job_id}-rank-{rank}"
 
             try:
                 result = self.sdk.container_groups.create_container_group(
+                    request_body=container_group_request,
                     organization_name=self.organization,
                     project_name=self.project,
-                    create_container_group=spec,
                 )
 
                 container_group_ids.append(
@@ -143,12 +143,18 @@ class SaladLauncher:
         print(f"[SaladLauncher] ✓ Job {self.job_id} completed")
 
     def _wait_for_containers_ready(
-        self, container_groups: List[Dict], timeout: int = 600
+        self, container_groups: List[Dict], timeout: int = None
     ) -> None:
         """Wait for all containers to reach 'running' state."""
         start_time = time.time()
 
-        while time.time() - start_time < timeout:
+        print(f"  Waiting for containers (timeout: {'disabled' if timeout is None else f'{timeout}s'})...")
+
+        while True:
+            # Check timeout if enabled
+            if timeout is not None and time.time() - start_time > timeout:
+                raise TimeoutError(f"Containers not ready within {timeout}s")
+
             all_ready = True
 
             for group_info in container_groups:
@@ -167,12 +173,11 @@ class SaladLauncher:
                     break
 
             if all_ready:
-                print("  ✓ All containers ready")
+                elapsed = int(time.time() - start_time)
+                print(f"  ✓ All containers ready (took {elapsed}s)")
                 return
 
             time.sleep(10)
-
-        raise TimeoutError(f"Containers not ready within {timeout}s")
 
     def cleanup(self) -> None:
         """Clean up container groups after training."""

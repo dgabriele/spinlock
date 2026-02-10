@@ -10,7 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import LambdaLR
+import math
 
 from experiments.diffusion.models import DiscreteD3PM, DenoisingNetwork
 from experiments.diffusion.config import DiffusionExperimentConfig
@@ -113,7 +114,7 @@ class DiffusionTrainer:
         return optimizer
 
     def _create_scheduler(self) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
-        """Create learning rate scheduler with warmup."""
+        """Create learning rate scheduler with warmup and cosine annealing."""
         lr_config = self.config.training.lr_scheduler
 
         if lr_config.type != 'cosine':
@@ -122,29 +123,29 @@ class DiffusionTrainer:
         warmup_epochs = lr_config.warmup_epochs
         min_lr = lr_config.min_lr
         num_epochs = self.config.training.num_epochs
+        base_lr = self.config.training.learning_rate
 
-        # Warmup scheduler
-        warmup_scheduler = LinearLR(
-            self.optimizer,
-            start_factor=0.1,
-            end_factor=1.0,
-            total_iters=warmup_epochs * len(self.train_loader),
-        )
+        warmup_steps = warmup_epochs * len(self.train_loader)
+        total_steps = num_epochs * len(self.train_loader)
+        cosine_steps = total_steps - warmup_steps
 
-        # Cosine annealing scheduler
-        cosine_scheduler = CosineAnnealingLR(
-            self.optimizer,
-            T_max=(num_epochs - warmup_epochs) * len(self.train_loader),
-            eta_min=min_lr,
-        )
+        def lr_lambda(current_step: int) -> float:
+            """Compute learning rate multiplier for current step.
 
-        # Sequential scheduler
-        scheduler = SequentialLR(
-            self.optimizer,
-            schedulers=[warmup_scheduler, cosine_scheduler],
-            milestones=[warmup_epochs * len(self.train_loader)],
-        )
+            Combines linear warmup with cosine annealing:
+            - Steps 0 to warmup_steps: linear warmup from 0.1 to 1.0
+            - Steps warmup_steps to total_steps: cosine annealing from 1.0 to min_lr
+            """
+            if current_step < warmup_steps:
+                # Linear warmup: 0.1 → 1.0
+                return 0.1 + 0.9 * (current_step / warmup_steps)
+            else:
+                # Cosine annealing: 1.0 → min_lr/base_lr
+                progress = (current_step - warmup_steps) / cosine_steps
+                cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+                return (min_lr / base_lr) + (1 - min_lr / base_lr) * cosine_decay
 
+        scheduler = LambdaLR(self.optimizer, lr_lambda)
         logger.info(f"LR scheduler created: warmup={warmup_epochs}ep, min_lr={min_lr}")
         return scheduler
 

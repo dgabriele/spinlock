@@ -233,6 +233,7 @@ class NOABackbone(BaseNOABackbone):
         return_all_steps: bool = True,
         num_realizations: int = 1,
         params: Optional[torch.Tensor] = None,
+        tokens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Generate autoregressive trajectory.
 
@@ -247,6 +248,7 @@ class NOABackbone(BaseNOABackbone):
             num_realizations: Number of independent realizations (M)
             params: Optional operator parameter vector θ [B, param_dim] for conditioning
                    (required if param_conditioning=True)
+            tokens: Optional token sequence for token conditioning (currently unused, for future compatibility)
 
         Returns:
             If num_realizations == 1:

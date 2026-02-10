@@ -88,6 +88,7 @@ class MSELedLoss(BaseNOALoss):
         target_trajectory: torch.Tensor,
         ic: Optional[torch.Tensor] = None,
         noa: Optional[nn.Module] = None,
+        params: Optional[torch.Tensor] = None,
     ) -> LossOutput:
         """Compute MSE-led loss components.
 
@@ -96,6 +97,7 @@ class MSELedLoss(BaseNOALoss):
             target_trajectory: CNO ground truth trajectory [B, T, C, H, W]
             ic: Initial condition [B, C, H, W] (for feature extraction)
             noa: NOA backbone reference (for L_latent computation)
+            params: Optional parameters [B, param_dim] (unused in MSE-led, for API compatibility)
 
         Returns:
             LossOutput with:

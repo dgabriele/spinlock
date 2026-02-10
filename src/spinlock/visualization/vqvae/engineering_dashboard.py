@@ -65,7 +65,10 @@ def _draw_standard_architecture(ax: Axes, data: VQVAECheckpointData,
     """Draw standard (non-pyramid) architecture diagram."""
     # Encoder box
     families = list(data.feature_families.keys())
-    encoder_text = "Encoders\n" + "\n".join(families[:3])
+    # Abbreviate family names for display
+    family_abbrev = {"temporal": "temp", "theta": "θ", "initial": "init", "architecture": "arch"}
+    family_labels = [family_abbrev.get(f, f) for f in families]
+    encoder_text = "Encoders\n" + "\n".join(family_labels[:4])  # Show up to 4 families
     rect = mpatches.FancyBboxPatch(
         (2.5, 2), 1.8, 2, boxstyle="round,pad=0.05", facecolor=encoder_color, edgecolor="black"
     )

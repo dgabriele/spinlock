@@ -1,0 +1,18 @@
+
+1. Token Diversity Assessment:
+   ⚠️  L0 (coarse): 34.8% single-token (CONCERNING - should have diversity)
+   •  L1 (medium): 39.1% single-token
+   •  L2 (fine): 43.5% single-token
+
+2. Reconstruction Quality:
+
+3. Parameter Space Coverage:
+
+================================================================================
+VERDICT:
+================================================================================
+
+⚠️  DATASET DIVERSITY ISSUE DETECTED
+
+L0 quantizers showing unexpected collapse
+This could affect semantic diversity in downstream models

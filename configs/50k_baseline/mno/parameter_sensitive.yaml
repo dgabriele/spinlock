@@ -1,0 +1,109 @@
+# Parameter-Sensitive MNO Training Configuration
+#
+# This config addresses the weak parameter conditioning issue by:
+# 1. Adding parameter reconstruction loss
+# 2. Adding contrastive loss (different params → different outputs)
+# 3. Increasing FiLM learning rate
+# 4. Adding parameter sensitivity regularization
+#
+# Goal: Force MNO to respect parameter inputs and produce diverse behaviors
+
+model:
+  spatial_dim: 64
+  in_channels: 3
+  out_channels: 3
+  base_channels: 40             # 227M parameters (same as baseline)
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  param_conditioning: true
+  param_dim: 14
+  param_embed_dim: 128
+
+  conditioning_mode: "film"
+
+  film:
+    enabled: true
+    embed_dim: 128
+    hidden_dim: 256
+    init_gamma: 1.0             # Start at identity
+    init_beta: 0.0
+    post_norm: true
+
+    modulate_encoder: true
+    modulate_decoder: true
+    encoder_levels: null
+    decoder_levels: null
+
+    modulate_afno_post: false
+    afno_blocks: null
+
+training:
+  n_samples: 20000
+  sampling_strategy: "sequential"
+  batch_size: 2
+  gradient_accumulation_steps: 4  # Effective batch size: 8
+  epochs: 3
+  learning_rate: 1.2e-4
+  warmup_steps: 4000
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  timesteps: 256
+  bptt_window: 32
+
+  use_torch_compile: false
+  replayer_cache_size: 16
+
+  early_stopping_patience: 10
+
+  # FiLM-specific learning rate (INCREASED for stronger parameter sensitivity)
+  film_lr_multiplier: 5.0        # FiLM weights get 5x higher learning rate
+
+loss:
+  mode: "mse_led_param_sensitive"  # Custom loss mode
+
+  # Standard losses
+  lambda_traj: 1.0               # Trajectory reconstruction
+  lambda_ic: 0.3                 # Initial condition reconstruction
+
+  # NEW: Parameter sensitivity losses
+  lambda_param_recon: 0.5        # Parameter reconstruction from rollout
+  lambda_contrastive: 0.3        # Contrastive loss (different params → different outputs)
+  lambda_param_sensitivity: 0.2  # Gradient-based sensitivity penalty
+
+  # Contrastive loss config
+  contrastive:
+    temperature: 0.1             # Temperature for contrastive loss
+    negative_samples: 4          # Number of negative samples per positive
+
+  # Parameter reconstruction config
+  param_recon:
+    architecture: "mlp"          # MLP to predict params from rollout features
+    hidden_dim: 256
+    num_layers: 3
+
+  # Sensitivity regularization
+  sensitivity:
+    epsilon: 0.01                # Finite difference epsilon for gradient estimation
+    target_ratio: 0.1            # Target: param changes cause 10% of temporal variance
+
+data:
+  dataset_path: "datasets/50k_baseline.h5"
+  config: "configs/50k_baseline/50k_baseline.yaml"
+  val_split: 0.2
+  num_workers: 8
+
+checkpointing:
+  save_dir: "checkpoints/mno/parameter_sensitive"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42
+
+# Expected improvements:
+# - Pairwise MSE between different params: >0.01 (100x increase from 0.0005)
+# - Diversity ratio (params/temporal): >0.1 (16x increase from 0.006)
+# - Parameter reconstruction accuracy: >80%
+# - Contrastive discrimination: >90% (can distinguish different params)

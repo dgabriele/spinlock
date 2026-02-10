@@ -1,17 +1,29 @@
-# MNO Training on Salad.com - Single RTX 3060 (12GB) Test
+# Multi-Channel MNO Training on 50K Baseline Dataset (3-channel)
 #
-# Purpose: Quick test before expensive multi-GPU run
-# Cost: ~$0.06/hr
-# Use: Validate containerization, data sync, monitoring
+# Location: configs/50k_baseline/mno/baseline.yaml
 #
-# Location: configs/50k_baseline/mno/salad_test.yaml
+# Architecture:
+# - in_channels: 3, out_channels: 3 (3-channel fields)
+# - base_channels: 40 (227M params)
+# - FiLM conditioning for parameter modulation
+# - Parameter-sensitive loss (trajectory + IC + param reconstruction + contrastive + sensitivity)
+# - BPTT with 32-step windows for memory efficiency
+#
+# CNO Supervision:
+# - CNO operators work with 3 channels
+# - All 3 channels supervised by CNO targets
+#
+# Parameter Sensitivity:
+# - Addresses weak parameter conditioning (diversity ratio: 0.006)
+# - Forces MNO to respect parameter inputs and produce diverse behaviors
+#
+# Training on 50K baseline dataset with multi-channel support.
 
-# Model configuration (same as baseline)
 model:
   spatial_dim: 64
-  in_channels: 3
-  out_channels: 3
-  base_channels: 40
+  in_channels: 3                # 3-channel input fields
+  out_channels: 3               # 3-channel output fields
+  base_channels: 40             # 227M parameters
   encoder_levels: 3
   modes: 16
   afno_blocks: 4
@@ -28,88 +40,113 @@ model:
     init_gamma: 1.0
     init_beta: 0.0
     post_norm: true
+
     modulate_encoder: true
     modulate_decoder: true
     encoder_levels: null
     decoder_levels: null
+
     modulate_afno_post: false
     afno_blocks: null
 
-# Training configuration (reduced for testing, but with realistic schedule)
 training:
-  n_samples: 1000                    # Small subset for testing
+  n_samples: 2000               # Test run with 2K samples
   sampling_strategy: "sequential"
   batch_size: 2
-  gradient_accumulation_steps: 4
-  epochs: 1                          # Single epoch test
-  learning_rate: 1.2e-4              # Match production peak LR
-  warmup_steps: 200                  # ~50% of epoch (400 batches total)
+  gradient_accumulation_steps: 4  # Effective batch size: 8
+  epochs: 3                      # Optimized: model converges in ~1.5 epochs, 3 allows fine-tuning
+  learning_rate: 1.2e-4          # Slightly higher peak for faster initial learning
+  warmup_steps: 4000             # 50% of epoch 1 (8000 batches/epoch), 16.7% of total training
   weight_decay: 1.0e-4
   clip_grad: 1.0
 
   timesteps: 256
-  bptt_window: 32
+  bptt_window: 32                # Memory-efficient backprop through time
 
-  use_torch_compile: false
-  replayer_cache_size: 16
+  use_torch_compile: false       # Disabled: BPTT + small batch size + FiLM don't benefit
+  replayer_cache_size: 16        # Cache CNO operators (conservative for memory)
 
   early_stopping_patience: 10
 
-# Loss configuration
-loss:
-  mode: "mse_led"
-  lambda_traj: 1.0
-  lambda_ic: 0.3
+  # FiLM-specific learning rate (INCREASED for stronger parameter sensitivity)
+  film_lr_multiplier: 5.0        # FiLM weights get 5x higher learning rate
 
-# Data configuration
+loss:
+  mode: "mse_led_param_sensitive"  # Parameter-sensitive loss mode
+
+  # Standard losses
+  lambda_traj: 1.0               # Trajectory reconstruction
+  lambda_ic: 0.3                 # Initial condition reconstruction
+
+  # Parameter sensitivity losses
+  lambda_param_recon: 0.5        # Parameter reconstruction from rollout
+  lambda_contrastive: 0.3        # Contrastive loss (different params → different outputs)
+  lambda_param_sensitivity: 0.2  # Gradient-based sensitivity penalty
+
+  # Contrastive loss config
+  contrastive:
+    temperature: 0.1             # Temperature for contrastive loss
+    negative_samples: 4          # Number of negative samples per positive
+
+  # Parameter reconstruction config
+  param_recon:
+    architecture: "mlp"          # MLP to predict params from rollout features
+    hidden_dim: 256
+    num_layers: 3
+
+  # Sensitivity regularization
+  sensitivity:
+    epsilon: 0.01                # Finite difference epsilon for gradient estimation
+    target_ratio: 0.1            # Target: param changes cause 10% of temporal variance
+
 data:
   dataset_path: "datasets/50k_baseline.h5"
   config: "configs/50k_baseline/50k_baseline.yaml"
   val_split: 0.2
-  num_workers: 4
+  num_workers: 8
 
-# Checkpointing
 checkpointing:
   save_dir: "checkpoints/mno/salad_test"
   save_every: 1
   keep_best: true
 
-# Distributed configuration - SALAD.COM (single GPU test)
+# Distributed configuration - SALAD.COM
 distributed:
-  enabled: false  # Single GPU, no distribution needed
+  enabled: true  # Enabled for Salad test run
+  backend: "salad"
 
   salad:
     enabled: true
-    api_key: "${SALAD_API_KEY}"
+    api_key: "REDACTED_SALAD_API_KEY"      # From .env file
     organization: "spinlock"
-    project: "spinlock-training"
+    project: "mno"
 
     container:
-      image: "psilogon/spinlock:latest"
-      registry_auth:
-        username: "${DOCKER_USERNAME}"
-        password: "${DOCKER_PASSWORD}"
+      image: "psilogon/spinlock:latest"  # Your Docker Hub image
+      # registry_auth:  # Disabled - make repo public on Docker Hub or provide credentials
+      #   username: "psilogon"
+      #   password: "<your_docker_hub_password>"
 
     resources:
-      gpu_class: "rtx_3060"           # Cheapest option for testing
-      num_replicas: 1                  # Single GPU
-      cpu: 4
-      memory: 12288                    # 12 GB RAM
-      storage: 32212254720             # 30 GB storage (dataset=22GB + overhead)
+      gpu_class: "0798d5aa-2d17-42ee-81b8-ea92e3bc088e"  # RTX 4070 (12 GB)
+      num_replicas: 4                 # 4× GPUs for distributed training
+      cpu: 4                          # vCPUs per replica
+      memory: 16384                   # 16 GB RAM per replica
+      storage: 32212254720            # 30 GB ephemeral storage
 
     storage:
-      backend: "minio"
-      endpoint_url: "${MINIO_ENDPOINT}"
+      backend: "minio"                   # Local MinIO via Cloudflare Tunnel
+      endpoint_url: "https://black-mitchell-planners-hired.trycloudflare.com"
       bucket: "spinlock-training"
       dataset_path: "datasets/50k_baseline.h5"
       checkpoint_path: "checkpoints/mno/salad_test"
-      use_ssl: false
+      use_ssl: true                      # HTTPS via Cloudflare
       credentials:
-        aws_access_key_id: "${MINIO_ACCESS_KEY}"
-        aws_secret_access_key: "${MINIO_SECRET_KEY}"
+        aws_access_key_id: "minioadmin"
+        aws_secret_access_key: "minioadmin"
 
     networking:
-      coordination_backend: "env"
+      coordination_backend: "env"     # Simple env-based coordination
       master_port: 29500
 
     monitoring:
@@ -118,3 +155,22 @@ distributed:
 
 device: "cuda"
 seed: 42
+
+# Expected performance:
+# - 227M parameters (3x channels compared to single-channel baseline)
+# - Effective batch size: 8 (2×4 gradient accumulation)
+# - LR schedule: 4000-batch warmup + cosine decay
+# - Peak LR: 1.2e-4 for base, 6.0e-4 for FiLM (5× multiplier)
+# - Training time varies with n_samples
+#
+# Parameter sensitivity targets:
+# - Diversity ratio > 0.1 (16× improvement from 0.006)
+# - Parameter reconstruction accuracy > 80%
+# - Contrastive discrimination > 90%
+# - Pairwise MSE between different params > 0.01 (100× increase)
+#
+# Loss component trends (expected):
+# - param_recon: Fast drop early in training (primary learning signal)
+# - traj/ic: Steady improvement (physics not compromised)
+# - sensitivity: May overshoot target initially (good problem)
+# - contrastive: Stable discrimination throughout

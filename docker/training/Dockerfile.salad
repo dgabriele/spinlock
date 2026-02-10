@@ -6,6 +6,10 @@ FROM spinlock:base
 # Copy application code
 COPY src/ ./src/
 COPY configs/ ./configs/
+COPY pyproject.toml poetry.lock README.md ./
+
+# Install the spinlock package
+RUN poetry install --only-root --no-interaction --no-ansi
 
 # Add cloud storage helper scripts
 COPY docker/training/entrypoint-salad.sh /entrypoint.sh

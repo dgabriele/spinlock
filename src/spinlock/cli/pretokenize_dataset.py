@@ -232,6 +232,12 @@ Examples:
                         ics = ics[:, None, :, :]  # [N, 1, H, W]
                     initial_raw = ics
 
+                # Load theta (parameters) features
+                theta = None
+                if dataset.parameters is not None and dataset.parameters.params is not None:
+                    theta = dataset.parameters.params.load_all()
+                    print(f"  Theta (parameters): {theta.shape}")
+
                 if temporal is None and initial_manual is None:
                     self.error("No features found in dataset")
                     return None
@@ -250,6 +256,7 @@ Examples:
                     'temporal': temporal,
                     'initial_manual': initial_manual,
                     'initial_raw': initial_raw,
+                    'theta': theta,
                     'num_samples': num_samples,
                 }
         except Exception as e:
@@ -281,11 +288,17 @@ Examples:
                     if features['initial_raw'] is not None
                     else None
                 )
+                theta_batch = (
+                    torch.from_numpy(features['theta'][:1]).to(device)
+                    if features['theta'] is not None
+                    else None
+                )
 
                 sample_tokens = tokenizer.tokenize(
                     temporal_features=temp_batch,
                     initial_manual=init_manual_batch,
                     initial_raw=init_raw_batch,
+                    theta_features=theta_batch,
                 )
 
             category_levels = sorted(sample_tokens.keys())
@@ -385,12 +398,18 @@ Examples:
                     if features['initial_raw'] is not None
                     else None
                 )
+                theta_batch = (
+                    torch.from_numpy(features['theta'][start_idx:end_idx]).to(device)
+                    if features['theta'] is not None
+                    else None
+                )
 
                 # Tokenize
                 batch_tokens = tokenizer.tokenize(
                     temporal_features=temp_batch,
                     initial_manual=init_manual_batch,
                     initial_raw=init_raw_batch,
+                    theta_features=theta_batch,
                 )
 
                 # Save tokens

@@ -113,13 +113,18 @@ Examples:
             print(f"Error: Checkpoint directory not found: {checkpoint_path}")
             return 1
 
-        # Check for model files
-        has_model = (checkpoint_path / "final_model.pt").exists() or (
-            checkpoint_path / "best_model.pt"
-        ).exists()
+        # Check for model files (support both naming conventions)
+        has_model = (
+            (checkpoint_path / "final_model.pt").exists()
+            or (checkpoint_path / "best_model.pt").exists()
+            or (checkpoint_path / "vq_tokenizer_final.pt").exists()
+            or (checkpoint_path / "vq_tokenizer_best.pt").exists()
+        )
         if not has_model:
             print(f"Error: No model checkpoint found in {checkpoint_path}")
-            print("Expected: final_model.pt or best_model.pt")
+            print(
+                "Expected: final_model.pt, best_model.pt, vq_tokenizer_final.pt, or vq_tokenizer_best.pt"
+            )
             return 1
 
         # Create output directory

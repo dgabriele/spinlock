@@ -1,0 +1,75 @@
+# Token-to-Rollout VAE Configuration
+# Enables Sobol sampling for rollout variations via latent space
+#
+# Note: All input/output dimensions (input_dim, theta_dim, grid_shape)
+#       are resolved at runtime from the VQTokenizer checkpoint and CNO dataset.
+
+model:
+  # Latent space dimensionality
+  latent_dim: 512
+
+  # Encoder: token embeddings → latent distribution
+  encoder:
+    hidden_dims: [2048, 1024]
+    dropout: 0.1
+
+  # Parameter decoder: latent → theta parameters
+  param_decoder:
+    hidden_dims: [256, 128]
+    dropout: 0.1
+
+  # Grid decoder: latent → initial condition grids
+  grid_decoder:
+    # ConvTranspose2d channels (upsamples from H//16 × W//16 to H × W)
+    hidden_channels: [512, 256, 128, 64, 32]
+    dropout: 0.1
+
+training:
+  # Training hyperparameters
+  num_epochs: 200
+  batch_size: 256
+  learning_rate: 0.001
+
+  # KL annealing (prevents posterior collapse)
+  beta_schedule: "linear"  # "linear" or "constant"
+  beta_max: 1.0
+  beta_warmup_epochs: 100  # Ramp beta from 0 to beta_max over first N epochs
+
+  # Optimizer
+  optimizer: "adam"  # "adam" or "adamw"
+  weight_decay: 0.0
+
+  # Learning rate scheduler
+  scheduler_type: "cosine"  # "cosine", "step", or "none"
+
+  # Gradient clipping
+  grad_clip_norm: 1.0
+
+data:
+  # Dataset paths (must be valid paths on your system)
+  vq_checkpoint: "checkpoints/vqvae/vq_tokenizer_best.pt"
+  cno_dataset: "datasets/50k_baseline.h5"
+  tokenized_dataset: "datasets/50k_baseline_tokenized.h5"
+
+  # Train/val split
+  train_split: 0.9
+  val_split: 0.1
+
+validation:
+  # Validation frequency
+  freq_epochs: 5
+
+  # Number of samples for validation metrics
+  n_samples: 100
+
+  # Seed for Sobol sampling validation
+  sobol_seed: 42
+
+# Output directory for checkpoints and logs
+output_dir: "checkpoints/token_to_rollout_vae/"
+
+# Device for training
+device: "cuda"
+
+# Random seed for reproducibility
+seed: 42

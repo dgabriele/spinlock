@@ -37,7 +37,9 @@ def extract_codebook_embeddings(
         - usage: Dict[codebook_key] -> usage counts (EMA cluster sizes)
         - codebook_order: List of codebook keys in order
     """
-    checkpoint = torch.load(checkpoint_path / "final_model.pt", map_location="cpu", weights_only=False)
+    from .utils import find_checkpoint_file
+
+    checkpoint = torch.load(find_checkpoint_file(checkpoint_path), map_location="cpu", weights_only=False)
     state = checkpoint["model_state_dict"]
 
     embeddings = {}
@@ -50,31 +52,52 @@ def extract_codebook_embeddings(
     # Detect if this is a hybrid model (VQVAEWithInitial) by checking for vqvae. prefix
     is_hybrid = any(key.startswith("vqvae.") for key in normalized_keys.keys())
 
-    # Extract VQ layer embeddings
-    # Standard model: vq_layers.{idx}.embedding.weight
-    # Hybrid model: vqvae.vq_layers.{idx}.embedding.weight
-    for norm_key in sorted(normalized_keys.keys()):
-        orig_key = normalized_keys[norm_key]
-        if "vq_layers" in norm_key and "embedding.weight" in norm_key:
-            # Parse index based on model type
-            parts = norm_key.split(".")
-            if is_hybrid:
-                # vqvae.vq_layers.{idx}.embedding.weight -> parts[2] is idx
-                idx = int(parts[2])
-            else:
-                # vq_layers.{idx}.embedding.weight -> parts[1] is idx
-                idx = int(parts[1])
+    # Detect newer quantizers structure (quantizers.{group}_{level}.codebook.weight)
+    # vs older vq_layers structure (vq_layers.{idx}.embedding.weight)
+    has_quantizers = any(key.startswith("quantizers.") for key in normalized_keys.keys())
 
-            codebook_keys.append(f"cb_{idx}")
-            embeddings[f"cb_{idx}"] = state[orig_key].numpy()
+    if has_quantizers:
+        # Newer structure: quantizers.{group}_{level}.embedding.weight and ema_cluster_size
+        for norm_key in sorted(normalized_keys.keys()):
+            orig_key = normalized_keys[norm_key]
+            if norm_key.startswith("quantizers.") and ".embedding.weight" in norm_key:
+                # Extract group_level from quantizers.{group}_{level}.embedding.weight
+                # e.g., quantizers.temporal_group_1_L0.embedding.weight
+                parts = norm_key.split(".")
+                group_level = parts[1]  # e.g., "temporal_group_1_L0"
+                codebook_keys.append(group_level)
+                embeddings[group_level] = state[orig_key].numpy()
 
-        if "vq_layers" in norm_key and "ema_cluster_size" in norm_key:
-            parts = norm_key.split(".")
-            if is_hybrid:
-                idx = int(parts[2])
-            else:
-                idx = int(parts[1])
-            usage[f"cb_{idx}"] = state[orig_key].numpy()
+            if norm_key.startswith("quantizers.") and ".ema_cluster_size" in norm_key:
+                parts = norm_key.split(".")
+                group_level = parts[1]
+                usage[group_level] = state[orig_key].numpy()
+    else:
+        # Older structure: vq_layers.{idx}.embedding.weight
+        # Standard model: vq_layers.{idx}.embedding.weight
+        # Hybrid model: vqvae.vq_layers.{idx}.embedding.weight
+        for norm_key in sorted(normalized_keys.keys()):
+            orig_key = normalized_keys[norm_key]
+            if "vq_layers" in norm_key and "embedding.weight" in norm_key:
+                # Parse index based on model type
+                parts = norm_key.split(".")
+                if is_hybrid:
+                    # vqvae.vq_layers.{idx}.embedding.weight -> parts[2] is idx
+                    idx = int(parts[2])
+                else:
+                    # vq_layers.{idx}.embedding.weight -> parts[1] is idx
+                    idx = int(parts[1])
+
+                codebook_keys.append(f"cb_{idx}")
+                embeddings[f"cb_{idx}"] = state[orig_key].numpy()
+
+            if "vq_layers" in norm_key and "ema_cluster_size" in norm_key:
+                parts = norm_key.split(".")
+                if is_hybrid:
+                    idx = int(parts[2])
+                else:
+                    idx = int(parts[1])
+                usage[f"cb_{idx}"] = state[orig_key].numpy()
 
     return embeddings, usage, codebook_keys
 
@@ -246,7 +269,18 @@ def compute_tsne_embedding(
             emb_normalized = padded
 
         all_embeddings.append(emb_normalized)
-        all_labels.extend([int(cb_key.split("_")[1])] * n_codes)
+
+        # Parse label based on key format
+        # Old format: "cb_0", "cb_1", etc.
+        # New format: "temporal_group_1_L0", "theta_group_1_L0", etc.
+        if cb_key.startswith("cb_"):
+            label = int(cb_key.split("_")[1])
+        else:
+            # For new format, create a stable hash from the key
+            # This ensures consistent coloring across visualizations
+            label = hash(cb_key) % 1000
+
+        all_labels.extend([label] * n_codes)
         codebook_ids.extend([cb_key] * n_codes)
 
     X = np.vstack(all_embeddings)

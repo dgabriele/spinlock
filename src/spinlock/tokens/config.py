@@ -149,12 +149,45 @@ class NormalizationConfig(BaseModel):
     clip_std_multiplier: Optional[float] = None
 
 
+class FeatureCleaningConfig(BaseModel):
+    """Feature cleaning configuration (pre-training)."""
+    enabled: bool = Field(default=False, description="Enable feature cleaning")
+    pre_categorization: bool = Field(
+        default=True,
+        description="Clean features before categorization (recommended)"
+    )
+    variance_threshold: float = Field(
+        default=1e-8,
+        ge=0.0,
+        description="Remove features with std below this threshold"
+    )
+    deduplicate_threshold: float = Field(
+        default=0.99,
+        ge=0.0,
+        le=1.0,
+        description="Remove features with |corr| above this threshold"
+    )
+    use_intelligent_dedup: bool = Field(
+        default=True,
+        description="Keep more informative feature from correlated pairs"
+    )
+    outlier_method: Literal["percentile", "iqr", "mad", "none"] = Field(
+        default="percentile",
+        description="Method for outlier capping"
+    )
+    percentile_range: tuple[float, float] = Field(
+        default=(0.5, 99.5),
+        description="Percentile range for clipping (e.g., (0.5, 99.5))"
+    )
+
+
 class TokenizerConfig(BaseModel):
     """Complete VQ tokenizer configuration."""
     encoder: EncoderConfig = Field(default_factory=EncoderConfig)
     quantizer: QuantizerConfig = Field(default_factory=QuantizerConfig)
     hierarchy: HierarchyConfig = Field(default_factory=HierarchyConfig)
     grouping: Optional[GroupingConfig] = None
+    feature_cleaning: Optional[FeatureCleaningConfig] = None
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     loss: LossConfig = Field(default_factory=LossConfig)
     normalization: NormalizationConfig = Field(default_factory=NormalizationConfig)

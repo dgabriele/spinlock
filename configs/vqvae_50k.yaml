@@ -23,7 +23,7 @@ encoder:
     manual_dim: 42  # Manual feature dimension (if encode_manual=True)
     cnn_embedding_dim: 384  # CNN output dimension (matches pretrained checkpoint)
     in_channels: 3  # Auto-detected from data at runtime
-    pretrained_cnn_path: "checkpoints/cnn_pretrained.pt"  # USE PRETRAINED!
+    pretrained_cnn_path: "checkpoints/v2/cnn_pretrained.pt"  # USE PRETRAINED!
     use_final_batchnorm: false
     encode_manual: false  # Set to true to include manual features
 
@@ -36,6 +36,15 @@ encoder:
     min_timesteps: 16
     max_timesteps: 256
     adaptive_pyramid: true  # Adapt pyramid to sequence length
+
+  # Theta (parameter) encoder
+  theta:
+    variant: "mlp"
+    param_dim: 14  # Number of PDE parameters
+    hidden_dim: 64
+    output_dim: 32  # Output embedding dimension
+    dropout: 0.1
+    use_layer_norm: true
 
   # Projection layers
   embedding_dim: 64  # Target embedding dimension per feature
@@ -68,6 +77,19 @@ hierarchy:
   compression_ratios: "0.5:1.0:1.5"  # Compression ratios per level
   min_latent_dim: 4  # Minimum latent dimension
   max_latent_dim: 64  # Maximum latent dimension
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Cleaning Configuration
+# ═══════════════════════════════════════════════════════════════
+
+feature_cleaning:
+  enabled: true
+  pre_categorization: true  # Clean before feature grouping
+  variance_threshold: 1.0e-8  # Remove features with std < 1e-8
+  deduplicate_threshold: 0.99  # Remove features with |corr| > 0.99
+  use_intelligent_dedup: true  # Keep more informative feature from correlated pairs
+  outlier_method: "percentile"  # Use percentile-based outlier capping
+  percentile_range: [0.5, 99.5]  # Clip at 0.5% and 99.5% percentiles
 
 # ═══════════════════════════════════════════════════════════════
 # Feature Grouping Configuration (Optional)

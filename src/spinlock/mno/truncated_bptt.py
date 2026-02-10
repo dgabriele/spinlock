@@ -80,12 +80,14 @@ class TruncatedBPTT(nn.Module):
         self,
         ic: torch.Tensor,
         params: Optional[torch.Tensor] = None,
+        tokens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Generate trajectory with truncated BPTT.
 
         Args:
             ic: Initial condition [B, C, H, W]
             params: Optional parameter vector θ [B, param_dim] for conditioning
+            tokens: Optional token sequence for token conditioning (ignored if None)
 
         Returns:
             Predicted trajectory [B, bptt_window+1, C, H, W]
@@ -99,6 +101,7 @@ class TruncatedBPTT(nn.Module):
                 steps=self.timesteps,
                 return_all_steps=True,
                 params=params,
+                tokens=tokens,
             )
 
         B, C, H, W = ic.shape
@@ -144,6 +147,7 @@ class TruncatedBPTT(nn.Module):
             steps=self.bptt_window,
             return_all_steps=True,
             params=params,
+            tokens=tokens,
         )  # [B, bptt_window+1, C, H, W]
 
         return supervised_traj

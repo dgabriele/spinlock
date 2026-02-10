@@ -11,7 +11,7 @@ import h5py
 class SpinlockDataset:
     """Unified interface for Spinlock HDF5 datasets.
 
-    Provides access to dataset features, inputs, and metadata.
+    Provides access to dataset features, inputs, parameters, and metadata.
     """
 
     def __init__(self, file_path: str):
@@ -24,6 +24,7 @@ class SpinlockDataset:
         self._file: Optional[h5py.File] = None
         self._features = None
         self._inputs = None
+        self._parameters = None
 
     @classmethod
     def from_file(cls, file_path: str) -> "SpinlockDataset":
@@ -41,11 +42,13 @@ class SpinlockDataset:
         """Open the HDF5 file and provide access to datasets."""
         if self._file is None:
             self._file = h5py.File(self.file_path, 'r')
-            # Lazy load features and inputs
+            # Lazy load features, inputs, and parameters
             if 'features' in self._file:
                 self._features = _FeatureGroup(self._file['features'])
             if 'inputs' in self._file:
                 self._inputs = _InputGroup(self._file['inputs'])
+            if 'parameters' in self._file:
+                self._parameters = _ParameterGroup(self._file['parameters'])
         return self
 
     def close(self):
@@ -55,6 +58,7 @@ class SpinlockDataset:
             self._file = None
             self._features = None
             self._inputs = None
+            self._parameters = None
 
     def __enter__(self):
         """Context manager entry."""
@@ -77,6 +81,13 @@ class SpinlockDataset:
         if self._inputs is None:
             raise RuntimeError("Dataset not opened. Use dataset.open() or 'with dataset:'")
         return self._inputs
+
+    @property
+    def parameters(self):
+        """Access parameter datasets."""
+        if self._file is None:
+            raise RuntimeError("Dataset not opened. Use dataset.open() or 'with dataset:'")
+        return self._parameters
 
 
 class _FeatureGroup:
@@ -123,6 +134,20 @@ class _InputGroup:
         """Load all input data."""
         if 'fields' in self._group:
             return self._group['fields'][:]
+        return None
+
+
+class _ParameterGroup:
+    """Wrapper for HDF5 parameters group."""
+
+    def __init__(self, h5group):
+        self._group = h5group if h5group is not None else {}
+
+    @property
+    def params(self):
+        """Access parameter dataset (theta values)."""
+        if 'params' in self._group:
+            return _Dataset(self._group['params'])
         return None
 
 

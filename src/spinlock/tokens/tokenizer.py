@@ -18,6 +18,7 @@ from spinlock.encoding.normalization import (
     apply_standard_normalization,
     NormalizationStats,
 )
+from spinlock.encoding.feature_processor import FeatureProcessor
 
 from .config import TokenizerConfig
 from .model import JointHierarchicalVQVAE
@@ -106,6 +107,13 @@ class VQTokenizer:
         # Extract features
         logger.info("Extracting features from dataset")
         features = self._extract_features(dataset)
+
+        # Clean features if configured (BEFORE grouping for pre-categorization)
+        if (self.config.feature_cleaning is not None and
+            self.config.feature_cleaning.enabled and
+            self.config.feature_cleaning.pre_categorization):
+            logger.info("Cleaning features (pre-categorization)")
+            features = self._clean_features(features)
 
         # Perform feature grouping if config specifies it
         if self.config.grouping is not None and self.group_indices is None:
@@ -379,8 +387,8 @@ class VQTokenizer:
 
             # Theta parameters (operator parameters)
             # Note: These are stored at /parameters/params as [N, 14] in [0,1] unit hypercube
-            if 'parameters' in dataset._file and 'params' in dataset._file['parameters']:
-                params = dataset._file['parameters/params'][:]  # [N, 14]
+            if dataset.parameters is not None and dataset.parameters.params is not None:
+                params = dataset.parameters.params.load_all()  # [N, 14]
                 features['theta'] = torch.from_numpy(params).float()
                 logger.info(f"Loaded theta parameters with shape: {features['theta'].shape}")
             else:
@@ -411,6 +419,80 @@ class VQTokenizer:
             logger.info(f"Validated features: N={N} operators (aggregated across M realizations)")
 
         return features
+
+    def _clean_features(
+        self, features: Dict[str, Optional[torch.Tensor]]
+    ) -> Dict[str, Optional[torch.Tensor]]:
+        """Clean features using FeatureProcessor.
+
+        Removes zero-variance features, deduplicates highly correlated features,
+        handles NaNs, and caps outliers. Only processes temporal features for now.
+
+        Args:
+            features: Dict with keys:
+                - temporal: [N, T, D_t] (will be cleaned)
+                - initial_manual: [N, D_i] (passed through)
+                - initial_raw: [N, C, H, W] (passed through)
+                - temporal_mask: [N, T] (passed through)
+                - temporal_lengths: [N] (passed through)
+                - theta: [N, param_dim] (passed through)
+
+        Returns:
+            Cleaned feature dict with reduced temporal dimension
+        """
+        if self.config.feature_cleaning is None or not self.config.feature_cleaning.enabled:
+            return features
+
+        cleaned = {}
+
+        # Clean temporal features
+        if features.get('temporal') is not None:
+            temporal = features['temporal']  # [N, T, D_t]
+            N, T, D_t = temporal.shape
+
+            # Aggregate over time for cleaning (use mean per trajectory)
+            temporal_agg = temporal.mean(dim=1)  # [N, D_t]
+
+            # Initialize FeatureProcessor
+            processor = FeatureProcessor(
+                variance_threshold=self.config.feature_cleaning.variance_threshold,
+                deduplicate_threshold=self.config.feature_cleaning.deduplicate_threshold,
+                use_intelligent_dedup=self.config.feature_cleaning.use_intelligent_dedup,
+                outlier_method=self.config.feature_cleaning.outlier_method,
+                percentile_range=self.config.feature_cleaning.percentile_range,
+                verbose=self.config.verbose,
+            )
+
+            # Clean features
+            temporal_cleaned_np, feature_mask, _ = processor.clean(
+                temporal_agg.numpy(),
+                feature_names=None,
+            )
+
+            # Convert back to tensor
+            temporal_cleaned_agg = torch.from_numpy(temporal_cleaned_np).float()
+
+            # Apply mask to full temporal tensor
+            temporal_cleaned = temporal[:, :, feature_mask]  # [N, T, D_t']
+
+            cleaned['temporal'] = temporal_cleaned
+
+            logger.info(
+                f"Feature cleaning complete: "
+                f"{D_t} → {temporal_cleaned.shape[2]} features "
+                f"({D_t - temporal_cleaned.shape[2]} removed)"
+            )
+        else:
+            cleaned['temporal'] = None
+
+        # Pass through other features
+        cleaned['initial_manual'] = features.get('initial_manual')
+        cleaned['initial_raw'] = features.get('initial_raw')
+        cleaned['temporal_mask'] = features.get('temporal_mask')
+        cleaned['temporal_lengths'] = features.get('temporal_lengths')
+        cleaned['theta'] = features.get('theta')
+
+        return cleaned
 
     def _normalize_features(
         self, features: Dict[str, Optional[torch.Tensor]]

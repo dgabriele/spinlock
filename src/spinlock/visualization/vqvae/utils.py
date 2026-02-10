@@ -244,6 +244,38 @@ class VQVAECheckpointData:
     vl_metrics: Optional[Dict] = None
 
 
+def find_checkpoint_file(checkpoint_dir: Path) -> Path:
+    """Find the checkpoint file in a directory.
+
+    Supports multiple naming conventions:
+    - final_model.pt / best_model.pt (legacy)
+    - vq_tokenizer_final.pt / vq_tokenizer_best.pt (new)
+
+    Args:
+        checkpoint_dir: Path to checkpoint directory
+
+    Returns:
+        Path to checkpoint file
+
+    Raises:
+        FileNotFoundError: If no checkpoint file is found
+    """
+    # Prefer final_model.pt (has feature_names), fall back to best_model.pt
+    # Also support vq_tokenizer_* naming convention
+    candidates = [
+        checkpoint_dir / "final_model.pt",
+        checkpoint_dir / "vq_tokenizer_final.pt",
+        checkpoint_dir / "best_model.pt",
+        checkpoint_dir / "vq_tokenizer_best.pt",
+    ]
+
+    for path in candidates:
+        if path.exists():
+            return path
+
+    raise FileNotFoundError(f"No model checkpoint found in {checkpoint_dir}")
+
+
 def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
     """Load all VQ-VAE checkpoint data for visualization.
 
@@ -258,13 +290,8 @@ def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
     """
     checkpoint_dir = Path(checkpoint_dir)
 
-    # Prefer final_model.pt (has feature_names), fall back to best_model.pt
-    if (checkpoint_dir / "final_model.pt").exists():
-        model_path = checkpoint_dir / "final_model.pt"
-    elif (checkpoint_dir / "best_model.pt").exists():
-        model_path = checkpoint_dir / "best_model.pt"
-    else:
-        raise FileNotFoundError(f"No model checkpoint found in {checkpoint_dir}")
+    # Find checkpoint file (supports multiple naming conventions)
+    model_path = find_checkpoint_file(checkpoint_dir)
 
     # Load model checkpoint
     checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
@@ -304,34 +331,59 @@ def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
     # Parse feature families from names (format: "family::name") or infer from checkpoint
     feature_families: Dict[str, List[int]] = {}
 
-    # First, try to get family info from checkpoint's 'families' key
-    families_config = checkpoint.get("families", config.get("families", {}))
-    if families_config:
-        # Config has explicit family definitions (e.g., initial, summary, temporal)
-        for family_name in families_config.keys():
-            feature_families[family_name.upper()] = []
+    # First, try to infer families from group_indices keys
+    # Keys follow pattern: "family_group_N" (e.g., "temporal_group_1", "initial_group_2", "theta_group_1")
+    detected_families = set()
+    for key in group_indices.keys():
+        # Split on first underscore to get family prefix
+        parts = key.split('_', 1)
+        if len(parts) >= 2:
+            family = parts[0]  # temporal, initial, theta, etc.
+            detected_families.add(family)
 
-        total_features = sum(len(v) for v in group_indices.values())
-        family_names = list(families_config.keys())
-        if family_names:
-            for i in range(total_features):
-                feature_families[family_names[i % len(family_names)].upper()].append(i)
+    if detected_families:
+        # Map features to families based on group_indices
+        for family in detected_families:
+            feature_families[family] = []
+
+        # Assign feature indices to their families
+        for group_name, indices in group_indices.items():
+            family = group_name.split('_', 1)[0]
+            if family in feature_families:
+                feature_families[family].extend(indices)
+
+        # Sort indices within each family
+        for family in feature_families:
+            feature_families[family] = sorted(feature_families[family])
     else:
-        # Try to parse from feature names
-        has_family_info = any("::" in name for name in feature_names)
-        if has_family_info:
-            for i, name in enumerate(feature_names):
-                if "::" in name:
-                    family = name.split("::")[0]
-                else:
-                    family = "behavioral"
-                if family not in feature_families:
-                    feature_families[family] = []
-                feature_families[family].append(i)
+        # Fallback: try to get family info from checkpoint's 'families' key
+        families_config = checkpoint.get("families", config.get("families", {}))
+        if families_config:
+            # Config has explicit family definitions (e.g., initial, summary, temporal)
+            for family_name in families_config.keys():
+                feature_families[family_name.upper()] = []
+
+            total_features = sum(len(v) for v in group_indices.values())
+            family_names = list(families_config.keys())
+            if family_names:
+                for i in range(total_features):
+                    feature_families[family_names[i % len(family_names)].upper()].append(i)
         else:
-            # No family info available - group all as "behavioral"
-            # Better than "unknown" for models without ARCHITECTURE
-            feature_families["behavioral"] = list(range(len(feature_names)))
+            # Try to parse from feature names
+            has_family_info = any("::" in name for name in feature_names)
+            if has_family_info:
+                for i, name in enumerate(feature_names):
+                    if "::" in name:
+                        family = name.split("::")[0]
+                    else:
+                        family = "behavioral"
+                    if family not in feature_families:
+                        feature_families[family] = []
+                    feature_families[family].append(i)
+            else:
+                # No family info available - group all as "behavioral"
+                # Better than "unknown" for models without ARCHITECTURE
+                feature_families["behavioral"] = list(range(len(feature_names)))
 
     # Load normalization stats
     norm_stats_path = checkpoint_dir / "normalization_stats.npz"
@@ -454,6 +506,8 @@ def get_abbreviated_feature_name(full_name: str) -> str:
         family_abbrev = {
             "summary": "sum",
             "temporal": "tmp",
+            "theta": "θ",  # Greek theta symbol
+            "initial": "ic",
             "architecture": "arch",
         }.get(family, family[:3])
 

@@ -41,7 +41,8 @@ def plot_feature_category_matrix(ax: Axes, data: VQVAECheckpointData) -> None:
             feature_to_cat[idx] = cat
 
     # Sort features by family, then by index
-    family_order = ["summary", "temporal", "architecture"]
+    # Standard order: summary -> temporal -> theta -> initial -> architecture
+    family_order = ["summary", "temporal", "theta", "initial", "architecture"]
     sorted_features = []
     for family in family_order:
         if family in data.feature_families:

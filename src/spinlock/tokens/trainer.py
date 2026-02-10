@@ -234,6 +234,11 @@ class VQTokenizerTrainer:
                     )
                 logger.info(log_msg)
 
+        # Compute final validation metrics (post-convergence)
+        logger.info("Computing final validation metrics...")
+        final_metrics = self._compute_final_validation_metrics(val_loader)
+        self.training_history['final_metrics'] = final_metrics
+
         # Save final checkpoint
         final_path = output_dir / f"{checkpoint_prefix}_final.pt"
         self._save_checkpoint(final_path, epoch, val_loss if val_loss else None)
@@ -448,6 +453,16 @@ class VQTokenizerTrainer:
         total_perplexity = 0.0
         num_batches = 0
 
+        # Track token frequencies for per-quantizer utilization
+        token_frequencies = {}
+        for quantizer_name in self.model.quantizers.keys():
+            num_codes = self.model.quantizers[quantizer_name].num_embeddings
+            token_frequencies[quantizer_name] = torch.zeros(num_codes, dtype=torch.long)
+
+        # Track per-category reconstruction MSE
+        category_mse = {}
+        category_counts = {}
+
         with torch.no_grad():
             for batch in loader:
                 # Unpack batch using tensor_map to handle variable tensor order
@@ -519,8 +534,47 @@ class VQTokenizerTrainer:
                 total_perplexity += outputs['perplexity'].item()
                 num_batches += 1
 
+                # Track token frequencies (post-convergence utilization)
+                if 'token_indices' in outputs:
+                    for quantizer_name, token_idxs in outputs['token_indices'].items():
+                        # token_idxs: [B] or [B, T] - flatten to count all tokens
+                        flat_tokens = token_idxs.flatten()
+                        # Use bincount to count occurrences
+                        counts = torch.bincount(
+                            flat_tokens,
+                            minlength=token_frequencies[quantizer_name].shape[0]
+                        )
+                        token_frequencies[quantizer_name] += counts.cpu()
+
+                # Track per-category reconstruction MSE
+                original = outputs['original_encoded']
+                reconstructed = outputs['reconstructed']
+                for family_cat, indices in self.group_indices.items():
+                    cat_orig = original[:, indices]
+                    cat_recon = reconstructed[:, indices]
+                    cat_mse = torch.mean((cat_orig - cat_recon) ** 2).item()
+
+                    if family_cat not in category_mse:
+                        category_mse[family_cat] = 0.0
+                        category_counts[family_cat] = 0
+
+                    category_mse[family_cat] += cat_mse
+                    category_counts[family_cat] += 1
+
+        # Compute per-quantizer utilization from token frequencies
+        per_quantizer_utilization = self._compute_token_utilization(token_frequencies)
+
+        # Check for codebook collapse (log warnings for very low utilization)
+        self._check_codebook_collapse(per_quantizer_utilization)
+
         # Compute embedding-based utilization (true codebook diversity)
         embed_util = self._compute_embedding_utilization()
+
+        # Average per-category MSE
+        per_category_mse = {
+            cat: category_mse[cat] / category_counts[cat]
+            for cat in category_mse.keys()
+        }
 
         return {
             'loss': total_loss / num_batches,
@@ -533,6 +587,8 @@ class VQTokenizerTrainer:
             'topo_post': total_topo_post / num_batches,
             'perplexity': total_perplexity / num_batches,
             'embedding_utilization': embed_util,
+            'per_quantizer_utilization': per_quantizer_utilization,
+            'per_category_mse': per_category_mse,
         }
 
     def _extract_category_embeddings(
@@ -555,6 +611,72 @@ class VQTokenizerTrainer:
             category_embeddings[family_cat] = cat_emb
 
         return category_embeddings
+
+    def _compute_token_utilization(
+        self, token_frequencies: Dict[str, torch.Tensor]
+    ) -> Dict[str, float]:
+        """Compute utilization from token frequency counts.
+
+        Utilization = (codes used at least once) / codebook_size
+
+        This measures real post-convergence usage, not EMA artifacts from
+        training transients.
+
+        Args:
+            token_frequencies: Dict mapping quantizer_name → frequency counts [num_codes]
+
+        Returns:
+            Dict mapping quantizer_name → utilization (0-100%)
+        """
+        utilizations = {}
+        for quantizer_name, frequencies in token_frequencies.items():
+            num_used = (frequencies > 0).sum().item()
+            codebook_size = len(frequencies)
+            utilizations[quantizer_name] = (num_used / codebook_size) * 100.0
+        return utilizations
+
+    def _check_codebook_collapse(
+        self, per_quantizer_utilization: Dict[str, float]
+    ) -> None:
+        """Check for codebook collapse and log warnings.
+
+        Warns when quantizers show very low utilization, which indicates
+        the codebook is collapsing and not learning diverse representations.
+
+        Args:
+            per_quantizer_utilization: Dict mapping quantizer_name → utilization (0-100%)
+        """
+        COLLAPSE_THRESHOLD = 5.0  # Warn if utilization < 5%
+        CRITICAL_THRESHOLD = 2.0  # Critical warning if < 2%
+
+        collapsed_quantizers = []
+        critical_quantizers = []
+
+        for quantizer_name, utilization in per_quantizer_utilization.items():
+            if utilization < CRITICAL_THRESHOLD:
+                critical_quantizers.append((quantizer_name, utilization))
+            elif utilization < COLLAPSE_THRESHOLD:
+                collapsed_quantizers.append((quantizer_name, utilization))
+
+        # Log warnings
+        if critical_quantizers:
+            logger.warning(
+                f"⚠️  CRITICAL CODEBOOK COLLAPSE: {len(critical_quantizers)} quantizers "
+                f"with <{CRITICAL_THRESHOLD}% utilization"
+            )
+            for name, util in critical_quantizers[:3]:  # Show first 3
+                logger.warning(f"    {name}: {util:.2f}%")
+            if len(critical_quantizers) > 3:
+                logger.warning(f"    ... and {len(critical_quantizers) - 3} more")
+
+        elif collapsed_quantizers:
+            logger.warning(
+                f"⚠️  Codebook collapse detected: {len(collapsed_quantizers)} quantizers "
+                f"with <{COLLAPSE_THRESHOLD}% utilization"
+            )
+            if self.config.verbose:
+                for name, util in collapsed_quantizers[:5]:  # Show first 5 in verbose
+                    logger.warning(f"    {name}: {util:.2f}%")
 
     def _compute_embedding_utilization(self) -> float:
         """Compute true codebook utilization based on non-zero embeddings.
@@ -585,6 +707,65 @@ class VQTokenizerTrainer:
 
         # Return average across all quantizers
         return sum(utilizations) / len(utilizations) if utilizations else 0.0
+
+    def _compute_final_validation_metrics(
+        self, loader: DataLoader
+    ) -> Dict[str, float]:
+        """Compute comprehensive post-training validation metrics.
+
+        This runs after training completes to capture post-convergence behavior
+        without training transients. Metrics are formatted for visualization
+        dashboard compatibility.
+
+        Args:
+            loader: Validation data loader
+
+        Returns:
+            Dict with visualization-compatible keys:
+            - "{category}/level_{level}/utilization": float (0-100)
+            - "{category}/reconstruction_mse": float
+        """
+        logger.info("Computing final validation metrics (post-convergence)...")
+
+        # Run one final validation pass to collect metrics
+        val_metrics = self._validate_epoch(loader)
+
+        # Extract per-quantizer utilization
+        per_quantizer_util = val_metrics['per_quantizer_utilization']
+        per_category_mse = val_metrics['per_category_mse']
+
+        # Format for visualization compatibility
+        final_metrics = {}
+
+        # Parse quantizer keys like "temporal_group_1_L0" → category + level
+        for quantizer_name, utilization in per_quantizer_util.items():
+            # Parse format: "{family}_{category}_L{level}"
+            parts = quantizer_name.split('_')
+            if len(parts) >= 3 and parts[-1].startswith('L'):
+                level_str = parts[-1]  # "L0", "L1", "L2"
+                level_num = int(level_str[1:])  # Extract level number
+                category = '_'.join(parts[:-1])  # Everything before level
+
+                # Format: "{category}/level_{level}/utilization"
+                key = f"{category}/level_{level_num}/utilization"
+                final_metrics[key] = utilization
+            else:
+                # Fallback for non-hierarchical quantizers
+                final_metrics[f"{quantizer_name}/utilization"] = utilization
+
+        # Add per-category reconstruction MSE
+        for category, mse in per_category_mse.items():
+            final_metrics[f"{category}/reconstruction_mse"] = mse
+
+        # Log summary
+        if self.config.verbose:
+            logger.info("\nFinal Metrics Summary:")
+            logger.info(f"  Validation Loss: {val_metrics['loss']:.6f}")
+            logger.info(f"  Reconstruction MSE: {val_metrics['reconstruction']:.6f}")
+            logger.info(f"  Average Token Utilization: {sum(per_quantizer_util.values()) / len(per_quantizer_util):.2f}%")
+            logger.info(f"  Total Metrics Captured: {len(final_metrics)}")
+
+        return final_metrics
 
     def _reset_dead_codes(self):
         """Reset dead codebook entries that are rarely used."""

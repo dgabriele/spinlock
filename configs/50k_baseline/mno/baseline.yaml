@@ -6,12 +6,16 @@
 # - in_channels: 3, out_channels: 3 (3-channel fields)
 # - base_channels: 40 (227M params)
 # - FiLM conditioning for parameter modulation
-# - MSE-LED loss (trajectory + initial condition)
+# - Parameter-sensitive loss (trajectory + IC + param reconstruction + contrastive + sensitivity)
 # - BPTT with 32-step windows for memory efficiency
 #
 # CNO Supervision:
 # - CNO operators work with 3 channels
 # - All 3 channels supervised by CNO targets
+#
+# Parameter Sensitivity:
+# - Addresses weak parameter conditioning (diversity ratio: 0.006)
+# - Forces MNO to respect parameter inputs and produce diverse behaviors
 #
 # Training on 50K baseline dataset with multi-channel support.
 
@@ -46,7 +50,7 @@ model:
     afno_blocks: null
 
 training:
-  n_samples: 20000              # Lean dataset for strong generalization
+  n_samples: 50000              # Full dataset for production training
   sampling_strategy: "sequential"
   batch_size: 2
   gradient_accumulation_steps: 4  # Effective batch size: 8
@@ -64,10 +68,36 @@ training:
 
   early_stopping_patience: 10
 
+  # FiLM-specific learning rate (INCREASED for stronger parameter sensitivity)
+  film_lr_multiplier: 5.0        # FiLM weights get 5x higher learning rate
+
 loss:
-  mode: "mse_led"
-  lambda_traj: 1.0
-  lambda_ic: 0.3
+  mode: "mse_led_param_sensitive"  # Parameter-sensitive loss mode
+
+  # Standard losses
+  lambda_traj: 1.0               # Trajectory reconstruction
+  lambda_ic: 0.3                 # Initial condition reconstruction
+
+  # Parameter sensitivity losses
+  lambda_param_recon: 0.5        # Parameter reconstruction from rollout
+  lambda_contrastive: 0.3        # Contrastive loss (different params → different outputs)
+  lambda_param_sensitivity: 0.2  # Gradient-based sensitivity penalty
+
+  # Contrastive loss config
+  contrastive:
+    temperature: 0.1             # Temperature for contrastive loss
+    negative_samples: 4          # Number of negative samples per positive
+
+  # Parameter reconstruction config
+  param_recon:
+    architecture: "mlp"          # MLP to predict params from rollout features
+    hidden_dim: 256
+    num_layers: 3
+
+  # Sensitivity regularization
+  sensitivity:
+    epsilon: 0.01                # Finite difference epsilon for gradient estimation
+    target_ratio: 0.1            # Target: param changes cause 10% of temporal variance
 
 data:
   dataset_path: "datasets/50k_baseline.h5"
@@ -80,26 +110,67 @@ checkpointing:
   save_every: 5
   keep_best: true
 
+# Distributed configuration - SALAD.COM (optional)
+distributed:
+  enabled: false  # Set to true for distributed training
+  backend: "salad"  # Use Salad.com launcher
+
+  salad:
+    enabled: false
+    api_key: "${SALAD_API_KEY}"      # From .env file
+    organization: "spinlock"
+    project: "spinlock-training"
+
+    container:
+      image: "psilogon/spinlock:latest"  # Your Docker Hub image
+      registry_auth:
+        username: "${DOCKER_USERNAME}"   # From .env
+        password: "${DOCKER_PASSWORD}"   # From .env
+
+    resources:
+      gpu_class: "rtx_4070"          # GPU type
+      num_replicas: 4                 # 4× GPUs for distributed training
+      cpu: 4                          # vCPUs per replica
+      memory: 16384                   # 16 GB RAM per replica
+      storage: 32212254720            # 30 GB ephemeral storage
+
+    storage:
+      backend: "minio"                   # Local MinIO (S3-compatible)
+      endpoint_url: "${MINIO_ENDPOINT}"  # http://YOUR_PUBLIC_IP:9000 from .env
+      bucket: "spinlock-training"
+      dataset_path: "datasets/50k_baseline.h5"
+      checkpoint_path: "checkpoints/mno/50k_baseline"
+      use_ssl: false                     # Set true if using HTTPS
+      credentials:
+        aws_access_key_id: "${MINIO_ACCESS_KEY}"
+        aws_secret_access_key: "${MINIO_SECRET_KEY}"
+
+    networking:
+      coordination_backend: "env"     # Simple env-based coordination
+      master_port: 29500
+
+    monitoring:
+      log_streaming: true
+      poll_interval: 30
+
 device: "cuda"
 seed: 42
 
 # Expected performance:
 # - 227M parameters (3x channels compared to single-channel baseline)
-# - 8000 batches/epoch (16000 train samples / 2 batch size)
 # - Effective batch size: 8 (2×4 gradient accumulation)
-# - Total training: 24,000 batches (3 epochs × 8000)
-# - LR schedule: 4000-batch warmup (50% of epoch 1) + 20,000-batch cosine decay
-# - Peak LR: 1.2e-4 (reached at batch 4000, ~12-15 min)
-# - Convergence: ~10,000-12,000 batches for 90% of improvement
-# - Final loss: ~0.59-0.60 total, ~0.49-0.50 trajectory
-# - Target: L_traj < 0.50 (all 3 channels supervised via CNO)
-# - Training time: ~40% less than 5-epoch schedule
-# - Dataset: 20K from 50K baseline (16K train, 4K val with 20% split)
-# - Rationale: Lean training for strong generalization, sparse world view refined downstream
+# - LR schedule: 4000-batch warmup + cosine decay
+# - Peak LR: 1.2e-4 for base, 6.0e-4 for FiLM (5× multiplier)
+# - Training time varies with n_samples
 #
-# Schedule optimization rationale:
-# - Empirical analysis showed model converges in ~1.5 epochs (12k batches)
-# - 3 epochs provides runway for fine-tuning without overtraining
-# - Longer warmup (4000 vs 2000) keeps model at peak LR longer for better exploration
-# - Higher peak LR (1.2e-4 vs 1.0e-4) accelerates early learning
-# - Saves ~16 epochs worth of compute vs original 5-epoch schedule
+# Parameter sensitivity targets:
+# - Diversity ratio > 0.1 (16× improvement from 0.006)
+# - Parameter reconstruction accuracy > 80%
+# - Contrastive discrimination > 90%
+# - Pairwise MSE between different params > 0.01 (100× increase)
+#
+# Loss component trends (expected):
+# - param_recon: Fast drop early in training (primary learning signal)
+# - traj/ic: Steady improvement (physics not compromised)
+# - sensitivity: May overshoot target initially (good problem)
+# - contrastive: Stable discrimination throughout
