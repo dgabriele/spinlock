@@ -832,12 +832,12 @@ class DatasetGenerationPipeline:
                         per_timestep_dim = summary_extractor.get_actual_per_timestep_dim(num_channels=output_channels)
                     else:
                         # Fallback: count registry features (all categories)
+                        # Note: quantum features are now part of temporal category
                         per_timestep_dim = (
                             len(registry.get_feature_names(category='spatial')) +
                             len(registry.get_feature_names(category='spectral')) +
                             len(registry.get_feature_names(category='cross_channel')) +
-                            len(registry.get_feature_names(category='temporal')) +
-                            len(registry.get_feature_names(category='quantum'))  # Add quantum features
+                            len(registry.get_feature_names(category='temporal'))  # Includes quantum if enabled
                         )
                 else:
                     per_timestep_dim = 0  # TEMPORAL disabled

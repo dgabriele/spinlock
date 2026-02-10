@@ -99,7 +99,7 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 long_window=long_window,
             )
 
-        # Initialize quantum extractor if enabled
+        # Initialize quantum extractor if enabled (subset of temporal family, registered as category="temporal")
         self.quantum_extractor = None
         if config and hasattr(config, 'quantum') and config.quantum.enabled:
             # Get grid size from trajectories (will be validated during extraction)
@@ -427,7 +427,8 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
         for i in range(30):
             registry.register(name=f"temporal_multiscale_{i}", category="temporal")
 
-        # Quantum features (10D) - only register if quantum extractor is enabled
+        # Quantum features (10D) - part of temporal family, conditionally enabled
+        # Only register if quantum extractor is enabled AND we have 2-channel data (wavefunctions)
         if self.quantum_extractor is not None:
             quantum_feature_names = [
                 'purity', 'linear_entropy', 'von_neumann_entropy_approx', 'coherence_measure',
@@ -436,7 +437,8 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 'uncertainty_product_x', 'uncertainty_product_y'
             ]
             for feat_name in quantum_feature_names:
-                registry.register(name=f"quantum_{feat_name}", category="quantum")
+                # Register as part of temporal category (not separate quantum category)
+                registry.register(name=f"temporal_quantum_{feat_name}", category="temporal")
 
         return registry
 

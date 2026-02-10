@@ -92,42 +92,44 @@ class MultiscaleConfig:
 
 @dataclass
 class TemporalFeatureConfig:
-    """Complete per-timestep feature configuration (v3.1).
+    """Complete per-timestep feature configuration (v3.2).
 
     This replaces the v2.x SummaryConfig with a focus on per-timestep-only features.
 
-    Total dimensions: ~209D per timestep (v3.1 orchestrator default):
-    - Spatial: 24D (per-channel statistics)
-    - Spectral: 28D (frequency domain + entropy)
-    - Cross-channel: 12D (channel interactions)
-    - Enhanced temporal: 145D (windowed dynamics + skewness/kurtosis/
-                                 multi-lag autocorr/sample entropy/
-                                 enstrophy/divergence)
+    Feature families (registered categories):
+    - spatial: Spatial statistics (per-channel, category="spatial")
+    - spectral: Frequency domain features (category="spectral")
+    - cross_channel: Channel interaction features (category="cross_channel")
+    - temporal: Temporal dynamics features (category="temporal")
+      - Includes standard dynamics (145D): windowed stats, autocorr, entropy, etc.
+      - Includes quantum features (10D, conditional): purity, coherence, uncertainty
 
-    Note: Higher dimension configs (e.g., 328D) available via config flags.
+    Total dimensions: ~209D per timestep (v3.1), ~219D with quantum (v3.2)
+
+    Note: Quantum features are a configurable subset of the temporal family, only
+    extracted for 2-channel wavefunction data (Re, Im). They are registered with
+    category="temporal" for proper organization.
 
     Attributes:
         spatial: Spatial feature configuration
         spectral: Spectral feature configuration
         cross_channel: Cross-channel feature configuration
-        temporal: Enhanced temporal feature configuration
+        temporal: Enhanced temporal dynamics configuration
+        quantum: Quantum feature configuration (subset of temporal family)
         per_channel: Global per-channel setting (can be overridden by component configs)
         version: Configuration version
-        structural: Stub for v2.x legacy (disabled in v3.0)
-        physics: Stub for v2.x legacy (disabled in v3.0)
-        morphological: Stub for v2.x legacy (disabled in v3.0)
-        multiscale: Stub for v2.x legacy (disabled in v3.0)
 
     Example:
         >>> config = TemporalFeatureConfig()
         >>> config.temporal.window_size = 10
+        >>> config.quantum.enabled = True  # Enable quantum subset
         >>> config.spatial.enabled = False
     """
     spatial: SpatialConfig = field(default_factory=SpatialConfig)
     spectral: SpectralConfig = field(default_factory=SpectralConfig)
     cross_channel: CrossChannelConfig = field(default_factory=CrossChannelConfig)
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
-    quantum: QuantumConfig = field(default_factory=QuantumConfig)
+    quantum: QuantumConfig = field(default_factory=QuantumConfig)  # Subset of temporal family (category="temporal")
     per_channel: bool = True
     version: str = "3.1.0"
     channel_indices: Optional[list] = None  # Select specific channels for feature extraction (e.g., [0] for density-only)
