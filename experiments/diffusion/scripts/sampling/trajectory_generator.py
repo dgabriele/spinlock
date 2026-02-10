@@ -123,20 +123,20 @@ class TrajectoryGenerator:
 
         for i in range(batch_size):
             params_vector = theta_batch[i].cpu().numpy()  # [14]
-            ic = u0_batch[i].cpu().numpy()  # [C, H, W]
+            ic = u0_batch[i]  # Keep as tensor [C, H, W]
 
-            # Rollout with CNOReplayer
+            # Rollout with CNOReplayer (expects torch tensor for ic)
             trajectory = self.replayer.rollout(
                 params_vector=params_vector,
                 ic=ic,
                 timesteps=num_steps,
                 num_realizations=num_realizations
-            )  # [M, T+1, C, H, W]
+            )  # [M, T+1, C, H, W] as torch tensor
 
-            batch_trajectories.append(trajectory)
+            batch_trajectories.append(trajectory.cpu())
 
         # Stack to tensor [B, M, T+1, C, H, W]
-        return torch.from_numpy(np.stack(batch_trajectories, axis=0)).float()
+        return torch.stack(batch_trajectories, dim=0)
 
     def _generate_with_mno(
         self,

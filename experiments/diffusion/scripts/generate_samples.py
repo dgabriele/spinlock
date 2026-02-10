@@ -115,7 +115,23 @@ class SampleGenerator:
             batched_tokens[key] = token_stack
 
         # Decode
-        theta, u0, temporal = self.tokenizer.decode(batched_tokens)
+        theta, u0_encoded, temporal = self.tokenizer.decode(batched_tokens)
+
+        # u0_encoded is [B, initial_dim], need to convert to [B, C, H, W]
+        # For now, use a simple projection/reshape
+        # TODO: Add proper inverse decoder for InitialCNN
+        if u0_encoded is not None:
+            B = u0_encoded.shape[0]
+            # Simple approach: create random ICs with correct statistics
+            # This is a placeholder until proper inverse decoder is implemented
+            # Use 1 channel to match CNO operator expectations
+            u0 = torch.randn(B, 1, 64, 64, device=u0_encoded.device) * 0.1
+            logger.warning(
+                "Using placeholder random ICs (1-channel). "
+                "Proper inverse decoder for initial conditions not yet implemented."
+            )
+        else:
+            u0 = None
 
         # Convert to numpy
         theta_np = theta.cpu().numpy() if theta is not None else None
