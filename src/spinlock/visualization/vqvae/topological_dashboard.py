@@ -253,7 +253,7 @@ def compute_tsne_embedding(
 
     max_dim = max(emb.shape[1] for emb in embeddings.values())
 
-    for cb_key, emb in embeddings.items():
+    for cb_idx, (cb_key, emb) in enumerate(embeddings.items()):
         n_codes = emb.shape[0]
 
         # L2 normalize each code vector BEFORE padding
@@ -276,9 +276,9 @@ def compute_tsne_embedding(
         if cb_key.startswith("cb_"):
             label = int(cb_key.split("_")[1])
         else:
-            # For new format, create a stable hash from the key
-            # This ensures consistent coloring across visualizations
-            label = hash(cb_key) % 1000
+            # For new format, use enumeration index to ensure all points are plotted
+            # (Using hash % 1000 causes most points to be skipped during plotting)
+            label = cb_idx
 
         all_labels.extend([label] * n_codes)
         codebook_ids.extend([cb_key] * n_codes)
@@ -463,27 +463,22 @@ def plot_codebook_similarity(
 
     Shows cosine similarity between codebook centroids.
     """
-    n_codebooks = num_categories * num_levels
-
-    # Compute centroids for each codebook
+    # Compute centroids for each codebook (iterate over actual keys, not assumed format)
     centroids = []
     max_dim = max(emb.shape[1] for emb in embeddings.values())
 
-    for cb_idx in range(n_codebooks):
-        cb_key = f"cb_{cb_idx}"
-        if cb_key in embeddings:
-            emb = embeddings[cb_key]
-            # Pad to max dimension
-            if emb.shape[1] < max_dim:
-                padded = np.zeros((emb.shape[0], max_dim))
-                padded[:, : emb.shape[1]] = emb
-                emb = padded
-            centroid = emb.mean(axis=0)
-            centroids.append(centroid)
-        else:
-            centroids.append(np.zeros(max_dim))
+    for cb_key in sorted(embeddings.keys()):
+        emb = embeddings[cb_key]
+        # Pad to max dimension
+        if emb.shape[1] < max_dim:
+            padded = np.zeros((emb.shape[0], max_dim))
+            padded[:, : emb.shape[1]] = emb
+            emb = padded
+        centroid = emb.mean(axis=0)
+        centroids.append(centroid)
 
     centroids = np.array(centroids)
+    n_codebooks = len(centroids)  # Actual number of codebooks
 
     # Compute cosine similarity
     norms = np.linalg.norm(centroids, axis=1, keepdims=True)
@@ -499,12 +494,16 @@ def plot_codebook_similarity(
         ax.axhline(y=i * num_levels - 0.5, color="black", linewidth=1)
         ax.axvline(x=i * num_levels - 0.5, color="black", linewidth=1)
 
-    # Labels
-    tick_labels = [f"C{i//num_levels + 1}L{i % num_levels}" for i in range(n_codebooks)]
-    ax.set_xticks(range(n_codebooks))
-    ax.set_xticklabels(tick_labels, fontsize=5, rotation=90)
-    ax.set_yticks(range(n_codebooks))
-    ax.set_yticklabels(tick_labels, fontsize=5)
+    # Labels - show only every Nth label to avoid overlap
+    # For 96 codebooks, show every 6th (16 labels total)
+    tick_interval = max(1, n_codebooks // 16)
+    tick_positions = list(range(0, n_codebooks, tick_interval))
+    tick_labels = [f"C{i//num_levels + 1}L{i % num_levels}" for i in tick_positions]
+
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, fontsize=7, rotation=90)
+    ax.set_yticks(tick_positions)
+    ax.set_yticklabels(tick_labels, fontsize=7)
 
     ax.set_title("Codebook Similarity (Cosine)", fontsize=12, fontweight="bold")
 
@@ -601,6 +600,13 @@ def plot_embedding_statistics(
     dims = [emb.shape[1] for emb in embeddings.values()]
     sizes = [emb.shape[0] for emb in embeddings.values()]
 
+    # Compute aggregate utilization from per-quantizer metrics
+    util_keys = [k for k in data.final_metrics.keys() if k.endswith('/utilization')]
+    if util_keys:
+        avg_utilization = sum(data.final_metrics[k] for k in util_keys) / len(util_keys)
+    else:
+        avg_utilization = data.final_metrics.get('utilization', 0)
+
     stats_text = f"""Codebook Statistics
 
 Total Codebooks: {len(embeddings)}
@@ -618,7 +624,7 @@ Codebook Sizes:
   Mean: {np.mean(sizes):.1f} codes
 
 Model Quality: {data.final_metrics.get('quality', 0):.4f}
-Utilization: {data.final_metrics.get('utilization', 0):.1%}
+Utilization: {avg_utilization:.1%}
 """
 
     ax.text(

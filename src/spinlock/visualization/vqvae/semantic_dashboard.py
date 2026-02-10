@@ -86,10 +86,15 @@ def plot_feature_category_matrix(ax: Axes, data: VQVAECheckpointData) -> None:
         ax.text(0.02, mid, family[:3].upper(), ha="left", va="center", fontsize=7, fontweight="bold",
                 transform=ax.get_yaxis_transform(), color="darkblue", alpha=0.8)
 
-    # X-axis: category names
-    short_labels = [c.replace("cluster_", "C") for c in data.category_names]
-    ax.set_xticks(range(num_cats))
-    ax.set_xticklabels(short_labels, fontsize=8, rotation=45, ha="right")
+    # X-axis: category names - show fewer to avoid overlap
+    short_labels = [c.replace("temporal_group_", "T").replace("initial_group_", "I").replace("theta_group_", "θ")
+                    for c in data.category_names]
+    tick_interval = max(1, num_cats // 16)
+    tick_positions = list(range(0, num_cats, tick_interval))
+    tick_labels = [short_labels[i] for i in tick_positions]
+
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, fontsize=7, rotation=90)
 
     # Remove y-ticks (too many features) - ylabel moved to right side to avoid family label overlap
     ax.set_yticks([])
@@ -116,9 +121,12 @@ def plot_category_sizes(ax: Axes, data: VQVAECheckpointData) -> None:
 
     bars = ax.bar(range(len(cat_names)), sizes, color=colors, edgecolor="white", linewidth=0.5)
 
-    # Labels
-    ax.set_xticks(range(len(cat_names)))
-    ax.set_xticklabels(short_labels, fontsize=9)
+    # Labels - show fewer to avoid overlap (every 2nd for 32 categories)
+    tick_interval = max(1, len(cat_names) // 16)
+    tick_positions = list(range(0, len(cat_names), tick_interval))
+    tick_labels = [short_labels[i] for i in tick_positions]
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, fontsize=8, rotation=45, ha="right")
     # Skip xlabel - category names already visible in tick labels, and it overlaps with panel below
     ax.set_ylabel("# Features", fontsize=10)
     ax.set_title("Category Sizes", fontsize=12, fontweight="bold")
@@ -187,9 +195,11 @@ def plot_codebook_utilization(
     ax.set_xticks(range(num_levels))
     ax.set_xticklabels(level_labels, fontsize=10)
 
-    short_labels = [c.replace("cluster_", "C").replace("architecture_isolated", "arch") for c in data.category_names]
+    # Shorten labels and reduce font size to avoid overlap
+    short_labels = [c.replace("temporal_group_", "T").replace("initial_group_", "I").replace("theta_group_", "θ")
+                    for c in data.category_names]
     ax.set_yticks(range(num_cats))
-    ax.set_yticklabels(short_labels, fontsize=8)
+    ax.set_yticklabels(short_labels, fontsize=6)
 
     ax.set_xlabel("Level")
     ax.set_ylabel("")  # Explicitly clear ylabel
@@ -244,12 +254,17 @@ def plot_category_correlation(ax: Axes, data: VQVAECheckpointData) -> None:
     # Plot heatmap
     im = ax.imshow(matrix, cmap="RdBu_r", vmin=-1, vmax=1)
 
-    # Labels
-    short_labels = [c.replace("cluster_", "C") for c in cat_names]
-    ax.set_xticks(range(num_cats))
-    ax.set_xticklabels(short_labels, fontsize=8, rotation=45, ha="right")
-    ax.set_yticks(range(num_cats))
-    ax.set_yticklabels(short_labels, fontsize=8)
+    # Labels - show fewer to avoid overlap (every 2nd for 32 categories)
+    short_labels = [c.replace("temporal_group_", "T").replace("initial_group_", "I").replace("theta_group_", "θ")
+                    for c in cat_names]
+    tick_interval = max(1, num_cats // 16)
+    tick_positions = list(range(0, num_cats, tick_interval))
+    tick_labels = [short_labels[i] for i in tick_positions]
+
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, fontsize=7, rotation=90)
+    ax.set_yticks(tick_positions)
+    ax.set_yticklabels(tick_labels, fontsize=7)
 
     ax.set_title("Category Correlation", fontsize=12, fontweight="bold")
 
@@ -441,32 +456,14 @@ def create_semantic_dashboard(
     # Load data
     data = load_vqvae_checkpoint(checkpoint_path)
 
-    # Compute topographic metrics if requested
-    topo_metrics = None
-    topo_error = None
-    if compute_topo:
-        try:
-            print("Computing topographic metrics...")
-            topo_metrics = compute_topographic_metrics_from_checkpoint(
-                checkpoint_path,
-                dataset_path=dataset_path,
-                n_samples=topo_samples,
-                device=device,
-            )
-            print(f"Topographic metrics: {topo_metrics}")
-        except Exception as e:
-            topo_error = f"Failed: {str(e)[:50]}"
-            print(f"Warning: Could not compute topographic metrics: {e}")
-
     # Create figure with grid layout
     # Layout: Top row has feature matrix + category sizes + family legend
-    #         Middle row has codebook utilization + topographic metrics
-    #         Bottom row has category correlation (wide)
+    #         Middle row has codebook utilization (left) + category correlation (right, larger)
     fig = plt.figure(figsize=figsize, dpi=dpi)
     gs = GridSpec(
-        3, 3,
+        2, 3,
         figure=fig,
-        height_ratios=[1.5, 1, 0.8],
+        height_ratios=[1.5, 1.2],
         width_ratios=[1.2, 0.8, 1],
         hspace=0.35,
         wspace=0.3,
@@ -485,16 +482,12 @@ def create_semantic_dashboard(
     create_family_legend(ax_legend, data)
     ax_legend.set_title("Feature Families", fontsize=12, fontweight="bold")
 
-    # Panel D: Codebook utilization (middle-left)
+    # Panel D: Codebook utilization (bottom-left)
     ax_util = fig.add_subplot(gs[1, 0])
     plot_codebook_utilization(ax_util, data)
 
-    # Panel E: Topographic metrics (middle-right, spans 2 columns)
-    ax_topo = fig.add_subplot(gs[1, 1:])
-    plot_topographic_metrics(ax_topo, topo_metrics, topo_error)
-
-    # Panel F: Category correlation (bottom, spans all columns)
-    ax_corr = fig.add_subplot(gs[2, :])
+    # Panel E: Category correlation (bottom-right, spans 2 columns - larger)
+    ax_corr = fig.add_subplot(gs[1, 1:])
     plot_category_correlation(ax_corr, data)
 
     # Title

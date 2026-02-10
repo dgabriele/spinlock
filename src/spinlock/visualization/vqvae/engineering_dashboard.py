@@ -486,10 +486,17 @@ def create_metrics_table(ax: Axes, data: VQVAECheckpointData) -> None:
     ax.axis("off")
     ax.set_title("Summary Metrics", fontsize=12, fontweight="bold")
 
+    # Compute aggregate utilization from per-quantizer metrics
+    util_keys = [k for k in data.final_metrics.keys() if k.endswith('/utilization')]
+    if util_keys:
+        avg_utilization = sum(data.final_metrics[k] for k in util_keys) / len(util_keys)
+    else:
+        avg_utilization = data.final_metrics.get('utilization', 0)
+
     # Collect metrics
     metrics = [
         ("Quality", f"{data.final_metrics.get('quality', 0):.4f}"),
-        ("Utilization", f"{data.final_metrics.get('utilization', 0):.1%}"),
+        ("Utilization", f"{avg_utilization:.1%}"),
         ("Recon. Error", f"{data.final_metrics.get('reconstruction_error', 0):.4f}"),
         ("Best Val Loss", f"{data.best_val_loss:.4f}"),
         ("Categories", str(data.num_categories)),

@@ -311,8 +311,42 @@ def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
     category_names = list(group_indices.keys())
     num_categories = len(category_names)
 
-    # Extract levels configuration
-    levels = config.get("levels", config.get("category_levels", {}))
+    # Extract levels configuration from model_state_dict (embedding shapes)
+    levels = {}
+    model_state = checkpoint.get("model_state_dict", {})
+
+    # Parse embedding weight shapes to get codebook sizes
+    # Format: quantizers.{category}_L{level}.embedding.weight -> [codebook_size, embedding_dim]
+    for key, tensor in model_state.items():
+        if "quantizers." in key and ".embedding.weight" in key:
+            # Extract category and level from key
+            # Example: "quantizers.temporal_group_1_L0.embedding.weight"
+            parts = key.split(".")
+            if len(parts) >= 2:
+                quantizer_name = parts[1]  # "temporal_group_1_L0"
+                if "_L" in quantizer_name:
+                    cat_and_level = quantizer_name.rsplit("_L", 1)
+                    if len(cat_and_level) == 2:
+                        category = cat_and_level[0]
+                        level_str = cat_and_level[1]
+                        try:
+                            level_idx = int(level_str)
+                            codebook_size = tensor.shape[0]
+                            embedding_dim = tensor.shape[1]
+
+                            if category not in levels:
+                                levels[category] = []
+
+                            # Ensure levels list is large enough
+                            while len(levels[category]) <= level_idx:
+                                levels[category].append({})
+
+                            levels[category][level_idx] = {
+                                "num_tokens": codebook_size,
+                                "embedding_dim": embedding_dim,
+                            }
+                        except ValueError:
+                            pass
 
     # Determine number of levels (assume consistent across categories)
     num_levels = 3  # default
@@ -423,6 +457,70 @@ def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:
         metrics_history = history.get("metrics", [])
         loss_components_history = history.get("loss_components", [])
         final_metrics = history.get("final_metrics", {})
+    elif "metadata" in checkpoint and "training_history" in checkpoint["metadata"]:
+        # VQTokenizer format: metadata.training_history
+        history = checkpoint["metadata"]["training_history"]
+        train_loss = history.get("train_losses", [])
+        val_loss_sparse = history.get("val_losses", [])
+        metrics_history = history.get("val_metrics", [])
+
+        # Align val_loss with train_loss (validation happens every N epochs)
+        # Infer validation frequency from lengths
+        if len(train_loss) > 0 and len(val_loss_sparse) > 0:
+            val_freq = max(1, len(train_loss) // len(val_loss_sparse))
+            val_loss = []
+            val_idx = 0
+            for epoch_idx in range(len(train_loss)):
+                if (epoch_idx + 1) % val_freq == 0 and val_idx < len(val_loss_sparse):
+                    val_loss.append(val_loss_sparse[val_idx])
+                    val_idx += 1
+                elif val_loss:
+                    # Interpolate or repeat last value
+                    val_loss.append(val_loss[-1])
+                else:
+                    val_loss.append(train_loss[epoch_idx])  # Fallback to train loss
+        else:
+            val_loss = val_loss_sparse
+
+        # Extract loss components from val_metrics
+        loss_components_history = []
+        for val_metric in metrics_history:
+            components = {
+                "reconstruction": val_metric.get("reconstruction", 0.0),
+                "vq": val_metric.get("vq", 0.0),
+                "orthogonality": val_metric.get("orthogonality", 0.0),
+                "informativeness": val_metric.get("informativeness", 0.0),
+                "topographic": val_metric.get("topographic", 0.0),
+            }
+            loss_components_history.append(components)
+
+        final_metrics = history.get("final_metrics", {})
+
+        # If final_metrics doesn't exist, construct from last validation metrics
+        if not final_metrics and metrics_history:
+            last_val = metrics_history[-1]
+            per_quantizer_util = last_val.get("per_quantizer_utilization", {})
+            per_category_mse = last_val.get("per_category_mse", {})
+
+            # Reformat to visualization format
+            for quantizer_name, utilization in per_quantizer_util.items():
+                parts = quantizer_name.rsplit('_L', 1)
+                if len(parts) == 2:
+                    category = parts[0]
+                    level = parts[1]
+                    try:
+                        level_num = int(level)
+                        key = f"{category}/level_{level_num}/utilization"
+                        # Convert from percentage (0-100) to fraction (0-1)
+                        final_metrics[key] = utilization / 100.0
+                    except ValueError:
+                        final_metrics[f"{quantizer_name}/utilization"] = utilization / 100.0
+                else:
+                    final_metrics[f"{quantizer_name}/utilization"] = utilization / 100.0
+
+            # Add per-category MSE
+            for category, mse in per_category_mse.items():
+                final_metrics[f"{category}/reconstruction_mse"] = mse
 
     # If no history file, try to get final_metrics from checkpoint directly
     if not final_metrics and "metrics" in checkpoint:

@@ -146,6 +146,9 @@ Examples:
         if features is None:
             return 1
 
+        # Apply feature cleaning to match tokenizer's expected dimensions
+        features = self._apply_feature_cleaning(tokenizer, features)
+
         # Analyze token structure
         category_levels = self._analyze_token_structure(tokenizer, features, device)
         if category_levels is None:
@@ -262,6 +265,48 @@ Examples:
         except Exception as e:
             self.error(f"Failed to load dataset: {e}")
             return None
+
+    def _apply_feature_cleaning(
+        self,
+        tokenizer,
+        features: Dict[str, np.ndarray],
+    ) -> Dict[str, np.ndarray]:
+        """Apply feature cleaning to match tokenizer's expected input dimensions."""
+        # Check if tokenizer was trained with feature cleaning
+        config = tokenizer.config
+        if hasattr(config, 'feature_cleaning') and config.feature_cleaning and config.feature_cleaning.enabled:
+            temporal = features['temporal']
+            actual_dim = temporal.shape[-1]
+
+            print(f"\n⚠ Feature cleaning enabled in tokenizer, applying to dataset")
+            print(f"  Input features: {actual_dim}")
+
+            # Use the same cleaning logic from FeatureProcessor
+            from spinlock.encoding.feature_processor import FeatureProcessor
+
+            # Aggregate temporal for cleaning analysis (use mean across time)
+            temporal_agg = temporal.mean(axis=1)  # [N, D]
+
+            # Initialize processor with tokenizer's config
+            processor = FeatureProcessor(
+                variance_threshold=config.feature_cleaning.variance_threshold,
+                deduplicate_threshold=config.feature_cleaning.deduplicate_threshold,
+                use_intelligent_dedup=config.feature_cleaning.use_intelligent_dedup,
+                outlier_method=config.feature_cleaning.outlier_method,
+                percentile_range=config.feature_cleaning.percentile_range,
+                verbose=False,
+            )
+
+            # Clean features
+            temporal_cleaned_np, feature_mask, _ = processor.clean(temporal_agg)
+
+            # Apply mask to full temporal tensor
+            temporal_cleaned = temporal[:, :, feature_mask]
+            features['temporal'] = temporal_cleaned
+
+            print(f"✓ Feature cleaning applied: {actual_dim} → {temporal_cleaned.shape[-1]} features")
+
+        return features
 
     def _analyze_token_structure(
         self,
