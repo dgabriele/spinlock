@@ -6,7 +6,7 @@ for trajectory encoding.
 
 import logging
 from pathlib import Path
-from typing import Dict, Optional, Any, Union
+from typing import Dict, Optional, Any, Union, Tuple
 
 import torch
 import numpy as np
@@ -226,6 +226,123 @@ class VQTokenizer:
             )
 
         return tokens
+
+    def decode(
+        self,
+        tokens: Dict[str, torch.Tensor],
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Decode discrete tokens back to continuous features.
+
+        Args:
+            tokens: Dict mapping "family_category_Ll" → token indices [B]
+
+        Returns:
+            Tuple of (theta, u0, temporal) - None if family not present
+
+        Example:
+            >>> theta, u0, temporal = tokenizer.decode(tokens)
+        """
+        if self.model is None:
+            raise ValueError("Model not initialized. Load from checkpoint first.")
+
+        self.model.eval()
+
+        with torch.no_grad():
+            # Prepare tokens
+            device = next(self.model.parameters()).device
+            tokens = self._move_tokens_to_device(tokens, device)
+
+            # Extract embeddings and reconstruct
+            quantized = self._extract_embeddings(tokens)
+            reconstructed = self.model.decoder(quantized)
+
+            # Split by family
+            return self._split_reconstructed_features(reconstructed)
+
+    def _move_tokens_to_device(
+        self, tokens: Dict[str, torch.Tensor], device: torch.device
+    ) -> Dict[str, torch.Tensor]:
+        """Move tokens to device."""
+        return {
+            k: v.to(device) if isinstance(v, torch.Tensor) else torch.tensor(v, device=device)
+            for k, v in tokens.items()
+        }
+
+    def _extract_embeddings(self, tokens: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Extract embeddings from codebooks."""
+        embeddings = []
+
+        for key in sorted(tokens.keys()):
+            if key not in self.model.quantizers:
+                logger.warning(f"Skipping unknown quantizer: {key}")
+                continue
+
+            quantizer = self.model.quantizers[key]
+            embedding = quantizer.embedding(tokens[key])
+            embeddings.append(embedding)
+
+        if not embeddings:
+            raise ValueError("No valid tokens found")
+
+        return torch.cat(embeddings, dim=1)
+
+    def _split_reconstructed_features(
+        self, reconstructed: torch.Tensor
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Split reconstructed features by family."""
+        offset = 0
+        theta, u0, temporal = None, None, None
+
+        if "temporal" in self.model.families:
+            temporal = self._extract_family_features(
+                reconstructed, offset, self.model.temporal_dim
+            )
+            offset += self.model.temporal_dim
+
+        if "initial" in self.model.families:
+            u0 = self._extract_family_features(
+                reconstructed, offset, self.model.initial_dim
+            )
+            offset += self.model.initial_dim
+
+        if "theta" in self.model.families:
+            theta_encoded = self._extract_family_features(
+                reconstructed, offset, self.model.theta_dim
+            )
+            theta = self._decode_theta(theta_encoded)
+
+        return theta, u0, temporal
+
+    def _extract_family_features(
+        self, reconstructed: torch.Tensor, offset: int, dim: int
+    ) -> torch.Tensor:
+        """Extract features for a family."""
+        return reconstructed[:, offset:offset + dim]
+
+    def _decode_theta(self, theta_encoded: torch.Tensor) -> torch.Tensor:
+        """Decode theta from encoded representation."""
+        if hasattr(self.model, 'theta_inverse') and self.model.theta_inverse is not None:
+            return self.model.theta_inverse(theta_encoded)
+
+        # Fallback: simple truncation/padding
+        return self._approximate_theta_decode(theta_encoded)
+
+    def _approximate_theta_decode(self, theta_encoded: torch.Tensor) -> torch.Tensor:
+        """Approximate theta decoding (fallback)."""
+        logger.warning(
+            "Using approximate theta decoding. "
+            "Train inverse model for better quality."
+        )
+        param_dim = 14
+
+        if theta_encoded.shape[1] >= param_dim:
+            theta = theta_encoded[:, :param_dim]
+        else:
+            theta = torch.nn.functional.pad(
+                theta_encoded, (0, param_dim - theta_encoded.shape[1])
+            )
+
+        return torch.clamp(theta, 0.0, 1.0)
 
     @classmethod
     def from_checkpoint(cls, checkpoint_path: Union[str, Path]) -> "VQTokenizer":
