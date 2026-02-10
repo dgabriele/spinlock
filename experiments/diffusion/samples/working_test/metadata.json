@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-02-10T10:30:01.169618",
+  "num_samples": 10,
+  "mode": "unconditional",
+  "diffusion_checkpoint": "experiments/diffusion/experiments/diffusion/results/v2_tokenizer_baseline/diffusion_v2_pretokenized_best.pt",
+  "tokenizer_checkpoint": "checkpoints/v2/vqvae/vq_tokenizer_best.pt",
+  "device": "cuda",
+  "seed": 42,
+  "generate_trajectories": false,
+  "num_timesteps": 256,
+  "num_realizations": 1
+}

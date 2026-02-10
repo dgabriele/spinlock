@@ -218,20 +218,26 @@ class SampleGenerator:
         config_obj = checkpoint['config']
         config = config_obj.model_dump() if hasattr(config_obj, 'model_dump') else config_obj
 
-        # Extract vocab_sizes from tokenizer (like evaluate.py does)
+        # Extract vocab_sizes from the diffusion checkpoint
+        # (These are the ACTUAL vocab sizes from the training dataset, not codebook sizes)
         vocab_sizes = {}
         category_level_info = {}
 
-        for quantizer_key, quantizer in self.tokenizer.model.quantizers.items():
-            vocab_size = quantizer.embedding.weight.shape[0]
-            vocab_sizes[quantizer_key] = vocab_size
+        # Get vocab sizes from diffusion model's transition matrices
+        for key in checkpoint['diffusion_state_dict'].keys():
+            if key.startswith('transition_matrices.'):
+                category_key = key.replace('transition_matrices.', '')
+                matrix_shape = checkpoint['diffusion_state_dict'][key].shape
+                vocab_size = matrix_shape[1]  # [T, V, V] -> V
+                vocab_sizes[category_key] = vocab_size
 
-            # Parse category level info
-            parts = quantizer_key.split('_')
+        # Parse category level info from vocab_sizes keys
+        for key in vocab_sizes.keys():
+            parts = key.split('_')
             family = parts[0]
             level = int(parts[-1][1:])
             category = '_'.join(parts[1:-1])
-            category_level_info[quantizer_key] = {
+            category_level_info[key] = {
                 'family': family,
                 'category': category,
                 'level': level,
