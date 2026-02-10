@@ -1247,10 +1247,7 @@ class DatasetGenerationPipeline:
     def _process_batch_qbm(
         self, param_batch: NDArray[np.float64], batch_size: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Process a batch using Quantum Brownian Motion (QBM) simulation.
-
-        This bypasses operator building and directly simulates quantum dynamics.
+        """Process batch using Quantum Brownian Motion simulation.
 
         Args:
             param_batch: Parameter values [B, P]
@@ -1258,137 +1255,137 @@ class DatasetGenerationPipeline:
 
         Returns:
             Tuple of (inputs, outputs)
-            - inputs: [B, M, 2, H, W] quantum ICs (Re/Im wavefunctions)
+            - inputs: [B, M, 2, H, W] quantum ICs
             - outputs: [B, M, T, 2, H, W] QBM rollouts
         """
+        self._ensure_qbm_initialized()
+        num_realizations = self.config.simulation.num_realizations
+
+        inputs = self._generate_quantum_ics(batch_size, num_realizations)
+        potentials, qbm_params = self._generate_qbm_potentials_and_params(param_batch)
+        outputs = self._run_qbm_simulations(inputs, potentials, qbm_params, num_realizations)
+
+        return inputs, outputs
+
+    def _ensure_qbm_initialized(self) -> None:
+        """Lazy initialization of QBM components."""
+        if hasattr(self, '_qbm_simulator'):
+            return
+
         from spinlock.qbm import QuantumBrownianSimulator, QuantumICGenerator, PotentialGenerator
 
-        # Initialize QBM components (lazy initialization)
-        if not hasattr(self, '_qbm_simulator'):
-            grid_size = 64  # Fixed for MVP
-            domain_size = 10.0  # Default domain
-            self._qbm_simulator = QuantumBrownianSimulator(
-                grid_size=grid_size,
-                domain_size=domain_size,
-                device=str(self.device)
-            )
-            self._qbm_ic_generator = QuantumICGenerator(
-                grid_size=grid_size,
-                domain_size=domain_size,
-                device=self.device
-            )
-            self._qbm_potential_generator = PotentialGenerator(
-                grid_size=grid_size,
-                domain_size=domain_size,
-                device=self.device
-            )
+        grid_size, domain_size = 64, 10.0
 
-        # Generate quantum ICs (multiple realizations per sample)
-        num_realizations = self.config.simulation.num_realizations
+        self._qbm_simulator = QuantumBrownianSimulator(
+            grid_size=grid_size, domain_size=domain_size, device=str(self.device)
+        )
+        self._qbm_ic_generator = QuantumICGenerator(
+            grid_size=grid_size, domain_size=domain_size, device=self.device
+        )
+        self._qbm_potential_generator = PotentialGenerator(
+            grid_size=grid_size, domain_size=domain_size, device=self.device
+        )
+
+    def _generate_quantum_ics(self, batch_size: int, num_realizations: int) -> torch.Tensor:
+        """Generate quantum ICs with 40% wavepacket, 30% coherent, 30% superposition."""
         total_ics = batch_size * num_realizations
+        ic_types = self._sample_quantum_ic_types(total_ics)
+        ic_list = self._generate_ics_by_type(ic_types)
+        all_ics = torch.stack(ic_list, dim=0)
+        return all_ics.view(batch_size, num_realizations, 2, 64, 64)
 
-        # Distribution: 40% wavepacket, 30% coherent, 15% superposition-2, 15% superposition-3
-        ic_types_and_configs = []
+    def _sample_quantum_ic_types(self, total_ics: int) -> list[str]:
+        """Sample IC types from distribution."""
+        ic_types = []
         for _ in range(total_ics):
             rand = torch.rand(1).item()
             if rand < 0.40:
-                ic_types_and_configs.append(('quantum_gaussian_wavepacket', {}))
+                ic_types.append('quantum_gaussian_wavepacket')
             elif rand < 0.70:
-                ic_types_and_configs.append(('quantum_coherent_state', {}))
+                ic_types.append('quantum_coherent_state')
             elif rand < 0.85:
-                ic_types_and_configs.append(('quantum_superposition_2', {}))
+                ic_types.append('quantum_superposition_2')
             else:
-                ic_types_and_configs.append(('quantum_superposition_3', {}))
+                ic_types.append('quantum_superposition_3')
+        return ic_types
 
-        # Generate ICs in batched groups by type
-        all_ics = []
+    def _generate_ics_by_type(self, ic_types: list[str]) -> list[torch.Tensor]:
+        """Generate ICs in batched groups by type."""
         type_groups = {}
-        for idx, (ic_type, config) in enumerate(ic_types_and_configs):
-            if ic_type not in type_groups:
-                type_groups[ic_type] = []
-            type_groups[ic_type].append(idx)
+        for idx, ic_type in enumerate(ic_types):
+            type_groups.setdefault(ic_type, []).append(idx)
 
-        ic_list = [None] * total_ics
+        ic_list = [None] * len(ic_types)
         for ic_type, indices in type_groups.items():
             ics_batch = self._qbm_ic_generator.generate_batch(
-                batch_size=len(indices),
-                ic_type=ic_type
+                batch_size=len(indices), ic_type=ic_type
             )
             for i, idx in enumerate(indices):
                 ic_list[idx] = ics_batch[i]
+        return ic_list
 
-        all_ics = torch.stack(ic_list, dim=0)  # [B*M, 2, H, W]
-        inputs = all_ics.view(batch_size, num_realizations, 2, 64, 64)
-
-        # Map parameters and generate potentials
-        potentials = []
-        qbm_params_list = []
-
+    def _generate_qbm_potentials_and_params(
+        self, param_batch: NDArray[np.float64]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Generate potentials and extract QBM parameters."""
+        potentials, qbm_params_list = [], []
         for params in param_batch:
             param_dict = self._map_single_parameter_set(params)
-
-            # Extract QBM-specific parameters
             gamma = param_dict.get('gamma', 0.01)
             kT = param_dict.get('kT', 1.0)
             mass = param_dict.get('mass', 1.0)
-            potential_type = param_dict.get('potential_type', 'harmonic')
-            potential_strength = param_dict.get('potential_strength', 1.0)
-            potential_width = param_dict.get('potential_width', 0.1)
-
-            # Generate potential
-            if potential_type == 'harmonic':
-                omega = potential_strength
-                V = self._qbm_potential_generator.harmonic_2d(
-                    batch_size=1,
-                    omega=torch.tensor([omega], device=self.device)
-                )
-            elif potential_type == 'double_well':
-                V = self._qbm_potential_generator.double_well(
-                    batch_size=1,
-                    barrier_height=torch.tensor([potential_strength], device=self.device),
-                    separation=torch.tensor([2.0], device=self.device)
-                )
-            elif potential_type == 'quartic':
-                V = self._qbm_potential_generator.quartic(
-                    batch_size=1,
-                    c0=torch.zeros(1, device=self.device),
-                    c2=torch.tensor([potential_strength], device=self.device),
-                    c4=torch.tensor([0.1], device=self.device)
-                )
-            else:  # random
-                V = self._qbm_potential_generator.random_potential(
-                    batch_size=1,
-                    correlation_length=potential_width,
-                    amplitude=potential_strength
-                )
-
+            V = self._generate_single_potential(param_dict)
             potentials.append(V[0])
             qbm_params_list.append([gamma, kT, mass])
+        return torch.stack(potentials, dim=0), torch.tensor(qbm_params_list, device=self.device)
 
-        potentials = torch.stack(potentials, dim=0)  # [B, H, W]
-        qbm_params = torch.tensor(qbm_params_list, device=self.device)  # [B, 3]
+    def _generate_single_potential(self, param_dict: Dict[str, Any]) -> torch.Tensor:
+        """Generate a single potential from parameters."""
+        potential_type = param_dict.get('potential_type', 'harmonic')
+        strength = param_dict.get('potential_strength', 1.0)
+        width = param_dict.get('potential_width', 0.1)
 
-        # Run QBM simulations for all realizations
-        # Flatten: [B, M, 2, H, W] -> [B*M, 2, H, W]
+        if potential_type == 'harmonic':
+            return self._qbm_potential_generator.harmonic_2d(
+                batch_size=1, omega=torch.tensor([strength], device=self.device)
+            )
+        elif potential_type == 'double_well':
+            return self._qbm_potential_generator.double_well(
+                batch_size=1,
+                barrier_height=torch.tensor([strength], device=self.device),
+                separation=torch.tensor([2.0], device=self.device)
+            )
+        elif potential_type == 'quartic':
+            return self._qbm_potential_generator.quartic(
+                batch_size=1,
+                c0=torch.zeros(1, device=self.device),
+                c2=torch.tensor([strength], device=self.device),
+                c4=torch.tensor([0.1], device=self.device)
+            )
+        else:  # random
+            return self._qbm_potential_generator.random_potential(
+                batch_size=1, correlation_length=width, amplitude=strength
+            )
+
+    def _run_qbm_simulations(
+        self, inputs: torch.Tensor, potentials: torch.Tensor,
+        qbm_params: torch.Tensor, num_realizations: int
+    ) -> torch.Tensor:
+        """Run QBM simulations for all realizations."""
+        batch_size, num_timesteps = inputs.shape[0], self.config.simulation.num_timesteps
+
+        # Flatten for batched simulation
         ics_flat = inputs.view(-1, 2, 64, 64)
-        potentials_repeated = potentials.unsqueeze(1).repeat(1, num_realizations, 1, 1).view(-1, 64, 64)
-        qbm_params_repeated = qbm_params.unsqueeze(1).repeat(1, num_realizations, 1).view(-1, 3)
+        potentials_flat = potentials.unsqueeze(1).repeat(1, num_realizations, 1, 1).view(-1, 64, 64)
+        params_flat = qbm_params.unsqueeze(1).repeat(1, num_realizations, 1).view(-1, 3)
 
-        # Simulate
-        num_timesteps = self.config.simulation.num_timesteps
+        # Simulate and reshape
         trajectories_flat = self._qbm_simulator.rollout(
-            psi_0=ics_flat,
-            potential=potentials_repeated,
-            params=qbm_params_repeated,
-            num_steps=num_timesteps,
-            return_all_steps=True
-        )  # [B*M, T+1, 2, H, W]
+            psi_0=ics_flat, potential=potentials_flat, params=params_flat,
+            num_steps=num_timesteps, return_all_steps=True
+        )[:, 1:, ...]  # Remove initial condition
 
-        # Remove initial condition, reshape
-        trajectories_flat = trajectories_flat[:, 1:, ...]  # [B*M, T, 2, H, W]
-        outputs = trajectories_flat.view(batch_size, num_realizations, num_timesteps, 2, 64, 64)
-
-        return inputs, outputs
+        return trajectories_flat.view(batch_size, num_realizations, num_timesteps, 2, 64, 64)
 
     def _map_single_parameter_set(self, params: NDArray[np.float64]) -> Dict[str, Any]:
         """
