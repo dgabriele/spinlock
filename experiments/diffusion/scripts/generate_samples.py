@@ -38,9 +38,9 @@ class SampleGenerator:
         self.args = args
         self.device = args.device
 
-        # Load models
-        self.diffusion, self.denoiser = self._load_diffusion_model()
+        # Load models (tokenizer first, diffusion needs it for vocab_sizes)
         self.tokenizer = self._load_tokenizer()
+        self.diffusion, self.denoiser = self._load_diffusion_model()
         self.trajectory_gen = self._load_trajectory_generator()
 
         # Create utilities
@@ -196,27 +196,84 @@ class SampleGenerator:
 
     def _load_diffusion_model(self):
         """Load diffusion model and denoiser."""
-        from experiments.diffusion.models.discrete_d3pm import DiscreteD3PM
-        from experiments.diffusion.models.denoising_network import DenoisingNetwork
+        import sys
+        from pathlib import Path
+
+        # Add experiments/diffusion to path
+        diffusion_root = Path(__file__).parent.parent  # experiments/diffusion/
+        sys.path.insert(0, str(diffusion_root))
+
+        from models.discrete_d3pm import DiscreteD3PM, DiffusionSchedule
+        from models.denoising_network import DenoisingNetwork
 
         logger.info(f"Loading diffusion model from {self.args.diffusion_checkpoint}")
 
-        checkpoint = torch.load(self.args.diffusion_checkpoint, map_location=self.device)
-
-        # Load config and models
-        config = checkpoint['config']
-
-        diffusion = DiscreteD3PM(
-            vocab_sizes=config.vocab_sizes,
-            schedule_config=config.schedule
+        checkpoint = torch.load(
+            self.args.diffusion_checkpoint,
+            map_location='cpu',
+            weights_only=False
         )
 
+        # Extract config (pydantic model, convert to dict)
+        config_obj = checkpoint['config']
+        config = config_obj.model_dump() if hasattr(config_obj, 'model_dump') else config_obj
+
+        # Extract vocab_sizes from tokenizer (like evaluate.py does)
+        vocab_sizes = {}
+        category_level_info = {}
+
+        for quantizer_key, quantizer in self.tokenizer.model.quantizers.items():
+            vocab_size = quantizer.embedding.weight.shape[0]
+            vocab_sizes[quantizer_key] = vocab_size
+
+            # Parse category level info
+            parts = quantizer_key.split('_')
+            family = parts[0]
+            level = int(parts[-1][1:])
+            category = '_'.join(parts[1:-1])
+            category_level_info[quantizer_key] = {
+                'family': family,
+                'category': category,
+                'level': level,
+            }
+
+        logger.info(f"Detected {len(vocab_sizes)} token categories")
+
+        # Create diffusion schedule from config dict
+        diffusion_config = config['diffusion']
+        schedule = DiffusionSchedule(
+            num_timesteps=diffusion_config['num_timesteps'],
+            beta_start=diffusion_config['beta_start'],
+            beta_end=diffusion_config['beta_end'],
+            schedule_type=diffusion_config['schedule_type']
+        )
+
+        # Create diffusion model
+        diffusion = DiscreteD3PM(
+            vocab_sizes=vocab_sizes,
+            schedule=schedule,
+            category_level_info=category_level_info,
+        )
+
+        # Create denoiser (unpack config['model'] dict)
         denoiser = DenoisingNetwork(
-            vocab_sizes=config.vocab_sizes,
-            config=config.model
+            vocab_sizes=vocab_sizes,
+            category_level_info=category_level_info,
+            **config['model']
         ).to(self.device)
 
-        denoiser.load_state_dict(checkpoint['model_state_dict'])
+        # Try to load weights (may fail if vocab sizes changed)
+        try:
+            diffusion.load_state_dict(checkpoint['diffusion_state_dict'])
+            denoiser.load_state_dict(checkpoint['denoiser_state_dict'])
+            logger.info("✓ Loaded diffusion weights successfully")
+        except RuntimeError as e:
+            logger.warning(
+                f"⚠ Could not load diffusion weights (vocab size mismatch). "
+                f"This usually means the tokenizer was retrained with different codebook sizes. "
+                f"Sampling from UNTRAINED model (will generate random tokens)."
+            )
+            logger.warning(f"Error details: {str(e)[:200]}...")
 
         return diffusion, denoiser
 
