@@ -108,6 +108,30 @@ class HierarchyConfig(BaseModel):
         return v
 
 
+class InverseHeadConfig(BaseModel):
+    """Configuration for inverse decoder heads.
+
+    Note: Dimensions like theta_param_dim, initial_channels, initial_spatial_size
+    are inferred from the dataset at runtime. Only specify architectural hyperparameters here.
+    """
+
+    # Theta inverse (dimensions inferred from encoder config and data)
+    theta_hidden_dim: int = Field(default=64, description="Hidden dimension for theta MLP")
+    theta_dropout: float = Field(default=0.1, description="Dropout rate for theta MLP")
+
+    # Initial inverse (dimensions inferred from encoder config and data)
+    initial_base_channels: int = Field(default=256, description="Base channels for CNN decoder")
+
+
+class RoundtripLossConfig(BaseModel):
+    """Configuration for roundtrip consistency loss."""
+
+    enabled: bool = Field(default=True, description="Enable roundtrip loss")
+    weight: float = Field(default=1.0, description="Weight for roundtrip loss in total loss")
+    theta_weight: float = Field(default=1.0, description="Weight for theta roundtrip")
+    initial_weight: float = Field(default=1.0, description="Weight for initial roundtrip")
+
+
 class LossConfig(BaseModel):
     """Loss function configuration."""
     reconstruction_weight: float = Field(default=1.0, ge=0.0)
@@ -115,6 +139,12 @@ class LossConfig(BaseModel):
     informativeness_weight: float = Field(default=0.1, ge=0.0)
     topographic_weight: float = Field(default=0.0, ge=0.0)
     normalize_reconstruction: bool = True
+
+    # NEW: Roundtrip loss configuration
+    roundtrip: Optional[RoundtripLossConfig] = Field(
+        default=None,
+        description="Configuration for roundtrip consistency loss"
+    )
 
 
 class TrainingConfig(BaseModel):
@@ -194,6 +224,12 @@ class TokenizerConfig(BaseModel):
     random_seed: Optional[int] = None
     verbose: bool = True
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+
+    # NEW: Inverse heads configuration
+    inverse_heads: Optional[InverseHeadConfig] = Field(
+        default=None,
+        description="Configuration for inverse decoder heads (theta/initial reconstruction)"
+    )
 
 
 class PretrainingConfig(BaseModel):

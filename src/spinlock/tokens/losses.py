@@ -1,20 +1,22 @@
 """Loss functions for VQ-VAE training.
 
-Implements the 5-component loss used in spinlock V2:
+Implements the 6-component loss used in spinlock V2:
 1. Reconstruction loss - MSE between input and reconstructed features
 2. VQ loss - Vector quantization commitment loss (from quantizers)
 3. Orthogonality loss - Minimize correlation between category representations
 4. Informativeness loss - Maximize variance within each category
 5. Topographic loss - Optional spatial organization of codebook
+6. Roundtrip loss - Ensure decoded values re-encode to same tokens
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Any, List
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import LossConfig
+from .config import LossConfig, RoundtripLossConfig
 
 logger = logging.getLogger(__name__)
 
@@ -210,15 +212,174 @@ def compute_topographic_loss(
     return total_loss, metrics
 
 
+class RoundtripConsistencyLoss(nn.Module):
+    """
+    Roundtrip consistency loss: decoded values should re-encode to same tokens.
+
+    Ensures that decode(tokens) → encode(decode(tokens)) produces the same tokens,
+    creating self-consistent equivalence classes in the latent space.
+    """
+
+    def __init__(
+        self,
+        theta_weight: float = 1.0,
+        initial_weight: float = 1.0,
+    ):
+        super().__init__()
+        self.theta_weight = theta_weight
+        self.initial_weight = initial_weight
+
+    def forward(
+        self,
+        model: Any,
+        tokens: Dict[str, torch.Tensor],
+        decoded: Dict[str, torch.Tensor],
+        initial_manual: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, Dict[str, float]]:
+        """Compute roundtrip consistency loss for all families.
+
+        Args:
+            model: JointHierarchicalVQVAE instance
+            tokens: Original tokens per quantizer
+            decoded: Decoded continuous values
+            initial_manual: Manual features for initial encoder (if needed)
+
+        Returns:
+            (total_loss, metrics_dict)
+        """
+        losses = []
+        metrics = {}
+
+        if 'theta' in decoded:
+            theta_losses = self._compute_theta_roundtrip(model, tokens, decoded['theta'])
+            losses.extend(theta_losses['losses'])
+            metrics.update(theta_losses['metrics'])
+
+        if 'initial' in decoded:
+            initial_losses = self._compute_initial_roundtrip(model, tokens, decoded['initial'])
+            losses.extend(initial_losses['losses'])
+            metrics.update(initial_losses['metrics'])
+
+        device = next(iter(decoded.values())).device
+        total_loss = torch.stack(losses).mean() if losses else torch.tensor(0.0, device=device)
+        metrics['roundtrip/total'] = total_loss.item()
+
+        return total_loss, metrics
+
+    def _compute_theta_roundtrip(
+        self,
+        model: Any,
+        tokens: Dict[str, torch.Tensor],
+        theta_decoded: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Compute roundtrip loss for theta family."""
+        losses = []
+        metrics = {}
+
+        # Re-encode decoded theta
+        theta_encoded_rt = model.theta_encoder(theta_decoded)
+
+        # Compute loss for each theta category
+        for family_cat, indices in model.group_indices.items():
+            if not family_cat.startswith('theta_'):
+                continue
+
+            cat_losses = self._compute_category_roundtrip(
+                model, tokens, theta_encoded_rt, family_cat, indices, self.theta_weight
+            )
+            losses.extend(cat_losses['losses'])
+            metrics.update(cat_losses['metrics'])
+
+        return {'losses': losses, 'metrics': metrics}
+
+    def _compute_initial_roundtrip(
+        self,
+        model: Any,
+        tokens: Dict[str, torch.Tensor],
+        u0_decoded: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Compute roundtrip loss for initial family."""
+        losses = []
+        metrics = {}
+
+        # Re-encode decoded initial conditions
+        initial_encoded_rt = self._encode_initial(model, u0_decoded)
+
+        # Compute loss for each initial category
+        for family_cat, indices in model.group_indices.items():
+            if not family_cat.startswith('initial_'):
+                continue
+
+            cat_losses = self._compute_category_roundtrip(
+                model, tokens, initial_encoded_rt, family_cat, indices, self.initial_weight
+            )
+            losses.extend(cat_losses['losses'])
+            metrics.update(cat_losses['metrics'])
+
+        return {'losses': losses, 'metrics': metrics}
+
+    def _encode_initial(self, model: Any, u0_decoded: torch.Tensor) -> torch.Tensor:
+        """Encode initial conditions (handle hybrid vs CNN-only modes)."""
+        # Check if this is a hybrid encoder (has both manual and CNN)
+        from spinlock.tokens.encoders.initial import InitialHybridEncoder
+
+        if isinstance(model.initial_encoder, InitialHybridEncoder):
+            # Hybrid mode: need to extract manual features
+            from spinlock.features.initial.manual_extractors import InitialManualExtractor
+            extractor = InitialManualExtractor(device=u0_decoded.device)
+            u0_expanded = u0_decoded.unsqueeze(1)  # [B,3,64,64] → [B,1,3,64,64]
+            manual_features = extractor.extract_all(u0_expanded).squeeze(1)  # [B, 42]
+            # InitialHybridEncoder.forward(manual_features, raw_ics)
+            return model.initial_encoder(manual_features, u0_decoded)
+        else:
+            # CNN-only mode: InitialCNNEncoder.forward(raw_ics)
+            return model.initial_encoder(u0_decoded)
+
+    def _compute_category_roundtrip(
+        self,
+        model: Any,
+        tokens: Dict[str, torch.Tensor],
+        encoded_rt: torch.Tensor,
+        family_cat: str,
+        indices: List[int],
+        weight: float,
+    ) -> Dict[str, Any]:
+        """Compute roundtrip loss for a single category across all levels."""
+        losses = []
+        metrics = {}
+
+        # Extract category features and project to hierarchical latents
+        cat_features_rt = encoded_rt[:, indices]
+        projector = model.projectors[family_cat]
+        latents_rt = projector(cat_features_rt)
+
+        # Compute loss for each hierarchy level
+        for level_idx, latent_rt in enumerate(latents_rt):
+            quantizer_key = f"{family_cat}_L{level_idx}"
+            quantizer = model.quantizers[quantizer_key]
+
+            # Target: embeddings of original tokens
+            target_tokens = tokens[quantizer_key]
+            target_embeddings = quantizer.embedding(target_tokens)
+
+            # MSE loss between roundtrip latents and target embeddings
+            loss = F.mse_loss(latent_rt, target_embeddings)
+            losses.append(weight * loss)
+            metrics[f'roundtrip/{quantizer_key}'] = loss.item()
+
+        return {'losses': losses, 'metrics': metrics}
+
+
 class VQVAELoss:
     """Combined loss function for VQ-VAE training.
 
-    Computes weighted sum of 5 loss components:
+    Computes weighted sum of 6 loss components:
     1. Reconstruction loss (MSE)
     2. VQ loss (from quantizers)
     3. Orthogonality loss
     4. Informativeness loss
     5. Topographic loss (optional)
+    6. Roundtrip loss (optional)
 
     Args:
         config: Loss configuration with weights
@@ -226,6 +387,14 @@ class VQVAELoss:
 
     def __init__(self, config: LossConfig):
         self.config = config
+
+        # Create roundtrip loss if enabled
+        self.roundtrip_loss = None
+        if config.roundtrip is not None and config.roundtrip.enabled:
+            self.roundtrip_loss = RoundtripConsistencyLoss(
+                theta_weight=config.roundtrip.theta_weight,
+                initial_weight=config.roundtrip.initial_weight,
+            )
 
     def __call__(
         self,
@@ -237,6 +406,10 @@ class VQVAELoss:
         token_indices: Optional[Dict[str, torch.Tensor]] = None,
         codebooks: Optional[Dict[str, torch.Tensor]] = None,
         latent_vectors: Optional[Dict[str, torch.Tensor]] = None,
+        model: Optional[Any] = None,
+        tokens: Optional[Dict[str, torch.Tensor]] = None,
+        decoded: Optional[Dict[str, torch.Tensor]] = None,
+        initial_manual: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Compute total VQ-VAE loss.
 
@@ -249,6 +422,10 @@ class VQVAELoss:
             token_indices: Optional dict of token indices per category
             codebooks: Optional dict of codebook tensors per category
             latent_vectors: Optional dict of pre-quantization latent vectors per category
+            model: Optional model instance (needed for roundtrip loss)
+            tokens: Optional original tokens (needed for roundtrip loss)
+            decoded: Optional decoded values (needed for roundtrip loss)
+            initial_manual: Optional manual features for initial encoder
 
         Returns:
             Dict with keys:
@@ -260,6 +437,8 @@ class VQVAELoss:
                 - topographic: Topographic loss component (if enabled)
                 - topo_pre: Pre-quantization correlation (if topographic enabled)
                 - topo_post: Post-quantization correlation (if topographic enabled)
+                - roundtrip/total: Roundtrip loss component (if enabled)
+                - roundtrip/*: Per-quantizer roundtrip losses (if enabled)
         """
         # 1. Reconstruction loss
         recon_loss = compute_reconstruction_loss(
@@ -308,6 +487,21 @@ class VQVAELoss:
                     topo_pre_corr = topo_metrics['topo_pre']
                     topo_post_corr = topo_metrics['topo_post']
 
+        # 6. Roundtrip loss (optional, NEW!)
+        roundtrip_loss = torch.tensor(0.0, device=original.device)
+        roundtrip_metrics = {}
+        if self.roundtrip_loss is not None:
+            if decoded is not None and tokens is not None and model is not None:
+                roundtrip_loss, roundtrip_metrics = self.roundtrip_loss(
+                    model=model,
+                    tokens=tokens,
+                    decoded=decoded,
+                    initial_manual=initial_manual,
+                )
+            else:
+                # Roundtrip loss requires decoded values, tokens, and model
+                roundtrip_metrics['roundtrip/total'] = 0.0
+
         # Weighted combination
         total_loss = (
             self.config.reconstruction_weight * recon_loss
@@ -315,9 +509,10 @@ class VQVAELoss:
             + self.config.orthogonality_weight * ortho_loss
             + self.config.informativeness_weight * info_loss
             + self.config.topographic_weight * topo_loss
+            + (self.config.roundtrip.weight * roundtrip_loss if self.config.roundtrip else 0.0)
         )
 
-        return {
+        result = {
             "total": total_loss,
             "reconstruction": recon_loss,
             "vq": vq_loss,
@@ -327,3 +522,8 @@ class VQVAELoss:
             "topo_pre": topo_pre_corr,
             "topo_post": topo_post_corr,
         }
+
+        # Add roundtrip metrics if computed
+        result.update(roundtrip_metrics)
+
+        return result

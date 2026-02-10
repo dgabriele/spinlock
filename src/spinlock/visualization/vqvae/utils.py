@@ -914,6 +914,7 @@ def compute_topographic_metrics_from_checkpoint(
     model_config = checkpoint.get("model_config", checkpoint.get("config", {}))
 
     # Load training history for quality estimate
+    history_path = checkpoint_dir / "training_history.json"
     train_metrics = {}
     if history_path.exists():
         with open(history_path) as f:
@@ -938,3 +939,305 @@ def compute_topographic_metrics_from_checkpoint(
         "quantization_degradation": round(degradation, 4),
         "_estimated": True,  # Flag to indicate these are estimates
     }
+
+
+# ============================================================================
+# Roundtrip Consistency & Semantic Structure Metrics
+# ============================================================================
+
+
+def extract_roundtrip_metrics(data: VQVAECheckpointData) -> Dict[str, Any]:
+    """Extract roundtrip consistency metrics from checkpoint.
+
+    Returns:
+        {
+            'per_quantizer': Dict[str, float],  # roundtrip/{key} → MSE
+            'per_family': {
+                'theta': float,     # Average theta roundtrip loss
+                'initial': float,   # Average initial roundtrip loss
+                'temporal': float,  # Average temporal roundtrip loss
+            },
+            'overall': float,       # Total roundtrip loss
+            'training_curve': List[float],  # Epoch-wise roundtrip from history
+        }
+
+    Data sources:
+    - data.final_metrics['roundtrip/{quantizer_key}']
+    - data.metrics_history[*]['roundtrip']
+    """
+    # Extract per-quantizer roundtrip losses
+    per_quantizer = {}
+    for key, value in data.final_metrics.items():
+        if key.startswith("roundtrip/"):
+            quantizer_name = key.split("roundtrip/", 1)[1]
+            per_quantizer[quantizer_name] = value
+
+    # Aggregate by family
+    per_family = {}
+    for family in data.feature_families.keys():
+        family_losses = []
+        for quantizer_name, loss in per_quantizer.items():
+            # Check if quantizer belongs to this family (e.g., "theta_group_1_L0")
+            if quantizer_name.lower().startswith(family.lower()):
+                family_losses.append(loss)
+        if family_losses:
+            per_family[family] = float(np.mean(family_losses))
+
+    # Overall roundtrip loss
+    overall = float(np.mean(list(per_quantizer.values()))) if per_quantizer else 0.0
+
+    # Extract training curve if available
+    training_curve = []
+    for epoch_metrics in data.metrics_history:
+        if "roundtrip" in epoch_metrics:
+            training_curve.append(epoch_metrics["roundtrip"])
+        elif "roundtrip_loss" in epoch_metrics:
+            training_curve.append(epoch_metrics["roundtrip_loss"])
+
+    return {
+        "per_quantizer": per_quantizer,
+        "per_family": per_family,
+        "overall": overall,
+        "training_curve": training_curve,
+    }
+
+
+def compute_combinatorial_space_size(data: VQVAECheckpointData) -> Dict[str, Any]:
+    """Compute size of combinatorial token space.
+
+    Returns:
+        {
+            'total': int,                   # Product of all N (active codes)
+            'per_category': Dict[str, int], # N for each category
+            'per_level': {                  # Product across each level
+                0: int,  # L0 product
+                1: int,  # L1 product
+                2: int,  # L2 product
+            },
+            'log_size': float,              # log10(total) for display
+        }
+
+    Calculation:
+    - Extract utilization counts N/M per quantizer
+    - Compute product of all N values
+    """
+    utilization_counts = extract_utilization_counts(data)
+
+    # Per-category active codes (sum across levels)
+    per_category = {}
+    for cat, level_counts in utilization_counts.items():
+        # Sum active codes across all levels for this category
+        total_active = sum(used for used, _ in level_counts.values())
+        per_category[cat] = total_active
+
+    # Per-level products
+    per_level = {}
+    for level_idx in range(data.num_levels):
+        level_product = 1
+        for cat in data.category_names:
+            if cat in utilization_counts and level_idx in utilization_counts[cat]:
+                used_codes, _ = utilization_counts[cat][level_idx]
+                # If no codes used, treat as 1 (doesn't contribute to diversity)
+                level_product *= max(used_codes, 1)
+        per_level[level_idx] = level_product
+
+    # Total combinatorial space: product of all active codes
+    total = 1
+    for cat in data.category_names:
+        cat_product = 1
+        if cat in utilization_counts:
+            for level_idx in range(data.num_levels):
+                if level_idx in utilization_counts[cat]:
+                    used_codes, _ = utilization_counts[cat][level_idx]
+                    cat_product *= max(used_codes, 1)
+        total *= cat_product
+
+    # Log size for display
+    import math
+    log_size = math.log10(max(total, 1))
+
+    return {
+        "total": total,
+        "per_category": per_category,
+        "per_level": per_level,
+        "log_size": log_size,
+    }
+
+
+def analyze_token_frequencies(
+    tokenized_dataset_path: Path,
+    data: VQVAECheckpointData,
+    max_samples: int = 50000,
+) -> Dict[str, Any]:
+    """Analyze token usage patterns from pretokenized dataset.
+
+    Args:
+        tokenized_dataset_path: Path to pretokenized HDF5 (e.g., 50k_tokenized.h5)
+        data: Checkpoint data for category structure
+        max_samples: Limit analysis to first N samples
+
+    Returns:
+        {
+            'frequency_distribution': np.ndarray,  # Histogram of pattern counts
+            'unique_patterns': int,                # Number of unique tokenizations
+            'entropy_per_category': Dict[str, float],  # Shannon entropy
+            'top_patterns': List[Tuple[tuple, int]],  # Most common (tokens, count)
+            'singleton_patterns': int,             # Patterns appearing once
+        }
+
+    Data source:
+    - Load tokens from tokenized_dataset['tokens/{quantizer_key}'][:]
+    - Compute frequency histogram across all samples
+    """
+    import h5py
+    from collections import Counter
+
+    with h5py.File(tokenized_dataset_path, "r") as f:
+        tokens_group = f["tokens"]
+
+        # Load all tokens for each quantizer
+        all_tokens = {}
+        for cat in data.category_names:
+            for level in range(data.num_levels):
+                key = f"{cat}_L{level}"
+                if key in tokens_group:
+                    tokens = tokens_group[key][:max_samples]
+                    all_tokens[key] = tokens
+
+        # Create composite patterns (tuple of all token assignments per sample)
+        n_samples = min(max_samples, len(next(iter(all_tokens.values()))))
+        patterns = []
+        for i in range(n_samples):
+            pattern = tuple(all_tokens[key][i] for key in sorted(all_tokens.keys()))
+            patterns.append(pattern)
+
+        # Count pattern frequencies
+        pattern_counts = Counter(patterns)
+        unique_patterns = len(pattern_counts)
+        singleton_patterns = sum(1 for count in pattern_counts.values() if count == 1)
+
+        # Frequency distribution (how many patterns appear N times)
+        frequency_counts = Counter(pattern_counts.values())
+        frequency_distribution = np.array(
+            [frequency_counts.get(i, 0) for i in range(1, max(frequency_counts.keys()) + 1)]
+        )
+
+        # Top patterns
+        top_patterns = pattern_counts.most_common(10)
+
+        # Per-category entropy (Shannon entropy of token distribution)
+        entropy_per_category = {}
+        for cat in data.category_names:
+            cat_tokens = []
+            for level in range(data.num_levels):
+                key = f"{cat}_L{level}"
+                if key in all_tokens:
+                    cat_tokens.extend(all_tokens[key])
+
+            # Compute Shannon entropy
+            if cat_tokens:
+                token_counts = Counter(cat_tokens)
+                total = sum(token_counts.values())
+                probs = np.array([count / total for count in token_counts.values()])
+                entropy = -np.sum(probs * np.log2(probs + 1e-10))
+                entropy_per_category[cat] = float(entropy)
+
+    return {
+        "frequency_distribution": frequency_distribution,
+        "unique_patterns": unique_patterns,
+        "entropy_per_category": entropy_per_category,
+        "top_patterns": top_patterns,
+        "singleton_patterns": singleton_patterns,
+    }
+
+
+def compute_token_cooccurrence(
+    tokenized_dataset_path: Path,
+    category_pairs: List[tuple[str, str]],
+    max_samples: int = 50000,
+) -> Dict[tuple[str, str], np.ndarray]:
+    """Compute co-occurrence matrix for selected category pairs.
+
+    Args:
+        tokenized_dataset_path: Path to pretokenized HDF5
+        category_pairs: List of (cat1, cat2) to analyze
+                       (e.g., [('theta_group_1', 'initial_group_1')])
+        max_samples: Limit analysis to first N samples
+
+    Returns:
+        Dict mapping (cat1, cat2) to co-occurrence matrix [N1 × N2]
+
+    Shows: How often token pairs appear together (compositional structure)
+    """
+    import h5py
+
+    cooccurrence_matrices = {}
+
+    with h5py.File(tokenized_dataset_path, "r") as f:
+        tokens_group = f["tokens"]
+
+        for cat1, cat2 in category_pairs:
+            # Use L0 tokens for simplicity (can extend to all levels)
+            key1 = f"{cat1}_L0"
+            key2 = f"{cat2}_L0"
+
+            if key1 in tokens_group and key2 in tokens_group:
+                tokens1 = tokens_group[key1][:max_samples]
+                tokens2 = tokens_group[key2][:max_samples]
+
+                # Determine matrix size
+                max_token1 = int(tokens1.max()) + 1
+                max_token2 = int(tokens2.max()) + 1
+
+                # Build co-occurrence matrix
+                cooccur = np.zeros((max_token1, max_token2), dtype=np.int32)
+                for t1, t2 in zip(tokens1, tokens2):
+                    cooccur[t1, t2] += 1
+
+                cooccurrence_matrices[(cat1, cat2)] = cooccur
+
+    return cooccurrence_matrices
+
+
+def extract_level_composition(data: VQVAECheckpointData) -> Dict[int, Dict[str, Any]]:
+    """Analyze per-level token composition across categories.
+
+    Returns:
+        {
+            0: {
+                'active_categories': int,  # Categories with L0 tokens
+                'total_tokens': int,       # Sum of N across L0
+                'avg_utilization': float,  # Mean N/M for L0
+            },
+            1: {...},
+            2: {...},
+        }
+    """
+    utilization_counts = extract_utilization_counts(data)
+
+    composition = {}
+    for level_idx in range(data.num_levels):
+        active_categories = 0
+        total_tokens = 0
+        utilizations = []
+
+        for cat in data.category_names:
+            if cat in utilization_counts and level_idx in utilization_counts[cat]:
+                used_codes, codebook_size = utilization_counts[cat][level_idx]
+
+                if used_codes > 0:
+                    active_categories += 1
+                    total_tokens += used_codes
+
+                if codebook_size > 0:
+                    utilizations.append(used_codes / codebook_size)
+
+        avg_utilization = float(np.mean(utilizations)) if utilizations else 0.0
+
+        composition[level_idx] = {
+            "active_categories": active_categories,
+            "total_tokens": total_tokens,
+            "avg_utilization": avg_utilization,
+        }
+
+    return composition

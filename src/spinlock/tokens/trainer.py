@@ -217,7 +217,7 @@ class VQTokenizerTrainer:
                 )
                 if (epoch + 1) % self.config.training.val_every_n_epochs == 0:
                     perplexity = val_metrics['perplexity']
-                    # Compute average codebook size across all quantizers
+                    # Compute average codebook size for util_epoch (but don't log it)
                     total_codes = sum(q.num_embeddings for q in self.model.quantizers.values())
                     num_quantizers = len(self.model.quantizers)
                     avg_codebook_size = total_codes / num_quantizers if num_quantizers > 0 else 1
@@ -225,12 +225,14 @@ class VQTokenizerTrainer:
                     log_msg += (
                         f" | Val Loss: {val_metrics['loss']:.6f} "
                         f"(recon={val_metrics['reconstruction']:.4f}, "
-                        f"vq={val_metrics['vq']:.4f}, "
-                        f"topo={val_metrics['topographic']:.4f} "
+                        f"vq={val_metrics['vq']:.4f}"
+                    )
+                    if 'roundtrip' in val_metrics:
+                        log_msg += f", roundtrip={val_metrics['roundtrip']:.4f}"
+                    log_msg += (
+                        f", topo={val_metrics['topographic']:.4f} "
                         f"[pre={val_metrics['topo_pre']:.3f}, post={val_metrics['topo_post']:.3f}], "
-                        f"util_epoch={util_pct:.1f}%, "
-                        f"util_embed={val_metrics['embedding_utilization']:.1f}%, "
-                        f"avg_codes={avg_codebook_size:.1f})"
+                        f"util_epoch={util_pct:.1f}%)"
                     )
                 logger.info(log_msg)
 
@@ -389,6 +391,13 @@ class VQTokenizerTrainer:
                 for key, quantizer in self.model.quantizers.items()
             }
 
+            # Prepare roundtrip loss inputs (if enabled)
+            tokens = None
+            decoded = outputs.get('decoded')
+            if self.loss_fn.roundtrip_loss is not None and decoded is not None:
+                # Extract token indices from quantized outputs
+                tokens = outputs.get('token_indices')
+
             losses = self.loss_fn(
                 original=outputs['original_encoded'],
                 reconstructed=outputs['reconstructed'],
@@ -398,6 +407,10 @@ class VQTokenizerTrainer:
                 token_indices=outputs.get('token_indices'),
                 codebooks=codebooks,
                 latent_vectors=outputs.get('latents'),
+                model=self.model,  # NEW: for roundtrip loss
+                tokens=tokens,  # NEW: for roundtrip loss
+                decoded=decoded,  # NEW: for roundtrip loss
+                initial_manual=initial_man,  # NEW: for roundtrip loss
             )
 
             loss = losses['total']
@@ -423,13 +436,19 @@ class VQTokenizerTrainer:
             total_info += losses['informativeness'].item()
             num_batches += 1
 
-        return {
+        metrics = {
             'loss': total_loss / num_batches,
             'reconstruction': total_recon / num_batches,
             'vq': total_vq / num_batches,
             'orthogonality': total_ortho / num_batches,
             'informativeness': total_info / num_batches,
         }
+
+        # Add roundtrip metric if available (computed in last batch)
+        if 'roundtrip/total' in losses:
+            metrics['roundtrip'] = losses['roundtrip/total']
+
+        return metrics
 
     def _validate_epoch(self, loader: DataLoader) -> Dict[str, float]:
         """Run one validation epoch.
@@ -451,6 +470,7 @@ class VQTokenizerTrainer:
         total_topo_pre = 0.0
         total_topo_post = 0.0
         total_perplexity = 0.0
+        total_roundtrip = 0.0  # NEW: for roundtrip loss
         num_batches = 0
 
         # Track token frequencies for per-quantizer utilization
@@ -511,6 +531,12 @@ class VQTokenizerTrainer:
                     for key, quantizer in self.model.quantizers.items()
                 }
 
+                # Prepare roundtrip loss inputs (if enabled)
+                tokens = None
+                decoded = outputs.get('decoded')
+                if self.loss_fn.roundtrip_loss is not None and decoded is not None:
+                    tokens = outputs.get('token_indices')
+
                 losses = self.loss_fn(
                     original=outputs['original_encoded'],
                     reconstructed=outputs['reconstructed'],
@@ -520,6 +546,10 @@ class VQTokenizerTrainer:
                     token_indices=outputs.get('token_indices'),
                     codebooks=codebooks,
                     latent_vectors=outputs.get('latents'),
+                    model=self.model,  # NEW: for roundtrip loss
+                    tokens=tokens,  # NEW: for roundtrip loss
+                    decoded=decoded,  # NEW: for roundtrip loss
+                    initial_manual=initial_man,  # NEW: for roundtrip loss
                 )
 
                 # Accumulate metrics
@@ -532,6 +562,8 @@ class VQTokenizerTrainer:
                 total_topo_pre += losses['topo_pre']
                 total_topo_post += losses['topo_post']
                 total_perplexity += outputs['perplexity'].item()
+                if 'roundtrip/total' in losses:  # NEW: accumulate roundtrip loss
+                    total_roundtrip += losses['roundtrip/total']
                 num_batches += 1
 
                 # Track token frequencies (post-convergence utilization)
@@ -576,7 +608,7 @@ class VQTokenizerTrainer:
             for cat in category_mse.keys()
         }
 
-        return {
+        metrics = {
             'loss': total_loss / num_batches,
             'reconstruction': total_recon / num_batches,
             'vq': total_vq / num_batches,
@@ -590,6 +622,12 @@ class VQTokenizerTrainer:
             'per_quantizer_utilization': per_quantizer_utilization,
             'per_category_mse': per_category_mse,
         }
+
+        # Add roundtrip metric if enabled
+        if self.loss_fn.roundtrip_loss is not None:
+            metrics['roundtrip'] = total_roundtrip / num_batches
+
+        return metrics
 
     def _extract_category_embeddings(
         self, outputs: Dict[str, Any]

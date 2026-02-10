@@ -29,15 +29,16 @@ class VisualizeVQVAECommand(CLICommand):
     def description(self) -> str:
         return """Create comprehensive visualizations for trained VQ-VAE models.
 
-Three dashboard types are available:
+Four dashboard types are available:
   - engineering: Model architecture, training curves, utilization heatmap
   - topological: t-SNE codebook embeddings, usage heatmap, similarity matrix
   - semantic: Feature-category mapping, category profiles, correlation matrix
+  - roundtrip: Roundtrip consistency, semantic structure, compositional analysis
 
 Examples:
   spinlock visualize-vqvae --checkpoint checkpoints/production/100k_full_features/
-  spinlock visualize-vqvae --checkpoint checkpoints/my_model/ --type topological
-  spinlock visualize-vqvae --checkpoint checkpoints/my_model/ --type all
+  spinlock visualize-vqvae --checkpoint checkpoints/my_model/ --type roundtrip
+  spinlock visualize-vqvae --checkpoint checkpoints/my_model/ --type all --tokenized-dataset datasets/50k_tokenized.h5
 """
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
@@ -56,7 +57,7 @@ Examples:
         parser.add_argument(
             "--type",
             type=str,
-            choices=["engineering", "topological", "semantic", "all"],
+            choices=["engineering", "topological", "semantic", "roundtrip", "all"],
             default="topological",
             help="Type of visualization to create (default: topological)",
         )
@@ -94,6 +95,12 @@ Examples:
             default="cuda",
             help="Device for topographic computation (default: cuda)",
         )
+        parser.add_argument(
+            "--tokenized-dataset",
+            type=str,
+            default=None,
+            help="Path to pretokenized dataset HDF5 for token frequency analysis (optional, for roundtrip dashboard)",
+        )
 
     def execute(self, args: argparse.Namespace) -> int:
         """Execute the visualization command."""
@@ -101,6 +108,7 @@ Examples:
             create_engineering_dashboard,
             create_semantic_dashboard,
             create_topological_dashboard,
+            create_roundtrip_dashboard,
         )
         import matplotlib
         import matplotlib.pyplot as plt
@@ -175,6 +183,19 @@ Examples:
                     compute_topo=not args.no_topo,
                     topo_samples=args.topo_samples,
                     device=args.device,
+                    dpi=args.dpi,
+                )
+                if not args.no_display:
+                    plt.show(block=False)
+                plt.close(fig)
+
+            if args.type in ["roundtrip", "all"]:
+                output_path = output_dir / f"{checkpoint_name}_roundtrip.png"
+                print(f"Creating roundtrip dashboard...")
+                fig = create_roundtrip_dashboard(
+                    checkpoint_path=checkpoint_path,
+                    output_path=output_path,
+                    tokenized_dataset_path=Path(args.tokenized_dataset) if args.tokenized_dataset else None,
                     dpi=args.dpi,
                 )
                 if not args.no_display:

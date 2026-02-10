@@ -1,0 +1,9 @@
+Roundtrip Consistency Test Results
+======================================================================
+
+Overall theta token match: 4.97%
+
+Per-category results:
+  theta_group_1_L0: 0.53%
+  theta_group_1_L1: 2.70%
+  theta_group_1_L2: 11.68%

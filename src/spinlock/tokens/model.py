@@ -26,6 +26,7 @@ from .encoders import (
 from .encoders.theta import ThetaMLPEncoder
 from .config import TokenizerConfig, HierarchyConfig
 from .projector import HierarchicalProjector
+from .inverse_models import ThetaInverseMLP, InitialInverseCNN
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +84,38 @@ class JointHierarchicalVQVAE(nn.Module):
         self.initial_dim = 0
         self.theta_dim = 0
 
-        # Create family encoders
+        # Create family encoders first (sets dims)
         self._create_encoders()
+
+        # Inverse decoders (created if config provided, otherwise None)
+        self.theta_inverse: Optional[ThetaInverseMLP] = None
+        self.initial_inverse: Optional[InitialInverseCNN] = None
+
+        if config.inverse_heads is not None:
+            # Create theta inverse if theta family exists
+            if "theta" in self.families and self.theta_dim > 0:
+                # Infer param_dim from encoder config (adaptive to dataset)
+                theta_param_dim = config.encoder.theta.param_dim if config.encoder.theta else 14
+                self.theta_inverse = ThetaInverseMLP(
+                    encoded_dim=self.theta_dim,
+                    param_dim=theta_param_dim,
+                    hidden_dim=config.inverse_heads.theta_hidden_dim,
+                    dropout=config.inverse_heads.theta_dropout,
+                )
+                logger.info(f"Created ThetaInverseMLP: {self.theta_dim} → {theta_param_dim}")
+
+            # Create initial inverse if initial family exists
+            if "initial" in self.families and self.initial_dim > 0:
+                # Infer channels and spatial_size from encoder config (adaptive to dataset)
+                initial_channels = config.encoder.initial.in_channels
+                # Spatial size is typically 64 for CNO, but could be inferred from data
+                initial_spatial_size = 64  # Default, could be made configurable
+                self.initial_inverse = InitialInverseCNN(
+                    encoded_dim=self.initial_dim,
+                    channels=initial_channels,
+                    spatial_size=initial_spatial_size,
+                )
+                logger.info(f"Created InitialInverseCNN: {self.initial_dim} → [{initial_channels}, {initial_spatial_size}, {initial_spatial_size}]")
 
         # Compute total encoded dimension
         total_encoded_dim = self.temporal_dim + self.initial_dim + self.theta_dim
@@ -505,6 +536,16 @@ class JointHierarchicalVQVAE(nn.Module):
         # Decode to reconstruct
         reconstructed = self.decoder(all_quantized_cat)  # [B, total_encoded_dim]
 
+        # Split reconstructed back into family components
+        reconstructed_split = self._split_reconstructed(reconstructed, all_encoded)
+
+        # Apply inverse heads if they exist (NEW!)
+        decoded = {}
+        if self.theta_inverse is not None and "theta" in reconstructed_split:
+            decoded["theta"] = self.theta_inverse(reconstructed_split["theta"])
+        if self.initial_inverse is not None and "initial" in reconstructed_split:
+            decoded["initial"] = self.initial_inverse(reconstructed_split["initial"])
+
         # Aggregate VQ losses
         total_vq_loss = torch.stack(vq_losses).mean()
         avg_perplexity = torch.stack(perplexities).mean()
@@ -514,6 +555,8 @@ class JointHierarchicalVQVAE(nn.Module):
 
         return {
             "reconstructed": reconstructed,
+            "reconstructed_split": reconstructed_split,  # NEW: split by family
+            "decoded": decoded if decoded else None,  # NEW: decoded (theta, ICs)
             "quantized": all_quantized_cat,
             "vq_loss": total_vq_loss,
             "perplexity": avg_perplexity,
@@ -567,6 +610,38 @@ class JointHierarchicalVQVAE(nn.Module):
             tokens[quantizer_key] = token_indices
 
         return tokens
+
+    def _split_reconstructed(
+        self,
+        reconstructed: torch.Tensor,
+        original_encoded: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Split reconstructed tensor back into family components.
+
+        Args:
+            reconstructed: Reconstructed features [B, total_encoded_dim]
+            original_encoded: Original encoded features [B, total_encoded_dim] (for shape reference)
+
+        Returns:
+            Dict mapping family → reconstructed features [B, family_dim]
+        """
+        split = {}
+        offset = 0
+
+        for family in sorted(self.families):
+            if family == "temporal":
+                family_dim = self.temporal_dim
+            elif family == "initial":
+                family_dim = self.initial_dim
+            elif family == "theta":
+                family_dim = self.theta_dim
+            else:
+                raise ValueError(f"Unknown family: {family}")
+
+            split[family] = reconstructed[:, offset:offset + family_dim]
+            offset += family_dim
+
+        return split
 
     def _get_token_indices(self, encodings: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Extract token indices from quantized encodings.

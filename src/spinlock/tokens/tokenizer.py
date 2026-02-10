@@ -230,20 +230,40 @@ class VQTokenizer:
     def decode(
         self,
         tokens: Dict[str, torch.Tensor],
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """Decode discrete tokens back to continuous features.
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Decode discrete tokens back to actual (theta, ICs).
+
+        Requires inverse models to be loaded. Returns proper operator parameters
+        and spatial initial conditions suitable for CNOReplayer.
 
         Args:
             tokens: Dict mapping "family_category_Ll" → token indices [B]
 
         Returns:
-            Tuple of (theta, u0, temporal) - None if family not present
+            Tuple of (theta [B, 14], u0 [B, 3, 64, 64])
+
+        Raises:
+            ValueError: If inverse models are not loaded
+            ValueError: If required families (theta, initial) are missing
 
         Example:
-            >>> theta, u0, temporal = tokenizer.decode(tokens)
+            >>> tokenizer = VQTokenizer.from_checkpoint(
+            ...     "checkpoints/best.pt",
+            ...     theta_inverse_path="checkpoints/theta_inverse.pt",
+            ...     initial_inverse_path="checkpoints/initial_inverse.pt",
+            ... )
+            >>> theta, u0 = tokenizer.decode(tokens)
+            >>> # theta: [B, 14] in [0,1], u0: [B, 3, 64, 64]
         """
         if self.model is None:
             raise ValueError("Model not initialized. Load from checkpoint first.")
+
+        # Verify required families exist
+        if "theta" not in self.model.families or "initial" not in self.model.families:
+            raise ValueError(
+                f"Decode requires both 'theta' and 'initial' families. "
+                f"Found families: {self.model.families}"
+            )
 
         self.model.eval()
 
@@ -256,8 +276,10 @@ class VQTokenizer:
             quantized = self._extract_embeddings(tokens)
             reconstructed = self.model.decoder(quantized)
 
-            # Split by family
-            return self._split_reconstructed_features(reconstructed)
+            # Split by family and apply inverse decoders
+            theta, u0 = self._split_and_decode(reconstructed)
+
+        return theta, u0
 
     def _move_tokens_to_device(
         self, tokens: Dict[str, torch.Tensor], device: torch.device
@@ -286,32 +308,36 @@ class VQTokenizer:
 
         return torch.cat(embeddings, dim=1)
 
-    def _split_reconstructed_features(
+    def _split_and_decode(
         self, reconstructed: torch.Tensor
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """Split reconstructed features by family."""
-        offset = 0
-        theta, u0, temporal = None, None, None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Split reconstructed features and apply inverse decoders.
 
+        Returns:
+            Tuple of (theta [B, 14], u0 [B, 3, 64, 64])
+        """
+        # Determine family order and offsets
+        # Order: temporal, initial, theta (as constructed in model)
+        offset = 0
+
+        # Skip temporal if present
         if "temporal" in self.model.families:
-            temporal = self._extract_family_features(
-                reconstructed, offset, self.model.temporal_dim
-            )
             offset += self.model.temporal_dim
 
-        if "initial" in self.model.families:
-            u0 = self._extract_family_features(
-                reconstructed, offset, self.model.initial_dim
-            )
-            offset += self.model.initial_dim
+        # Extract and decode initial
+        initial_encoded = self._extract_family_features(
+            reconstructed, offset, self.model.initial_dim
+        )
+        u0 = self._decode_initial(initial_encoded)
+        offset += self.model.initial_dim
 
-        if "theta" in self.model.families:
-            theta_encoded = self._extract_family_features(
-                reconstructed, offset, self.model.theta_dim
-            )
-            theta = self._decode_theta(theta_encoded)
+        # Extract and decode theta
+        theta_encoded = self._extract_family_features(
+            reconstructed, offset, self.model.theta_dim
+        )
+        theta = self._decode_theta(theta_encoded)
 
-        return theta, u0, temporal
+        return theta, u0
 
     def _extract_family_features(
         self, reconstructed: torch.Tensor, offset: int, dim: int
@@ -324,32 +350,40 @@ class VQTokenizer:
         if hasattr(self.model, 'theta_inverse') and self.model.theta_inverse is not None:
             return self.model.theta_inverse(theta_encoded)
 
-        # Fallback: simple truncation/padding
-        return self._approximate_theta_decode(theta_encoded)
-
-    def _approximate_theta_decode(self, theta_encoded: torch.Tensor) -> torch.Tensor:
-        """Approximate theta decoding (fallback)."""
-        logger.warning(
-            "Using approximate theta decoding. "
-            "Train inverse model for better quality."
+        # No fallback: inverse model is required for proper decoding
+        raise ValueError(
+            "Theta inverse model not loaded. Train and load the inverse model using:\n"
+            "  1. Train: poetry run python scripts/train_theta_inverse.py ...\n"
+            "  2. Load: tokenizer.load_theta_inverse('checkpoints/theta_inverse.pt')\n"
+            "Or load at initialization: VQTokenizer.from_checkpoint(..., theta_inverse_path=...)"
         )
-        param_dim = 14
 
-        if theta_encoded.shape[1] >= param_dim:
-            theta = theta_encoded[:, :param_dim]
-        else:
-            theta = torch.nn.functional.pad(
-                theta_encoded, (0, param_dim - theta_encoded.shape[1])
-            )
+    def _decode_initial(self, initial_encoded: torch.Tensor) -> torch.Tensor:
+        """Decode initial conditions from encoded representation."""
+        if hasattr(self.model, 'initial_inverse') and self.model.initial_inverse is not None:
+            return self.model.initial_inverse(initial_encoded)
 
-        return torch.clamp(theta, 0.0, 1.0)
+        # No fallback: inverse model is required for proper decoding
+        raise ValueError(
+            "Initial inverse model not loaded. Train and load the inverse model using:\n"
+            "  1. Train: poetry run python scripts/train_initial_inverse.py ...\n"
+            "  2. Load: tokenizer.load_initial_inverse('checkpoints/initial_inverse.pt')\n"
+            "Or load at initialization: VQTokenizer.from_checkpoint(..., initial_inverse_path=...)"
+        )
 
     @classmethod
-    def from_checkpoint(cls, checkpoint_path: Union[str, Path]) -> "VQTokenizer":
+    def from_checkpoint(
+        cls,
+        checkpoint_path: Union[str, Path],
+        theta_inverse_path: Optional[Union[str, Path]] = None,
+        initial_inverse_path: Optional[Union[str, Path]] = None,
+    ) -> "VQTokenizer":
         """Load tokenizer from checkpoint.
 
         Args:
             checkpoint_path: Path to checkpoint file
+            theta_inverse_path: Optional path to trained ThetaInverseMLP checkpoint
+            initial_inverse_path: Optional path to trained InitialInverseCNN checkpoint
 
         Returns:
             Initialized VQTokenizer instance
@@ -357,6 +391,14 @@ class VQTokenizer:
         Example:
             >>> tokenizer = VQTokenizer.from_checkpoint("checkpoints/best.pt")
             >>> tokens = tokenizer.tokenize(trajectories)
+            >>>
+            >>> # With inverse models
+            >>> tokenizer = VQTokenizer.from_checkpoint(
+            ...     "checkpoints/best.pt",
+            ...     theta_inverse_path="checkpoints/theta_inverse.pt",
+            ...     initial_inverse_path="checkpoints/initial_inverse.pt",
+            ... )
+            >>> theta, u0, _ = tokenizer.decode(tokens)
         """
         checkpoint_path = Path(checkpoint_path)
         logger.info(f"Loading checkpoint from {checkpoint_path}")
@@ -383,6 +425,13 @@ class VQTokenizer:
         # Create tokenizer
         tokenizer = cls(config, model=model, group_indices=group_indices)
         tokenizer.normalization_stats = normalization_stats
+
+        # Load inverse models if provided
+        if theta_inverse_path is not None:
+            tokenizer.load_theta_inverse(theta_inverse_path)
+
+        if initial_inverse_path is not None:
+            tokenizer.load_initial_inverse(initial_inverse_path)
 
         logger.info("Checkpoint loaded successfully")
         return tokenizer
@@ -972,3 +1021,69 @@ class VQTokenizer:
                     f"    --embedding-dim {self.config.encoder.initial.cnn_embedding_dim} \\\n"
                     f"    --output <pretrained_cnn_path>"
                 )
+
+    def load_theta_inverse(self, checkpoint_path: Union[str, Path]):
+        """Load trained ThetaInverseMLP model.
+
+        Args:
+            checkpoint_path: Path to trained theta inverse checkpoint
+
+        Example:
+            >>> tokenizer.load_theta_inverse("checkpoints/theta_inverse.pt")
+        """
+        from .inverse_models import ThetaInverseMLP
+
+        checkpoint_path = Path(checkpoint_path)
+        logger.info(f"Loading theta inverse from {checkpoint_path}")
+
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+
+        # Create model with saved dimensions
+        model = ThetaInverseMLP(
+            encoded_dim=checkpoint['encoded_dim'],
+            param_dim=checkpoint['param_dim'],
+        )
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+
+        # Attach to VQTokenizer model
+        self.model.theta_inverse = model
+
+        logger.info(
+            f"Theta inverse loaded: {checkpoint['encoded_dim']} → {checkpoint['param_dim']} "
+            f"(Val MSE: {checkpoint['val_mse']:.6f})"
+        )
+
+    def load_initial_inverse(self, checkpoint_path: Union[str, Path]):
+        """Load trained InitialInverseCNN model.
+
+        Args:
+            checkpoint_path: Path to trained initial inverse checkpoint
+
+        Example:
+            >>> tokenizer.load_initial_inverse("checkpoints/initial_inverse.pt")
+        """
+        from .inverse_models import InitialInverseCNN
+
+        checkpoint_path = Path(checkpoint_path)
+        logger.info(f"Loading initial inverse from {checkpoint_path}")
+
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+
+        # Create model with saved dimensions
+        model = InitialInverseCNN(
+            encoded_dim=checkpoint['encoded_dim'],
+            channels=checkpoint['channels'],
+            spatial_size=checkpoint['spatial_size'],
+        )
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+
+        # Attach to VQTokenizer model
+        self.model.initial_inverse = model
+
+        logger.info(
+            f"Initial inverse loaded: {checkpoint['encoded_dim']} → "
+            f"[{checkpoint['channels']}, {checkpoint['spatial_size']}, {checkpoint['spatial_size']}] "
+            f"(Val MSE: {checkpoint['val_mse']:.6f})"
+        )

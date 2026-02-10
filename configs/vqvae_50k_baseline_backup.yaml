@@ -43,7 +43,7 @@ encoder:
     param_dim: 14  # Number of PDE parameters
     hidden_dim: 64
     output_dim: 32  # Output embedding dimension
-    dropout: 0.15
+    dropout: 0.1
     use_layer_norm: true
 
   # Projection layers
@@ -127,24 +127,13 @@ grouping:
   random_seed: 42
 
 # ═══════════════════════════════════════════════════════════════
-# Inverse Heads Configuration (for roundtrip consistency)
-# ═══════════════════════════════════════════════════════════════
-# Dimensions (theta_param_dim, initial_channels, initial_spatial_size)
-# are inferred from encoder config at runtime for framework flexibility
-
-inverse_heads:
-  theta_hidden_dim: 64
-  theta_dropout: 0.15
-  initial_base_channels: 256
-
-# ═══════════════════════════════════════════════════════════════
 # Training Configuration
 # ═══════════════════════════════════════════════════════════════
 
 training:
-  num_epochs: 1000  # Keep original proven setting
-  batch_size: 768  # Maximize GPU utilization (8GB VRAM)
-  learning_rate: 0.001  # Keep original proven setting
+  num_epochs: 1000
+  batch_size: 256
+  learning_rate: 0.001
   val_split: 0.1  # 10% validation split
   val_every_n_epochs: 5  # Validate every 5 epochs
 
@@ -175,18 +164,11 @@ training:
 # ═══════════════════════════════════════════════════════════════
 
 loss:
-  reconstruction_weight: 0.0  # Pure roundtrip objective (no encoded-space reconstruction)
+  reconstruction_weight: 1.0  # Primary objective: reconstruction quality
   orthogonality_weight: 0.1  # Encourage orthogonal code embeddings
   informativeness_weight: 0.1  # Encourage informative codes
   topographic_weight: 0.2  # Topographic organization (preserve topology in codebook)
   normalize_reconstruction: true  # Normalize reconstruction loss
-
-  # Roundtrip consistency loss (PRIMARY objective - ensure decode(tokens) re-encodes to same tokens)
-  roundtrip:
-    enabled: true
-    weight: 5.0  # PRIMARY objective (was 2.0) - roundtrip consistency is what matters
-    theta_weight: 1.0
-    initial_weight: 1.0
 
 # ═══════════════════════════════════════════════════════════════
 # Normalization Configuration
@@ -205,16 +187,14 @@ verbose: true
 log_level: "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR"
 
 # ═══════════════════════════════════════════════════════════════
-# Expected Performance (with roundtrip consistency training)
+# Expected Performance
 # ═══════════════════════════════════════════════════════════════
 #
-# With pretrained CNN encoder + integrated inverse heads:
-#   - Reconstruction: < 0.02 MSE (98%+ quality)
-#   - Roundtrip theta token match: > 90% (vs 4.97% without end-to-end training)
-#   - Roundtrip initial token match: > 85%
-#   - Theta reconstruction MSE: < 0.01 (vs 0.083 without end-to-end training)
-#   - Codebook utilization: > 10% per quantizer
-#   - Training time: ~150 epochs (roundtrip loss converges faster than separate training)
+# With pretrained CNN encoder:
+#   - Initial encoder: Better initialization (1.8% pretrain error)
+#   - Temporal encoder: Random init (proven to reach 0.02 MSE)
+#   - Expected reconstruction: < 0.02 MSE (98%+ quality)
+#   - Target utilization: > 15% codebook usage
 #
 # Training command:
 #   poetry run spinlock train-vq-tokenizer --config configs/vqvae_50k.yaml
