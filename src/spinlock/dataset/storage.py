@@ -114,7 +114,11 @@ class HDF5DatasetWriter:
 
         # Reduced chunk size for more frequent flushing (prevents buffer accumulation)
         # Changed from 100 to 20 to reduce peak memory usage by ~80%
-        self.chunk_size = chunk_size or min(20, num_parameter_sets)
+        # Ensure chunk size never exceeds dataset size (HDF5 requirement)
+        if chunk_size is None:
+            self.chunk_size = min(20, num_parameter_sets)
+        else:
+            self.chunk_size = min(chunk_size, num_parameter_sets)
 
         self.file: Optional[h5py.File] = None
         self.current_idx = 0

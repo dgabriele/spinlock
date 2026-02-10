@@ -6,6 +6,7 @@ Updated with enhanced temporal and spectral features.
 
 from dataclasses import dataclass, field
 from typing import Optional, Any
+from spinlock.features.quantum.config import QuantumConfig
 
 
 @dataclass
@@ -126,6 +127,7 @@ class TemporalFeatureConfig:
     spectral: SpectralConfig = field(default_factory=SpectralConfig)
     cross_channel: CrossChannelConfig = field(default_factory=CrossChannelConfig)
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
+    quantum: QuantumConfig = field(default_factory=QuantumConfig)
     per_channel: bool = True
     version: str = "3.1.0"
     channel_indices: Optional[list] = None  # Select specific channels for feature extraction (e.g., [0] for density-only)

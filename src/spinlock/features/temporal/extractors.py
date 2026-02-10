@@ -20,6 +20,7 @@ from spinlock.features.temporal.spatial import SpatialFeatureExtractor
 from spinlock.features.temporal.spectral import SpectralFeatureExtractor
 from spinlock.features.temporal.cross_channel import CrossChannelFeatureExtractor
 from spinlock.features.temporal.temporal import TemporalFeatureExtractor
+from spinlock.features.quantum.quantum import QuantumFeatureExtractor
 
 
 class TemporalFeatureOrchestrator(FeatureExtractorBase):
@@ -96,6 +97,17 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 short_window=short_window,
                 medium_window=medium_window,
                 long_window=long_window,
+            )
+
+        # Initialize quantum extractor if enabled
+        self.quantum_extractor = None
+        if config and hasattr(config, 'quantum') and config.quantum.enabled:
+            # Get grid size from trajectories (will be validated during extraction)
+            # Default to 64 for now, will be updated on first extract call
+            self.quantum_extractor = QuantumFeatureExtractor(
+                device=device,
+                config=config.quantum,
+                grid_size=64  # Will be updated based on actual data
             )
 
     def extract_per_timestep(self, trajectories: torch.Tensor) -> torch.Tensor:
@@ -213,8 +225,28 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
             # Stack: [T, N, 130] → [N, T, 130]
             temporal = torch.stack(temporal_features, dim=0).transpose(0, 1)
 
+        # Extract quantum features if enabled
+        quantum = None
+        if self.quantum_extractor is not None:
+            # Quantum features require exactly 2 channels (Re, Im) for wavefunctions
+            if C == 2:
+                # Update grid size based on actual data
+                if fields.shape[-1] != self.quantum_extractor.grid_size:
+                    self.quantum_extractor.grid_size = fields.shape[-1]
+                    self.quantum_extractor._setup_grids()
+
+                quantum = self.quantum_extractor.extract(fields)  # [N, T, D_quantum]
+            else:
+                # Skip quantum features for non-quantum data (C != 2)
+                # This handles classical PDE systems or systems with multiple physical fields
+                pass
+
         # Now all features are [N, T, D_i], concatenate along last dimension
-        features = torch.cat([spatial, spectral, cross, temporal], dim=-1)
+        feature_list = [spatial, spectral, cross, temporal]
+        if quantum is not None:
+            feature_list.append(quantum)
+
+        features = torch.cat(feature_list, dim=-1)
 
         return features
 
@@ -249,15 +281,18 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
             'aggregated_mean': torch.zeros(N, 0, device=self.device),
         }
 
-    def get_actual_per_timestep_dim(self) -> int:
+    def get_actual_per_timestep_dim(self, num_channels: int = 3) -> int:
         """Get actual per-timestep feature dimension by runtime extraction.
+
+        Args:
+            num_channels: Number of channels in the data (dynamically determined)
 
         Returns:
             Actual feature dimension (auto-detected)
         """
         # Create a small dummy batch to measure actual dimensions
-        # Shape: [N=1, M=2, T=5, C=3, H=64, W=64]
-        dummy = torch.zeros(1, 2, 5, 3, 64, 64, device=self.device)
+        # Shape: [N=1, M=2, T=5, C=num_channels, H=64, W=64]
+        dummy = torch.zeros(1, 2, 5, num_channels, 64, 64, device=self.device)
 
         # Extract to get actual shape
         with torch.no_grad():
@@ -338,32 +373,38 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
         """
         return None
 
-    def get_feature_registry(self):
-        """Get feature registry for v3.0.
+    def get_feature_registry(self, num_channels: int = 3):
+        """Get feature registry for v3.0+.
+
+        Args:
+            num_channels: Number of channels in the data (dynamically determined)
 
         Returns:
-            FeatureRegistry with 193D feature mapping
+            FeatureRegistry with dynamically determined feature mapping
         """
         from spinlock.features.registry import FeatureRegistry
 
         registry = FeatureRegistry(family_name="temporal")
 
-        # Register features by category
-        # Spatial: 24D (8 features x 3 channels)
+        # Register features by category (dynamically based on num_channels)
+        # Spatial: (8 features x num_channels)
         for feat in ['mean', 'std', 'variance', 'skewness', 'kurtosis', 'min', 'max', 'range']:
-            for ch in ['ch0', 'ch1', 'ch2']:
-                registry.register(name=f"spatial_{feat}_{ch}", category="spatial")
+            for ch_idx in range(num_channels):
+                registry.register(name=f"spatial_{feat}_ch{ch_idx}", category="spatial")
 
-        # Spectral: 27D (9 features x 3 channels)
+        # Spectral: (9 features x num_channels)
         for feat in ['peak_freq', 'spectral_centroid', 'spectral_spread', 'spectral_flatness',
                      'spectral_rolloff', 'spectral_entropy', 'power_low', 'power_mid', 'power_high']:
-            for ch in ['ch0', 'ch1', 'ch2']:
-                registry.register(name=f"spectral_{feat}_{ch}", category="spectral")
+            for ch_idx in range(num_channels):
+                registry.register(name=f"spectral_{feat}_ch{ch_idx}", category="spectral")
 
-        # Cross-channel: 12D (4 features x 3 channel pairs)
-        for feat in ['correlation', 'covariance', 'mutual_info', 'phase_sync']:
-            for pair in ['ch0_ch1', 'ch0_ch2', 'ch1_ch2']:
-                registry.register(name=f"cross_channel_{feat}_{pair}", category="cross_channel")
+        # Cross-channel: (4 features x num_channel_pairs)
+        # For C channels, we have C*(C-1)/2 unique pairs
+        if num_channels >= 2:
+            for feat in ['correlation', 'covariance', 'mutual_info', 'phase_sync']:
+                for i in range(num_channels):
+                    for j in range(i+1, num_channels):
+                        registry.register(name=f"cross_channel_{feat}_ch{i}_ch{j}", category="cross_channel")
 
         # Temporal: 130D (enhanced temporal features)
         # Instantaneous (22D)
@@ -385,6 +426,17 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
         # Multi-scale (30D)
         for i in range(30):
             registry.register(name=f"temporal_multiscale_{i}", category="temporal")
+
+        # Quantum features (10D) - only register if quantum extractor is enabled
+        if self.quantum_extractor is not None:
+            quantum_feature_names = [
+                'purity', 'linear_entropy', 'von_neumann_entropy_approx', 'coherence_measure',
+                'position_uncertainty_x', 'position_uncertainty_y',
+                'momentum_uncertainty_px', 'momentum_uncertainty_py',
+                'uncertainty_product_x', 'uncertainty_product_y'
+            ]
+            for feat_name in quantum_feature_names:
+                registry.register(name=f"quantum_{feat_name}", category="quantum")
 
         return registry
 

@@ -76,8 +76,8 @@ sampling:
   sobol:
     scramble: true
     seed: 42
-  total_samples: 10000
-  batch_size: 2  # Conservative for GPU memory
+  total_samples: 50000
+  batch_size: 50  # Increased for 50K generation
 
 # Simulation configuration
 simulation:
@@ -102,7 +102,7 @@ simulation:
 
 # Dataset storage
 dataset:
-  output_path: "./datasets/qbm_10k_test.h5"
+  output_path: "./datasets/qbm_50k.h5"
   storage:
     compression: "gzip"
     compression_level: 4
@@ -113,6 +113,17 @@ features:
   temporal:
     enabled: true
     extractors: ["summary"]
+
+    # Quantum features (NEW)
+    quantum:
+      enabled: true
+      include_purity: true
+      include_entropy: true
+      include_coherence: true
+      include_variance: true
+      include_decoherence: false  # Optional, adds summary statistic
+      hbar: 1.0
+      domain_size: 10.0
 
   summary:
     summary_mode: "manual"  # Use manual features for QBM

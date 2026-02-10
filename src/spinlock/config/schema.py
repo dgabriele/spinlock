@@ -538,6 +538,22 @@ class LoggingConfig(BaseModel):
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
 
 
+class QuantumFeaturesConfig(BaseModel):
+    """Quantum feature configuration for QBM systems."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Extract quantum-specific features (purity, coherence, entropy, uncertainty)."
+    )
+    include_purity: bool = Field(default=True, description="Compute purity and linear entropy")
+    include_entropy: bool = Field(default=True, description="Compute von Neumann entropy (approximate)")
+    include_coherence: bool = Field(default=True, description="Compute coherence measure")
+    include_variance: bool = Field(default=True, description="Compute position/momentum uncertainties")
+    include_decoherence: bool = Field(default=False, description="Estimate decoherence rate")
+    hbar: float = Field(default=1.0, description="Reduced Planck constant")
+    domain_size: float = Field(default=10.0, description="Spatial domain size")
+
+
 class TemporalFeaturesConfig(BaseModel):
     """TEMPORAL feature family configuration (per-timestep time series)."""
 
@@ -549,6 +565,10 @@ class TemporalFeaturesConfig(BaseModel):
         default=None,
         description="Select specific channels for feature extraction (e.g., [0] for density-only). "
                     "Use this to ensure MNO/CNO compatibility by extracting from density channel only."
+    )
+    quantum: QuantumFeaturesConfig = Field(
+        default_factory=QuantumFeaturesConfig,
+        description="Quantum feature configuration (for QBM systems)"
     )
 
 

@@ -348,8 +348,8 @@ class QuantumICGenerator:
             # Multiply by complex coefficient: c * ψ
             # Real part: c_r * ψ_r - c_i * ψ_i
             # Imag part: c_r * ψ_i + c_i * ψ_r
-            c_r = coeff_real[:, i].view(batch_size, 1, 1, 1)
-            c_i = coeff_imag[:, i].view(batch_size, 1, 1, 1)
+            c_r = coeff_real[:, i].view(batch_size, 1, 1)
+            c_i = coeff_imag[:, i].view(batch_size, 1, 1)
 
             psi_real_weighted = c_r * psi_component[:, 0] - c_i * psi_component[:, 1]
             psi_imag_weighted = c_r * psi_component[:, 1] + c_i * psi_component[:, 0]

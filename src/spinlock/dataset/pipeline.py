@@ -290,6 +290,10 @@ class DatasetGenerationPipeline:
         """
         self.config = config
 
+        # Dynamically detect channel counts FIRST (before any components that need them)
+        self._num_input_channels = None
+        self._num_output_channels = None
+
         # Inject backends (with defaults for backward compatibility)
         self._storage_backend = storage_backend or self._create_default_storage()
         self._execution_backend = execution_backend or self._create_default_execution()
@@ -369,14 +373,49 @@ class DatasetGenerationPipeline:
         """Create parameter space sampler from config."""
         return StratifiedSobolSampler.from_config(self.config.parameter_space, self.config.sampling)
 
+    def _detect_channel_counts(self) -> tuple[int, int]:
+        """Detect input/output channel counts from operator type and config.
+
+        Returns:
+            (num_input_channels, num_output_channels)
+        """
+        operator_type = self.config.simulation.operator_type
+
+        # QBM: Always 2 channels (Re, Im) for quantum wavefunctions
+        if operator_type == "qbm":
+            return (2, 2)
+
+        # Neural operators: Check config first, then parameter space
+        # Try explicit config
+        if hasattr(self.config.simulation, 'num_channels'):
+            num_channels = self.config.simulation.num_channels
+            return (num_channels, num_channels)
+
+        # Try parameter space (for heterogeneous operators, use first sample)
+        if hasattr(self.config.parameter_space, 'architecture'):
+            arch = self.config.parameter_space.architecture
+            if hasattr(arch, 'input_channels'):
+                input_ch = arch.input_channels
+                # If it's a distribution, take the first value
+                if hasattr(input_ch, 'choices'):
+                    return (input_ch.choices[0], input_ch.choices[0])
+                elif hasattr(input_ch, 'bounds'):
+                    return (int(input_ch.bounds[0]), int(input_ch.bounds[0]))
+
+        # Fallback: Will be detected from first batch output
+        return (None, None)
+
     def _create_input_generator(self) -> InputFieldGenerator:
         """Create input field generator from config."""
         # Fixed dimensions for MVP (homogeneous operators)
         # Future: Extract from parameter space for heterogeneous support
         grid_size = 64
 
-        # Read num_channels from config, default to 3 for backwards compatibility
-        num_channels = getattr(self.config, 'num_channels', 3)
+        # Dynamically detect channels (no hardcoding!)
+        if self._num_input_channels is None:
+            self._num_input_channels, self._num_output_channels = self._detect_channel_counts()
+
+        num_channels = self._num_input_channels if self._num_input_channels is not None else 3
 
         return InputFieldGenerator(
             grid_size=grid_size, num_channels=num_channels, device=self.device
@@ -397,7 +436,11 @@ class DatasetGenerationPipeline:
                 "method='per_channel' requires channel_configs to be specified"
             )
 
-        num_channels = getattr(self.config, 'num_channels', 3)
+        # Dynamically detect channels (no hardcoding!)
+        if self._num_input_channels is None:
+            self._num_input_channels, self._num_output_channels = self._detect_channel_counts()
+
+        num_channels = self._num_input_channels if self._num_input_channels is not None else 3
 
         return PerChannelICGenerator(
             input_generator=self.input_generator,
@@ -577,9 +620,12 @@ class DatasetGenerationPipeline:
         print(f"\nPre-compiling {len(unique_signatures)} architecture templates...")
 
         # Fixed I/O channels (MVP constraint: homogeneous channel count)
-        # Read from config, default to 3 for backwards compatibility
-        fixed_input_channels = getattr(self.config, 'num_channels', 3)
-        fixed_output_channels = getattr(self.config, 'num_channels', 3)
+        # Dynamically detect channels (no hardcoding!)
+        if self._num_input_channels is None or self._num_output_channels is None:
+            self._num_input_channels, self._num_output_channels = self._detect_channel_counts()
+
+        fixed_input_channels = self._num_input_channels if self._num_input_channels is not None else 3
+        fixed_output_channels = self._num_output_channels if self._num_output_channels is not None else 3
 
         # Build and compile one template per signature
         for sig, param_dict in param_by_sig.items():
@@ -732,11 +778,20 @@ class DatasetGenerationPipeline:
             self._summary_extractor = summary_extractor
             self._temporal_enabled = temporal_enabled
 
+        # Detect channel counts dynamically (no hardcoding!)
+        if self._num_input_channels is None or self._num_output_channels is None:
+            self._num_input_channels, self._num_output_channels = self._detect_channel_counts()
+
+        # If still not detected, will be inferred from first batch output
+        # Use placeholder values for storage init (will be updated on first batch)
+        input_channels = self._num_input_channels if self._num_input_channels is not None else 2
+        output_channels = self._num_output_channels if self._num_output_channels is not None else 2
+
         # Initialize storage backend with actual max grid size (not hardcoded 256)
         storage_config = {
             "grid_size": self.max_grid_size,  # Use actual max, not hardcoded 256
-            "input_channels": 3,  # TODO: Extract from config
-            "output_channels": 3,  # TODO: Extract from config
+            "input_channels": input_channels,  # Dynamically detected
+            "output_channels": output_channels,  # Dynamically detected
             "num_realizations": self.config.simulation.num_realizations,
             "num_parameter_sets": num_samples,
             "compression": self.config.dataset.storage.compression,
@@ -764,21 +819,25 @@ class DatasetGenerationPipeline:
                 self._feature_writer = feature_writer
 
                 # Create SUMMARY storage groups
-                registry = summary_extractor.get_feature_registry()
+                # Pass actual channel count to registry builder
+                num_channels = output_channels  # Use detected channel count
+                registry = summary_extractor.get_feature_registry(num_channels=num_channels)
                 summary_config = summary_extractor.config
 
                 # Calculate dimensions dynamically at runtime
                 # Use extractor's runtime dimension detection if available
                 if temporal_enabled:
                     if hasattr(summary_extractor, 'get_actual_per_timestep_dim'):
-                        per_timestep_dim = summary_extractor.get_actual_per_timestep_dim()
+                        # Pass actual channel count to get correct dimensions
+                        per_timestep_dim = summary_extractor.get_actual_per_timestep_dim(num_channels=output_channels)
                     else:
-                        # Fallback: count registry features
+                        # Fallback: count registry features (all categories)
                         per_timestep_dim = (
                             len(registry.get_feature_names(category='spatial')) +
                             len(registry.get_feature_names(category='spectral')) +
                             len(registry.get_feature_names(category='cross_channel')) +
-                            len(registry.get_feature_names(category='temporal'))
+                            len(registry.get_feature_names(category='temporal')) +
+                            len(registry.get_feature_names(category='quantum'))  # Add quantum features
                         )
                 else:
                     per_timestep_dim = 0  # TEMPORAL disabled
@@ -879,14 +938,16 @@ class DatasetGenerationPipeline:
             print(f"Stage 2-4: Generating dataset (group-by-grid-size strategy)...\n")
 
             # Initialize async operator builder for pipelined generation (Phase 2 optimization)
-            self._async_operator_builder = AsyncOperatorBuilder(
-                device=str(self.device),
-                max_queue_size=2,  # Build batch N+1 while running batch N
-                operator_builder=self.operator_builder,
-                operator_type=self.config.simulation.operator_type,
-                config=self.config,
-            )
-            self._async_operator_builder.start()
+            # Skip for QBM (physics simulation, not neural operators)
+            if self.config.simulation.operator_type != "qbm":
+                self._async_operator_builder = AsyncOperatorBuilder(
+                    device=str(self.device),
+                    max_queue_size=2,  # Build batch N+1 while running batch N
+                    operator_builder=self.operator_builder,
+                    operator_type=self.config.simulation.operator_type,
+                    config=self.config,
+                )
+                self._async_operator_builder.start()
 
             with tqdm(total=num_samples, desc="Generating") as pbar:
                 for grid_size in sorted(grid_size_groups.keys()):
@@ -923,33 +984,35 @@ class DatasetGenerationPipeline:
                             )
 
                             # PHASE 2 OPTIMIZATION: Async operator building
-                            # For first batch: submit current batch
-                            # For subsequent batches: get current (already submitted in previous iteration)
+                            # Skip for QBM (physics simulation, not neural operators)
                             pre_built_operators = None
-                            if batch_count == 0:
-                                # First batch: submit current batch now
-                                self._async_operator_builder.submit_batch(
-                                    param_batch,
-                                    batch_id=batch_count,
+                            if self._async_operator_builder is not None:
+                                # For first batch: submit current batch
+                                # For subsequent batches: get current (already submitted in previous iteration)
+                                if batch_count == 0:
+                                    # First batch: submit current batch now
+                                    self._async_operator_builder.submit_batch(
+                                        param_batch,
+                                        batch_id=batch_count,
+                                    )
+
+                                # Get CURRENT batch operators (blocks if not ready yet)
+                                pre_built_operators, _ = self._async_operator_builder.get_batch(
+                                    batch_id=batch_count, timeout=120.0
                                 )
 
-                            # Get CURRENT batch operators (blocks if not ready yet)
-                            pre_built_operators, _ = self._async_operator_builder.get_batch(
-                                batch_id=batch_count, timeout=120.0
-                            )
+                                # Submit NEXT batch to async builder (if exists)
+                                # This will build while current batch runs inference
+                                next_batch_start = batch_end_idx
+                                if next_batch_start < len(indices):
+                                    next_batch_end = min(next_batch_start + current_batch_size, len(indices))
+                                    next_param_batch = group_params[next_batch_start:next_batch_end]
+                                    self._async_operator_builder.submit_batch(
+                                        next_param_batch,
+                                        batch_id=batch_count + 1,
+                                    )
 
-                            # Submit NEXT batch to async builder (if exists)
-                            # This will build while current batch runs inference
-                            next_batch_start = batch_end_idx
-                            if next_batch_start < len(indices):
-                                next_batch_end = min(next_batch_start + current_batch_size, len(indices))
-                                next_param_batch = group_params[next_batch_start:next_batch_end]
-                                self._async_operator_builder.submit_batch(
-                                    next_param_batch,
-                                    batch_id=batch_count + 1,
-                                )
-
-                            # Process batch with async-built operators
+                            # Process batch with async-built operators (or None for QBM)
                             batch_inputs, batch_outputs, metadata, operators = self._process_batch_with_metadata(
                                 param_batch, actual_batch_size, grid_size,
                                 keep_operators=needs_operators,
@@ -1168,9 +1231,13 @@ class DatasetGenerationPipeline:
         operators = []
 
         # Fixed dimensions (MVP constraint: homogeneous operators)
-        # Read from config, default to 3 for backwards compatibility
-        fixed_input_channels = getattr(self.config, 'num_channels', 3)
-        fixed_output_channels = getattr(self.config, 'num_channels', 3)
+        # Dynamically detect channels if not already set
+        if self._num_input_channels is None or self._num_output_channels is None:
+            self._num_input_channels, self._num_output_channels = self._detect_channel_counts()
+
+        # Use detected values, fallback to 3 only if truly unknown (shouldn't happen)
+        fixed_input_channels = self._num_input_channels if self._num_input_channels is not None else 3
+        fixed_output_channels = self._num_output_channels if self._num_output_channels is not None else 3
         fixed_grid_size = 64
 
         for params in param_batch:
@@ -1748,6 +1815,14 @@ class DatasetGenerationPipeline:
             - ic_types_used: List of IC types used for each sample
             - operators: List of operators if keep_operators=True, else None
         """
+        # Special handling for QBM (physics simulation, not neural operators)
+        operator_type = self.config.simulation.operator_type
+        if operator_type == "qbm":
+            inputs, outputs = self._process_batch_qbm(param_batch, batch_size)
+            # QBM doesn't have IC types tracking (uses quantum ICs)
+            ic_types_used = ["quantum_ic"] * batch_size
+            return inputs, outputs, ic_types_used, None
+
         # Build operators with this grid size (or use pre-built from async builder)
         if pre_built_operators is not None:
             # Phase 2 optimization: Use pre-built operators from async builder
@@ -1756,9 +1831,12 @@ class DatasetGenerationPipeline:
             # Legacy synchronous building
             operators = []
 
-        # Read from config, default to 3 for backwards compatibility
-        fixed_input_channels = getattr(self.config, 'num_channels', 3)
-        fixed_output_channels = getattr(self.config, 'num_channels', 3)
+        # Dynamically detect channels (no hardcoding!)
+        if self._num_input_channels is None or self._num_output_channels is None:
+            self._num_input_channels, self._num_output_channels = self._detect_channel_counts()
+
+        fixed_input_channels = self._num_input_channels if self._num_input_channels is not None else 3
+        fixed_output_channels = self._num_output_channels if self._num_output_channels is not None else 3
 
         if pre_built_operators is None:
             # Synchronous operator building (legacy path)
@@ -1954,7 +2032,11 @@ class DatasetGenerationPipeline:
         Returns:
             Formatted string like "ch0:grf|ch1:localized|ch2:structured"
         """
-        num_channels = getattr(self.config, 'num_channels', 3)
+        # Dynamically detect channels (no hardcoding!)
+        if self._num_input_channels is None:
+            self._num_input_channels, self._num_output_channels = self._detect_channel_counts()
+
+        num_channels = self._num_input_channels if self._num_input_channels is not None else 3
         parts = []
         for i in range(num_channels):
             ch_name = f"channel_{i}"
