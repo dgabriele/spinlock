@@ -181,6 +181,20 @@ Output:
         if not self.validate_file_exists(dataset_path, "Dataset"):
             return 1
 
+        # CRITICAL: Auto-detect dataset structure (SPINLOCK IS A FRAMEWORK!)
+        # All encoder dimensions should come from the actual dataset, not hardcoded config
+        logger.info("Introspecting dataset structure...")
+        from spinlock.tokens.dataset_introspection import introspect_and_update_config
+
+        try:
+            config_dict = introspect_and_update_config(
+                config_dict,
+                dataset_path,
+                verbose=args.verbose or config_dict.get("verbose", False)
+            )
+        except Exception as e:
+            return self.error(f"Failed to introspect dataset: {e}")
+
         # Apply CLI overrides
         if args.epochs:
             config_dict.setdefault("training", {})["num_epochs"] = args.epochs

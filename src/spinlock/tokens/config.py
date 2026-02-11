@@ -26,11 +26,23 @@ class QuantizerConfig(BaseModel):
 
 
 class InitialEncoderConfig(BaseModel):
-    """Initial condition encoder configuration."""
+    """Initial condition encoder configuration.
+
+    Dimensions (manual_dim, in_channels) are automatically detected from dataset
+    if not specified. Manual specification only needed for overrides.
+    """
     variant: Literal["cnn", "hybrid"] = "hybrid"
-    manual_dim: int = Field(default=42, ge=0)
+    manual_dim: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Initial feature dimension (auto-detected if None)"
+    )
     cnn_embedding_dim: int = Field(default=256, gt=0)
-    in_channels: int = Field(default=3, ge=1)
+    in_channels: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Number of input channels (auto-detected if None)"
+    )
     pretrained_cnn_path: Optional[Path] = None
     use_final_batchnorm: bool = False
     encode_manual: bool = False
@@ -48,16 +60,20 @@ class TemporalEncoderConfig(BaseModel):
 
 
 class ThetaEncoderConfig(BaseModel):
-    """Configuration for theta (parameter) encoder."""
+    """Configuration for theta (parameter) encoder.
+
+    Parameter dimension (param_dim) is automatically detected from dataset
+    if not specified. Manual specification only needed for overrides.
+    """
 
     variant: Literal["mlp"] = Field(
         default="mlp",
         description="Encoder variant (currently only MLP supported)"
     )
-    param_dim: int = Field(
-        default=14,
+    param_dim: Optional[int] = Field(
+        default=None,
         ge=1,
-        description="Dimensionality of input parameters"
+        description="Dimensionality of input parameters (auto-detected if None)"
     )
     hidden_dim: int = Field(
         default=64,

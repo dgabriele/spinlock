@@ -21,6 +21,12 @@ from .config import (
 )
 from .extractors import InitialExtractor
 from .manual_extractors import InitialManualExtractor
+from .ic_feature_extractors import InitialConditionsFeatureExtractor
+from .extraction_pipeline import (
+    InitialFeatureExtractionPipeline,
+    ExtractorType,
+    extract_initial_features,
+)
 from .cnn_encoder import (
     InitialCNNEncoder,
     InitialCNNDecoder,
@@ -36,6 +42,11 @@ __all__ = [
     # Extractors
     'InitialExtractor',
     'InitialManualExtractor',
+    'InitialConditionsFeatureExtractor',
+    # Extraction Pipeline
+    'InitialFeatureExtractionPipeline',
+    'ExtractorType',
+    'extract_initial_features',
     # CNN components
     'InitialCNNEncoder',
     'InitialCNNDecoder',
