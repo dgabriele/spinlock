@@ -33,6 +33,32 @@ class VQTokenizer:
 
     Provides simple train() and tokenize() methods for trajectory encoding.
 
+    **Multi-Codebook Architecture - CRITICAL UNDERSTANDING**:
+    VQTokenizer trains 30+ codebooks SIMULTANEOUSLY (not a single codebook).
+    Each rollout is encoded as a SET of tokens (one from each codebook).
+
+    **Token Diversity Interpretation**:
+    Individual codebook utilization metrics (e.g., "10% utilization") are
+    MISLEADING in isolation. What matters is COMBINATORIAL DIVERSITY:
+
+      - 30 codebooks × 10% utilization per codebook = massive diversity
+      - If each codebook uses 3/28 codes (10%), combinatorial space = 3^30 ≈ 2×10^14
+      - Diversity metric: unique token SET combinations across rollouts
+      - Similarity metric: Jaccard similarity between token sets
+
+    DO NOT interpret low per-codebook utilization as poor diversity!
+    The joint distribution of token sets is what provides semantic richness.
+
+    Example token set for one rollout:
+        {
+          'theta_group_1_L0': 5,
+          'theta_group_1_L1': 12,
+          'initial_manual_features_L0': 3,
+          'temporal_group_1_L0': 8,
+          'temporal_group_2_L0': 15,
+          ... (30+ tokens total)
+        }
+
     **Realization Handling Philosophy**:
     The VQ-VAE tokenizer produces operator-level discrete tokens by aggregating
     across M stochastic realizations per operator. This design aligns with:
