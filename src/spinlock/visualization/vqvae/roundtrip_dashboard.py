@@ -971,7 +971,12 @@ def plot_cluster_summary(
     ax3 = fig.add_subplot(gs[0, 2])
     dendro = dendrogram(linkage_matrix, ax=ax3, orientation='top', no_labels=True,
                        color_threshold=distance_threshold if n_clusters is None else None,
-                       linewidth=0.2, color='#666666', above_threshold_color='#666666')
+                       above_threshold_color='#666666')
+
+    # Set line widths and colors for dendrogram (PNG version)
+    for line in ax3.get_lines():
+        line.set_linewidth(0.5)
+        line.set_color('#666666')
 
     if distance_threshold and n_clusters is None:
         ax3.axhline(y=distance_threshold, color='red', linestyle='--', linewidth=1.5,
@@ -985,17 +990,30 @@ def plot_cluster_summary(
     # Overall title
     fig.suptitle(f"Cluster Summary Analysis", fontsize=14, fontweight='bold', y=0.98)
 
-    # Save
+    # Save PNG
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches='tight')
 
-    # Also save as PDF
+    # Save PDF with larger size and thinner lines for better zoom quality
     pdf_path = output_path.with_suffix('.pdf')
+
+    # Temporarily set thinner lines for PDF
+    for line in ax3.get_lines():
+        line.set_linewidth(0.2)
+
+    # Save with larger figure size for PDF
+    original_size = fig.get_size_inches()
+    fig.set_size_inches(original_size[0] * 1.5, original_size[1] * 1.5)
     fig.savefig(pdf_path, format='pdf', bbox_inches='tight')
+
+    # Restore original size and line widths
+    fig.set_size_inches(original_size)
+    for line in ax3.get_lines():
+        line.set_linewidth(0.5)
 
     plt.close(fig)
     print(f"Saved cluster summary to {output_path}")
-    print(f"Saved vector version to {pdf_path}")
+    print(f"Saved vector version to {pdf_path} (1.5x larger with thinner lines for zoom)")
     print(f"  → Found {n_found_clusters} clusters")
     print(f"  → Cluster sizes: {cluster_sizes}")
     print(f"  → Avg intra-cluster similarity: {np.mean(cluster_avg_similarity):.3f}")

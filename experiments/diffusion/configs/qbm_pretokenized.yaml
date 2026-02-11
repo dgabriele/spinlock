@@ -1,0 +1,67 @@
+# QBM VQTokenizer Discrete Diffusion Configuration (Pre-Tokenized)
+# 50-step diffusion with RANDOM masking strategy
+# Uses QBM 50K pre-tokenized dataset (13.1% utilization, 32 codebooks × 3 levels = 96 category-levels)
+
+# Dataset paths
+dataset:
+  tokenized_path: "datasets/qbm_50k_tokenized.h5"  # Pre-tokenized with QBM VQTokenizer (from project root)
+  use_pretokenized: true  # Use pre-tokenized data (fast)
+
+# Masking strategy
+masking:
+  strategy: "random"  # Primary strategy: random masking per category-level
+  mask_probability: 0.5  # 50% of category-levels masked
+  seed: 42
+
+# Diffusion schedule
+diffusion:
+  num_timesteps: 50
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule_type: "cosine"  # Cosine schedule (Nichol & Dhariwal, 2021)
+
+# Denoising network
+model:
+  hidden_dim: 256
+  num_layers: 6
+  num_heads: 8
+  dropout: 0.1
+  use_hierarchical_guidance: true
+  hierarchical_guidance_weight: 0.1
+
+# Training
+training:
+  batch_size: 32  # Can increase with pre-tokenized data
+  num_epochs: 100
+  num_workers: 0  # Keep 0 to avoid multiprocessing issues
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  gradient_clip_norm: 1.0
+
+  # Learning rate schedule
+  lr_scheduler:
+    type: "cosine"  # Cosine annealing
+    warmup_epochs: 2
+    min_lr: 1.0e-6
+
+  # Validation
+  val_batch_size: 128
+  val_frequency: 1  # Validate every N epochs
+  val_samples: 5  # Number of full diffusion samples per validation
+
+  # Checkpointing
+  checkpoint_frequency: 5  # Save every N epochs
+  save_best: true  # Save best model based on validation loss
+
+  # Logging
+  log_frequency: 50  # Log every N batches
+  use_wandb: false  # Set to true to enable W&B logging
+
+# Output
+output:
+  dir: "experiments/diffusion/results/qbm_pretokenized"
+  checkpoint_prefix: "diffusion_qbm"
+
+# Device
+device: "cuda"
+seed: 42
