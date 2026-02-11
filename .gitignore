@@ -23,6 +23,15 @@ wheels/
 checkpoints/
 data/
 
+# Model checkpoints and training artifacts (never commit these!)
+*.pt
+*.ckpt
+*.pth
+diagnostics/
+results/
+runs/
+*.npz
+
 # Virtual environments
 venv/
 ENV/
