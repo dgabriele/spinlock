@@ -161,22 +161,31 @@ See [docs/architecture.md](docs/architecture.md) for comprehensive system design
 
 ## 📊 Feature Families
 
-Spinlock extracts **4 complementary feature families** that jointly capture neural operator behavior from different perspectives:
+Spinlock extracts **three complementary feature families** from PDE simulations, plus **operator parameters**:
 
-| Family | Captures | Granularity |
-|--------|----------|-------------|
-| **INITIAL** | Initial condition characteristics (spatial, spectral, information, morphology) | Per-realization |
-| **ARCHITECTURE** | Operator parameters (architecture, stochastic, evolution) | Per-operator |
-| **SUMMARY** | Aggregated behavioral statistics (spatial, spectral, temporal, causality) | Per-rollout (aggregated across timesteps and realizations) |
-| **TEMPORAL** | Full temporal trajectories preserving time-series structure | Per-timestep |
+| Family | Dimension | Purpose | Encoder |
+|--------|-----------|---------|---------|
+| **TEMPORAL** | Variable-length sequences | Trajectory dynamics across timesteps | PyramidTemporalEncoder (hierarchical CNN) |
+| **INITIAL** | 3×64×64 spatial + 42 manual | Initial conditions and boundary setup | Hybrid CNN + MLP |
+| **Operator Parameters (θ)** | 14D continuous [0,1] | PDE coefficients and operator specification | ThetaMLPEncoder |
+
+*Note: The ARCHITECTURE family was deprecated in v3.0 in favor of dedicated theta parameter encoding.*
+
+### Quantum Features (Optional)
+
+For quantum PDE systems (e.g., Quantum Brownian Motion), Spinlock includes **10-11D quantum-specific metrics**:
+- Purity, entropy, coherence
+- Uncertainty measures
+- Quantum state characterization
+
+These extend the TEMPORAL family with quantum observables. See [Quantum Features Guide](docs/quantum-features-guide.md).
 
 ### Joint Training
 
-The VQ-VAE jointly trains on all 4 families simultaneously, learning unified representations that span:
-- **INITIAL**: How initial conditions influence operator dynamics
-- **ARCHITECTURE**: How architectural choices determine behavioral regimes
-- **SUMMARY**: Statistical signatures of emergent patterns
+The VQ-VAE jointly trains on all families simultaneously, learning unified representations that span:
 - **TEMPORAL**: Temporal evolution and regime transitions
+- **INITIAL**: How initial conditions influence operator dynamics
+- **Theta Parameters**: How operator parameters determine behavioral regimes
 
 This multi-modal training enables the model to discover behavioral categories that integrate structural, dynamical, and temporal characteristics—essential for NOA systems that reason about operator behavior.
 
@@ -212,6 +221,155 @@ Spinlock's VQ-VAE converts operator features into discrete behavioral tokens thr
 - Quality: >95% feature recovery, 15-30% codebook utilization
 
 See [docs/vqvae/architecture.md](docs/vqvae/architecture.md) for comprehensive architecture details and [docs/vqvae/assignment-strategies.md](docs/vqvae/assignment-strategies.md) for choosing between static and learnable assignments.
+
+---
+
+## Theta Parameter Tokenization
+
+Spinlock introduces **theta tokens** to discretely represent continuous operator parameters. This enables:
+- Parameter-conditioned generation
+- Discrete operator search spaces
+- Alignment between Conditional Neural Operators (CNO) and Meta Neural Operators (MNO)
+
+### Architecture
+
+```
+14D PDE Parameters [0,1]
+  ↓
+ThetaMLPEncoder
+  Linear(14 → 64) → LayerNorm → ReLU → Dropout
+  Linear(64 → 32) → LayerNorm
+  ↓
+32D Embeddings
+  ↓
+Hierarchical VQ Quantizers (L0, L1, L2)
+  ↓
+Discrete Theta Tokens
+```
+
+**Key Properties:**
+- **Single semantic group**: All 14 parameters encoded together (unlike temporal features which split into 8-20 groups)
+- **Hierarchical quantization**: 3 levels provide coarse-to-fine parameter discretization
+- **Roundtrip consistency**: Inverse decoder ensures tokens can reconstruct original parameters
+
+### Use Cases
+
+1. **CNO-MNO Alignment**: Map parameter tokens to MNO latent representations
+2. **Operator Discovery**: Search discrete token space instead of continuous parameters
+3. **Transfer Learning**: Pre-train on parameter distributions, fine-tune on specific operators
+
+See [Theta Features Guide](docs/theta-features-guide.md) for integration examples.
+
+---
+
+## Roundtrip Self-Consistency Training
+
+Spinlock uses **roundtrip consistency** as the primary training objective for VQ-VAE tokenizers. This ensures that decoded values re-encode to the same tokens, creating self-consistent equivalence classes.
+
+### Training Loop
+
+```
+Input Data → Encode → Quantize → Tokens
+                          ↓
+                      Embeddings
+                          ↓
+          Decode ← Inverse Decoder ← Reconstructed
+              ↓
+          Re-encode → Re-quantize → Roundtrip Tokens
+              ↓
+          Loss: MSE(Roundtrip Latents, Target Token Embeddings)
+```
+
+### Loss Function
+
+```python
+total_loss = (
+    reconstruction_weight * recon_loss      # Encoded-space reconstruction
+    + vq_loss                               # Codebook commitment
+    + orthogonality_weight * ortho_loss     # Category separation
+    + informativeness_weight * info_loss    # Shannon entropy
+    + topographic_weight * topo_loss        # Topology preservation
+    + roundtrip_weight * roundtrip_loss     # PRIMARY: Re-encoding consistency
+)
+```
+
+**Recommended Configuration:**
+```yaml
+loss:
+  reconstruction_weight: 0.0   # Pure roundtrip objective
+  roundtrip:
+    enabled: true
+    weight: 5.0                # Primary training signal
+    theta_weight: 1.0
+    initial_weight: 1.0
+```
+
+### Why Roundtrip Consistency?
+
+Traditional VQ-VAE training optimizes reconstruction in the **encoded space**, but this doesn't guarantee that decoded continuous values will re-encode to the same tokens. Roundtrip training ensures:
+
+1. **Self-consistent equivalence classes**: Each token represents a stable region in both encoded and decoded spaces
+2. **Improved token match rates**: >90% for theta, >85% for initial conditions (vs 5-10% without roundtrip)
+3. **Better parameter reconstruction**: <0.01 MSE for theta (vs 0.083 without)
+4. **Faster convergence**: Joint optimization is more efficient than separate encoder/decoder training
+
+See [Training Regimes Guide](docs/training-regimes-guide.md) for detailed comparisons.
+
+---
+
+## Dataset Generation
+
+Spinlock supports multiple PDE operator families. Generate datasets using the CLI:
+
+### Convex PDE Operators
+
+```bash
+poetry run spinlock generate-cno-dataset \
+  --num-samples 50000 \
+  --num-realizations 3 \
+  --output datasets/cno_50k.h5 \
+  --device cuda
+```
+
+**Operators Included:**
+- Heat equation (diffusion)
+- Wave equation
+- Advection
+- Reaction-diffusion
+- Burgers' equation
+
+### Quantum Brownian Motion (QBM)
+
+For quantum PDE systems with dissipation and decoherence:
+
+```bash
+poetry run spinlock generate-qbm-dataset \
+  --num-samples 10000 \
+  --num-realizations 3 \
+  --output datasets/qbm_10k.h5 \
+  --device cuda
+```
+
+**Quantum Features Extracted:**
+- Purity: Tr(ρ²) - measure of quantum state mixedness
+- Von Neumann entropy: -Tr(ρ log ρ)
+- Coherence measures: Off-diagonal density matrix elements
+- Uncertainty products: Position-momentum spreads
+- Quantum trajectory fidelity
+
+**Dataset Structure:**
+```
+qbm_10k.h5
+├── inputs/                    # [N, M, C, H, W] initial states
+├── outputs/                   # [N, M, T, C, H, W] evolved states
+├── parameters/params          # [N, 14] operator parameters
+└── features/
+    ├── temporal/              # Standard: energy, gradients, statistics
+    │   └── quantum/           # Quantum: purity, entropy, coherence (10-11D)
+    └── initial/               # Spatial + manual initial features
+```
+
+See [Dataset Generation Guide](docs/dataset-generation.md) and [Quantum Features Guide](docs/quantum-features-guide.md).
 
 ### Terminology Note
 

@@ -364,10 +364,131 @@ poetry run spinlock train-vqvae --datasets datasets/*.h5
 - Adjust feature cleaning thresholds
 - Tune VQ-VAE hyperparameters (latent dims, codebook sizes)
 
+## Working with Theta Parameters
+
+### Generate Dataset with Theta Tokens
+
+```bash
+# Standard CNO dataset (includes theta parameters)
+poetry run spinlock generate-cno-dataset \
+  --num-samples 50000 \
+  --output datasets/cno_50k.h5
+```
+
+### Train Theta Tokenizer
+
+```bash
+# Multi-family tokenizer (temporal + initial + theta)
+poetry run spinlock train-vq-tokenizer \
+  --config configs/vqvae_50k.yaml \
+  --dataset datasets/cno_50k.h5 \
+  --checkpoint-dir checkpoints/theta_tokenizer
+```
+
+### Verify Theta Reconstruction
+
+```python
+from spinlock.tokens import VQTokenizer
+import torch
+
+tokenizer = VQTokenizer.from_checkpoint('checkpoints/theta_tokenizer/best_model.pt')
+
+# Tokenize parameters
+theta_params = torch.randn(10, 14).sigmoid()  # [B, 14] in [0,1]
+tokens = tokenizer.encode(theta_features=theta_params)
+
+# Decode and check roundtrip
+outputs = tokenizer.forward(theta_features=theta_params)
+reconstructed = outputs['decoded']['theta']
+
+# Measure reconstruction quality
+mse = torch.nn.functional.mse_loss(reconstructed, theta_params)
+print(f"Theta reconstruction MSE: {mse:.6f}")  # Should be <0.01
+
+# Check roundtrip consistency
+roundtrip_tokens = tokenizer.encode(theta_features=reconstructed)
+match_rate = sum(
+    (roundtrip_tokens[k] == tokens[k]).float().mean()
+    for k in tokens
+) / len(tokens)
+print(f"Token match rate: {match_rate:.2%}")  # Should be >90%
+```
+
+## Working with Quantum Features
+
+### Generate QBM Dataset
+
+```bash
+poetry run spinlock generate-qbm-dataset \
+  --num-samples 10000 \
+  --num-realizations 3 \
+  --output datasets/qbm_10k.h5
+```
+
+### Train QBM Tokenizer
+
+```bash
+# Uses 188D temporal features (178 standard + 10 quantum)
+poetry run spinlock train-vq-tokenizer \
+  --config configs/vqvae_qbm.yaml \
+  --dataset datasets/qbm_10k.h5 \
+  --checkpoint-dir checkpoints/qbm_tokenizer
+```
+
+### Analyze Quantum Features
+
+```python
+from spinlock.data import SpinlockDataset
+
+dataset = SpinlockDataset.from_file('datasets/qbm_10k.h5')
+
+with dataset.open():
+    temporal = dataset.features.temporal.load_all()  # [N, T, 188]
+
+    # Extract quantum subset
+    quantum_feats = temporal[..., 178:]  # Last 10 dimensions
+
+    # Analyze decoherence
+    purity = quantum_feats[:, :, 0]  # First quantum feature
+
+    import matplotlib.pyplot as plt
+    plt.plot(purity[0], label='Sample 0')
+    plt.xlabel('Timestep')
+    plt.ylabel('Purity Tr(ρ²)')
+    plt.title('Quantum Decoherence')
+    plt.legend()
+    plt.show()
+```
+
+## Choosing a Training Regime
+
+See [Training Regimes Guide](training-regimes-guide.md) for detailed comparison.
+
+**Quick Recommendation:**
+- **General use**: Roundtrip-first training (`configs/vqvae_50k.yaml`)
+- **Ablation studies**: Independent training (`configs/ablation_independent.yaml`)
+- **Memory-constrained**: Independent without inverse heads
+
+```bash
+# Recommended: Roundtrip-first (150 epochs, best metrics)
+poetry run spinlock train-vq-tokenizer \
+  --config configs/vqvae_50k.yaml \
+  --dataset datasets/cno_50k.h5
+
+# Ablation: Independent (200 epochs, baseline)
+poetry run spinlock train-vq-tokenizer \
+  --config configs/ablation_independent.yaml \
+  --dataset datasets/cno_50k.h5
+```
+
 ## References
 
 - [Architecture](architecture.md) - System design details
-- [Feature Families](features/README.md) - Feature family documentation (TEMPORAL, SUMMARY)
+- [Feature Families](features/README.md) - Feature family documentation (TEMPORAL, INITIAL, Theta)
 - [HDF5 Layout](features/hdf5-layout.md) - Dataset schema reference
 - [VQ-VAE Training](vqvae/training-guide.md) - Tokenization pipeline
+- [Theta Features Guide](theta-features-guide.md) - Theta parameter tokenization
+- [Quantum Features Guide](quantum-features-guide.md) - QBM and quantum observables
+- [Training Regimes Guide](training-regimes-guide.md) - Roundtrip vs independent training
+- [Dataset Generation](dataset-generation.md) - CNO, QBM, and MNO dataset creation
 - [NOA Roadmap](noa-roadmap.md) - Future development plan
