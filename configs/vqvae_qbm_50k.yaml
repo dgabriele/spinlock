@@ -197,6 +197,9 @@ loss:
     weight: 5.0  # PRIMARY objective - roundtrip consistency is what matters
     theta_weight: 1.0
     initial_weight: 1.0
+    # NOTE: Roundtrip loss uses CACHED features from dataset, not re-extracted.
+    # Initial features must match what was used during dataset generation.
+    # For QBM: 93D statistical features from InitialConditionsFeatureExtractor
 
 # ═══════════════════════════════════════════════════════════════
 # Normalization Configuration
@@ -227,7 +230,7 @@ log_level: "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR"
 # Expected metrics:
 #   - Reconstruction: < 0.03 MSE (quantum systems may be more complex)
 #   - Roundtrip theta token match: > 85%
-#   - Roundtrip initial token match: > 80%
+#   - Roundtrip initial token match: > 80% (now achievable with correct dimensions!)
 #   - Theta reconstruction MSE: < 0.015
 #   - Codebook utilization: > 10% per quantizer
 #   - Training time: ~150-200 epochs

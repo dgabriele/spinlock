@@ -80,6 +80,7 @@ class VQTokenizer:
         self.model = model
         self.group_indices = group_indices
         self.normalization_stats = None
+        self.feature_metadata = None  # Will be populated during training
 
     def train(
         self,
@@ -160,6 +161,7 @@ class VQTokenizer:
             self.config,
             self.group_indices,
             self.normalization_stats,
+            self.feature_metadata,
         )
 
         # Train
@@ -425,6 +427,7 @@ class VQTokenizer:
         # Create tokenizer
         tokenizer = cls(config, model=model, group_indices=group_indices)
         tokenizer.normalization_stats = normalization_stats
+        tokenizer.feature_metadata = checkpoint.feature_metadata  # Load feature metadata (v2.1+)
 
         # Load inverse models if provided
         if theta_inverse_path is not None:
@@ -629,10 +632,13 @@ class VQTokenizer:
                 verbose=self.config.verbose,
             )
 
+            # Generate generic feature names
+            original_feature_names = [f"temporal_feature_{i}" for i in range(D_t)]
+
             # Clean features
-            temporal_cleaned_np, feature_mask, _ = processor.clean(
+            temporal_cleaned_np, feature_mask, cleaned_feature_names, cleaning_report = processor.clean(
                 temporal_agg.numpy(),
-                feature_names=None,
+                feature_names=original_feature_names,
             )
 
             # Convert back to tensor
@@ -642,6 +648,14 @@ class VQTokenizer:
             temporal_cleaned = temporal[:, :, feature_mask]  # [N, T, D_t']
 
             cleaned['temporal'] = temporal_cleaned
+
+            # Build feature metadata from cleaning report
+            self._build_feature_metadata(
+                cleaning_report=cleaning_report,
+                feature_mask=feature_mask,
+                original_feature_names=original_feature_names,
+                cleaned_feature_names=cleaned_feature_names,
+            )
 
             logger.info(
                 f"Feature cleaning complete: "
@@ -659,6 +673,71 @@ class VQTokenizer:
         cleaned['theta'] = features.get('theta')
 
         return cleaned
+
+    def _build_feature_metadata(
+        self,
+        cleaning_report: dict,
+        feature_mask: np.ndarray,
+        original_feature_names: list,
+        cleaned_feature_names: list,
+    ):
+        """Build FeatureMetadata from cleaning report.
+
+        Args:
+            cleaning_report: Detailed cleaning report from FeatureProcessor.clean()
+            feature_mask: Boolean mask indicating which features were kept
+            original_feature_names: Names of all original features
+            cleaned_feature_names: Names of features after cleaning
+        """
+        from .checkpoint import (
+            FeatureMetadata,
+            FeatureFamilyMetadata,
+            CleaningOperation,
+        )
+
+        # Build CleaningOperation objects from report
+        operations = []
+        for op in cleaning_report['operations']:
+            operations.append(
+                CleaningOperation(
+                    operation_type=op['operation_type'],
+                    features_removed=op['features_removed'],
+                    features_kept=op['features_kept'],
+                    parameters=op['parameters'],
+                    num_removed=op['num_removed'],
+                    num_kept=op['num_kept'],
+                )
+            )
+
+        # Get kept and removed indices
+        kept_indices = np.where(feature_mask)[0].tolist()
+        removed_indices = np.where(~feature_mask)[0].tolist()
+
+        # Build FeatureFamilyMetadata for temporal features
+        temporal_family = FeatureFamilyMetadata(
+            family_name='temporal',
+            original_feature_count=len(original_feature_names),
+            cleaned_feature_count=len(cleaned_feature_names),
+            original_feature_names=original_feature_names,
+            kept_feature_indices=kept_indices,
+            kept_feature_names=cleaned_feature_names,
+            removed_feature_indices=removed_indices,
+            removed_feature_names=[original_feature_names[i] for i in removed_indices],
+            cleaning_operations=operations,
+        )
+
+        # Build FeatureMetadata (categories will be added later during grouping)
+        self.feature_metadata = FeatureMetadata(
+            families={'temporal': temporal_family},
+            categories={},  # Will be populated during grouping
+            total_original_features=len(original_feature_names),
+            total_cleaned_features=len(cleaned_feature_names),
+            total_features_removed=len(removed_indices),
+            cleaning_config=self.config.feature_cleaning.model_dump() if self.config.feature_cleaning else None,
+            grouping_config=None,  # Will be set during grouping
+        )
+
+        logger.info(f"Feature metadata built: {len(cleaned_feature_names)} features kept from {len(original_feature_names)} original")
 
     def _normalize_features(
         self, features: Dict[str, Optional[torch.Tensor]]
@@ -999,7 +1078,73 @@ class VQTokenizer:
                 group_indices[f"theta_{group_name}"] = group.feature_indices
 
         logger.info(f"Feature grouping complete: {len(group_indices)} groups")
+
+        # Populate category metadata if feature_metadata exists
+        if self.feature_metadata is not None:
+            self._populate_category_metadata(group_indices, features)
+
         return group_indices
+
+    def _populate_category_metadata(
+        self,
+        group_indices: Dict[str, list],
+        features: Dict[str, Optional[torch.Tensor]],
+    ):
+        """Populate category metadata in feature_metadata.
+
+        Args:
+            group_indices: Dict mapping category_name → feature indices
+            features: Dict of features after cleaning
+        """
+        from .checkpoint import CategoryMetadata
+
+        # Get cleaned feature names from the temporal family metadata
+        if 'temporal' in self.feature_metadata.families:
+            temporal_family = self.feature_metadata.families['temporal']
+            cleaned_feature_names = temporal_family.kept_feature_names
+            kept_indices = temporal_family.kept_feature_indices
+
+            # Build mapping from cleaned index to original index
+            cleaned_to_original = {i: orig_idx for i, orig_idx in enumerate(kept_indices)}
+        else:
+            # Fallback if no temporal family (shouldn't happen in practice)
+            temporal = features.get('temporal')
+            if temporal is not None:
+                D_t = temporal.shape[2]
+                cleaned_feature_names = [f"temporal_feature_{i}" for i in range(D_t)]
+                cleaned_to_original = {i: i for i in range(D_t)}
+            else:
+                cleaned_feature_names = []
+                cleaned_to_original = {}
+
+        # Build CategoryMetadata for each group
+        categories = {}
+        for category_name, feature_indices in group_indices.items():
+            # Get feature names for this category
+            category_feature_names = [
+                cleaned_feature_names[idx] for idx in feature_indices
+            ]
+
+            # Map back to original indices
+            original_indices = [
+                cleaned_to_original.get(idx, idx) for idx in feature_indices
+            ]
+
+            categories[category_name] = CategoryMetadata(
+                category_name=category_name,
+                feature_indices=feature_indices,
+                feature_names=category_feature_names,
+                original_indices=original_indices,
+                num_features=len(feature_indices),
+            )
+
+        # Update feature_metadata
+        self.feature_metadata.categories = categories
+        self.feature_metadata.grouping_config = (
+            self.config.grouping.model_dump() if self.config.grouping else None
+        )
+
+        logger.info(f"Category metadata populated: {len(categories)} categories")
 
     def _verify_cnn_pretraining(self):
         """Verify CNN pretraining if configured."""

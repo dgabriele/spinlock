@@ -183,17 +183,15 @@ Output:
 
         # CRITICAL: Auto-detect dataset structure (SPINLOCK IS A FRAMEWORK!)
         # All encoder dimensions should come from the actual dataset, not hardcoded config
-        logger.info("Introspecting dataset structure...")
-        from spinlock.tokens.dataset_introspection import introspect_and_update_config
-
+        logger.info(f"Loading and introspecting dataset: {dataset_path}")
         try:
-            config_dict = introspect_and_update_config(
+            dataset, config_dict = SpinlockDataset.introspect_and_update_config(
                 config_dict,
                 dataset_path,
                 verbose=args.verbose or config_dict.get("verbose", False)
             )
         except Exception as e:
-            return self.error(f"Failed to introspect dataset: {e}")
+            return self.error(f"Failed to load/introspect dataset: {e}")
 
         # Apply CLI overrides
         if args.epochs:
@@ -215,12 +213,7 @@ Output:
         except Exception as e:
             return self.error(f"Invalid config: {e}")
 
-        # Load dataset
-        logger.info(f"Loading dataset from {dataset_path}")
-        try:
-            dataset = SpinlockDataset.from_file(dataset_path)
-        except Exception as e:
-            return self.error(f"Failed to load dataset: {e}")
+        # Dataset is already open and ready to use (no duplicate loading!)
 
         # Create tokenizer
         logger.info("Creating VQ tokenizer")

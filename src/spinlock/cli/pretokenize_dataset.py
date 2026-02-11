@@ -271,7 +271,15 @@ Examples:
         tokenizer,
         features: Dict[str, np.ndarray],
     ) -> Dict[str, np.ndarray]:
-        """Apply feature cleaning to match tokenizer's expected input dimensions."""
+        """Apply feature cleaning to match tokenizer's expected input dimensions.
+
+        NEW BEHAVIOR (v2.1+): If checkpoint contains feature_metadata, use the stored
+        feature_mask directly instead of re-running FeatureProcessor. This eliminates
+        code duplication and ensures perfect consistency.
+
+        FALLBACK: For old checkpoints without feature_metadata, fall back to config-based
+        cleaning with FeatureProcessor (legacy behavior).
+        """
         # Check if tokenizer was trained with feature cleaning
         config = tokenizer.config
         if hasattr(config, 'feature_cleaning') and config.feature_cleaning and config.feature_cleaning.enabled:
@@ -281,30 +289,63 @@ Examples:
             print(f"\n⚠ Feature cleaning enabled in tokenizer, applying to dataset")
             print(f"  Input features: {actual_dim}")
 
-            # Use the same cleaning logic from FeatureProcessor
-            from spinlock.encoding.feature_processor import FeatureProcessor
+            # NEW PATH: Use feature_metadata if available (v2.1+)
+            if hasattr(tokenizer, 'feature_metadata') and tokenizer.feature_metadata is not None:
+                print("✓ Using feature metadata from checkpoint (v2.1+)")
 
-            # Aggregate temporal for cleaning analysis (use mean across time)
-            temporal_agg = temporal.mean(axis=1)  # [N, D]
+                # Validate dataset compatibility
+                feature_metadata = tokenizer.feature_metadata
+                if 'temporal' in feature_metadata.families:
+                    temporal_family = feature_metadata.families['temporal']
 
-            # Initialize processor with tokenizer's config
-            processor = FeatureProcessor(
-                variance_threshold=config.feature_cleaning.variance_threshold,
-                deduplicate_threshold=config.feature_cleaning.deduplicate_threshold,
-                use_intelligent_dedup=config.feature_cleaning.use_intelligent_dedup,
-                outlier_method=config.feature_cleaning.outlier_method,
-                percentile_range=config.feature_cleaning.percentile_range,
-                verbose=False,
-            )
+                    # Check that dataset has expected number of features
+                    if actual_dim != temporal_family.original_feature_count:
+                        raise ValueError(
+                            f"Dataset feature count mismatch!\n"
+                            f"  Dataset: {actual_dim} features\n"
+                            f"  Checkpoint expects: {temporal_family.original_feature_count} features\n"
+                            f"  This means the dataset and checkpoint are incompatible."
+                        )
 
-            # Clean features
-            temporal_cleaned_np, feature_mask, _ = processor.clean(temporal_agg)
+                    # Use stored feature mask (no FeatureProcessor duplication!)
+                    feature_mask = np.array(temporal_family.kept_feature_indices)
+                    temporal_cleaned = temporal[:, :, feature_mask]
+                    features['temporal'] = temporal_cleaned
 
-            # Apply mask to full temporal tensor
-            temporal_cleaned = temporal[:, :, feature_mask]
-            features['temporal'] = temporal_cleaned
+                    print(f"✓ Feature mask loaded from checkpoint: {actual_dim} → {temporal_cleaned.shape[-1]} features")
+                    print(f"  (Removed {len(temporal_family.removed_feature_indices)} features)")
+                else:
+                    raise ValueError("Checkpoint feature_metadata missing 'temporal' family")
 
-            print(f"✓ Feature cleaning applied: {actual_dim} → {temporal_cleaned.shape[-1]} features")
+            # FALLBACK PATH: Re-run FeatureProcessor for old checkpoints
+            else:
+                print("⚠ Checkpoint missing feature_metadata (v2.0 format), using fallback cleaning")
+                from spinlock.encoding.feature_processor import FeatureProcessor
+
+                # Aggregate temporal for cleaning analysis (use mean across time)
+                temporal_agg = temporal.mean(axis=1)  # [N, D]
+
+                # Initialize processor with tokenizer's config
+                processor = FeatureProcessor(
+                    variance_threshold=config.feature_cleaning.variance_threshold,
+                    deduplicate_threshold=config.feature_cleaning.deduplicate_threshold,
+                    use_intelligent_dedup=config.feature_cleaning.use_intelligent_dedup,
+                    outlier_method=config.feature_cleaning.outlier_method,
+                    percentile_range=config.feature_cleaning.percentile_range,
+                    verbose=False,
+                )
+
+                # Clean features
+                temporal_cleaned_np, feature_mask, _, _ = processor.clean(
+                    temporal_agg,
+                    feature_names=None,
+                )
+
+                # Apply mask to full temporal tensor
+                temporal_cleaned = temporal[:, :, feature_mask]
+                features['temporal'] = temporal_cleaned
+
+                print(f"✓ Feature cleaning applied (fallback): {actual_dim} → {temporal_cleaned.shape[-1]} features")
 
         return features
 

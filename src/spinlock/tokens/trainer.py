@@ -50,11 +50,13 @@ class VQTokenizerTrainer:
         config: TokenizerConfig,
         group_indices: Dict[str, list],
         normalization_stats: Optional[Dict] = None,
+        feature_metadata: Optional[Any] = None,
     ):
         self.model = model
         self.config = config
         self.group_indices = group_indices
         self.normalization_stats = normalization_stats
+        self.feature_metadata = feature_metadata
 
         # Determine device
         if config.training.device == "auto":
@@ -380,6 +382,20 @@ class VQTokenizerTrainer:
                 temporal_mask=temp_mask,
                 temporal_lengths=temp_lens,
             )
+
+            # VALIDATION: Ensure dimensions match if roundtrip loss is enabled
+            if self.loss_fn.roundtrip_loss is not None and initial_man is not None:
+                from spinlock.tokens.encoders.initial import InitialHybridEncoder
+                if isinstance(self.model.initial_encoder, InitialHybridEncoder):
+                    expected_dim = self.model.initial_encoder.manual_encoder[0].in_features
+                    actual_dim = initial_man.shape[1]
+                    if expected_dim != actual_dim:
+                        raise RuntimeError(
+                            f"Feature dimension mismatch: model expects {expected_dim}D initial features "
+                            f"but batch provides {actual_dim}D. This indicates an inconsistency between "
+                            f"dataset feature extraction and model initialization. "
+                            f"Check that InitialManualExtractor is not being used during roundtrip loss."
+                        )
 
             # Extract category embeddings for auxiliary losses
             category_embeddings = self._extract_category_embeddings(outputs)
@@ -862,4 +878,5 @@ class VQTokenizerTrainer:
             metadata={'training_history': self.training_history},
             temporal_input_dim=self.model.temporal_input_dim,
             initial_input_dim=self.model.initial_input_dim,
+            feature_metadata=self.feature_metadata,
         )

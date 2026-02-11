@@ -1332,6 +1332,12 @@ class DatasetGenerationPipeline:
         potentials, qbm_params = self._generate_qbm_potentials_and_params(param_batch)
         outputs = self._run_qbm_simulations(inputs, potentials, qbm_params, num_realizations)
 
+        # Validate format: [B, M, C, H, W] for inputs
+        assert inputs.shape[1] == num_realizations, \
+            f"Expected M={num_realizations} realizations, got {inputs.shape[1]}"
+        assert inputs.shape[2] == 2, \
+            f"QBM should have C=2 channels (Re/Im), got {inputs.shape[2]}"
+
         return inputs, outputs
 
     def _ensure_qbm_initialized(self) -> None:

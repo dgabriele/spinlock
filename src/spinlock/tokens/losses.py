@@ -256,7 +256,12 @@ class RoundtripConsistencyLoss(nn.Module):
             metrics.update(theta_losses['metrics'])
 
         if 'initial' in decoded:
-            initial_losses = self._compute_initial_roundtrip(model, tokens, decoded['initial'])
+            initial_losses = self._compute_initial_roundtrip(
+                model,
+                tokens,
+                decoded['initial'],
+                cached_manual_features=initial_manual
+            )
             losses.extend(initial_losses['losses'])
             metrics.update(initial_losses['metrics'])
 
@@ -297,13 +302,26 @@ class RoundtripConsistencyLoss(nn.Module):
         model: Any,
         tokens: Dict[str, torch.Tensor],
         u0_decoded: torch.Tensor,
+        cached_manual_features: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
-        """Compute roundtrip loss for initial family."""
+        """Compute roundtrip loss for initial family.
+
+        Args:
+            model: VQ tokenizer model
+            tokens: Original token indices
+            u0_decoded: Decoded initial conditions [B, C, H, W]
+            cached_manual_features: Pre-extracted manual features [B, D] from dataset
+
+        Returns:
+            Dict with losses and metrics
+        """
         losses = []
         metrics = {}
 
-        # Re-encode decoded initial conditions
-        initial_encoded_rt = self._encode_initial(model, u0_decoded)
+        # Re-encode decoded initial conditions using CACHED features
+        initial_encoded_rt = self._encode_initial(
+            model, u0_decoded, cached_manual_features=cached_manual_features
+        )
 
         # Compute loss for each initial category
         for family_cat, indices in model.group_indices.items():
@@ -318,21 +336,38 @@ class RoundtripConsistencyLoss(nn.Module):
 
         return {'losses': losses, 'metrics': metrics}
 
-    def _encode_initial(self, model: Any, u0_decoded: torch.Tensor) -> torch.Tensor:
-        """Encode initial conditions (handle hybrid vs CNN-only modes)."""
-        # Check if this is a hybrid encoder (has both manual and CNN)
+    def _encode_initial(
+        self,
+        model: Any,
+        u0_decoded: torch.Tensor,
+        cached_manual_features: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Encode initial conditions using cached features.
+
+        Args:
+            model: VQ tokenizer model
+            u0_decoded: Decoded initial conditions [B, C, H, W]
+            cached_manual_features: Pre-extracted manual features [B, D] from dataset
+
+        Returns:
+            Encoded features [B, embedding_dim]
+
+        Raises:
+            ValueError: If InitialHybridEncoder requires cached features but none provided
+        """
         from spinlock.tokens.encoders.initial import InitialHybridEncoder
 
         if isinstance(model.initial_encoder, InitialHybridEncoder):
-            # Hybrid mode: need to extract manual features
-            from spinlock.features.initial.manual_extractors import InitialManualExtractor
-            extractor = InitialManualExtractor(device=u0_decoded.device)
-            u0_expanded = u0_decoded.unsqueeze(1)  # [B,3,64,64] → [B,1,3,64,64]
-            manual_features = extractor.extract_all(u0_expanded).squeeze(1)  # [B, 42]
-            # InitialHybridEncoder.forward(manual_features, raw_ics)
-            return model.initial_encoder(manual_features, u0_decoded)
+            # Use cached manual features (same as training!)
+            if cached_manual_features is None:
+                raise ValueError(
+                    "InitialHybridEncoder requires cached_manual_features for roundtrip loss. "
+                    "These should be passed from the training batch (same features used during encoding)."
+                )
+            # Pass cached features + raw ICs (exactly as training does)
+            return model.initial_encoder(cached_manual_features, u0_decoded)
         else:
-            # CNN-only mode: InitialCNNEncoder.forward(raw_ics)
+            # CNN-only mode: only needs raw ICs
             return model.initial_encoder(u0_decoded)
 
     def _compute_category_roundtrip(

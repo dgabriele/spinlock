@@ -191,13 +191,22 @@ class HDF5DatasetWriter:
 
         # Inputs group
         inputs_group = self.file.create_group("inputs")
-        inputs_group.create_dataset(
+        inputs_dataset = inputs_group.create_dataset(
             "fields",
             shape=(self.num_parameter_sets, self.num_realizations, self.input_channels, self.grid_size, self.grid_size),
             dtype=np.float32,
             chunks=(self.chunk_size, self.num_realizations, self.input_channels, self.grid_size, self.grid_size),
             compression=self.compression,
             compression_opts=self.compression_opts,
+        )
+
+        # Add explicit format metadata for robust introspection
+        inputs_dataset.attrs['format'] = 'NMCHW'
+        inputs_dataset.attrs['num_realizations'] = self.num_realizations
+        inputs_dataset.attrs['num_channels'] = self.input_channels
+        inputs_dataset.attrs['description'] = (
+            f"Input fields in [N, M, C, H, W] format where "
+            f"N=samples, M=realizations, C=channels, H=height, W=width"
         )
 
         # Outputs group (only if storing trajectories)

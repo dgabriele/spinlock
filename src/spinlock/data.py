@@ -4,14 +4,123 @@ Provides a unified interface for loading and accessing Spinlock HDF5 datasets.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any, Tuple
+import logging
 import h5py
+
+logger = logging.getLogger(__name__)
+
+
+class _DatasetIntrospector:
+    """Internal helper for introspecting HDF5 dataset structure.
+
+    Discovers dimensions from explicitly declared metadata.
+    Requires all datasets to follow NMCHW format with metadata attributes.
+    No heuristics, no guessing - fails fast with clear error messages.
+    """
+
+    def __init__(self, dataset_path: str):
+        self.dataset_path = str(dataset_path)
+
+    def introspect_all(self) -> Dict[str, Any]:
+        """Introspect complete dataset structure."""
+        with h5py.File(self.dataset_path, 'r') as f:
+            result = {}
+
+            # Number of samples
+            if 'parameters/params' in f:
+                result['num_samples'] = f['parameters/params'].shape[0]
+            elif 'features/temporal/features' in f:
+                result['num_samples'] = f['features/temporal/features'].shape[0]
+            elif 'inputs/fields' in f:
+                result['num_samples'] = f['inputs/fields'].shape[0]
+            else:
+                raise ValueError("Cannot determine dataset size")
+
+            # Initial manual features
+            if 'features/initial/aggregated/features' in f:
+                initial_shape = f['features/initial/aggregated/features'].shape
+                result['initial_manual_dim'] = initial_shape[1]
+            else:
+                result['initial_manual_dim'] = None
+
+            # Temporal features
+            if 'features/temporal/features' in f:
+                temporal_shape = f['features/temporal/features'].shape  # [N, T, D]
+                result['temporal_feature_dim'] = temporal_shape[2]
+                result['temporal_timesteps'] = temporal_shape[1]
+            else:
+                result['temporal_feature_dim'] = None
+                result['temporal_timesteps'] = None
+
+            # Parameters/theta
+            if 'parameters/params' in f:
+                params_shape = f['parameters/params'].shape  # [N, P]
+                result['theta_param_dim'] = params_shape[1]
+            else:
+                result['theta_param_dim'] = None
+
+            # Raw initial conditions - REQUIRE explicit metadata
+            if 'inputs/fields' not in f:
+                raise ValueError(
+                    f"Dataset missing required 'inputs/fields'. "
+                    f"All Spinlock datasets must contain input fields."
+                )
+
+            fields = f['inputs/fields']
+            result['initial_raw_shape'] = fields.shape
+
+            # REQUIRE format metadata (no heuristics, no guessing)
+            if 'format' not in fields.attrs:
+                raise ValueError(
+                    f"Dataset missing required 'format' attribute.\n"
+                    f"All Spinlock datasets must explicitly declare their format.\n"
+                    f"Expected format: 'NMCHW' [N, M, C, H, W]\n"
+                    f"To fix: poetry run python scripts/dataset/add_format_metadata.py {self.dataset_path}"
+                )
+
+            format_str = str(fields.attrs['format'])
+            if format_str != 'NMCHW':
+                raise ValueError(
+                    f"Unsupported format: '{format_str}'. "
+                    f"Spinlock requires format='NMCHW' [N, M, C, H, W]"
+                )
+
+            # Read explicit dimensions from metadata
+            if 'num_channels' not in fields.attrs or 'num_realizations' not in fields.attrs:
+                raise ValueError(
+                    f"Dataset missing required attributes 'num_channels' or 'num_realizations'.\n"
+                    f"To fix: poetry run python scripts/dataset/add_format_metadata.py {self.dataset_path}"
+                )
+
+            result['initial_raw_channels'] = int(fields.attrs['num_channels'])
+            result['num_realizations'] = int(fields.attrs['num_realizations'])
+
+            # Validate shape matches metadata
+            if len(fields.shape) != 5:
+                raise ValueError(
+                    f"Invalid shape {fields.shape}. "
+                    f"Expected 5D tensor [N, M, C, H, W], got {len(fields.shape)}D"
+                )
+
+            N, M, C, H, W = fields.shape
+            if M != result['num_realizations']:
+                raise ValueError(
+                    f"Shape/metadata mismatch: shape[1]={M} but num_realizations={result['num_realizations']}"
+                )
+            if C != result['initial_raw_channels']:
+                raise ValueError(
+                    f"Shape/metadata mismatch: shape[2]={C} but num_channels={result['initial_raw_channels']}"
+                )
+
+            return result
 
 
 class SpinlockDataset:
     """Unified interface for Spinlock HDF5 datasets.
 
     Provides access to dataset features, inputs, parameters, and metadata.
+    Automatically introspects dataset structure on open.
     """
 
     def __init__(self, file_path: str):
@@ -25,6 +134,8 @@ class SpinlockDataset:
         self._features = None
         self._inputs = None
         self._parameters = None
+        self._introspector = None
+        self._introspection_cache = None
 
     @classmethod
     def from_file(cls, file_path: str) -> "SpinlockDataset":
@@ -49,6 +160,10 @@ class SpinlockDataset:
                 self._inputs = _InputGroup(self._file['inputs'])
             if 'parameters' in self._file:
                 self._parameters = _ParameterGroup(self._file['parameters'])
+
+            # Lazy create introspector and run introspection
+            self._introspector = _DatasetIntrospector(str(self.file_path))
+            self._introspection_cache = self._introspector.introspect_all()
         return self
 
     def close(self):
@@ -88,6 +203,124 @@ class SpinlockDataset:
         if self._file is None:
             raise RuntimeError("Dataset not opened. Use dataset.open() or 'with dataset:'")
         return self._parameters
+
+    # Introspection properties (delegated to DatasetIntrospector)
+    @property
+    def num_channels(self) -> Optional[int]:
+        """Number of input channels (C dimension)."""
+        return self._introspection_cache.get('initial_raw_channels') if self._introspection_cache else None
+
+    @property
+    def num_realizations(self) -> Optional[int]:
+        """Number of realizations (M dimension)."""
+        return self._introspection_cache.get('num_realizations') if self._introspection_cache else None
+
+    @property
+    def temporal_feature_dim(self) -> Optional[int]:
+        """Dimensionality of temporal features."""
+        return self._introspection_cache.get('temporal_feature_dim') if self._introspection_cache else None
+
+    @property
+    def initial_feature_dim(self) -> Optional[int]:
+        """Dimensionality of initial/summary features."""
+        return self._introspection_cache.get('initial_manual_dim') if self._introspection_cache else None
+
+    @property
+    def theta_param_dim(self) -> Optional[int]:
+        """Dimensionality of theta parameters."""
+        return self._introspection_cache.get('theta_param_dim') if self._introspection_cache else None
+
+    @property
+    def raw_input_shape(self) -> Optional[Tuple]:
+        """Raw shape of inputs/fields dataset."""
+        return self._introspection_cache.get('initial_raw_shape') if self._introspection_cache else None
+
+    def get_introspection_dict(self) -> Dict[str, Any]:
+        """Get complete introspection results as dictionary."""
+        return self._introspection_cache.copy() if self._introspection_cache else {}
+
+    def get_encoder_config_overrides(self) -> Dict[str, Any]:
+        """Get config overrides for encoder based on introspected dimensions."""
+        if not self._introspection_cache:
+            return {}
+
+        info = self._introspection_cache
+        overrides = {}
+
+        # Initial encoder overrides
+        if info.get('initial_manual_dim') is not None:
+            overrides.setdefault('encoder', {}).setdefault('initial', {})['manual_dim'] = info['initial_manual_dim']
+
+        if info.get('initial_raw_channels') is not None:
+            overrides.setdefault('encoder', {}).setdefault('initial', {})['in_channels'] = info['initial_raw_channels']
+
+        # Theta encoder overrides
+        if info.get('theta_param_dim') is not None:
+            overrides.setdefault('encoder', {}).setdefault('theta', {})['param_dim'] = info['theta_param_dim']
+
+        # Temporal encoder overrides
+        if info.get('temporal_timesteps') is not None:
+            overrides.setdefault('encoder', {}).setdefault('temporal', {})['max_timesteps'] = max(
+                info['temporal_timesteps'],
+                overrides.get('encoder', {}).get('temporal', {}).get('max_timesteps', 256)
+            )
+
+        return overrides
+
+    @classmethod
+    def introspect_and_update_config(
+        cls,
+        config_dict: Dict,
+        dataset_path: Path,
+        verbose: bool = True
+    ) -> Tuple['SpinlockDataset', Dict]:
+        """Load dataset, introspect, and update config in one operation.
+
+        Opens the dataset once, runs introspection, validates and updates config.
+        Returns both the opened dataset and updated config.
+
+        Args:
+            config_dict: Configuration dictionary (will be deep-merged)
+            dataset_path: Path to HDF5 dataset file
+            verbose: Log introspection results
+
+        Returns:
+            (dataset, updated_config_dict) tuple
+
+        Example:
+            >>> config_dict = yaml.safe_load(open('config.yaml'))
+            >>> dataset, config_dict = SpinlockDataset.introspect_and_update_config(
+            ...     config_dict, 'datasets/qbm_50k.h5'
+            ... )
+            >>> config = TokenizerConfig(**config_dict)
+            >>> # dataset is already open and ready to use
+        """
+
+        # Open dataset (runs introspection automatically)
+        dataset = cls.from_file(dataset_path).open()
+
+        if verbose:
+            logger.info(f"Introspected dataset: {dataset_path}")
+
+        # Get encoder config overrides
+        overrides = dataset.get_encoder_config_overrides()
+
+        # Deep merge helper
+        def deep_update(d, u):
+            for k, v in u.items():
+                if isinstance(v, dict):
+                    d[k] = deep_update(d.get(k, {}), v)
+                else:
+                    d[k] = v
+            return d
+
+        # Apply overrides
+        config_dict = deep_update(config_dict, overrides)
+
+        if verbose:
+            logger.info("Applied dataset-detected dimensions to config")
+
+        return dataset, config_dict
 
 
 class _FeatureGroup:

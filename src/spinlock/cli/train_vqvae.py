@@ -809,7 +809,7 @@ Output:
                 print(f"  Protected {initial_dim}D INITIAL features (hybrid encoded) from cleaning")
 
                 # Clean non-INITIAL features
-                cleaned_features, feature_mask_non_initial, cleaned_names = processor.clean(
+                cleaned_features, feature_mask_non_initial, cleaned_names, _ = processor.clean(
                     features_for_cleaning, names_for_cleaning
                 )
 
@@ -866,7 +866,7 @@ Output:
                         family_counts = Counter(families)
                         print(f"  Features per family: {dict(family_counts)}")
             else:
-                features, feature_mask, feature_names = processor.clean(features, feature_names)
+                features, feature_mask, feature_names, _ = processor.clean(features, feature_names)
 
                 # Store feature_mask for later use
                 self._feature_mask = feature_mask
@@ -1214,7 +1214,7 @@ Output:
                 print(f"  Original: {len(cat_indices_sorted)} features")
 
                 # Clean this category's features
-                cat_cleaned, cat_mask, cat_cleaned_names = processor.clean(cat_features, cat_names)
+                cat_cleaned, cat_mask, cat_cleaned_names, _ = processor.clean(cat_features, cat_names)
 
                 # Update global mask
                 for local_idx, original_idx in enumerate(cat_indices_sorted):

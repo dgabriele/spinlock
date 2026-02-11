@@ -70,7 +70,7 @@ class FeatureProcessor:
         self,
         features: np.ndarray,
         feature_names: Optional[List[str]] = None,
-    ) -> Tuple[np.ndarray, np.ndarray, Optional[List[str]]]:
+    ) -> Tuple[np.ndarray, np.ndarray, Optional[List[str]], dict]:
         """Apply all post-processing steps.
 
         Args:
@@ -78,9 +78,11 @@ class FeatureProcessor:
             feature_names: Original feature names [D] (optional)
 
         Returns:
-            Tuple of (cleaned_features [N, D'], feature_mask [D], cleaned_feature_names [D'])
-            where feature_mask indicates which original features were kept,
-            and cleaned_feature_names are the names after all cleaning steps (None if input None)
+            Tuple of (cleaned_features [N, D'], feature_mask [D], cleaned_feature_names [D'], cleaning_report [dict])
+            where:
+            - feature_mask indicates which original features were kept
+            - cleaned_feature_names are the names after all cleaning steps (None if input None)
+            - cleaning_report contains detailed metadata about each cleaning operation
         """
         if features.shape[0] == 0:
             raise ValueError("Cannot process empty feature array")
@@ -104,8 +106,30 @@ class FeatureProcessor:
         else:
             current_names = None
 
+        # Initialize cleaning report
+        cleaning_report = {
+            'operations': [],
+            'original_feature_count': original_dim,
+        }
+
         # 1. Remove zero-variance features
         features, variance_mask = self._remove_zero_variance(features)
+
+        # Record variance filtering operation
+        variance_kept = np.where(variance_mask)[0].tolist()
+        variance_removed = np.where(~variance_mask)[0].tolist()
+        cleaning_report['operations'].append({
+            'operation_type': 'variance_filter',
+            'features_kept': variance_kept,
+            'features_removed': variance_removed,
+            'num_kept': len(variance_kept),
+            'num_removed': len(variance_removed),
+            'parameters': {
+                'variance_threshold': self.variance_threshold,
+                'max_variance_threshold': self.max_variance_threshold,
+                'max_cv_threshold': self.max_cv_threshold,
+            }
+        })
         if current_names is not None:
             current_names = current_names[variance_mask]
 
@@ -121,6 +145,22 @@ class FeatureProcessor:
 
         # 2. Deduplicate highly correlated features
         features, dedup_mask = self._deduplicate(features)
+
+        # Record deduplication operation (map back to original indices)
+        # dedup_mask is in the variance-filtered space, need to map to original
+        original_dedup_kept = np.where(variance_mask)[0][dedup_mask].tolist()
+        original_dedup_removed = np.where(variance_mask)[0][~dedup_mask].tolist()
+        cleaning_report['operations'].append({
+            'operation_type': 'deduplication',
+            'features_kept': original_dedup_kept,
+            'features_removed': original_dedup_removed,
+            'num_kept': len(original_dedup_kept),
+            'num_removed': len(original_dedup_removed),
+            'parameters': {
+                'deduplicate_threshold': self.deduplicate_threshold,
+                'use_intelligent_dedup': self.use_intelligent_dedup,
+            }
+        })
         if current_names is not None:
             current_names = current_names[dedup_mask]
 
@@ -134,6 +174,19 @@ class FeatureProcessor:
         # 3. Handle NaNs
         nan_stats = self._get_nan_stats(features)
         features = self._handle_nans(features)
+
+        # Record NaN handling operation (no features removed, just values replaced)
+        cleaning_report['operations'].append({
+            'operation_type': 'nan_handling',
+            'features_kept': original_dedup_kept,  # Same as after dedup
+            'features_removed': [],
+            'num_kept': len(original_dedup_kept),
+            'num_removed': 0,
+            'parameters': {
+                'method': 'median_replacement',
+                'nan_stats': nan_stats,
+            }
+        })
 
         if self.verbose:
             logger.info(f"\n3. NaN handling (median replacement):")
@@ -149,6 +202,22 @@ class FeatureProcessor:
         else:
             # Skip outlier capping if method is None or invalid
             outlier_stats = {'num_features_with_outliers': 0, 'total_outliers': 0}
+
+        # Record outlier capping operation (no features removed, just values clipped)
+        cleaning_report['operations'].append({
+            'operation_type': 'outlier_capping',
+            'features_kept': original_dedup_kept,  # Same as after dedup
+            'features_removed': [],
+            'num_kept': len(original_dedup_kept),
+            'num_removed': 0,
+            'parameters': {
+                'method': self.outlier_method,
+                'percentile_range': self.percentile_range if self.outlier_method == 'percentile' else None,
+                'iqr_multiplier': self.iqr_multiplier if self.outlier_method == 'iqr' else None,
+                'mad_threshold': self.mad_threshold if self.outlier_method == 'mad' else None,
+                'outlier_stats': outlier_stats,
+            }
+        })
 
         if self.verbose:
             if self.outlier_method == "percentile":
@@ -173,12 +242,16 @@ class FeatureProcessor:
         # Convert names back to list
         final_names = current_names.tolist() if current_names is not None else None
 
+        # Finalize cleaning report
+        cleaning_report['cleaned_feature_count'] = features.shape[1]
+        cleaning_report['total_removed'] = original_dim - features.shape[1]
+
         if self.verbose:
             logger.info(f"\nFinal: {features.shape[0]} samples × {features.shape[1]} features")
             logger.info(f"Feature reduction: {original_dim} → {features.shape[1]} ({100*features.shape[1]/original_dim:.1f}%)")
             logger.info("=" * 70 + "\n")
 
-        return features, combined_mask, final_names
+        return features, combined_mask, final_names, cleaning_report
 
     def _remove_zero_variance(self, features: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Remove features with std < threshold OR unstable variance (using CV).

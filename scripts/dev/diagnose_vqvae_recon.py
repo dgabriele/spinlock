@@ -437,7 +437,7 @@ class VQVAEDiagnostics:
                     verbose=True,
                 )
 
-                cleaned_features, feature_mask, _ = processor.clean(concatenated)
+                cleaned_features, feature_mask, _, _ = processor.clean(concatenated)
                 logger.info(f"After cleaning: {cleaned_features.shape}")
 
                 # Check if we match expected dimension
