@@ -34,11 +34,13 @@ Four dashboard types are available:
   - topological: t-SNE codebook embeddings, usage heatmap, similarity matrix
   - semantic: Feature-category mapping, category profiles, correlation matrix
   - roundtrip: Roundtrip consistency, semantic structure, compositional analysis
+  - hierarchical: Hierarchical token pattern analysis (requires --tokenized-dataset)
 
 Examples:
   spinlock visualize-vqvae --checkpoint checkpoints/production/100k_full_features/
   spinlock visualize-vqvae --checkpoint checkpoints/my_model/ --type roundtrip
   spinlock visualize-vqvae --checkpoint checkpoints/my_model/ --type all --tokenized-dataset datasets/50k_tokenized.h5
+  spinlock visualize-vqvae --checkpoint checkpoints/my_model/ --type hierarchical --tokenized-dataset datasets/50k_tokenized.h5
 """
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
@@ -57,7 +59,7 @@ Examples:
         parser.add_argument(
             "--type",
             type=str,
-            choices=["engineering", "topological", "semantic", "roundtrip", "all"],
+            choices=["engineering", "topological", "semantic", "roundtrip", "hierarchical", "all"],
             default="topological",
             help="Type of visualization to create (default: topological)",
         )
@@ -101,6 +103,26 @@ Examples:
             default=None,
             help="Path to pretokenized dataset HDF5 for token frequency analysis (optional, for roundtrip dashboard)",
         )
+        parser.add_argument(
+            "--family",
+            type=str,
+            default="all",
+            choices=["temporal", "initial", "theta", "all"],
+            help="Feature family to analyze for hierarchical visualization. Use 'all' to analyze all families (default: all)",
+        )
+        parser.add_argument(
+            "--max-rollouts",
+            type=int,
+            default=None,
+            help="Maximum number of rollouts to analyze (for performance, default: all)",
+        )
+        parser.add_argument(
+            "--similarity-metric",
+            type=str,
+            default="jaccard",
+            choices=["jaccard", "cosine"],
+            help="Similarity metric for hierarchical analysis (default: jaccard)",
+        )
 
     def execute(self, args: argparse.Namespace) -> int:
         """Execute the visualization command."""
@@ -109,6 +131,9 @@ Examples:
             create_semantic_dashboard,
             create_topological_dashboard,
             create_roundtrip_dashboard,
+        )
+        from spinlock.visualization.vqvae.roundtrip_dashboard import (
+            generate_hierarchical_pattern_analysis,
         )
         import matplotlib
         import matplotlib.pyplot as plt
@@ -201,6 +226,22 @@ Examples:
                 if not args.no_display:
                     plt.show(block=False)
                 plt.close(fig)
+
+            if args.type in ["hierarchical", "all"]:
+                if not args.tokenized_dataset:
+                    print("Error: --tokenized-dataset is required for hierarchical pattern analysis")
+                    return 1
+
+                hierarchical_output_dir = output_dir / f"{checkpoint_name}_hierarchical"
+                print(f"Creating hierarchical pattern analysis...")
+                generate_hierarchical_pattern_analysis(
+                    checkpoint_path=checkpoint_path,
+                    tokenized_dataset_path=Path(args.tokenized_dataset),
+                    output_dir=hierarchical_output_dir,
+                    family=args.family,
+                    max_rollouts=args.max_rollouts,
+                    similarity_metric=args.similarity_metric,
+                )
 
             print()
             print("Visualization complete!")

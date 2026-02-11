@@ -6,9 +6,9 @@ from torch.utils.data import Dataset
 from pathlib import Path
 from typing import Dict, Optional
 
-from experiments.common.data.trajectory_loader import TrajectoryDataLoader
-from experiments.common.models.trained_vqvae import TrainedVQVAE
-from experiments.trajectory_completion.data.masking import TemporalMaskGenerator
+from spinlock.experimental.common.data.trajectory_loader import TrajectoryDataLoader
+from spinlock.experimental.common.models.trained_vqvae import TrainedVQVAE
+from spinlock.experimental.trajectory_completion.data.masking import TemporalMaskGenerator
 
 
 class TrajectoryCompletionDataset(Dataset):

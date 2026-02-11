@@ -212,15 +212,8 @@ class SampleGenerator:
 
     def _load_diffusion_model(self):
         """Load diffusion model and denoiser."""
-        import sys
-        from pathlib import Path
-
-        # Add experiments/diffusion to path
-        diffusion_root = Path(__file__).parent.parent  # experiments/diffusion/
-        sys.path.insert(0, str(diffusion_root))
-
-        from models.discrete_d3pm import DiscreteD3PM, DiffusionSchedule
-        from models.denoising_network import DenoisingNetwork
+        from spinlock.experimental.diffusion.models.discrete_d3pm import DiscreteD3PM, DiffusionSchedule
+        from spinlock.experimental.diffusion.models.denoising_network import DenoisingNetwork
 
         logger.info(f"Loading diffusion model from {self.args.diffusion_checkpoint}")
 

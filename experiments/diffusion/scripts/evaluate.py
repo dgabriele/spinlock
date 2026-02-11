@@ -9,8 +9,8 @@ import yaml
 from torch.utils.data import DataLoader
 
 from spinlock.tokens.tokenizer import VQTokenizer
-from experiments.diffusion.models import DiscreteD3PM, DenoisingNetwork
-from experiments.diffusion.data import (
+from spinlock.experimental.diffusion.models import DiscreteD3PM, DenoisingNetwork
+from spinlock.experimental.diffusion.data import (
     HierarchicalMaskGenerator,
     MaskingStrategy,
     DiffusionCompletionDataset,

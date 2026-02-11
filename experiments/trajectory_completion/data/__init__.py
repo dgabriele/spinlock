@@ -1,10 +1,10 @@
 """Data utilities for trajectory completion experiment."""
 
-from experiments.trajectory_completion.data.masking import (
+from spinlock.experimental.trajectory_completion.data.masking import (
     MaskingStrategy,
     TemporalMaskGenerator,
 )
-from experiments.trajectory_completion.data.completion_dataset import (
+from spinlock.experimental.trajectory_completion.data.completion_dataset import (
     TrajectoryCompletionDataset,
 )
 

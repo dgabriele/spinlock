@@ -14,13 +14,13 @@ from pathlib import Path
 from torch.utils.data import DataLoader, Subset
 from pydantic import BaseModel
 
-from experiments.common.config.loader import load_experiment_config
-from experiments.common.config.base import BaseExperimentConfig
-from experiments.common.models.trained_vqvae import TrainedVQVAE
-from experiments.trajectory_completion.data.masking import TemporalMaskGenerator, MaskingStrategy
-from experiments.trajectory_completion.data.completion_dataset import TrajectoryCompletionDataset
-from experiments.trajectory_completion.models.completion_model import TrajectoryCompletionModel
-from experiments.trajectory_completion.training.trainer import CompletionTrainer
+from spinlock.experimental.common.config.loader import load_experiment_config
+from spinlock.experimental.common.config.base import BaseExperimentConfig
+from spinlock.experimental.common.models.trained_vqvae import TrainedVQVAE
+from spinlock.experimental.trajectory_completion.data.masking import TemporalMaskGenerator, MaskingStrategy
+from spinlock.experimental.trajectory_completion.data.completion_dataset import TrajectoryCompletionDataset
+from spinlock.experimental.trajectory_completion.models.completion_model import TrajectoryCompletionModel
+from spinlock.experimental.trajectory_completion.training.trainer import CompletionTrainer
 
 
 # Config schema for trajectory completion experiment

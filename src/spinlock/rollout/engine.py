@@ -483,7 +483,14 @@ class OperatorRollout:
 
             # Test forward pass with test batch size
             with torch.no_grad():
-                X_test = initial_condition.unsqueeze(0).repeat(test_batch_size, 1, 1, 1).to(self.device)
+                # Handle both [C, H, W] and [M, C, H, W] formats
+                if initial_condition.ndim == 4:
+                    # Multiple realizations format [M, C, H, W] - use first realization
+                    ic_test = initial_condition[0]
+                else:
+                    ic_test = initial_condition
+
+                X_test = ic_test.unsqueeze(0).repeat(test_batch_size, 1, 1, 1).to(self.device)
                 _ = operator(X_test)
                 torch.cuda.synchronize()
 
@@ -494,7 +501,10 @@ class OperatorRollout:
             # Estimate total memory needed for full evolution:
             # 1. Forward pass memory (measured above)
             # 2. Trajectory storage: num_timesteps × batch_size × state_size
-            C, H, W = initial_condition.shape
+            if initial_condition.ndim == 4:
+                C, H, W = initial_condition.shape[1:]
+            else:
+                C, H, W = initial_condition.shape
             bytes_per_state = C * H * W * 4  # float32
             trajectory_memory_per_sample = self.num_timesteps * bytes_per_state
             total_memory_per_sample = memory_per_sample + trajectory_memory_per_sample

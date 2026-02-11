@@ -11,13 +11,9 @@ from pathlib import Path
 import torch
 import yaml
 
-# Add parent directories to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from spinlock.tokens.tokenizer import VQTokenizer
-from models import DiscreteD3PM, DiffusionSchedule, DenoisingNetwork
-from data import (
+from spinlock.experimental.diffusion.models import DiscreteD3PM, DiffusionSchedule, DenoisingNetwork
+from spinlock.experimental.diffusion.data import (
     HierarchicalMaskGenerator,
     MaskingStrategy,
     DiffusionCompletionDataset,

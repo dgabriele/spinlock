@@ -540,19 +540,39 @@ class HDF5DatasetReader:
         """
         Get input fields.
 
+        Handles two dataset formats:
+        - Standard format: [N, C, H, W]
+        - Multi-realization format: [N, M, C, H, W] -> returns [N, C, H, W] (first realization)
+
         Args:
             idx: Index or slice (None = all)
 
         Returns:
-            Input field array
+            Input field array with shape [N, C, H, W] or [..., C, H, W] for single sample
         """
         if self.file is None:
             raise RuntimeError("HDF5 file not opened")
 
         dataset = cast(h5py.Dataset, self.file["inputs/fields"])
+
+        # Load data
         if idx is None:
-            return dataset[:]  # type: ignore
-        return dataset[idx]  # type: ignore
+            data = dataset[:]  # type: ignore
+        else:
+            data = dataset[idx]  # type: ignore
+
+        # Handle multi-realization format [N, M, C, H, W] or [M, C, H, W]
+        # Check if second dimension looks like a realization count (small number)
+        if data.ndim == 5:  # [N, M, C, H, W]
+            # Take first realization
+            data = data[:, 0, :, :, :]  # [N, C, H, W]
+        elif data.ndim == 4 and idx is not None:  # Single sample [M, C, H, W]
+            # Check if this looks like multi-realization format
+            # Heuristic: if first dim is small (< 10) and matches typical M values
+            if data.shape[0] < 10:
+                data = data[0, :, :, :]  # [C, H, W]
+
+        return data
 
     def get_outputs(self, idx: Optional[Union[int, slice]] = None) -> np.ndarray:
         """

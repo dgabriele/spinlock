@@ -9,9 +9,6 @@ from pathlib import Path
 import torch
 import numpy as np
 
-# Add parent to path
-sys.path.insert(0, str(Path(__file__).parent))
-
 from sampling import DiffusionSampler, SampleWriter, SampleVisualizer
 
 

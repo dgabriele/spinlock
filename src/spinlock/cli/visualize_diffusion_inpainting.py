@@ -12,15 +12,14 @@ import numpy as np
 
 from spinlock.cli.base import CLICommand
 from spinlock.tokens.tokenizer import VQTokenizer
-from experiments.diffusion.models.discrete_d3pm import DiscreteD3PM
-from experiments.diffusion.models.denoising_network import DenoisingNetwork
-from experiments.diffusion.visualization.trajectory_inpainter import TrajectoryInpainter
-from experiments.diffusion.visualization.comparison_visualizer import ComparisonVisualizer
-from experiments.diffusion.visualization.masking_strategies import MaskingStrategy
-import experiments.diffusion.config as diffusion_config
 
-# Fix for unpickling: checkpoint was saved with 'config' module name
-sys.modules['config'] = diffusion_config
+# Imports from experiments module - these will fail if experiments dir is not available
+# This is intentional - this command requires experimental code
+from spinlock.experimental.diffusion.models.discrete_d3pm import DiscreteD3PM
+from spinlock.experimental.diffusion.models.denoising_network import DenoisingNetwork
+from spinlock.experimental.diffusion.visualization.trajectory_inpainter import TrajectoryInpainter
+from spinlock.experimental.diffusion.visualization.comparison_visualizer import ComparisonVisualizer
+from spinlock.experimental.diffusion.visualization.masking_strategies import MaskingStrategy
 
 
 class VisualizeDiffusionInpaintingCommand(CLICommand):
@@ -157,6 +156,12 @@ class VisualizeDiffusionInpaintingCommand(CLICommand):
 
     def execute(self, args: Namespace) -> int:
         """Main execution pipeline."""
+        # Check if diffusion dependencies are available
+        if not DIFFUSION_AVAILABLE:
+            print("Error: Diffusion visualization requires experimental dependencies.", file=sys.stderr)
+            print("The experiments.diffusion module is not available.", file=sys.stderr)
+            return 1
+
         # Phase 1: Validation
         device = self._validate_and_setup(args)
         if device is None:
@@ -305,7 +310,7 @@ class VisualizeDiffusionInpaintingCommand(CLICommand):
             exp_config = checkpoint['config']
 
             # Initialize DiscreteD3PM with vocab_sizes dict
-            from experiments.diffusion.models.discrete_d3pm import DiffusionSchedule
+            from spinlock.experimental.diffusion.models.discrete_d3pm import DiffusionSchedule
 
             diffusion = DiscreteD3PM(
                 vocab_sizes=vocab_sizes,

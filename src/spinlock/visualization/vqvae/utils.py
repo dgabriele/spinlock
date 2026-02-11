@@ -1241,3 +1241,206 @@ def extract_level_composition(data: VQVAECheckpointData) -> Dict[int, Dict[str, 
         }
 
     return composition
+
+
+# ============================================================================
+# Hierarchical Token Pattern Analysis - Rollout Similarity
+# ============================================================================
+
+
+def extract_rollout_token_sets(
+    dataset_path: str | Path,
+    family: str = "temporal",
+) -> Dict[int, Dict[str, set]]:
+    """Extract token sets for each rollout from pretokenized dataset.
+
+    Args:
+        dataset_path: Path to HDF5 pretokenized dataset with /tokens/{category}_L{level}
+        family: Feature family to analyze ("temporal", "initial", "theta", "all")
+                Use "all" to analyze all families together.
+
+    Returns:
+        Dict mapping rollout_idx → category → token_set
+
+        Example structure:
+        {
+            0: {"temporal_group_0_L0": {5, 12}, "temporal_group_0_L1": {3}, ...},
+            1: {"temporal_group_0_L0": {7, 15}, "temporal_group_0_L1": {2}, ...},
+            ...
+        }
+    """
+    import h5py
+
+    dataset_path = Path(dataset_path)
+    rollout_tokens: Dict[int, Dict[str, set]] = {}
+
+    with h5py.File(dataset_path, "r") as f:
+        tokens_group = f["tokens"]
+
+        # Find all token keys matching family pattern
+        token_keys = []
+        for key in tokens_group.keys():
+            # Match pattern: "{family}_group_{id}_L{level}"
+            if family == "all":
+                # Include all token keys
+                if "_group_" in key and "_L" in key:
+                    token_keys.append(key)
+            else:
+                # Filter by specific family
+                if key.startswith(f"{family}_group_") and "_L" in key:
+                    token_keys.append(key)
+
+        if not token_keys:
+            raise ValueError(f"No token keys found for family '{family}' in {dataset_path}")
+
+        # Load first key to determine number of samples
+        first_key = token_keys[0]
+        n_samples = tokens_group[first_key].shape[0]
+
+        # Initialize rollout_tokens structure
+        for rollout_idx in range(n_samples):
+            rollout_tokens[rollout_idx] = {}
+
+        # Load tokens for each category and populate sets
+        for key in token_keys:
+            token_array = tokens_group[key][:]  # [N] array
+
+            for rollout_idx, token_id in enumerate(token_array):
+                if rollout_idx not in rollout_tokens:
+                    rollout_tokens[rollout_idx] = {}
+
+                if key not in rollout_tokens[rollout_idx]:
+                    rollout_tokens[rollout_idx][key] = set()
+
+                rollout_tokens[rollout_idx][key].add(int(token_id))
+
+    return rollout_tokens
+
+
+def flatten_rollout_tokens(
+    rollout_tokens: Dict[int, Dict[str, set]]
+) -> Dict[int, set]:
+    """Flatten token sets by concatenating all categories.
+
+    For similarity computation, we treat each category's tokens as distinct
+    by prefixing with category name (e.g., "temporal_group_0_L0_token5").
+
+    Args:
+        rollout_tokens: Nested dict from extract_rollout_token_sets()
+
+    Returns:
+        Dict mapping rollout_idx → flattened_token_set with globally unique tokens
+    """
+    flattened: Dict[int, set] = {}
+
+    for rollout_idx, category_tokens in rollout_tokens.items():
+        combined = set()
+
+        for category_name, token_set in category_tokens.items():
+            # Prefix each token with category name to make globally unique
+            for token_id in token_set:
+                unique_token = f"{category_name}_token{token_id}"
+                combined.add(unique_token)
+
+        flattened[rollout_idx] = combined
+
+    return flattened
+
+
+def compute_rollout_similarity(
+    rollout_tokens_flat: Dict[int, set],
+    metric: str = "jaccard",
+) -> np.ndarray:
+    """Compute pairwise similarity matrix between rollouts.
+
+    Args:
+        rollout_tokens_flat: Flattened token sets from flatten_rollout_tokens()
+        metric: "jaccard" or "cosine"
+
+    Returns:
+        [N, N] similarity matrix where entry (i, j) = similarity(rollout_i, rollout_j)
+
+    Notes:
+        - Jaccard: |A ∩ B| / |A ∪ B| (set-based)
+        - Cosine: dot(A, B) / (||A|| ||B||) (vector-based, treats tokens as binary features)
+    """
+    # Get rollout indices in sorted order
+    rollout_indices = sorted(rollout_tokens_flat.keys())
+    n_rollouts = len(rollout_indices)
+
+    similarity_matrix = np.zeros((n_rollouts, n_rollouts))
+
+    if metric == "jaccard":
+        # Compute Jaccard similarity for each pair
+        for i, idx_i in enumerate(rollout_indices):
+            for j, idx_j in enumerate(rollout_indices):
+                set_i = rollout_tokens_flat[idx_i]
+                set_j = rollout_tokens_flat[idx_j]
+
+                if i == j:
+                    similarity_matrix[i, j] = 1.0
+                else:
+                    intersection = len(set_i & set_j)
+                    union = len(set_i | set_j)
+
+                    if union > 0:
+                        similarity_matrix[i, j] = intersection / union
+                    else:
+                        similarity_matrix[i, j] = 0.0
+
+    elif metric == "cosine":
+        # Build vocabulary of all unique tokens
+        all_tokens = set()
+        for token_set in rollout_tokens_flat.values():
+            all_tokens.update(token_set)
+
+        token_to_idx = {token: idx for idx, token in enumerate(sorted(all_tokens))}
+        vocab_size = len(token_to_idx)
+
+        # Convert each rollout to binary vector
+        vectors = np.zeros((n_rollouts, vocab_size))
+        for i, rollout_idx in enumerate(rollout_indices):
+            for token in rollout_tokens_flat[rollout_idx]:
+                vectors[i, token_to_idx[token]] = 1
+
+        # Compute cosine similarity using sklearn
+        from sklearn.metrics.pairwise import cosine_similarity
+        similarity_matrix = cosine_similarity(vectors)
+
+    else:
+        raise ValueError(f"Unknown metric: {metric}. Choose 'jaccard' or 'cosine'.")
+
+    return similarity_matrix
+
+
+def hierarchical_cluster_rollouts(
+    similarity_matrix: np.ndarray,
+    method: str = "average",
+) -> np.ndarray:
+    """Perform hierarchical clustering on rollouts.
+
+    Args:
+        similarity_matrix: [N, N] similarity matrix
+        method: Linkage method ("average", "ward", "complete", "single")
+
+    Returns:
+        Linkage matrix for scipy.cluster.hierarchy.dendrogram
+
+    Notes:
+        - Convert similarity → distance: distance = 1 - similarity
+        - Use scipy.cluster.hierarchy.linkage
+    """
+    from scipy.cluster.hierarchy import linkage
+    from scipy.spatial.distance import squareform
+
+    # Convert similarity to distance
+    distance_matrix = 1.0 - similarity_matrix
+
+    # Extract upper triangle as condensed distance matrix
+    # scipy linkage expects condensed form (1D array of upper triangle)
+    condensed_dist = squareform(distance_matrix, checks=False)
+
+    # Perform hierarchical clustering
+    linkage_matrix = linkage(condensed_dist, method=method)
+
+    return linkage_matrix
