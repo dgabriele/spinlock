@@ -319,16 +319,32 @@ See [Training Regimes Guide](docs/training-regimes-guide.md) for detailed compar
 
 ## Dataset Generation
 
-Spinlock supports multiple PDE operator families. Generate datasets using the CLI:
+Spinlock supports multiple operator architectures and PDE families. Generate datasets using the CLI:
 
-### Convex PDE Operators
+### Neural Operators (U-AFNO)
+
+U-AFNO combines U-Net encoder/decoder with AFNO bottleneck for multi-scale spatial hierarchy + global spectral mixing:
 
 ```bash
-poetry run spinlock generate-cno-dataset \
-  --num-samples 50000 \
-  --num-realizations 3 \
-  --output datasets/cno_50k.h5 \
-  --device cuda
+poetry run spinlock generate \
+  --config configs/experiments/u_afno_100k.yaml \
+  --output datasets/uafno_100k.h5
+```
+
+**Architecture Features:**
+- Multi-scale spatial hierarchy (U-Net encoder/decoder)
+- Global spectral mixing (AFNO bottleneck)
+- Configurable depth, channels, and Fourier modes
+- Stochastic perturbations for diverse dynamics
+
+### Convex PDE Operators (CNO)
+
+Classical PDE operators with fixed equations:
+
+```bash
+poetry run spinlock generate \
+  --config configs/experiments/cno_50k.yaml \
+  --output datasets/cno_50k.h5
 ```
 
 **Operators Included:**
@@ -343,11 +359,9 @@ poetry run spinlock generate-cno-dataset \
 For quantum PDE systems with dissipation and decoherence:
 
 ```bash
-poetry run spinlock generate-qbm-dataset \
-  --num-samples 10000 \
-  --num-realizations 3 \
-  --output datasets/qbm_10k.h5 \
-  --device cuda
+poetry run spinlock generate \
+  --config configs/experiments/qbm_10k_test.yaml \
+  --output datasets/qbm_10k.h5
 ```
 
 **Quantum Features Extracted:**
