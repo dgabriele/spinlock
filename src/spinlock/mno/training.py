@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader, Dataset
 from typing import Optional, Dict, Any, List, Tuple
 import time
 
-from .backbone import NOABackbone
+from .backbone import MNOBackbone
 
 
 # =============================================================================
@@ -175,7 +175,7 @@ class NOAPhase1Trainer:
         feature_weight: Weight for feature loss (0 = Stage 1, >0 = Stage 2)
 
     Example:
-        >>> noa = NOABackbone()
+        >>> noa = MNOBackbone()
         >>> # Stage 1: Grid loss only
         >>> trainer = NOAPhase1Trainer(noa, device="cuda", feature_weight=0.0)
         >>> # Stage 2: Grid + Feature loss
@@ -184,7 +184,7 @@ class NOAPhase1Trainer:
 
     def __init__(
         self,
-        noa: NOABackbone,
+        noa: MNOBackbone,
         device: str = "cuda",
         learning_rate: float = 1e-4,
         weight_decay: float = 0.01,
@@ -484,8 +484,8 @@ class NOARealDataTrainer:
         device: Device to train on
 
     Example:
-        >>> from spinlock.mno import NOABackbone, NOARealDataset, MNOFeatureExtractor
-        >>> noa = NOABackbone(in_channels=1, out_channels=1, base_channels=32)
+        >>> from spinlock.mno import MNOBackbone, NOARealDataset, MNOFeatureExtractor
+        >>> noa = MNOBackbone(in_channels=1, out_channels=1, base_channels=32)
         >>> dataset = NOARealDataset("datasets/100k_full_features.h5", n_samples=1000)
         >>> trainer = NOARealDataTrainer(noa, device="cuda")
         >>> trainer.train(DataLoader(dataset, batch_size=16), epochs=10)
@@ -493,7 +493,7 @@ class NOARealDataTrainer:
 
     def __init__(
         self,
-        noa: NOABackbone,
+        noa: MNOBackbone,
         feature_extractor: Optional["MNOFeatureExtractor"] = None,
         summary_weight: float = 1.0,
         temporal_weight: float = 1.0,

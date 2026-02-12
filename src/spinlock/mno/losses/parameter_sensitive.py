@@ -25,7 +25,7 @@ Usage:
     ... )
     >>> output = loss_fn.compute(
     ...     pred_trajectory, target_trajectory,
-    ...     ic=ic, noa=mno, params=params
+    ...     ic=ic, mno=mno, params=params
     ... )
 """
 
@@ -137,7 +137,7 @@ class ParameterSensitiveLoss(BaseNOALoss):
         pred_trajectory: torch.Tensor,
         target_trajectory: torch.Tensor,
         ic: Optional[torch.Tensor] = None,
-        noa: Optional[nn.Module] = None,
+        mno: Optional[nn.Module] = None,
         params: Optional[torch.Tensor] = None,
     ) -> LossOutput:
         """Compute parameter-sensitive loss components.
@@ -146,7 +146,7 @@ class ParameterSensitiveLoss(BaseNOALoss):
             pred_trajectory: MNO predicted trajectory [B, T, C, H, W]
             target_trajectory: CNO ground truth trajectory [B, T, C, H, W]
             ic: Initial condition [B, C, H, W] (required for sensitivity)
-            noa: MNO reference (required for sensitivity)
+            mno: MNO reference (required for sensitivity)
             params: PDE parameters [B, param_dim] (required for param sensitivity)
 
         Returns:
@@ -200,10 +200,10 @@ class ParameterSensitiveLoss(BaseNOALoss):
                 mean_negative_sim = contrastive_out['mean_negative_sim'].item()
 
             # 3. Sensitivity regularization (requires MNO and IC)
-            if self.lambda_sensitivity > 0.0 and noa is not None and ic is not None:
+            if self.lambda_sensitivity > 0.0 and mno is not None and ic is not None:
                 T = pred_trajectory.shape[1]
                 sensitivity_out = self.sensitivity_reg(
-                    mno=noa,
+                    mno=mno,
                     ic=ic,
                     params=params,
                     rollout_steps=T,

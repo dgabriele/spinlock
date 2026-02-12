@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from tqdm import tqdm
 
-from spinlock.mno.backbone import NOABackbone
+from spinlock.mno.backbone import MNOBackbone
 from spinlock.mno.validation_utils import load_mno_checkpoint
 from spinlock.mno.cno_replay import CNOReplayer
 from spinlock.diagnostics.metrics import (
@@ -62,7 +62,7 @@ class MNODiagnosticEvaluator:
         self.device = torch.device(device)
 
         # Models (loaded on demand)
-        self.mno: Optional[NOABackbone] = None
+        self.mno: Optional[MNOBackbone] = None
         self.cno_replayer: Optional[CNOReplayer] = None
 
         # Dataset info
@@ -228,7 +228,7 @@ class PhysicsFidelityEvaluator:
 
     def __init__(
         self,
-        mno: NOABackbone,
+        mno: MNOBackbone,
         cno_replayer: CNOReplayer,
         dataset_path: Path,
         device: torch.device,
@@ -459,7 +459,7 @@ class TokenizationEvaluator:
 
     def __init__(
         self,
-        mno: NOABackbone,
+        mno: MNOBackbone,
         cno_replayer: CNOReplayer,
         vqvae_checkpoint: Path,
         dataset_path: Path,

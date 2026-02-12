@@ -12,11 +12,11 @@ import sys
 
 # Import models
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from spinlock.mno.backbone import NOABackbone
+from spinlock.mno.backbone import MNOBackbone
 from spinlock.tokens import VQTokenizer
 
 
-def load_mno_checkpoint(checkpoint_path: str, device: str = "cuda") -> NOABackbone:
+def load_mno_checkpoint(checkpoint_path: str, device: str = "cuda") -> MNOBackbone:
     """Load trained MNO from checkpoint.
 
     Args:
@@ -58,12 +58,12 @@ def load_mno_checkpoint(checkpoint_path: str, device: str = "cuda") -> NOABackbo
             "dropout": 0.1,
         }
 
-    # Rename 'film' to 'film_config' if present (NOABackbone expects 'film_config')
+    # Rename 'film' to 'film_config' if present (MNOBackbone expects 'film_config')
     if "film" in config:
         config["film_config"] = config.pop("film")
 
     # Create model
-    mno = NOABackbone(**config)
+    mno = MNOBackbone(**config)
 
     # Load state dict
     if "model_state_dict" in checkpoint:

@@ -11,7 +11,7 @@ import h5py
 logger = logging.getLogger(__name__)
 
 
-class _DatasetIntrospector:
+class _DatasetDimensionInferrer:
     """Internal helper for introspecting HDF5 dataset structure.
 
     Discovers dimensions from explicitly declared metadata.
@@ -22,8 +22,8 @@ class _DatasetIntrospector:
     def __init__(self, dataset_path: str):
         self.dataset_path = str(dataset_path)
 
-    def introspect_all(self) -> Dict[str, Any]:
-        """Introspect complete dataset structure."""
+    def infer_dimensions(self) -> Dict[str, Any]:
+        """Infer complete dataset structure."""
         with h5py.File(self.dataset_path, 'r') as f:
             result = {}
 
@@ -135,7 +135,7 @@ class SpinlockDataset:
         self._inputs = None
         self._parameters = None
         self._introspector = None
-        self._introspection_cache = None
+        self._dimension_cache = None
 
     @classmethod
     def from_file(cls, file_path: str) -> "SpinlockDataset":
@@ -161,9 +161,9 @@ class SpinlockDataset:
             if 'parameters' in self._file:
                 self._parameters = _ParameterGroup(self._file['parameters'])
 
-            # Lazy create introspector and run introspection
-            self._introspector = _DatasetIntrospector(str(self.file_path))
-            self._introspection_cache = self._introspector.introspect_all()
+            # Lazy create introspector and run dimension inference
+            self._introspector = _DatasetDimensionInferrer(str(self.file_path))
+            self._dimension_cache = self._introspector.infer_dimensions()
         return self
 
     def close(self):
@@ -204,47 +204,47 @@ class SpinlockDataset:
             raise RuntimeError("Dataset not opened. Use dataset.open() or 'with dataset:'")
         return self._parameters
 
-    # Introspection properties (delegated to DatasetIntrospector)
+    # Inferion properties (delegated to DatasetInferor)
     @property
     def num_channels(self) -> Optional[int]:
         """Number of input channels (C dimension)."""
-        return self._introspection_cache.get('initial_raw_channels') if self._introspection_cache else None
+        return self._dimension_cache.get('initial_raw_channels') if self._dimension_cache else None
 
     @property
     def num_realizations(self) -> Optional[int]:
         """Number of realizations (M dimension)."""
-        return self._introspection_cache.get('num_realizations') if self._introspection_cache else None
+        return self._dimension_cache.get('num_realizations') if self._dimension_cache else None
 
     @property
     def temporal_feature_dim(self) -> Optional[int]:
         """Dimensionality of temporal features."""
-        return self._introspection_cache.get('temporal_feature_dim') if self._introspection_cache else None
+        return self._dimension_cache.get('temporal_feature_dim') if self._dimension_cache else None
 
     @property
     def initial_feature_dim(self) -> Optional[int]:
         """Dimensionality of initial/summary features."""
-        return self._introspection_cache.get('initial_manual_dim') if self._introspection_cache else None
+        return self._dimension_cache.get('initial_manual_dim') if self._dimension_cache else None
 
     @property
     def theta_param_dim(self) -> Optional[int]:
         """Dimensionality of theta parameters."""
-        return self._introspection_cache.get('theta_param_dim') if self._introspection_cache else None
+        return self._dimension_cache.get('theta_param_dim') if self._dimension_cache else None
 
     @property
     def raw_input_shape(self) -> Optional[Tuple]:
         """Raw shape of inputs/fields dataset."""
-        return self._introspection_cache.get('initial_raw_shape') if self._introspection_cache else None
+        return self._dimension_cache.get('initial_raw_shape') if self._dimension_cache else None
 
-    def get_introspection_dict(self) -> Dict[str, Any]:
-        """Get complete introspection results as dictionary."""
-        return self._introspection_cache.copy() if self._introspection_cache else {}
+    def get_dimension_inference_dict(self) -> Dict[str, Any]:
+        """Get complete dimension inference results as dictionary."""
+        return self._dimension_cache.copy() if self._dimension_cache else {}
 
     def get_encoder_config_overrides(self) -> Dict[str, Any]:
         """Get config overrides for encoder based on introspected dimensions."""
-        if not self._introspection_cache:
+        if not self._dimension_cache:
             return {}
 
-        info = self._introspection_cache
+        info = self._dimension_cache
         overrides = {}
 
         # Initial encoder overrides
@@ -267,8 +267,78 @@ class SpinlockDataset:
 
         return overrides
 
+    def infer_mno_dimensions(self) -> Dict[str, Any]:
+        """Infer MNO model dimensions from dataset metadata and shapes.
+
+        Returns MNO-specific dimension overrides for:
+        - model.in_channels: Input channels (from dataset metadata)
+        - model.out_channels: Output channels (same as input)
+        - model.param_dim: Parameter dimension (from parameters/params)
+        - model.spatial_dim: Spatial resolution (from field shape, if square)
+        - training.max_timesteps: Maximum available timesteps (for validation)
+
+        Returns:
+            Dict with model dimension overrides:
+            {
+                'model': {
+                    'in_channels': int,
+                    'out_channels': int,
+                    'param_dim': int,
+                    'spatial_dim': int  # Optional, only if square spatial domain
+                },
+                'training': {
+                    'max_timesteps': int
+                }
+            }
+
+        Example:
+            >>> dataset = SpinlockDataset("datasets/qbm_50k.h5").open()
+            >>> mno_dims = dataset.infer_mno_dimensions()
+            >>> print(mno_dims)
+            {
+                'model': {
+                    'in_channels': 2,
+                    'out_channels': 2,
+                    'param_dim': 9,
+                    'spatial_dim': 64
+                },
+                'training': {
+                    'max_timesteps': 256
+                }
+            }
+        """
+        if not self._dimension_cache:
+            return {}
+
+        info = self._dimension_cache
+        overrides = {}
+
+        # Channel dimensions (input and output are the same for MNO)
+        if info.get('initial_raw_channels') is not None:
+            overrides.setdefault('model', {})
+            overrides['model']['in_channels'] = info['initial_raw_channels']
+            overrides['model']['out_channels'] = info['initial_raw_channels']
+
+        # Parameter dimension
+        if info.get('theta_param_dim') is not None:
+            overrides.setdefault('model', {})['param_dim'] = info['theta_param_dim']
+
+        # Spatial dimension (from inputs/fields shape [N, M, C, H, W])
+        if info.get('initial_raw_shape') is not None:
+            shape = info['initial_raw_shape']
+            if len(shape) >= 2:
+                H, W = shape[-2:]
+                if H == W:  # Square spatial domain
+                    overrides.setdefault('model', {})['spatial_dim'] = H
+
+        # Max timesteps (for validation)
+        if info.get('temporal_timesteps') is not None:
+            overrides.setdefault('training', {})['max_timesteps'] = info['temporal_timesteps']
+
+        return overrides
+
     @classmethod
-    def introspect_and_update_config(
+    def infer_and_update_config(
         cls,
         config_dict: Dict,
         dataset_path: Path,
@@ -276,31 +346,31 @@ class SpinlockDataset:
     ) -> Tuple['SpinlockDataset', Dict]:
         """Load dataset, introspect, and update config in one operation.
 
-        Opens the dataset once, runs introspection, validates and updates config.
+        Opens the dataset once, runs dimension inference, validates and updates config.
         Returns both the opened dataset and updated config.
 
         Args:
             config_dict: Configuration dictionary (will be deep-merged)
             dataset_path: Path to HDF5 dataset file
-            verbose: Log introspection results
+            verbose: Log dimension inference results
 
         Returns:
             (dataset, updated_config_dict) tuple
 
         Example:
             >>> config_dict = yaml.safe_load(open('config.yaml'))
-            >>> dataset, config_dict = SpinlockDataset.introspect_and_update_config(
+            >>> dataset, config_dict = SpinlockDataset.infer_and_update_config(
             ...     config_dict, 'datasets/qbm_50k.h5'
             ... )
             >>> config = TokenizerConfig(**config_dict)
             >>> # dataset is already open and ready to use
         """
 
-        # Open dataset (runs introspection automatically)
+        # Open dataset (runs dimension inference automatically)
         dataset = cls.from_file(dataset_path).open()
 
         if verbose:
-            logger.info(f"Introspected dataset: {dataset_path}")
+            logger.info(f"Infered dataset: {dataset_path}")
 
         # Get encoder config overrides
         overrides = dataset.get_encoder_config_overrides()

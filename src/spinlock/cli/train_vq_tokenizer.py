@@ -185,7 +185,7 @@ Output:
         # All encoder dimensions should come from the actual dataset, not hardcoded config
         logger.info(f"Loading and introspecting dataset: {dataset_path}")
         try:
-            dataset, config_dict = SpinlockDataset.introspect_and_update_config(
+            dataset, config_dict = SpinlockDataset.infer_and_update_config(
                 config_dict,
                 dataset_path,
                 verbose=args.verbose or config_dict.get("verbose", False)

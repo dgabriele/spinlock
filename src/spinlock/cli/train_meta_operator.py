@@ -1,13 +1,13 @@
 """
 Train Meta-Operator command for Spinlock CLI.
 
-Trains NOA as a precision physics meta-operator using pure trajectory matching.
+Trains MNO as a precision physics meta-operator using pure trajectory matching.
 Supports both MSE-led (Stage 1) and VQ-led (Stage 2) training paradigms.
 
 Documentation:
-    - Training guide: docs/noa-training-guide.md
+    - Training guide: docs/mno-training-guide.md
     - Two-stage curriculum: docs/two-stage-curriculum-architecture.md
-    - NOA architecture: docs/noa-architecture.md
+    - MNO architecture: docs/mno-architecture.md
     - MNO architecture spec: docs/MNO_ARCHITECTURE.md
     - Truncated BPTT: docs/truncated-bptt-integration.md
 """
@@ -47,11 +47,11 @@ from .base import CLICommand
 
 class TrainMetaOperatorCommand(CLICommand):
     """
-    Command to train NOA as a precision physics meta-operator.
+    Command to train MNO as a precision physics meta-operator.
 
-    Stage 1 of two-stage training: Train NOA purely on physics (trajectory matching)
+    Stage 1 of two-stage training: Train MNO purely on physics (trajectory matching)
     without any VQ involvement. The trained checkpoint can then be used in Stage 2
-    to train VQ-VAE on NOA's distribution.
+    to train VQ-VAE on MNO's distribution.
     """
 
     @property
@@ -60,16 +60,16 @@ class TrainMetaOperatorCommand(CLICommand):
 
     @property
     def help(self) -> str:
-        return "Train NOA as precision physics meta-operator (Stage 1)"
+        return "Train MNO as precision physics meta-operator (Stage 1)"
 
     @property
     def description(self) -> str:
         return """
-Train NOA as a precision physics meta-operator using pure trajectory matching.
+Train MNO as a precision physics meta-operator using pure trajectory matching.
 
 This is Stage 1 of the two-stage training approach:
-- Stage 1 (this command): Train NOA on pure physics (MSE vs CNO rollouts)
-- Stage 2 (train-vqvae): Train VQ-VAE on NOA's distribution
+- Stage 1 (this command): Train MNO on pure physics (MSE vs CNO rollouts)
+- Stage 2 (train-vqvae): Train VQ-VAE on MNO's distribution
 
 Prerequisites:
   For token-conditioned training (model.token_conditioning=true):
@@ -87,7 +87,7 @@ Training:
 Output Checkpoint Format:
   Checkpoint includes full model config for Stage 2 compatibility.
   Structure:
-    - model_state_dict: NOA weights
+    - model_state_dict: MNO weights
     - optimizer_state_dict: Optimizer state (for resuming)
     - scheduler_state_dict: LR scheduler state
     - config: Full config (for reproducibility in Stage 2)
@@ -98,18 +98,18 @@ Output Checkpoint Format:
 
 Examples:
   # Train with config file
-  spinlock train-meta-operator --config configs/noa/train_meta_operator.yaml
+  spinlock train-meta-operator --config configs/mno/train_meta_operator.yaml
 
   # Override parameters
   spinlock train-meta-operator \\
-      --config configs/noa/train_meta_operator.yaml \\
+      --config configs/mno/train_meta_operator.yaml \\
       --n-samples 1000 \\
       --epochs 20 \\
       --learning-rate 1e-4
 
   # Resume from checkpoint
   spinlock train-meta-operator \\
-      --config configs/noa/train_meta_operator.yaml \\
+      --config configs/mno/train_meta_operator.yaml \\
       --resume-from checkpoints/meta_operator/meta_operator_epoch10.pt
 
 Output:
@@ -399,26 +399,40 @@ Output:
         return config
 
     def _validate_config(self, config: Dict[str, Any]) -> None:
-        """Validate configuration has required fields."""
+        """Validate configuration has required fields.
+
+        Note: Data-dependent dimensions (spatial_dim, in_channels, out_channels, param_dim)
+        are auto-detected at runtime and validated later during training initialization.
+        Only algorithmic choices are validated here.
+        """
         # Validate model section
         if "model" not in config:
             raise ValueError(
                 "Missing required section: 'model'\n\n"
                 "Example:\n"
                 "  model:\n"
-                "    spatial_dim: 64\n"
-                "    in_channels: 1\n"
-                "    out_channels: 1\n"
+                "    # Data-dependent dimensions (AUTO-DETECTED from dataset):\n"
+                "    # spatial_dim: auto-detected from inputs/fields shape\n"
+                "    # in_channels: auto-detected from dataset metadata\n"
+                "    # out_channels: auto-detected from dataset metadata\n"
+                "    # param_dim: auto-detected from parameters/params shape\n"
+                "    \n"
+                "    # Algorithmic choices (USER-SPECIFIED):\n"
                 "    base_channels: 32\n"
                 "    encoder_levels: 3\n"
                 "    modes: 16\n"
                 "    afno_blocks: 4"
             )
 
-        required_model_fields = ["spatial_dim", "in_channels", "out_channels"]
+        # Validate only algorithmic choices (data-dependent fields are auto-detected)
+        required_model_fields = ["base_channels", "encoder_levels", "modes", "afno_blocks"]
         for field in required_model_fields:
             if field not in config["model"]:
-                raise ValueError(f"Model section missing required field: '{field}'")
+                raise ValueError(
+                    f"Model section missing required algorithmic choice: '{field}'\n"
+                    f"Note: Data-dependent dimensions (spatial_dim, in_channels, etc.) "
+                    f"are auto-detected from the dataset."
+                )
 
         # Validate training section
         if "training" not in config:
@@ -550,7 +564,7 @@ Output:
 
     def _run_training(self, config: Dict[str, Any], args: Namespace) -> int:
         """Execute training pipeline."""
-        from spinlock.mno import NOABackbone, CNOReplayer
+        from spinlock.mno import MNOBackbone, CNOReplayer
         from spinlock.mno.losses import MSELedLoss
         from spinlock.operators.state_dataset import NOAStateDataset
 
@@ -683,71 +697,71 @@ Output:
             rank = 0
             world_size = 1
 
-        # Auto-detect channel count from dataset metadata
-        if rank == 0:
-            print("Detecting channel count from dataset...")
+        # Use unified dimension inference pattern (framework-compliant)
+        from spinlock.data import SpinlockDataset
+        from pathlib import Path
 
-        import h5py
-        with h5py.File(config["data"]["dataset_path"], "r") as f:
-            # Read from explicit metadata (preferred)
-            if "metadata" in f and "num_channels" in f["metadata"].attrs:
-                num_channels = int(f["metadata"].attrs["num_channels"])
+        rank_id = args.distributed_rank if hasattr(args, 'distributed_rank') and args.distributed_rank is not None else "master"
+        if rank == 0:
+            print(f"[{rank_id}] Loading dataset and inferring dimensions...")
+            sys.stdout.flush()
+
+        # Load dataset and infer dimensions (single pass, efficient)
+        dataset_path = Path(config["data"]["dataset_path"])
+        spinlock_dataset, config = SpinlockDataset.infer_and_update_config(
+            config_dict=config,
+            dataset_path=dataset_path,
+            verbose=(rank == 0)
+        )
+
+        # Apply MNO-specific dimension inference
+        mno_dimensions = spinlock_dataset.infer_mno_dimensions()
+        for key, value in mno_dimensions.items():
+            if isinstance(value, dict):
+                config.setdefault(key, {}).update(value)
             else:
-                # Fallback: infer from IC shape
-                # IC shape can be:
-                # - [N, M, H, W] for single-channel (NOAStateDataset adds C=1 with unsqueeze)
-                # - [N, M, C, H, W] for multi-channel (explicit channel dimension)
-                ic_shape = f["inputs/fields"].shape
-                if len(ic_shape) == 4:
-                    # [N, M, H, W] - single channel (added by dataset loader)
-                    num_channels = 1
-                elif len(ic_shape) == 5:
-                    # [N, M, C, H, W] - explicit channel dimension
-                    num_channels = ic_shape[2]
-                else:
-                    raise ValueError(
-                        f"Unexpected inputs/fields shape: {ic_shape}. "
-                        f"Expected [N, M, H, W] or [N, M, C, H, W]"
-                    )
+                config[key] = value
+
+        # Validate timesteps
+        max_timesteps = config.get('training', {}).get('max_timesteps')
+        requested_timesteps = config["training"]["timesteps"]
+        if max_timesteps and requested_timesteps > max_timesteps:
+            raise ValueError(
+                f"Requested timesteps ({requested_timesteps}) exceeds dataset maximum ({max_timesteps}). "
+                f"Reduce training.timesteps in config."
+            )
 
         if rank == 0:
-            print(f"  ✓ Detected {num_channels} channels from dataset")
-            if num_channels == 1:
-                print("    (single-channel)")
-            elif num_channels == 3:
-                print("    (3-channel)")
-            else:
-                print(f"    ({num_channels}-channel configuration)")
+            print(f"✓ Auto-detected dimensions:")
+            print(f"  in_channels: {config['model']['in_channels']}")
+            print(f"  out_channels: {config['model']['out_channels']}")
+            print(f"  param_dim: {config['model'].get('param_dim', 'N/A')}")
+            print(f"  spatial_dim: {config['model'].get('spatial_dim', 'N/A')}")
+            print(f"  max_timesteps: {max_timesteps}")
 
         # Create model
-        print("Creating NOA backbone..." if rank == 0 else "")
+        if rank == 0:
+            print("Creating MNO backbone...")
 
         # Prepare model config
         model_config = dict(config["model"])
 
-        # Override channel counts with dataset values
-        model_config["in_channels"] = num_channels
-        model_config["out_channels"] = num_channels
-
-        if rank == 0:
-            print(f"  Using in_channels={num_channels}, out_channels={num_channels} (from dataset)")
-
-        # Transform 'film' section to 'film_config' for NOABackbone constructor
+        # Transform 'film' section to 'film_config' for MNOBackbone constructor
         if "film" in model_config:
             model_config["film_config"] = model_config.pop("film")
 
-        noa = NOABackbone(**model_config)
-        noa = noa.to(device)
+        mno = MNOBackbone(**model_config)
+        mno = mno.to(device)
         if rank == 0:
-            print(f"  ✓ NOA created ({sum(p.numel() for p in noa.parameters()):,} parameters)")
+            print(f"  ✓ MNO created ({sum(p.numel() for p in mno.parameters()):,} parameters)")
 
             # Log FiLM configuration if enabled
             conditioning_mode = model_config.get("conditioning_mode", "concat")
             if conditioning_mode in ("film", "both"):
                 print(f"  ✓ FiLM conditioning enabled (mode: {conditioning_mode})")
-                if hasattr(noa, 'operator') and hasattr(noa.operator, 'get_film_parameter_count'):
-                    film_params = noa.operator.get_film_parameter_count()
-                    total_params = sum(p.numel() for p in noa.parameters())
+                if hasattr(mno, 'operator') and hasattr(mno.operator, 'get_film_parameter_count'):
+                    film_params = mno.operator.get_film_parameter_count()
+                    total_params = sum(p.numel() for p in mno.parameters())
                     overhead_pct = 100 * film_params / total_params if total_params > 0 else 0
                     print(f"    FiLM parameters: {film_params:,} ({overhead_pct:.1f}% overhead)")
 
@@ -757,7 +771,7 @@ Output:
             if rank == 0:
                 print("  Compiling model with torch.compile...")
             try:
-                noa = torch.compile(noa, mode="default")
+                mno = torch.compile(mno, mode="default")
                 if rank == 0:
                     print("  ✓ torch.compile enabled (expect 2-3× speedup after warmup)")
             except Exception as e:
@@ -767,13 +781,13 @@ Output:
         # Wrap model in DDP if distributed
         if is_distributed:
             from torch.nn.parallel import DistributedDataParallel as DDP
-            noa = DDP(noa, device_ids=[local_rank], output_device=local_rank)
+            mno = DDP(mno, device_ids=[local_rank], output_device=local_rank)
             if rank == 0:
                 print(f"  ✓ Model wrapped in DistributedDataParallel")
             # Get underlying model for rollout (DDP adds .module attribute)
-            noa_base = noa.module
+            noa_base = mno.module
         else:
-            noa_base = noa
+            noa_base = mno
 
         # Wrap with truncated BPTT if configured
         timesteps = config["training"]["timesteps"]
@@ -858,6 +872,8 @@ Output:
                 lambda_param_recon=loss_config.get("lambda_param_recon", 0.5),
                 lambda_contrastive=loss_config.get("lambda_contrastive", 0.3),
                 lambda_sensitivity=loss_config.get("lambda_param_sensitivity", 0.2),
+                # Parameter dimension (auto-detected from dataset)
+                param_dim=config["model"]["param_dim"],
                 # Parameter reconstruction config
                 param_recon_hidden_dim=loss_config.get("param_recon", {}).get("hidden_dim", 128),
                 param_recon_num_layers=loss_config.get("param_recon", {}).get("num_layers", 2),
@@ -890,26 +906,45 @@ Output:
             else:
                 print(f"  ✓ Pure physics loss (L_traj = {config['loss'].get('lambda_traj', 1.0)})")
 
-        # Create substrate replayer
+        # Create substrate replayer (CNO or QBM based on substrate config structure)
         print("Loading substrate replayer...")
-        substrate_config = config["data"].get("config")
+        substrate_config_path = config["data"].get("config")
 
-        if not substrate_config:
+        if not substrate_config_path:
             return self.error(
                 "Data section missing substrate configuration.\n"
                 "Required field: config (path to substrate config YAML)"
             )
 
-        # Larger cache to reduce operator reconstruction overhead
-        # With 16K samples, we have ~8K unique operators per epoch
-        # Cache as many as GPU memory allows (~256-512 operators at 5-10MB each)
-        cache_size = config.get("training", {}).get("replayer_cache_size", 512)
-        replayer = CNOReplayer.from_config(
-            config_path=substrate_config,
-            device=device,
-            cache_size=cache_size,
-        )
-        print(f"  ✓ Substrate replayer loaded (cache_size={cache_size})")
+        # Detect replayer type from substrate config structure
+        # CNO: has 'operators' section
+        # QBM: has 'parameter_space' section
+        import yaml
+        with open(substrate_config_path, 'r') as f:
+            substrate_config = yaml.safe_load(f)
+
+        if 'parameter_space' in substrate_config:
+            # QBM substrate - use QBMReplayer
+            from spinlock.qbm import QBMReplayer
+            replayer = QBMReplayer.from_config(
+                config_path=substrate_config_path,
+                device=device
+            )
+            print(f"  ✓ QBM replayer loaded")
+        elif 'operators' in substrate_config:
+            # CNO substrate - use CNOReplayer
+            cache_size = config.get("training", {}).get("replayer_cache_size", 512)
+            replayer = CNOReplayer.from_config(
+                config_path=substrate_config_path,
+                device=device,
+                cache_size=cache_size,
+            )
+            print(f"  ✓ CNO replayer loaded (cache_size={cache_size})")
+        else:
+            return self.error(
+                f"Unknown substrate config format: {substrate_config_path}\n"
+                f"Expected either 'operators' (CNO) or 'parameter_space' (QBM) section"
+            )
 
         # Create dataset and dataloaders
         print("Loading dataset...")
@@ -1022,7 +1057,7 @@ Output:
             film_params = []
             other_params = []
 
-            for name, param in noa.named_parameters():
+            for name, param in mno.named_parameters():
                 if 'film' in name.lower():
                     film_params.append(param)
                 else:
@@ -1036,7 +1071,7 @@ Output:
             print(f"  ✓ FiLM parameters get {film_lr_multiplier}x learning rate ({base_lr * film_lr_multiplier:.2e})")
         else:
             optimizer = torch.optim.AdamW(
-                noa.parameters(),
+                mno.parameters(),
                 lr=base_lr,
                 weight_decay=weight_decay,
             )
@@ -1078,7 +1113,7 @@ Output:
         if "resume_from" in config:
             print(f"Resuming from checkpoint: {config['resume_from']}")
             checkpoint = torch.load(config["resume_from"], map_location=device)
-            noa.load_state_dict(checkpoint["model_state_dict"])
+            mno.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             if "scheduler_state_dict" in checkpoint and checkpoint["scheduler_state_dict"] is not None:
                 scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
@@ -1140,7 +1175,7 @@ Output:
 
             # Train (with mid-epoch validation/checkpointing if configured)
             train_metrics, global_batch_counter, best_val_loss = self._train_epoch(
-                noa=noa,
+                mno=mno,
                 noa_rollout=noa_rollout,
                 loss_fn=loss_fn,
                 replayer=replayer,
@@ -1170,7 +1205,7 @@ Output:
             # Optional: Limit validation batches for faster epochs
             max_val_batches = config["training"].get("max_val_batches", None)
             val_metrics = self._validate_epoch(
-                noa=noa,
+                mno=mno,
                 noa_rollout=noa_rollout,
                 loss_fn=loss_fn,
                 replayer=replayer,
@@ -1218,7 +1253,7 @@ Output:
                     checkpoint_path = save_dir / f"meta_operator_epoch{epoch+1}.pt"
                     self._save_checkpoint(
                         path=checkpoint_path,
-                        noa=noa_base,  # Save unwrapped model
+                        mno=noa_base,  # Save unwrapped model
                         optimizer=optimizer,
                         scheduler=scheduler,
                         epoch=epoch,
@@ -1237,7 +1272,7 @@ Output:
                     best_checkpoint_path = save_dir / "meta_operator_best.pt"
                     self._save_checkpoint(
                         path=best_checkpoint_path,
-                        noa=noa_base,  # Save unwrapped model
+                        mno=noa_base,  # Save unwrapped model
                         optimizer=optimizer,
                         scheduler=scheduler,
                         epoch=epoch,
@@ -1277,7 +1312,7 @@ Output:
 
     def _train_epoch(
         self,
-        noa,
+        mno,
         noa_rollout,
         loss_fn,
         replayer,
@@ -1304,7 +1339,7 @@ Output:
         noa_base=None,  # Unwrapped model for checkpointing
     ) -> tuple:
         """Train for one epoch with gradient accumulation."""
-        noa.train()
+        mno.train()
         total_loss = 0.0
         component_losses = {}  # Track individual loss components
         normalized_metrics = {}  # Track normalized/relative metrics
@@ -1341,7 +1376,7 @@ Output:
                 # ground_truth_tokens is indexed by original dataset index
                 batch_tokens = ground_truth_tokens[indices].to(device)
 
-            # Generate NOA rollout (with truncated BPTT if configured)
+            # Generate MNO rollout (with truncated BPTT if configured)
             pred_trajectory = noa_rollout.rollout(ic, params=params, tokens=batch_tokens)
 
             # Generate CNO targets
@@ -1352,28 +1387,45 @@ Output:
                 if max_allocated > 0 and allocated / max_allocated > 0.9:
                     torch.cuda.empty_cache()
 
-            target_trajectories = []
-            skip_batch = False
-
-            for b in range(B):
-                try:
-                    target_traj = replayer.rollout(
-                        params_vector=params[b].cpu().numpy(),  # Move to CPU for CNOReplayer
-                        ic=ic[b:b+1],  # [1, C, H, W] - all channels
-                        timesteps=timesteps,
+            # Generate ground truth trajectories using batch rollout (parallel on GPU)
+            # Check if replayer supports batch rollout (QBMReplayer does, CNOReplayer might not)
+            try:
+                if hasattr(replayer, 'rollout_batch'):
+                    # Batch rollout: run all simulations in parallel on GPU
+                    target_trajectory = replayer.rollout_batch(
+                        params_batch=params.cpu().numpy(),  # [B, param_dim]
                         num_realizations=1,
+                        num_timesteps=timesteps,
+                        timesteps=timesteps,  # Alias for compatibility
                         return_all_steps=True,
                     )
-                    target_trajectories.append(target_traj)
-                except (ValueError, RuntimeError) as e:
-                    print(f"  Warning: CNO rollout failed for sample {b} in batch {batch_idx}: {e}")
-                    skip_batch = True
-                    break
+                    # rollout_batch returns [B, M, T, C, H, W], squeeze M=1 -> [B, T, C, H, W]
+                    target_trajectory = target_trajectory.squeeze(1)
+                else:
+                    # Fallback: sequential rollout (for CNOReplayer compatibility)
+                    target_trajectories = []
+                    skip_batch = False
+                    for b in range(B):
+                        try:
+                            target_traj = replayer.rollout(
+                                params_vector=params[b].cpu().numpy(),
+                                ic=ic[b:b+1],  # [1, C, H, W]
+                                timesteps=timesteps,
+                                num_realizations=1,
+                                return_all_steps=True,
+                            )
+                            target_trajectories.append(target_traj)
+                        except (ValueError, RuntimeError) as e:
+                            print(f"  Warning: Replayer rollout failed for sample {b}: {e}")
+                            skip_batch = True
+                            break
 
-            if skip_batch:
+                    if skip_batch:
+                        continue
+                    target_trajectory = torch.cat(target_trajectories, dim=0)
+            except Exception as e:
+                print(f"  Warning: Batch rollout failed: {e}, skipping batch")
                 continue
-
-            target_trajectory = torch.cat(target_trajectories, dim=0)
 
             # Align predicted and target states for loss computation
             # (handles truncated BPTT windowing automatically)
@@ -1389,7 +1441,7 @@ Output:
                     pred_trajectory=pred_states,
                     target_trajectory=target_states,
                     ic=ic,
-                    noa=noa,
+                    mno=mno,
                     params=params,  # For parameter-sensitive losses
                 )
             except Exception as e:
@@ -1406,7 +1458,7 @@ Output:
 
             # Only step optimizer every N batches
             if (batch_idx + 1) % accumulation_steps == 0:
-                torch.nn.utils.clip_grad_norm_(noa.parameters(), clip_grad)
+                torch.nn.utils.clip_grad_norm_(mno.parameters(), clip_grad)
                 optimizer.step()
                 optimizer.zero_grad()
                 # Step scheduler after optimizer step (per effective batch)
@@ -1457,9 +1509,9 @@ Output:
                 print(f"\n  >>> Mid-epoch checkpoint at batch {global_batch_counter} (epoch {epoch+1}, batch {batch_idx+1})")
 
                 # Run validation
-                noa.eval()
+                mno.eval()
                 val_metrics = self._validate_epoch(
-                    noa=noa,
+                    mno=mno,
                     noa_rollout=noa_rollout,
                     loss_fn=loss_fn,
                     replayer=replayer,
@@ -1468,7 +1520,7 @@ Output:
                     timesteps=timesteps,
                     ground_truth_tokens=ground_truth_tokens,
                 )
-                noa.train()  # Back to training mode
+                mno.train()  # Back to training mode
 
                 print(f"  Val Loss: {val_metrics['loss']:.6f}")
 
@@ -1484,11 +1536,11 @@ Output:
                 if val_metrics['loss'] < best_val_loss:
                     best_val_loss = val_metrics['loss']
                     if rank == 0:
-                        model_to_save = noa_base if noa_base is not None else noa
+                        model_to_save = noa_base if noa_base is not None else mno
                         best_checkpoint_path = save_dir / "meta_operator_best.pt"
                         self._save_checkpoint(
                             path=best_checkpoint_path,
-                            noa=model_to_save,
+                            mno=model_to_save,
                             optimizer=optimizer,
                             scheduler=scheduler,
                             epoch=epoch,
@@ -1501,11 +1553,11 @@ Output:
 
                 # Always save periodic checkpoint (only on rank 0)
                 if rank == 0:
-                    model_to_save = noa_base if noa_base is not None else noa
+                    model_to_save = noa_base if noa_base is not None else mno
                     checkpoint_path = save_dir / f"meta_operator_epoch{epoch+1}_batch{global_batch_counter}.pt"
                     self._save_checkpoint(
                         path=checkpoint_path,
-                        noa=model_to_save,
+                        mno=model_to_save,
                         optimizer=optimizer,
                         scheduler=scheduler,
                         epoch=epoch,
@@ -1518,7 +1570,7 @@ Output:
 
         # Handle leftover gradients at end of epoch
         if (batch_idx + 1) % accumulation_steps != 0:
-            torch.nn.utils.clip_grad_norm_(noa.parameters(), clip_grad)
+            torch.nn.utils.clip_grad_norm_(mno.parameters(), clip_grad)
             optimizer.step()
             optimizer.zero_grad()
 
@@ -1534,7 +1586,7 @@ Output:
 
     def _validate_epoch(
         self,
-        noa,
+        mno,
         noa_rollout,
         loss_fn,
         replayer,
@@ -1546,7 +1598,7 @@ Output:
         max_batches=None,
     ) -> dict:
         """Validate for one epoch."""
-        noa.eval()
+        mno.eval()
         total_loss = 0.0
         component_losses = {}  # Track individual loss components
         normalized_metrics = {}  # Track normalized/relative metrics
@@ -1569,31 +1621,46 @@ Output:
                     # ground_truth_tokens is indexed by original dataset index
                     batch_tokens = ground_truth_tokens[indices].to(device)
 
-                # Generate NOA rollout (with truncated BPTT if configured)
+                # Generate MNO rollout (with truncated BPTT if configured)
                 pred_trajectory = noa_rollout.rollout(ic, params=params, tokens=batch_tokens)
 
-                # Generate CNO targets
-                target_trajectories = []
-                skip_batch = False
-
-                for b in range(B):
-                    try:
-                        target_traj = replayer.rollout(
-                            params_vector=params[b].cpu().numpy(),  # Move to CPU for CNOReplayer
-                            ic=ic[b:b+1],  # [1, C, H, W] - all channels
-                            timesteps=timesteps,
+                # Generate ground truth trajectories using batch rollout (parallel on GPU)
+                try:
+                    if hasattr(replayer, 'rollout_batch'):
+                        # Batch rollout: run all simulations in parallel on GPU
+                        target_trajectory = replayer.rollout_batch(
+                            params_batch=params.cpu().numpy(),  # [B, param_dim]
                             num_realizations=1,
+                            num_timesteps=timesteps,
+                            timesteps=timesteps,  # Alias for compatibility
                             return_all_steps=True,
                         )
-                        target_trajectories.append(target_traj)
-                    except (ValueError, RuntimeError):
-                        skip_batch = True
-                        break
+                        # rollout_batch returns [B, M, T, C, H, W], squeeze M=1 -> [B, T, C, H, W]
+                        target_trajectory = target_trajectory.squeeze(1)
+                    else:
+                        # Fallback: sequential rollout (for CNOReplayer compatibility)
+                        target_trajectories = []
+                        skip_batch = False
+                        for b in range(B):
+                            try:
+                                target_traj = replayer.rollout(
+                                    params_vector=params[b].cpu().numpy(),
+                                    ic=ic[b:b+1],  # [1, C, H, W]
+                                    timesteps=timesteps,
+                                    num_realizations=1,
+                                    return_all_steps=True,
+                                )
+                                target_trajectories.append(target_traj)
+                            except (ValueError, RuntimeError):
+                                skip_batch = True
+                                break
 
-                if skip_batch:
+                        if skip_batch:
+                            continue
+                        target_trajectory = torch.cat(target_trajectories, dim=0)
+                except Exception as e:
+                    print(f"  Warning: Batch rollout failed: {e}, skipping batch")
                     continue
-
-                target_trajectory = torch.cat(target_trajectories, dim=0)
 
                 # Align predicted and target states for loss computation
                 # (handles truncated BPTT windowing automatically)
@@ -1609,7 +1676,7 @@ Output:
                         pred_trajectory=pred_states,
                         target_trajectory=target_states,
                         ic=ic,
-                        noa=noa,
+                        mno=mno,
                         params=params,  # For parameter-sensitive losses
                     )
                 except Exception:
@@ -1657,7 +1724,7 @@ Output:
     def _save_checkpoint(
         self,
         path: Path,
-        noa,
+        mno,
         optimizer,
         scheduler,
         epoch,
@@ -1669,7 +1736,7 @@ Output:
         """Save checkpoint in Stage 2 compatible format."""
         checkpoint = {
             'epoch': epoch,
-            'model_state_dict': noa.state_dict(),
+            'model_state_dict': mno.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
             'val_loss': val_loss,

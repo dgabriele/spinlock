@@ -51,7 +51,7 @@ from tqdm import tqdm
 import time
 import h5py
 
-from ..noa.backbone import NOABackbone
+from spinlock.mno.backbone import MNOBackbone
 from ..dataset.generators import InputFieldGenerator
 from ..features.summary import SummaryExtractor, SummaryConfig
 from ..features.initial import InitialManualExtractor
@@ -157,7 +157,7 @@ class NOAFeatureGenerationPipeline:
 
         # Reconstruct MNO from checkpoint config
         model_config = checkpoint["config"]["model"]
-        self.noa = NOABackbone(**model_config)
+        self.noa = MNOBackbone(**model_config)
         self.noa.load_state_dict(checkpoint["model_state_dict"])
         self.noa = self.noa.to(self.device).eval()
 

@@ -9,9 +9,9 @@ This limits gradient flow to the last bptt_window steps while still generating
 the full T-step trajectory for supervision.
 
 Example:
-    >>> from spinlock.mno import NOABackbone, TruncatedBPTT
+    >>> from spinlock.mno.backbone import MNOBackbone, TruncatedBPTT
     >>>
-    >>> noa = NOABackbone(...)
+    >>> noa = MNOBackbone(...)
     >>> tbptt = TruncatedBPTT(noa, timesteps=256, bptt_window=32)
     >>>
     >>> # During training:

@@ -1,17 +1,17 @@
-"""Abstract base class for NOA backbones.
+"""Abstract base class for MNO backbones.
 
 Provides the interface for autoregressive neural operator backbones
 that generate trajectories and support feature extraction for alignment losses.
 
 Design Pattern:
-    All NOA backbones inherit from BaseNOABackbone to ensure consistent APIs.
+    All MNO backbones inherit from BaseMNOBackbone to ensure consistent APIs.
     This enables:
     - Swappable architectures (U-AFNO, FNO, etc.)
     - Unified training loops via abstract interface
     - Feature extraction for VQ-VAE alignment
 
 Example:
-    >>> class MyBackbone(BaseNOABackbone):
+    >>> class MyBackbone(BaseMNOBackbone):
     ...     def single_step(self, x): return self.operator(x)
     ...     def get_intermediate_features(self, x, extract_from="bottleneck"):
     ...         return {"bottleneck": self.encoder(x)}
@@ -23,10 +23,10 @@ import torch
 import torch.nn as nn
 
 
-class BaseNOABackbone(nn.Module, ABC):
+class BaseMNOBackbone(nn.Module, ABC):
     """Abstract base for autoregressive neural operator backbones.
 
-    NOA backbones generate trajectories by autoregressively applying
+    MNO backbones generate trajectories by autoregressively applying
     a neural operator: u₀ → u₁ → u₂ → ... → uₜ
 
     Subclasses must implement:
@@ -62,7 +62,7 @@ class BaseNOABackbone(nn.Module, ABC):
         """Extract intermediate features for alignment losses.
 
         Used by VQ-VAE alignment to compute L_latent loss, which aligns
-        NOA's internal representations with VQ-VAE's learned behavioral space.
+        MNO's internal representations with VQ-VAE's learned behavioral space.
 
         Args:
             x: Input state [B, C, H, W]
@@ -87,7 +87,7 @@ class BaseNOABackbone(nn.Module, ABC):
         """Generate autoregressive trajectory from initial condition.
 
         Applies single_step() repeatedly to generate a trajectory.
-        This is the core forward pass of NOA.
+        This is the core forward pass of MNO.
 
         Args:
             u0: Initial condition [B, C, H, W]

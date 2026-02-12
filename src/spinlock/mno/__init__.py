@@ -13,9 +13,9 @@ VQ-led (Creative Observer):
     - Enables "creative" exploration where meaningful deviation is allowed
 
 Core Components:
-    - BaseNOABackbone: Abstract interface for autoregressive neural operators
+    - BaseMNOBackbone: Abstract interface for autoregressive neural operators
     - BaseNOALoss: Abstract interface for training losses with LossOutput format
-    - NOABackbone: U-AFNO implementation with gradient checkpointing
+    - MNOBackbone: U-AFNO implementation with gradient checkpointing
     - MSELedLoss: Physics-first training objective
     - VQLedLoss: Symbolic coherence training objective
 
@@ -23,11 +23,11 @@ All dimensions are resolved dynamically at runtime.
 """
 
 # Abstract base classes
-from .base_backbone import BaseNOABackbone
+from .base_backbone import BaseMNOBackbone
 from .base_loss import BaseNOALoss, LossOutput
 
 # Concrete backbone
-from .backbone import NOABackbone
+from .backbone import MNOBackbone
 
 # Training losses (two paradigms)
 from .losses import MSELedLoss, VQLedLoss
@@ -59,11 +59,11 @@ from .truncated_bptt import TruncatedBPTT
 
 __all__ = [
     # Abstract base classes
-    "BaseNOABackbone",
+    "BaseMNOBackbone",
     "BaseNOALoss",
     "LossOutput",
     # Backbone
-    "NOABackbone",
+    "MNOBackbone",
     # Training losses (two paradigms)
     "MSELedLoss",
     "VQLedLoss",

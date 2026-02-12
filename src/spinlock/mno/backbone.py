@@ -1,6 +1,6 @@
-"""NOA Backbone - U-AFNO wrapper for autoregressive rollout generation.
+"""MNO Backbone - U-AFNO wrapper for autoregressive rollout generation.
 
-This module provides the core NOA backbone for Phase 1:
+This module provides the core MNO backbone for Phase 1:
 - Wraps U-AFNO neural operator
 - Generates autoregressive trajectories
 - Extracts intermediate features for VQ-VAE loss
@@ -30,11 +30,11 @@ from typing import Optional, Dict, Any, List, Literal
 
 from spinlock.operators.u_afno import UAFNOOperator, FiLMUAFNOOperator
 from spinlock.operators.film import FiLMConfig
-from spinlock.mno.base_backbone import BaseNOABackbone
+from spinlock.mno.base_backbone import BaseMNOBackbone
 
 
-class NOABackbone(BaseNOABackbone):
-    """Minimal U-AFNO wrapper for NOA Phase 1 prototype.
+class MNOBackbone(BaseMNOBackbone):
+    """Minimal U-AFNO wrapper for MNO Phase 1 prototype.
 
     Generates autoregressive trajectories from initial conditions.
     Designed for training with grid-level MSE and VQ-VAE perceptual loss.
@@ -51,9 +51,9 @@ class NOABackbone(BaseNOABackbone):
         noise_scale: Noise scale if using stochastic
 
     Example:
-        >>> noa = NOABackbone(in_channels=1, out_channels=1)
+        >>> mno = MNOBackbone(in_channels=1, out_channels=1)
         >>> u0 = torch.randn(8, 1, 64, 64)
-        >>> trajectory = noa(u0, steps=64)
+        >>> trajectory = mno(u0, steps=64)
         >>> trajectory.shape
         torch.Size([8, 65, 1, 64, 64])  # T+1 states
     """
@@ -447,10 +447,10 @@ class NOABackbone(BaseNOABackbone):
                     delta = self.operator(x)
                 return x + self.residual_scale * delta
             else:
-                # u_{t+1} = u_t + scale * NOA(u_t) - Euler-style, better gradient flow
+                # u_{t+1} = u_t + scale * MNO(u_t) - Euler-style, better gradient flow
                 return x + self.residual_scale * self.operator(x)
         else:
-            # u_{t+1} = NOA(u_t) - pure autoregressive
+            # u_{t+1} = MNO(u_t) - pure autoregressive
             if isinstance(self.operator, FiLMUAFNOOperator):
                 return self.operator(x, conditioning=conditioning)
             else:
@@ -483,8 +483,8 @@ class NOABackbone(BaseNOABackbone):
         return self._out_channels
 
 
-def create_noa_backbone(config: Dict[str, Any]) -> NOABackbone:
-    """Create NOA backbone from configuration dictionary.
+def create_mno_backbone(config: Dict[str, Any]) -> MNOBackbone:
+    """Create MNO backbone from configuration dictionary.
 
     Args:
         config: Configuration dictionary with keys:
@@ -500,9 +500,9 @@ def create_noa_backbone(config: Dict[str, Any]) -> NOABackbone:
             - update_mode: "residual" or "autoregressive" (default: "residual")
 
     Returns:
-        Configured NOABackbone instance
+        Configured MNOBackbone instance
     """
-    return NOABackbone(
+    return MNOBackbone(
         in_channels=config.get("in_channels", 1),
         out_channels=config.get("out_channels", 1),
         base_channels=config.get("base_channels", 32),

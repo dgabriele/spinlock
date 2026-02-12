@@ -19,7 +19,7 @@ from torch import Tensor
 import time
 
 from spinlock.perturbations.base import BasePerturbation
-from spinlock.mno.backbone import NOABackbone
+from spinlock.mno.backbone import MNOBackbone
 from spinlock.tokens import VQTokenizer
 from .early_stopping import EarlyStoppingCriterion, EpisodeState
 
@@ -81,7 +81,7 @@ class EpisodeRunner:
 
     def __init__(
         self,
-        mno: NOABackbone,
+        mno: MNOBackbone,
         vqvae: VQTokenizer,
         early_stopping: EarlyStoppingCriterion,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
