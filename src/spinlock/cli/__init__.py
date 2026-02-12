@@ -30,6 +30,7 @@ from .validate_mno_vqvae import ValidateMNOVQVAECommand
 from .train_token_to_rollout_vae import TrainTokenToRolloutVAECommand
 from .visualize_qbm import VisualizeQBMCommand
 from .visualize_diffusion_inpainting import VisualizeDiffusionInpaintingCommand
+from .run_token_synthesis import RunTokenSynthesisCommand
 
 __all__ = [
     "CLICommand",
@@ -55,6 +56,7 @@ __all__ = [
     "TrainTokenToRolloutVAECommand",
     "VisualizeQBMCommand",
     "VisualizeDiffusionInpaintingCommand",
+    "RunTokenSynthesisCommand",
     "main",
 ]
 
@@ -116,6 +118,7 @@ For more help on a specific command:
         DiagnoseMNOCommand(),
         ValidateMNOVQVAECommand(),
         TrainTokenToRolloutVAECommand(),
+        RunTokenSynthesisCommand(),
     ]
 
     for command in commands:
