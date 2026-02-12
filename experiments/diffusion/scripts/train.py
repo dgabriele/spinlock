@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader, random_split
 
 from spinlock.tokens.tokenizer import VQTokenizer
+from spinlock.tokens.schema import TokenSchema
 from spinlock.experimental.common.config.loader import load_experiment_config
 from spinlock.experimental.diffusion.config import DiffusionExperimentConfig
 from spinlock.experimental.diffusion.models import DiscreteD3PM, DiffusionSchedule, DenoisingNetwork
@@ -36,82 +37,32 @@ logger = logging.getLogger(__name__)
 def extract_vocab_sizes_and_info(tokenizer_path: Path) -> tuple[dict, dict]:
     """Extract vocab sizes and category-level info from tokenizer.
 
+    Delegates to TokenSchema.from_tokenizer() for the actual parsing.
+
     Args:
         tokenizer_path: Path to VQTokenizer v2 checkpoint
 
     Returns:
-        Tuple of (vocab_sizes, category_level_info)
+        Tuple of (vocab_sizes, category_level_info) in dict format
     """
     tokenizer = VQTokenizer.from_checkpoint(tokenizer_path)
-
-    vocab_sizes = {}
-    category_level_info = {}
-
-    for quantizer_key, quantizer in tokenizer.model.quantizers.items():
-        vocab_size = quantizer.embedding.weight.shape[0]
-        vocab_sizes[quantizer_key] = vocab_size
-
-        # Parse key: "family_category_Ll" → {family, category, level}
-        parts = quantizer_key.split('_')
-        family = parts[0]  # "temporal" or "initial"
-        level = int(parts[-1][1:])  # "L0" → 0
-        category = '_'.join(parts[1:-1])  # "group_1"
-
-        category_level_info[quantizer_key] = {
-            'family': family,
-            'category': category,
-            'level': level,
-        }
-
-    logger.info(
-        f"Extracted vocab sizes: {len(vocab_sizes)} category-levels, "
-        f"sizes={list(set(vocab_sizes.values()))}"
-    )
-
-    return vocab_sizes, category_level_info
+    schema = TokenSchema.from_tokenizer(tokenizer)
+    return schema.vocab_sizes_dict(), schema.category_level_info_dict()
 
 
 def extract_vocab_sizes_from_pretokenized(tokenized_path: Path) -> tuple[dict, dict]:
     """Extract vocab sizes from pre-tokenized dataset.
 
+    Delegates to TokenSchema.from_pretokenized() for the actual parsing.
+
     Args:
         tokenized_path: Path to pre-tokenized HDF5 file
 
     Returns:
-        Tuple of (vocab_sizes, category_level_info)
+        Tuple of (vocab_sizes, category_level_info) in dict format
     """
-    import h5py
-
-    vocab_sizes = {}
-    category_level_info = {}
-
-    with h5py.File(tokenized_path, 'r') as f:
-        tokens_group = f['tokens']
-
-        for key in tokens_group.keys():
-            # Get vocab size from max token value + 1
-            tokens = tokens_group[key][:]
-            vocab_size = int(tokens.max()) + 1
-            vocab_sizes[key] = vocab_size
-
-            # Parse key: "family_category_Ll" → {family, category, level}
-            parts = key.split('_')
-            family = parts[0]  # "temporal" or "initial"
-            level = int(parts[-1][1:])  # "L0" → 0
-            category = '_'.join(parts[1:-1])  # "group_1"
-
-            category_level_info[key] = {
-                'family': family,
-                'category': category,
-                'level': level,
-            }
-
-    logger.info(
-        f"Extracted vocab sizes from pre-tokenized dataset: {len(vocab_sizes)} category-levels, "
-        f"sizes={list(set(vocab_sizes.values()))}"
-    )
-
-    return vocab_sizes, category_level_info
+    schema = TokenSchema.from_pretokenized(tokenized_path)
+    return schema.vocab_sizes_dict(), schema.category_level_info_dict()
 
 
 def create_datasets(config: DiffusionExperimentConfig, mask_generator: HierarchicalMaskGenerator):

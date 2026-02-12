@@ -1,0 +1,52 @@
+# Token Synthesis Self-Play Configuration
+# ========================================
+# Explore-refine loop for discovering novel token sequences
+# that are physically grounded via QBM simulation.
+
+checkpoints:
+  diffusion_checkpoint: "experiments/diffusion/results/qbm_pretokenized/diffusion_qbm_best.pt"
+  vqvae_checkpoint: "checkpoints/vqvae/50k_baseline/best_model.pt"
+  theta_inverse_path: "checkpoints/theta_inverse.pt"
+  initial_inverse_path: "checkpoints/initial_inverse.pt"
+  qbm_substrate_config: "configs/qbm/substrate.yaml"
+
+generation:
+  batch_size: 8
+  sampling_mode: "unconditional"
+  mask_probability: 0.5  # Only used for partial_mask mode
+
+rollout:
+  num_realizations: 3
+  num_timesteps: 256
+  rollout_batch_size: 4
+
+surprisal:
+  lambda_entropy: 0.2
+  threshold: 0.4
+  verification_samples: 3
+  max_variance: 0.15
+
+priority:
+  alpha: 0.6       # Surprisal weight
+  beta: 0.25       # Novelty weight
+  gamma: 0.15      # Rarity weight
+  queue_capacity: 1000
+  min_queue_for_refinement: 64
+
+scheduler:
+  explore_steps: 5
+  refine_epochs: 3
+  max_cycles: 20
+  adaptive: true
+  queue_threshold_high: 0.8
+  queue_threshold_low: 0.2
+
+refinement:
+  learning_rate: 1.0e-5
+  gradient_clip_norm: 1.0
+  batch_size: 16
+  replay_buffer_size: 5000
+
+output_dir: "experiments/token_synthesis/results/qbm_baseline"
+device: "cuda"
+seed: 42

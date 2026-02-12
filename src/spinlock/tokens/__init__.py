@@ -47,10 +47,15 @@ from .checkpoint import (
 )
 
 from .pretraining import CNNPretrainer
+from .schema import TokenSchema, CategoryLevelInfo
 
 __all__ = [
     # Main interface
     "VQTokenizer",
+
+    # Schema
+    "TokenSchema",
+    "CategoryLevelInfo",
 
     # Configuration
     "TokenizerConfig",
