@@ -65,6 +65,8 @@ class SynthesisVerificationPipeline:
         self._schema: Optional[TokenSchema] = None
         self._feature_resolvers: Dict[str, str] = {}
         self._temporal_extractor = None
+        self._temporal_feature_mask: Optional[np.ndarray] = None  # 247→152 cleaning mask
+        self._initial_extractor = None  # IC feature extractor for initial_manual
 
         # Components (created during initialize)
         self._surprisal_computer = None
@@ -110,15 +112,14 @@ class SynthesisVerificationPipeline:
         # Reconstruct diffusion model from checkpoint config
         config = checkpoint['config']
 
-        # Extract vocab sizes from denoiser state dict
-        # The denoiser stores per-category embedding layers: "embeddings.<key>.weight"
-        denoiser_state = checkpoint['denoiser_state_dict']
+        # Extract vocab sizes from D3PM transition matrices (authoritative source)
+        # transition_matrices.<key> has shape [T, V, V] → vocab_size = V
+        diffusion_state = checkpoint['diffusion_state_dict']
         vocab_sizes = {}
-        for param_key, param in denoiser_state.items():
-            if param_key.startswith('embeddings.') and param_key.endswith('.weight'):
-                # "embeddings.temporal_group_1_L0.weight" → "temporal_group_1_L0"
-                token_key = param_key[len('embeddings.'):-len('.weight')]
-                vocab_sizes[token_key] = param.shape[0]
+        for param_key, param in diffusion_state.items():
+            if param_key.startswith('transition_matrices.'):
+                token_key = param_key[len('transition_matrices.'):]
+                vocab_sizes[token_key] = param.shape[1]  # [T, V, V] → V
 
         # Build category_level_info from discovered keys
         category_level_info = {}
@@ -162,13 +163,23 @@ class SynthesisVerificationPipeline:
         )
 
     def _load_tokenizer(self) -> None:
-        """Load VQTokenizer with inverse models for decode."""
+        """Load VQTokenizer with inverse models for decode.
+
+        If external inverse model paths are provided, they override the
+        built-in inverse heads. Otherwise, the V2 tokenizer's own trained
+        inverse heads (from roundtrip loss) are used.
+        """
         logger.info(f"Loading VQTokenizer from {self.config.checkpoints.vqvae_checkpoint}")
+
+        kwargs = {}
+        if self.config.checkpoints.theta_inverse_path:
+            kwargs['theta_inverse_path'] = self.config.checkpoints.theta_inverse_path
+        if self.config.checkpoints.initial_inverse_path:
+            kwargs['initial_inverse_path'] = self.config.checkpoints.initial_inverse_path
 
         self._tokenizer = VQTokenizer.from_checkpoint(
             self.config.checkpoints.vqvae_checkpoint,
-            theta_inverse_path=self.config.checkpoints.theta_inverse_path,
-            initial_inverse_path=self.config.checkpoints.initial_inverse_path,
+            **kwargs,
         )
 
     def _load_replayer(self) -> None:
@@ -179,7 +190,8 @@ class SynthesisVerificationPipeline:
             f"Loading QBMReplayer from {self.config.checkpoints.qbm_substrate_config}"
         )
         self._replayer = QBMReplayer.from_config(
-            str(self.config.checkpoints.qbm_substrate_config)
+            str(self.config.checkpoints.qbm_substrate_config),
+            device=str(self.device),
         )
 
     def _resolve_token_schema(self) -> None:
@@ -202,9 +214,11 @@ class SynthesisVerificationPipeline:
                     self._feature_resolvers[family] = 'passthrough'
                 case 'initial':
                     self._feature_resolvers[family] = 'initial'
+                    self._initial_extractor = self._load_initial_extractor()
                 case 'temporal':
                     self._feature_resolvers[family] = 'temporal'
                     self._temporal_extractor = self._load_temporal_extractor()
+                    self._load_temporal_feature_mask()
                 case _:
                     logger.warning(
                         f"Unknown family '{family}' — tokens will be "
@@ -214,13 +228,120 @@ class SynthesisVerificationPipeline:
 
         logger.info(f"Feature resolvers: {self._feature_resolvers}")
 
+    def _load_initial_extractor(self):
+        """Load initial condition feature extractor for computing initial_manual.
+
+        The InitialHybridEncoder in the tokenizer requires both:
+        - initial_raw: [B, C, H, W] raw ICs (from inverse decode)
+        - initial_manual: [B, D_manual] hand-crafted IC features
+
+        We extract initial_manual from u0 using the same extractor type that was
+        used during dataset generation (statistical features).
+        """
+        from spinlock.features.initial.ic_feature_extractors import (
+            InitialConditionsFeatureExtractor,
+        )
+
+        extractor = InitialConditionsFeatureExtractor(device=str(self.device))
+        logger.info("Initial condition feature extractor loaded (for initial_manual)")
+        return extractor
+
     def _load_temporal_extractor(self):
-        """Load temporal feature extractor matching dataset generation config."""
+        """Load temporal feature extractor matching the tokenizer's training config.
+
+        The orchestrator must produce the same raw feature count that the tokenizer
+        was trained on. For QBM data (2-channel wavefunctions), this means quantum
+        features must be enabled, matching the dataset generation config.
+
+        The orchestrator's config is validated against the tokenizer's feature_metadata
+        to ensure dimension compatibility.
+        """
+        from spinlock.features.temporal.config import TemporalFeatureConfig
         from spinlock.features.temporal.extractors import TemporalFeatureOrchestrator
 
-        extractor = TemporalFeatureOrchestrator(device=self.device)
-        logger.info("Temporal feature extractor loaded")
+        # Default config enables quantum features (QuantumConfig.enabled=True)
+        config = TemporalFeatureConfig()
+        extractor = TemporalFeatureOrchestrator(device=self.device, config=config)
+
+        # Validate: raw output dimension must match tokenizer's expected input
+        if (
+            hasattr(self._tokenizer, 'feature_metadata')
+            and self._tokenizer.feature_metadata is not None
+            and 'temporal' in self._tokenizer.feature_metadata.families
+        ):
+            expected_raw_dim = self._tokenizer.feature_metadata.families[
+                'temporal'
+            ].original_feature_count
+
+            # Probe actual dimension with dummy data matching QBM (2-channel)
+            actual_dim = extractor.get_actual_per_timestep_dim(num_channels=2)
+
+            if actual_dim != expected_raw_dim:
+                raise ValueError(
+                    f"Temporal extractor dimension mismatch: "
+                    f"extractor produces {actual_dim} features but tokenizer "
+                    f"expects {expected_raw_dim} raw features. "
+                    f"The feature extraction config must match what was used "
+                    f"during tokenizer training."
+                )
+
+            logger.info(
+                f"Temporal feature extractor validated: {actual_dim} raw features "
+                f"→ {self._tokenizer.feature_metadata.families['temporal'].cleaned_feature_count} "
+                f"after cleaning"
+            )
+        else:
+            logger.warning(
+                "Tokenizer has no feature_metadata — cannot validate temporal "
+                "extractor dimensions. Feature cleaning will be skipped."
+            )
+
         return extractor
+
+    def _load_temporal_feature_mask(self) -> None:
+        """Load temporal feature cleaning mask from tokenizer's feature_metadata.
+
+        The tokenizer was trained on cleaned features (e.g. 247→152), so the
+        synthesis pipeline must apply the same cleaning after extraction.
+        This mirrors the pretokenization CLI's _apply_feature_cleaning() logic.
+        """
+        if (
+            hasattr(self._tokenizer, 'feature_metadata')
+            and self._tokenizer.feature_metadata is not None
+            and 'temporal' in self._tokenizer.feature_metadata.families
+        ):
+            temporal_meta = self._tokenizer.feature_metadata.families['temporal']
+            self._temporal_feature_mask = np.array(temporal_meta.kept_feature_indices)
+            logger.info(
+                f"Temporal feature mask loaded: {temporal_meta.original_feature_count} "
+                f"→ {temporal_meta.cleaned_feature_count} features "
+                f"({temporal_meta.original_feature_count - temporal_meta.cleaned_feature_count} removed)"
+            )
+        else:
+            logger.warning(
+                "No temporal feature mask available — raw features will be "
+                "passed directly to tokenizer (may cause dimension mismatch "
+                "if tokenizer was trained with feature cleaning)"
+            )
+
+    def _apply_temporal_feature_cleaning(
+        self, temporal: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply feature cleaning mask to raw temporal features.
+
+        Args:
+            temporal: [B, T, D_raw] raw temporal features from orchestrator
+
+        Returns:
+            [B, T, D_cleaned] cleaned features matching tokenizer input dims
+        """
+        if self._temporal_feature_mask is not None:
+            # Index select along the last dimension: [B, T, D_raw] → [B, T, D_cleaned]
+            mask = torch.tensor(
+                self._temporal_feature_mask, device=temporal.device, dtype=torch.long,
+            )
+            temporal = temporal.index_select(-1, mask)
+        return temporal
 
     def _create_components(self) -> None:
         """Create verification, queue, and scheduler components."""
@@ -307,6 +428,7 @@ class SynthesisVerificationPipeline:
         trajectory: torch.Tensor,
         theta: torch.Tensor,
         u0: torch.Tensor,
+        ics: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Extract features for each active family from a physical rollout.
 
@@ -316,6 +438,9 @@ class SynthesisVerificationPipeline:
             trajectory: [B, M, T, C, H, W] raw rollout from QBM
             theta: [B, param_dim] decoded parameters
             u0: [B, C, H, W] decoded initial conditions
+            ics: [B, M, C, H, W] per-realization initial conditions from QBM
+                 Used to extract initial_manual features matching the dataset
+                 generation pipeline's shape normalization (M*C channels).
 
         Returns:
             Dict matching VQTokenizer.tokenize() kwargs
@@ -328,11 +453,23 @@ class SynthesisVerificationPipeline:
                     features['theta_features'] = theta
                 case 'initial':
                     features['initial_raw'] = u0
+                    # Extract initial_manual features (required by InitialHybridEncoder)
+                    # During dataset generation, ICs [B, M, C, H, W] were shape-normalized
+                    # to [B, M*C, H, W] (M and C flattened), producing features for all
+                    # realization-channel combinations. We replicate that here.
+                    if self._initial_extractor is not None and ics is not None:
+                        B, M, C, H, W = ics.shape
+                        ics_flattened = ics.reshape(B, M * C, H, W)  # [B, M*C, H, W]
+                        with torch.no_grad():
+                            initial_manual = self._initial_extractor(ics_flattened)
+                        features['initial_manual'] = initial_manual
                 case 'temporal':
                     if self._temporal_extractor is not None:
                         temporal = self._temporal_extractor.extract_per_timestep(
                             trajectory
                         )
+                        # Apply feature cleaning (raw 247 → cleaned 152)
+                        temporal = self._apply_temporal_feature_cleaning(temporal)
                         features['temporal_features'] = temporal
                 case 'skip':
                     pass  # Tokens from this family always mismatch
@@ -356,27 +493,29 @@ class SynthesisVerificationPipeline:
         # 3. Run QBM simulation
         # QBMReplayer expects numpy [B, param_dim] in [0,1]
         theta_np = theta.cpu().numpy()
-        trajectory = self._replayer.rollout_batch(
+        trajectory, ics = self._replayer.rollout_batch(
             theta_np,
             num_realizations=self.config.rollout.num_realizations,
             num_timesteps=self.config.rollout.num_timesteps,
-        )  # [B, M, T, C, H, W] torch tensor
+            return_ics=True,
+        )  # trajectory: [B, M, T, C, H, W], ics: [B, M, C, H, W]
 
         # 4. Extract features per active family
-        features = self._extract_features_from_rollout(trajectory, theta, u0)
+        features = self._extract_features_from_rollout(trajectory, theta, u0, ics=ics)
 
         # 5. Retokenize (with multiple samples for variance estimation)
         if self.config.surprisal.verification_samples > 1:
             retokenized_samples = []
             for k in range(self.config.surprisal.verification_samples):
                 # Re-run QBM with different seed for stochastic variation
-                traj_k = self._replayer.rollout_batch(
+                traj_k, ics_k = self._replayer.rollout_batch(
                     theta_np,
                     num_realizations=self.config.rollout.num_realizations,
                     num_timesteps=self.config.rollout.num_timesteps,
                     seed=self.config.seed + k + 1,
+                    return_ics=True,
                 )
-                feats_k = self._extract_features_from_rollout(traj_k, theta, u0)
+                feats_k = self._extract_features_from_rollout(traj_k, theta, u0, ics=ics_k)
                 with torch.no_grad():
                     retok_k = self._tokenizer.tokenize(**feats_k)
                 retokenized_samples.append(retok_k)
@@ -472,15 +611,30 @@ class SynthesisVerificationPipeline:
             return {'refine_loss': 0.0, 'refine_samples': 0}
 
         # Build training batch from retokenized tokens (= physically grounded truth)
+        # Clip token values to D3PM's vocabulary range per category.
+        # Retokenized tokens may exceed D3PM's vocab_size (trained on max+1 from
+        # pretokenized data) when the VQ-VAE assigns novel codebook entries.
+        # These out-of-range tokens represent true novelty discoveries.
+        d3pm_vocab = self._diffusion.vocab_sizes  # Dict[str, int]
         keys = list(items[0].retokenized_tokens.keys())
-        tokens = {
-            k: torch.tensor(
+        tokens = {}
+        num_clipped = 0
+        for k in keys:
+            raw = torch.tensor(
                 [item.retokenized_tokens[k] for item in items],
                 device=self.device,
                 dtype=torch.long,
             )
-            for k in keys
-        }
+            max_valid = d3pm_vocab[k] - 1
+            clip_mask = raw > max_valid
+            num_clipped += clip_mask.sum().item()
+            tokens[k] = raw.clamp(max=max_valid)
+
+        if num_clipped > 0:
+            logger.debug(
+                f"Clipped {num_clipped} out-of-range token values to D3PM vocab bounds"
+            )
+
         # All positions are targets (unconditional training)
         target_mask = {
             k: torch.ones(len(items), device=self.device, dtype=torch.bool)

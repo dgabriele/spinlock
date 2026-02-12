@@ -5,9 +5,10 @@
 
 checkpoints:
   diffusion_checkpoint: "experiments/diffusion/results/qbm_pretokenized/diffusion_qbm_best.pt"
-  vqvae_checkpoint: "checkpoints/vqvae/50k_baseline/best_model.pt"
-  theta_inverse_path: "checkpoints/theta_inverse.pt"
-  initial_inverse_path: "checkpoints/initial_inverse.pt"
+  vqvae_checkpoint: "checkpoints/v2/vqvae/vq_tokenizer_best.pt"
+  # theta_inverse_path and initial_inverse_path omitted:
+  # Uses V2 tokenizer's built-in inverse heads (trained via roundtrip loss)
+  # which produce QBM-native dimensions (9 Sobol params, 2-channel ICs)
   qbm_substrate_config: "configs/qbm/substrate.yaml"
 
 generation:

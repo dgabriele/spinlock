@@ -403,7 +403,8 @@ class QBMReplayer:
         # Compatibility with CNOReplayer interface
         timesteps: Optional[int] = None,
         return_all_steps: bool = True,
-    ) -> torch.Tensor:
+        return_ics: bool = False,
+    ) -> "torch.Tensor | tuple[torch.Tensor, torch.Tensor]":
         """Batch rollout for efficiency.
 
         Args:
@@ -413,9 +414,11 @@ class QBMReplayer:
             seed: Base random seed (incremented for each batch element)
             timesteps: Alias for num_timesteps (for CNOReplayer compatibility)
             return_all_steps: Always True for QBM (for CNOReplayer compatibility)
+            return_ics: If True, also return initial conditions [B, M, 2, H, W]
 
         Returns:
-            Batch of trajectories [B, M, T, 2, H, W]
+            trajectories: [B, M, T, 2, H, W]
+            ics (only if return_ics=True): [B, M, 2, H, W]
         """
         # Handle parameter alias for CNOReplayer compatibility
         if timesteps is not None:
@@ -507,6 +510,13 @@ class QBMReplayer:
 
         # Reshape to [B, M, T, 2, H, W]
         trajectories = trajectory_flat.view(batch_size, num_realizations, num_timesteps, 2, self.grid_size, self.grid_size)
+
+        if return_ics:
+            # Reshape ICs to [B, M, 2, H, W]
+            ics = psi_all.to(torch.float32).view(
+                batch_size, num_realizations, 2, self.grid_size, self.grid_size,
+            )
+            return trajectories, ics
 
         return trajectories
 

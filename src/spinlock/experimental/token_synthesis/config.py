@@ -18,21 +18,33 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class CheckpointPaths(BaseModel):
-    """Paths to all model checkpoints required by the pipeline."""
+    """Paths to all model checkpoints required by the pipeline.
+
+    theta_inverse_path and initial_inverse_path are optional: when omitted,
+    the VQTokenizer uses its built-in inverse heads (trained via roundtrip
+    loss during VQ-VAE training). External inverse models should only be
+    provided when they were specifically trained for this tokenizer.
+    """
     diffusion_checkpoint: Path
     vqvae_checkpoint: Path
-    theta_inverse_path: Path
-    initial_inverse_path: Path
+    theta_inverse_path: Optional[Path] = None
+    initial_inverse_path: Optional[Path] = None
     qbm_substrate_config: Path
 
     @field_validator(
         "diffusion_checkpoint", "vqvae_checkpoint",
-        "theta_inverse_path", "initial_inverse_path",
         "qbm_substrate_config",
     )
     @classmethod
     def validate_path_exists(cls, v: Path) -> Path:
         if not v.exists():
+            raise ValueError(f"Path not found: {v}")
+        return v
+
+    @field_validator("theta_inverse_path", "initial_inverse_path")
+    @classmethod
+    def validate_optional_path_exists(cls, v: Optional[Path]) -> Optional[Path]:
+        if v is not None and not v.exists():
             raise ValueError(f"Path not found: {v}")
         return v
 
