@@ -27,9 +27,11 @@ References:
 from spinlock.qbm.simulator import QuantumBrownianSimulator
 from spinlock.qbm.initial_conditions import QuantumICGenerator
 from spinlock.qbm.potentials import PotentialGenerator
+from spinlock.qbm.replayer import QBMReplayer
 
 __all__ = [
     "QuantumBrownianSimulator",
     "QuantumICGenerator",
     "PotentialGenerator",
+    "QBMReplayer",
 ]

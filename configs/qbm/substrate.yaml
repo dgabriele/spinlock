@@ -1,0 +1,75 @@
+# QBM Substrate Configuration - Parameter Space Definition
+#
+# Used by QBMReplayer to reconstruct QBM simulations from stored parameters.
+# Maps Sobol [0,1]^9 vectors → physical parameters → QBM trajectories.
+
+parameter_space:
+  operator:
+    gamma:              # Bath coupling strength (decoherence rate)
+      type: "continuous"
+      distribution: "log_uniform"
+      min: 0.001
+      max: 0.1
+
+    kT:                 # Temperature (thermal energy scale)
+      type: "continuous"
+      distribution: "log_uniform"
+      min: 0.1
+      max: 10.0
+
+    mass:               # Particle mass
+      type: "continuous"
+      distribution: "uniform"
+      min: 0.5
+      max: 2.0
+
+    potential_type:     # Potential landscape type
+      type: "discrete"
+      values: ["harmonic", "double_well", "quartic", "random"]
+      probabilities: [0.25, 0.25, 0.25, 0.25]
+
+    potential_strength: # Potential energy scale
+      type: "continuous"
+      distribution: "log_uniform"
+      min: 0.1
+      max: 10.0
+
+    potential_width:    # Potential characteristic length
+      type: "continuous"
+      distribution: "uniform"
+      min: 0.1
+      max: 2.0
+
+    # Placeholder parameters (for future extensions)
+    param_7:
+      type: "continuous"
+      distribution: "uniform"
+      min: 0.0
+      max: 1.0
+
+    param_8:
+      type: "continuous"
+      distribution: "uniform"
+      min: 0.0
+      max: 1.0
+
+    param_9:
+      type: "continuous"
+      distribution: "uniform"
+      min: 0.0
+      max: 1.0
+
+simulation:
+  grid_size: 64
+  domain_size: 10.0
+  hbar: 1.0
+  dt: 0.01
+  num_timesteps: 256
+  num_realizations: 3
+
+# IC distribution (matches dataset generation)
+ic_distribution:
+  quantum_gaussian_wavepacket: 0.40
+  quantum_coherent_state: 0.30
+  quantum_superposition_2: 0.15
+  quantum_superposition_3: 0.15

@@ -1,0 +1,99 @@
+# MNO Training Configuration - QBM Dataset
+#
+# Framework-compliant: ALL data-dependent dimensions auto-detected at runtime.
+# Only algorithmic choices specified explicitly.
+
+model:
+  # ============================================================================
+  # DATA-DEPENDENT DIMENSIONS (AUTO-DETECTED - DO NOT SET!)
+  # ============================================================================
+  # spatial_dim: auto-detected from inputs/fields shape
+  # in_channels: auto-detected from dataset metadata (QBM: 2 channels Re/Im)
+  # out_channels: auto-detected from dataset metadata
+  # param_dim: auto-detected from parameters/params shape (QBM: 9 params)
+
+  # ============================================================================
+  # ALGORITHMIC CHOICES (USER-SPECIFIED)
+  # ============================================================================
+  base_channels: 40              # 227M parameters
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  dropout: 0.1
+
+  # Parameter conditioning
+  param_conditioning: true
+  param_embed_dim: 128
+  conditioning_mode: "film"
+
+  # FiLM configuration
+  film:
+    enabled: true
+    embed_dim: 128
+    hidden_dim: 256
+    init_gamma: 1.0
+    init_beta: 0.0
+    post_norm: true
+    modulate_encoder: true
+    modulate_decoder: true
+
+  # Update mode
+  update_mode: "residual"
+
+  # Gradient checkpointing (memory optimization)
+  use_checkpointing: true
+  checkpoint_every: 16
+
+training:
+  n_samples: 50000
+  sampling_strategy: "sequential"
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  epochs: 3
+  learning_rate: 1.2e-4
+  warmup_steps: 4000
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  timesteps: 256                 # Validated against dataset max_timesteps
+  bptt_window: 32
+
+  use_torch_compile: false
+  replayer_cache_size: 16
+  early_stopping_patience: 10
+  film_lr_multiplier: 5.0
+
+loss:
+  mode: "mse_led_param_sensitive"
+  lambda_traj: 1.0
+  lambda_ic: 0.3
+  lambda_param_recon: 0.5
+  lambda_contrastive: 0.3
+  lambda_param_sensitivity: 0.2
+
+  contrastive:
+    temperature: 0.1
+    negative_samples: 4
+
+  param_recon:
+    architecture: "mlp"
+    hidden_dim: 256
+    num_layers: 3
+
+  sensitivity:
+    epsilon: 0.01
+    target_ratio: 0.1
+
+data:
+  dataset_path: "datasets/qbm_50k.h5"
+  config: "configs/qbm/substrate.yaml"  # QBM replayer config
+  val_split: 0.2
+  num_workers: 8
+
+checkpointing:
+  save_dir: "checkpoints/mno/qbm_baseline"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42
