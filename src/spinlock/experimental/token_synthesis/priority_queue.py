@@ -313,6 +313,34 @@ class SurprisalPriorityQueue:
 
         return items
 
+    def sample_batch(self, batch_size: int) -> List[PriorityItem]:
+        """Return top-priority items WITHOUT removing them from the queue.
+
+        Used by frontier exploration: queue items seed new exploration,
+        they shouldn't be consumed (they're still valid for refinement).
+
+        Args:
+            batch_size: Maximum number of items to return
+
+        Returns:
+            List of PriorityItems with restored (non-negated) priorities,
+            ordered by priority (highest first)
+        """
+        top = heapq.nsmallest(min(batch_size, len(self._heap)), self._heap)
+        return [
+            PriorityItem(
+                priority=-item.priority,
+                index=item.index,
+                surprisal=item.surprisal,
+                generated_tokens=item.generated_tokens,
+                retokenized_tokens=item.retokenized_tokens,
+                theta=item.theta,
+                features=item.features,
+                raw_features=item.raw_features,
+            )
+            for item in top
+        ]
+
     def get_all_items(self) -> List[PriorityItem]:
         """Return all items in the queue (without removing them).
 

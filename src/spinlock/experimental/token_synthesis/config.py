@@ -169,6 +169,28 @@ class ResamplingConfig(BaseModel):
                     "None = no cap (adaptive only). Useful as a safety valve.")
 
 
+class FrontierConfig(BaseModel):
+    """Frontier-conditioned exploration: re-explore categories of high-surprisal queue items.
+
+    Masks selected categories of queue items and uses D3PM inpainting to
+    re-generate them conditioned on the grounded context. The ratio of
+    frontier vs unconditional explore steps increases linearly across cycles.
+    """
+    enabled: bool = Field(default=False)
+    ratio_start: float = Field(default=0.0, ge=0.0, le=1.0,
+        description="Fraction of explore steps that are frontier-conditioned at cycle 0")
+    ratio_end: float = Field(default=0.7, ge=0.0, le=1.0,
+        description="Fraction of explore steps that are frontier-conditioned at final cycle")
+    min_queue_for_frontier: int = Field(default=16, ge=1,
+        description="Need this many queue items before frontier exploration activates")
+    use_mismatch_mask: bool = Field(default=True,
+        description="Mask categories where queue item's generated != retokenized")
+    extra_categories_to_mask: int = Field(default=2, ge=0,
+        description="Additional random categories to mask beyond mismatches")
+    max_categories_to_mask: int = Field(default=5, ge=1,
+        description="Hard cap on total masked categories")
+
+
 class AdaptConfig(BaseModel):
     """VQTokenizer online refinement configuration.
 
@@ -223,6 +245,7 @@ class TokenSynthesisConfig(BaseModel):
     adapt: AdaptConfig = AdaptConfig()
     counterfactual: Optional[CounterfactualConfig] = None
     resampling: Optional[ResamplingConfig] = None
+    frontier: Optional[FrontierConfig] = None
     output_dir: Path = Path("experiments/token_synthesis/results")
     device: str = "cuda"
     seed: int = 42

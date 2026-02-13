@@ -10,6 +10,7 @@ Single-GPU constraint: models are swapped between CPU and GPU when switching mod
 import gc
 import json
 import logging
+import random
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -90,6 +91,9 @@ class SynthesisVerificationPipeline:
         self._original_features_cache: Optional[Dict[str, torch.Tensor]] = None
         # ADAPT cycle counter for anchor cache refresh
         self._adapt_cycle_count: int = 0
+
+        # Explore step counter (for deterministic rollout seeding)
+        self._global_explore_step: int = 0
 
         # Metrics
         self._metrics: Dict[str, List] = defaultdict(list)
@@ -1031,6 +1035,35 @@ class SynthesisVerificationPipeline:
 
         return features
 
+    def _inpaint_tokens(
+        self,
+        observed_dict: Dict[str, torch.BoolTensor],
+        x_0_dict: Dict[str, torch.Tensor],
+        start_step: Optional[int] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """D3PM inpainting: re-generate masked positions conditioned on observed context.
+
+        Shared by _correct_tokens() and _frontier_generate_tokens().
+
+        Args:
+            observed_dict: {key: [B] bool} — True = keep fixed, False = re-generate
+            x_0_dict: {key: [B] int} — clean token values for RePaint conditioning
+            start_step: Denoising starts from this step (None = full T)
+
+        Returns:
+            Dict mapping key → inpainted token indices [B]
+        """
+        batch_size = next(iter(x_0_dict.values())).shape[0]
+        with torch.no_grad():
+            return self._diffusion.sample(
+                batch_size=batch_size,
+                observed_dict=observed_dict,
+                x_0_dict=x_0_dict,
+                denoising_network=self._denoiser,
+                device=str(self.device),
+                start_step=start_step,
+            )
+
     def _correct_tokens(
         self,
         generated: Dict[str, torch.Tensor],
@@ -1084,15 +1117,7 @@ class SynthesisVerificationPipeline:
             f"({mismatch_rate:.1%}), start_step={start_step}/{T}"
         )
 
-        # RePaint inpainting: re-generate mismatched keys from matching context
-        corrected = self._diffusion.sample(
-            batch_size=batch_size,
-            observed_dict=observed_dict,
-            x_0_dict=x_0_dict,
-            denoising_network=self._denoiser,
-            device=str(self.device),
-            start_step=start_step,
-        )
+        corrected = self._inpaint_tokens(observed_dict, x_0_dict, start_step=start_step)
         return corrected, start_step
 
     @staticmethod
@@ -1120,58 +1145,46 @@ class SynthesisVerificationPipeline:
             result[key] = torch.where(mask.expand_as(a), b, a)
         return result
 
-    def _explore_step(self) -> Dict[str, float]:
-        """One exploration batch: generate → decode → rollout → retokenize → verify → queue.
+    def _process_generated_tokens(
+        self, generated_tokens: Dict[str, torch.Tensor],
+    ) -> Dict[str, float]:
+        """Common pipeline tail: decode → QBM → retokenize → correct → score → queue.
 
-        When resampling is enabled, a correction loop is inserted after the
-        initial QBM roundtrip:
-        1. Generate tokens from noise (dreamed)
-        2. Decode → QBM → retokenize (preliminary roundtrip, identifies mismatches)
-        3. _correct_tokens(dreamed, retokenized) → corrected (RePaint inpainting)
-        4. Decode corrected → QBM → retokenize (main roundtrip, better grounding)
-        5. Score, queue, etc. using corrected + main retokenized
+        Shared by _explore_step() (unconditional) and _frontier_explore_step()
+        (frontier-conditioned). Handles resampling, surprisal computation,
+        ADAPT experience collection, and queue insertion.
 
-        When counterfactual surprisal is active:
-        - 1 QBM rollout (physical grounding + experience collection)
-        - Surprisal scored by denoiser's masked prediction cross-entropy
-        - Jaccard computed for monitoring only (not scoring)
-        - No multi-QBM variance estimation (scoring is denoiser-only)
-
-        When counterfactual is inactive (legacy path):
-        - K QBM rollouts for variance estimation
-        - Jaccard-based surprisal scoring
+        Args:
+            generated_tokens: Dict mapping key → token indices [B]
 
         Returns:
             Dict of metrics for this step
         """
-        batch_size = self.config.generation.batch_size
+        batch_size = next(iter(generated_tokens.values())).shape[0]
 
-        # 1. Generate novel tokens from noise
-        generated_tokens = self._generate_tokens(batch_size)
-
-        # 2. Decode tokens to (theta, u0)
+        # 1. Decode tokens to (theta, u0)
         theta, u0 = self._tokenizer.decode(generated_tokens)
 
-        # 3. Run QBM simulation (1 rollout for physical grounding)
-        # QBMReplayer expects numpy [B, param_dim] in [0,1]
+        # 2. Run QBM simulation (1 rollout for physical grounding)
+        # Seed rollout for deterministic ICs: same theta → same dynamics → stable retokenization.
+        rollout_seed = self.config.seed + self._global_explore_step * 1000
         theta_np = theta.cpu().numpy()
         trajectory, ics = self._replayer.rollout_batch(
             theta_np,
             num_realizations=self.config.rollout.num_realizations,
             num_timesteps=self.config.rollout.num_timesteps,
+            seed=rollout_seed,
             return_ics=True,
         )  # trajectory: [B, M, T, C, H, W], ics: [B, M, C, H, W]
 
-        # 4. Extract features per active family
+        # 3. Extract features per active family
         features = self._extract_features_from_rollout(trajectory, theta, u0, ics=ics)
 
-        # 5. Retokenize (single pass — always needed for queue storage)
+        # 4. Retokenize (single pass — always needed for queue storage)
         with torch.no_grad():
             retokenized = self._tokenizer.tokenize(**features)
 
-        # 5b. Physically-guided resampling with per-sample keep-best gate.
-        # Correct mismatched tokens via RePaint inpainting, re-run QBM,
-        # then keep the corrected version only for samples where Jaccard improved.
+        # 4b. Physically-guided resampling with per-sample keep-best gate.
         correction_metrics = {}
         if self.config.resampling is not None:
             # Pre-correction Jaccard per sample [B]
@@ -1189,12 +1202,14 @@ class SynthesisVerificationPipeline:
             corrected_tokens, start_step = self._correct_tokens(generated_tokens, retokenized)
 
             # Re-decode corrected tokens → second QBM roundtrip
+            # Same seed as initial rollout → same ICs → fair Jaccard comparison
             theta_c, u0_c = self._tokenizer.decode(corrected_tokens)
             theta_c_np = theta_c.cpu().numpy()
             trajectory_c, ics_c = self._replayer.rollout_batch(
                 theta_c_np,
                 num_realizations=self.config.rollout.num_realizations,
                 num_timesteps=self.config.rollout.num_timesteps,
+                seed=rollout_seed,
                 return_ics=True,
             )
             features_post = self._extract_features_from_rollout(
@@ -1242,11 +1257,8 @@ class SynthesisVerificationPipeline:
                 f"T_corr={start_step}/{T}"
             )
 
-        # 6. Compute surprisal (counterfactual or legacy Jaccard-based)
+        # 5. Compute surprisal (counterfactual or legacy Jaccard-based)
         if self._counterfactual is not None:
-            # Counterfactual CE on retokenized (physically grounded) tokens.
-            # Measures denoiser's blind spots about real physical co-occurrences,
-            # not artifacts of imperfect sampling (dreamed tokens ~60% Jaccard).
             surprisal = self._counterfactual.compute(retokenized)
             variance = torch.zeros(batch_size)
         elif self.config.surprisal.verification_samples > 1:
@@ -1269,16 +1281,15 @@ class SynthesisVerificationPipeline:
                 generated_tokens, retokenized_samples,
             )
         else:
-            # Legacy: single-sample Jaccard surprisal
             surprisal = self._surprisal_computer.compute_surprisal(
                 generated_tokens, retokenized,
             )
             variance = torch.zeros_like(surprisal)
 
-        # 7. Compute Jaccard for monitoring (always, regardless of scoring method)
+        # 6. Compute Jaccard for monitoring (always, regardless of scoring method)
         jaccard = self._surprisal_computer.compute_jaccard(generated_tokens, retokenized)
 
-        # 7b. Accumulate raw features for ADAPT phase
+        # 6b. Accumulate raw features for ADAPT phase
         if self.config.adapt.enabled:
             for i in range(batch_size):
                 if len(self._experience_buffer) < self.config.adapt.max_experiences:
@@ -1287,7 +1298,7 @@ class SynthesisVerificationPipeline:
                     }
                     self._experience_buffer.append(item_features)
 
-        # 8. Queue items (with raw_features for ADAPT retokenization)
+        # 7. Queue items (with raw_features for ADAPT retokenization)
         raw_features_list = None
         if self.config.adapt.enabled:
             raw_features_list = [
@@ -1318,7 +1329,118 @@ class SynthesisVerificationPipeline:
             f"queue={self._queue.size}/{self.config.priority.queue_capacity}"
         )
 
+        self._global_explore_step += 1
         return metrics
+
+    def _explore_step(self) -> Dict[str, float]:
+        """Unconditional exploration: generate tokens from noise, then process.
+
+        Returns:
+            Dict of metrics for this step
+        """
+        batch_size = self.config.generation.batch_size
+        generated_tokens = self._generate_tokens(batch_size)
+        return self._process_generated_tokens(generated_tokens)
+
+    def _frontier_generate_tokens(
+        self, batch_size: int,
+    ) -> Dict[str, torch.Tensor]:
+        """Generate tokens via frontier-conditioned inpainting.
+
+        Takes high-surprisal items from the priority queue, masks a subset
+        of their categories, and uses D3PM inpainting to re-generate those
+        categories conditioned on the physically-grounded context.
+
+        Args:
+            batch_size: Number of token sequences to generate
+
+        Returns:
+            Dict mapping key → generated token indices [B]
+        """
+        cfg = self.config.frontier
+
+        # 1. Sample seeds from queue (non-destructive)
+        seeds = self._queue.sample_batch(batch_size)
+        if not seeds:
+            # Fallback to unconditional if queue is empty
+            return self._generate_tokens(batch_size)
+
+        # Pad with repeated seeds if queue has fewer items than batch_size
+        while len(seeds) < batch_size:
+            seeds.append(seeds[random.randint(0, len(seeds) - 1)])
+
+        # 2. Batch retokenized tokens into Dict[str, Tensor[B]]
+        all_keys = sorted(seeds[0].retokenized_tokens.keys())
+        x_0_dict = {}
+        for key in all_keys:
+            x_0_dict[key] = torch.tensor(
+                [s.retokenized_tokens[key] for s in seeds],
+                dtype=torch.long, device=self.device,
+            )
+
+        # 3. Build category-level masks
+        # Discover unique categories from schema
+        categories = self._schema.unique_categories()  # List[(family, category)]
+        cat_to_keys = {
+            (fam, cat): self._schema.keys_for_category(fam, cat)
+            for fam, cat in categories
+        }
+
+        # Per-sample mask building
+        observed_dict = {key: torch.ones(batch_size, dtype=torch.bool, device=self.device)
+                         for key in all_keys}
+
+        for i, seed in enumerate(seeds):
+            cats_to_mask = set()
+
+            # 3a. Mismatch-based masking: mask categories where generated != retokenized
+            if cfg.use_mismatch_mask:
+                for fam, cat in categories:
+                    cat_keys = cat_to_keys[(fam, cat)]
+                    for key in cat_keys:
+                        gen_val = seed.generated_tokens.get(key)
+                        retok_val = seed.retokenized_tokens.get(key)
+                        if gen_val is not None and retok_val is not None and gen_val != retok_val:
+                            cats_to_mask.add((fam, cat))
+                            break  # One mismatch in category is enough
+
+            # 3b. Add random extra categories
+            remaining = [c for c in categories if c not in cats_to_mask]
+            n_extra = min(cfg.extra_categories_to_mask, len(remaining))
+            if n_extra > 0:
+                cats_to_mask.update(random.sample(remaining, n_extra))
+
+            # 3c. Cap total masked categories
+            if len(cats_to_mask) > cfg.max_categories_to_mask:
+                cats_to_mask = set(random.sample(sorted(cats_to_mask), cfg.max_categories_to_mask))
+
+            # Apply mask: set observed=False for all keys in masked categories
+            for fam, cat in cats_to_mask:
+                for key in cat_to_keys[(fam, cat)]:
+                    if key in observed_dict:
+                        observed_dict[key][i] = False
+
+        # 4. Inpaint: re-generate masked positions from full T
+        generated = self._inpaint_tokens(observed_dict, x_0_dict, start_step=None)
+
+        n_masked_keys = sum(
+            (~v).any().item() for v in observed_dict.values()
+        )
+        logger.debug(
+            f"  Frontier: {n_masked_keys}/{len(all_keys)} keys have masked positions"
+        )
+
+        return generated
+
+    def _frontier_explore_step(self) -> Dict[str, float]:
+        """Frontier-conditioned exploration: inpaint queue seeds, then process.
+
+        Returns:
+            Dict of metrics for this step
+        """
+        batch_size = self.config.generation.batch_size
+        generated_tokens = self._frontier_generate_tokens(batch_size)
+        return self._process_generated_tokens(generated_tokens)
 
     # ─── Refinement ───────────────────────────────────────────────
 
@@ -1602,6 +1724,28 @@ class SynthesisVerificationPipeline:
 
     # ─── Main Loop ────────────────────────────────────────────────
 
+    # ─── Frontier Scheduling ────────────────────────────────────
+
+    def _frontier_steps_this_cycle(self, cycle: int) -> int:
+        """Linearly interpolate frontier ratio across cycles.
+
+        Returns the number of explore steps that should be frontier-conditioned
+        for the given cycle. At cycle 0 this is ratio_start * explore_steps;
+        at the final cycle it's ratio_end * explore_steps.
+        """
+        cfg = self.config.frontier
+        if cfg is None or not cfg.enabled:
+            return 0
+        progress = cycle / max(self.config.scheduler.max_cycles - 1, 1)
+        ratio = cfg.ratio_start + (cfg.ratio_end - cfg.ratio_start) * progress
+        return round(ratio * self.config.scheduler.explore_steps)
+
+    def _can_do_frontier(self) -> bool:
+        """Check if frontier exploration is possible right now."""
+        cfg = self.config.frontier
+        return (cfg is not None and cfg.enabled
+                and self._queue.size >= cfg.min_queue_for_frontier)
+
     def run(self) -> Dict[str, List]:
         """Execute the full explore-refine self-play loop.
 
@@ -1641,8 +1785,17 @@ class SynthesisVerificationPipeline:
             match mode:
                 case Mode.EXPLORE:
                     step = 0
+                    n_explore = self.config.scheduler.explore_steps
+                    n_frontier = self._frontier_steps_this_cycle(cycle)
+                    # Unconditional steps first, then frontier steps.
+                    # Unconditional builds queue diversity; frontier refines it.
                     while self._scheduler.get_explore_steps_remaining() > 0:
-                        metrics = self._explore_step()
+                        if step >= (n_explore - n_frontier) and self._can_do_frontier():
+                            metrics = self._frontier_explore_step()
+                            metrics['explore_mode'] = 'frontier'
+                        else:
+                            metrics = self._explore_step()
+                            metrics['explore_mode'] = 'unconditional'
                         self._log_metrics(cycle, mode, step, metrics)
                         self._cycle_jaccards[cycle].append(metrics['avg_jaccard'])
                         self._scheduler.step()

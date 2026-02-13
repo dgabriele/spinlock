@@ -410,11 +410,14 @@ Examples:
 
             # Create tokens group
             tokens_group = f.create_group('tokens')
+            n = features['num_samples']
+            chunk_size = min(n, 4096)
             for key in category_levels:
                 tokens_group.create_dataset(
                     key,
-                    shape=(features['num_samples'],),
+                    shape=(n,),
                     dtype='int32',
+                    chunks=(chunk_size,),
                     compression='gzip',
                     compression_opts=4,
                 )

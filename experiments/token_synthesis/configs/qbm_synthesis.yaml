@@ -4,8 +4,8 @@
 # that are physically grounded via QBM simulation.
 
 checkpoints:
-  diffusion_checkpoint: "experiments/diffusion/results/qbm_pretokenized/diffusion_qbm_best.pt"
-  vqvae_checkpoint: "checkpoints/v2/vqvae/vq_tokenizer_best.pt"
+  diffusion_checkpoint: "experiments/diffusion/results/improved_safe_5ep/diffusion_improved_best.pt"
+  vqvae_checkpoint: "checkpoints/qbm_tokenizer_50k/vq_tokenizer_wider_inverse.pt"
   # theta_inverse_path and initial_inverse_path omitted:
   # Uses V2 tokenizer's built-in inverse heads (trained via roundtrip loss)
   # which produce QBM-native dimensions (9 Sobol params, 2-channel ICs)
@@ -67,8 +67,21 @@ counterfactual:
 # keys conditioned on the matching (physically-grounded) context.
 # ~87% slower per explore step, but improves Jaccard beyond 0.88 plateau.
 resampling:
-  noise_scale: 1.0            # T_correction = T × mismatch_rate × noise_scale (adaptive)
-  max_correction_steps: null  # Optional hard cap on correction steps
+  noise_scale: 2.5            # Was 1.0 — 2.5× gives T_corr≥8 at 7% mismatch (enough denoiser freedom)
+  max_correction_steps: 10    # Was null — floor prevents T_corr<3 from corrupting without reconstructing
+
+# Frontier-conditioned exploration: take high-surprisal queue items,
+# mask a subset of categories, and use D3PM inpainting to re-generate
+# those categories. Focuses exploration on the boundary between what the
+# denoiser knows and what the physics simulator reveals.
+frontier:
+  enabled: true               # Frontier-conditioned exploration active
+  ratio_start: 0.0            # Cycle 0: all unconditional
+  ratio_end: 0.6              # Final cycle: 60% frontier
+  min_queue_for_frontier: 32  # Need 32 queue items before frontier kicks in
+  use_mismatch_mask: true     # Mask categories where generated != retokenized
+  extra_categories_to_mask: 2 # Add 2 random categories beyond mismatches
+  max_categories_to_mask: 5   # Hard cap on total masked categories
 
 adapt:
   enabled: false             # Disabled — codebook drift destabilizes denoiser (see cycle 4→5 regression)
@@ -83,6 +96,6 @@ adapt:
   max_experiences: 2000      # Max experiences to accumulate
   min_experiences: 16        # Min to trigger ADAPT (2 explore steps × 8 batch)
 
-output_dir: "experiments/token_synthesis/results/qbm_adapt_freq5_no_replay_retok"
+output_dir: "experiments/token_synthesis/results/qbm_v2_seeded_wider_inverse"
 device: "cuda"
 seed: 42
