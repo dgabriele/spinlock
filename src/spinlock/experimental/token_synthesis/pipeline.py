@@ -157,7 +157,13 @@ class SynthesisVerificationPipeline:
         )
 
         # Create models
-        self._diffusion = DiscreteD3PM(vocab_sizes, schedule, category_level_info)
+        transition_type = getattr(diffusion_config, 'transition_type', 'uniform')
+        beta_scaling = getattr(diffusion_config, 'beta_scaling', 'uniform')
+        self._diffusion = DiscreteD3PM(
+            vocab_sizes, schedule, category_level_info,
+            transition_type=transition_type,
+            beta_scaling=beta_scaling,
+        )
         self._diffusion.load_state_dict(checkpoint['diffusion_state_dict'])
 
         model_config = config.model if hasattr(config, 'model') else config
@@ -170,6 +176,8 @@ class SynthesisVerificationPipeline:
             dropout=getattr(model_config, 'dropout', 0.1),
             use_hierarchical_guidance=getattr(model_config, 'use_hierarchical_guidance', True),
             hierarchical_guidance_weight=getattr(model_config, 'hierarchical_guidance_weight', 0.1),
+            guidance_mode=getattr(model_config, 'hierarchical_guidance_mode', 'global'),
+            transition_type=transition_type,
         )
         self._denoiser.load_state_dict(checkpoint['denoiser_state_dict'])
 

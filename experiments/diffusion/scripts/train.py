@@ -182,7 +182,13 @@ def main(args):
         beta_end=config.diffusion.beta_end,
         schedule_type=config.diffusion.schedule_type,
     )
-    diffusion = DiscreteD3PM(vocab_sizes, diffusion_schedule, category_level_info)
+    diffusion = DiscreteD3PM(
+        vocab_sizes,
+        diffusion_schedule,
+        category_level_info,
+        transition_type=config.diffusion.transition_type,
+        beta_scaling=config.diffusion.beta_scaling,
+    )
 
     # Create denoising network
     logger.info("Creating denoising network")
@@ -195,6 +201,8 @@ def main(args):
         dropout=config.model.dropout,
         use_hierarchical_guidance=config.model.use_hierarchical_guidance,
         hierarchical_guidance_weight=config.model.hierarchical_guidance_weight,
+        guidance_mode=config.model.hierarchical_guidance_mode,
+        transition_type=config.diffusion.transition_type,
     )
 
     # Log model size

@@ -75,6 +75,8 @@ class DiffusionConfig(BaseModel):
     beta_start: float = Field(default=0.0001, gt=0.0)
     beta_end: float = Field(default=0.02, gt=0.0)
     schedule_type: str = Field(default="cosine", pattern="^(linear|cosine|sqrt)$")
+    transition_type: str = Field(default="uniform", pattern="^(uniform|absorbing)$")
+    beta_scaling: str = Field(default="uniform", pattern="^(uniform|vocab_aware)$")
 
     @field_validator("beta_end")
     @classmethod
@@ -93,6 +95,9 @@ class ModelConfig(BaseModel):
     dropout: float = Field(default=0.1, ge=0.0, le=0.5)
     use_hierarchical_guidance: bool = True
     hierarchical_guidance_weight: float = Field(default=0.1, ge=0.0)
+    hierarchical_guidance_mode: str = Field(
+        default="global", pattern="^(global|per_category)$"
+    )
 
 
 class LRSchedulerConfig(BaseModel):
@@ -110,6 +115,8 @@ class TrainingConfig(BaseModel):
     learning_rate: float = Field(default=1e-4, gt=0.0)
     weight_decay: float = Field(default=1e-5, ge=0.0)
     gradient_clip_norm: float = Field(default=1.0, gt=0.0)
+    use_snr_weighting: bool = False
+    use_vocab_size_weighting: bool = False
 
     lr_scheduler: LRSchedulerConfig = Field(default_factory=LRSchedulerConfig)
 

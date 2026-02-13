@@ -1,0 +1,65 @@
+# D3PM with Safe Architecture Improvements
+# Enables: batched-t (automatic), SNR weighting, vocab-size weighting,
+# per-category guidance, eval-mode attention unmasking (automatic).
+# Short 5-epoch validation run on pretokenized 50K data.
+
+dataset:
+  use_pretokenized: true
+  tokenized_path: "datasets/50k_tokenized_v2_cleaned.h5"
+  tokenizer_checkpoint: "checkpoints/vqvae/vq_tokenizer_best.pt"
+
+masking:
+  strategy: "random"
+  mask_probability: 0.5
+  seed: 42
+
+diffusion:
+  num_timesteps: 50
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule_type: "cosine"
+  # Safe: no retraining needed for these
+  transition_type: "uniform"
+  beta_scaling: "uniform"
+
+model:
+  hidden_dim: 256
+  num_layers: 6
+  num_heads: 8
+  dropout: 0.1
+  use_hierarchical_guidance: true
+  hierarchical_guidance_weight: 0.1
+  hierarchical_guidance_mode: "per_category"  # NEW: family-local guidance
+
+training:
+  batch_size: 32
+  num_epochs: 5  # Short validation run
+  num_workers: 0
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  gradient_clip_norm: 1.0
+  use_snr_weighting: true           # NEW: weight by 1/beta_t
+  use_vocab_size_weighting: true    # NEW: normalize by log(V)/log(V_max)
+
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 1
+    min_lr: 1.0e-6
+
+  val_batch_size: 128
+  val_split: 0.1
+  val_frequency: 1
+  val_samples: 5
+
+  checkpoint_frequency: 5
+  save_best: true
+
+  log_frequency: 50
+  use_wandb: false
+
+output:
+  dir: "experiments/diffusion/results/improved_safe_5ep"
+  checkpoint_prefix: "diffusion_improved"
+
+device: "cuda"
+seed: 42
