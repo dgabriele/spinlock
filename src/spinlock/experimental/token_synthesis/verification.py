@@ -12,11 +12,16 @@ normalized Hamming similarity: match_count / total_keys.
 """
 
 import logging
-from typing import Dict, List, Tuple
+import random
+from typing import Dict, List, Set, Tuple
 
 import torch
+import torch.nn.functional as F
 
-from spinlock.experimental.token_synthesis.config import SurprisalConfig
+from spinlock.experimental.token_synthesis.config import (
+    CounterfactualConfig,
+    SurprisalConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,3 +174,183 @@ class SurprisalComputer:
         variance = surprisals.var(dim=0)           # [B]
 
         return mean_surprisal, variance
+
+
+class CounterfactualSurprisal:
+    """Novelty via masked prediction cross-entropy.
+
+    Masks a subset of token keys, forward-diffuses masked positions to
+    t_probe (default: T, full noise), and has the denoiser predict them
+    from observed context. Per-sample mean cross-entropy on masked
+    positions measures how surprising the token combination is.
+
+    High CE = denoiser can't recover masked tokens from context → genuinely novel.
+    Low CE = easily predicted from context → boring/redundant.
+
+    Masking strategies are mixed per call:
+    - Category-level: mask all levels of 1+ random categories (structured)
+    - Random: each key independently masked with probability p (unstructured)
+
+    Uses existing D3PM forward_process(mask_dict) and DenoisingNetwork(observed_dict)
+    infrastructure — no new model changes needed.
+
+    Args:
+        config: CounterfactualConfig with masking parameters
+        d3pm: DiscreteD3PM instance for forward process
+        denoiser: DenoisingNetwork instance for prediction
+        schema: TokenSchema for category structure
+        device: torch device
+    """
+
+    def __init__(self, config, d3pm, denoiser, schema, device):
+        self._config = config
+        self._d3pm = d3pm
+        self._denoiser = denoiser
+        self._device = device
+
+        # All token keys
+        self._all_keys = sorted(schema.keys)
+
+        # Precompute category structure from schema
+        self._categories = schema.unique_categories()
+        self._category_keys = {
+            cat: schema.keys_for_category(*cat)
+            for cat in self._categories
+        }
+
+        # Probe timestep: default to T-1 (max noise)
+        self._t_probe = (
+            config.t_probe
+            if config.t_probe is not None
+            else d3pm.schedule.num_timesteps - 1
+        )
+
+        logger.info(
+            f"CounterfactualSurprisal: {len(self._all_keys)} keys, "
+            f"{len(self._categories)} categories, t_probe={self._t_probe}"
+        )
+
+    def compute(self, tokens: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Per-sample counterfactual surprisal.
+
+        1. Select keys to mask via mixed strategy
+        2. Forward-diffuse masked positions to t_probe (full noise)
+        3. Denoiser predicts masked positions from observed context
+        4. Return mean cross-entropy on masked positions per sample
+
+        Args:
+            tokens: Dict mapping key → token indices [B]
+
+        Returns:
+            Per-sample surprisal [B]
+        """
+        batch_size = next(iter(tokens.values())).shape[0]
+        masked_keys = self._select_masked_keys()
+
+        if not masked_keys:
+            return torch.zeros(batch_size, device=self._device)
+
+        # Build mask dicts: True = apply noise (masked), False = keep (observed)
+        mask_dict = {}
+        observed_dict = {}
+        for k in self._all_keys:
+            if k not in tokens:
+                continue
+            is_masked = k in masked_keys
+            mask_dict[k] = torch.full(
+                (batch_size,), is_masked, dtype=torch.bool, device=self._device,
+            )
+            observed_dict[k] = torch.full(
+                (batch_size,), not is_masked, dtype=torch.bool, device=self._device,
+            )
+
+        # Forward-diffuse masked positions to t_probe
+        # Move tokens to device
+        tokens_device = {
+            k: v.to(self._device) for k, v in tokens.items()
+            if k in self._all_keys
+        }
+
+        with torch.no_grad():
+            noisy, _ = self._d3pm.forward_process(
+                tokens_device, self._t_probe, mask_dict=mask_dict,
+            )
+
+            # Denoiser predicts from observed context
+            t_tensor = torch.full(
+                (batch_size,), self._t_probe, dtype=torch.long, device=self._device,
+            )
+            logits = self._denoiser(noisy, t_tensor, observed_dict=observed_dict)
+
+        # Cross-entropy on masked positions, averaged per sample
+        total_ce = torch.zeros(batch_size, device=self._device)
+        n_masked = 0
+
+        for k in masked_keys:
+            if k not in logits or k not in tokens_device:
+                continue
+            ce = F.cross_entropy(
+                logits[k], tokens_device[k], reduction='none',
+            )  # [B]
+            total_ce = total_ce + ce
+            n_masked += 1
+
+        if n_masked > 0:
+            total_ce = total_ce / n_masked
+
+        return total_ce
+
+    def _select_masked_keys(self) -> Set[str]:
+        """Select keys to mask via mixed strategy.
+
+        With probability category_mask_prob → category-level masking,
+        otherwise → random per-key masking.
+        """
+        if random.random() < self._config.category_mask_prob:
+            return self._select_category_mask()
+        else:
+            return self._select_random_mask()
+
+    def _select_category_mask(self) -> Set[str]:
+        """Mask all levels of 1-N randomly selected categories.
+
+        Ensures at least 1 key remains observed for context.
+        """
+        n_cats = min(
+            random.randint(1, self._config.max_categories_to_mask),
+            len(self._categories) - 1,  # Keep at least 1 category observed
+        )
+        if n_cats <= 0:
+            return set()
+
+        selected = random.sample(self._categories, n_cats)
+        masked = set()
+        for cat in selected:
+            masked.update(self._category_keys[cat])
+
+        # Safety: ensure at least 1 key remains observed
+        if len(masked) >= len(self._all_keys):
+            # Remove one key from masked set
+            masked.discard(next(iter(masked)))
+
+        return masked
+
+    def _select_random_mask(self) -> Set[str]:
+        """Each key masked independently with probability mask_fraction.
+
+        Ensures at least 1 masked and at least 1 observed.
+        """
+        masked = {
+            k for k in self._all_keys
+            if random.random() < self._config.mask_fraction
+        }
+
+        # Ensure at least 1 masked
+        if not masked:
+            masked.add(random.choice(self._all_keys))
+
+        # Ensure at least 1 observed
+        if len(masked) >= len(self._all_keys):
+            masked.discard(random.choice(list(masked)))
+
+        return masked

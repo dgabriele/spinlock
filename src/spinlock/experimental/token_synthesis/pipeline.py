@@ -13,7 +13,7 @@ import logging
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import numpy as np
 import torch
@@ -28,7 +28,10 @@ from spinlock.tokens.tokenizer import VQTokenizer
 from spinlock.experimental.token_synthesis.config import TokenSynthesisConfig
 from spinlock.experimental.token_synthesis.priority_queue import SurprisalPriorityQueue
 from spinlock.experimental.token_synthesis.scheduler import Mode, ModeScheduler
-from spinlock.experimental.token_synthesis.verification import SurprisalComputer
+from spinlock.experimental.token_synthesis.verification import (
+    CounterfactualSurprisal,
+    SurprisalComputer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +69,7 @@ class SynthesisVerificationPipeline:
         self._feature_resolvers: Dict[str, str] = {}
         self._temporal_extractor = None
         self._temporal_feature_mask: Optional[np.ndarray] = None  # 247→152 cleaning mask
+        self._temporal_skip_extractors: Set[str] = set()  # Sub-extractors to skip (fully masked)
         self._initial_extractor = None  # IC feature extractor for initial_manual
 
         # Components (created during initialize)
@@ -77,8 +81,20 @@ class SynthesisVerificationPipeline:
         # Replay buffer for refinement diversity
         self._replay_buffer: list = []
 
+        # Counterfactual surprisal scorer (optional, replaces Jaccard-based scoring)
+        self._counterfactual = None
+
+        # Experience buffer for ADAPT phase (raw features from EXPLORE)
+        self._experience_buffer: List[Dict[str, np.ndarray]] = []
+        # Cached original training features for ADAPT anti-forgetting
+        self._original_features_cache: Optional[Dict[str, torch.Tensor]] = None
+        # ADAPT cycle counter for anchor cache refresh
+        self._adapt_cycle_count: int = 0
+
         # Metrics
         self._metrics: Dict[str, List] = defaultdict(list)
+        # Per-cycle explore Jaccard means (for learned priority delta computation)
+        self._cycle_jaccards: Dict[int, List[float]] = defaultdict(list)
 
     def initialize(self) -> None:
         """Load all models, discover schema, create pipeline components."""
@@ -219,6 +235,8 @@ class SynthesisVerificationPipeline:
                     self._feature_resolvers[family] = 'temporal'
                     self._temporal_extractor = self._load_temporal_extractor()
                     self._load_temporal_feature_mask()
+                    self._compute_skip_extractors()
+                    self._compute_reduced_feature_mask()
                 case _:
                     logger.warning(
                         f"Unknown family '{family}' — tokens will be "
@@ -324,6 +342,85 @@ class SynthesisVerificationPipeline:
                 "if tokenizer was trained with feature cleaning)"
             )
 
+    def _compute_skip_extractors(self) -> None:
+        """Determine which sub-extractors produce ONLY masked-out features.
+
+        Analyzes the tokenizer's kept_feature_indices against each sub-extractor's
+        index range. Sub-extractors whose entire output range has zero overlap
+        with the kept indices are added to ``_temporal_skip_extractors`` and will
+        be skipped during extraction, saving compute (e.g., eigendecomposition
+        in CrossChannel, quantum state calculations).
+        """
+        if self._temporal_feature_mask is None or self._temporal_extractor is None:
+            return
+
+        kept_set = set(self._temporal_feature_mask.tolist())
+        # QBM data has 2 channels — get feature ranges for that
+        feature_ranges = self._temporal_extractor.get_feature_ranges(num_channels=2)
+
+        for name, idx_range in feature_ranges.items():
+            range_set = set(idx_range)
+            if range_set.isdisjoint(kept_set):
+                self._temporal_skip_extractors.add(name)
+                logger.info(
+                    f"Skipping sub-extractor '{name}': all {len(idx_range)} "
+                    f"features masked (indices {idx_range.start}-{idx_range.stop - 1})"
+                )
+
+        if self._temporal_skip_extractors:
+            logger.info(
+                f"Feature extraction optimization: skipping {self._temporal_skip_extractors}, "
+                f"keeping {set(feature_ranges.keys()) - self._temporal_skip_extractors}"
+            )
+
+    def _compute_reduced_feature_mask(self) -> None:
+        """Remap cleaning mask indices after skipping sub-extractors.
+
+        When sub-extractors are skipped, the raw output has fewer features
+        (e.g., 237 instead of 247 if cross-channel 10D is skipped). The
+        cleaning mask indices must be adjusted to account for the removed
+        dimensions.
+
+        Indices falling within a skipped range are removed (they were masked
+        anyway — that's why the extractor was skipped). Indices after a
+        skipped range are shifted down by the range's width.
+        """
+        if not self._temporal_skip_extractors or self._temporal_feature_mask is None:
+            return
+
+        feature_ranges = self._temporal_extractor.get_feature_ranges(num_channels=2)
+
+        # Collect all skipped ranges, sorted by start index
+        skipped_ranges = sorted(
+            [feature_ranges[name] for name in self._temporal_skip_extractors],
+            key=lambda r: r.start,
+        )
+
+        # Build a cumulative offset: how many indices are removed before each position
+        # For each original index, compute how much to subtract
+        original_mask = self._temporal_feature_mask.tolist()
+        skipped_indices = set()
+        for r in skipped_ranges:
+            skipped_indices.update(range(r.start, r.stop))
+
+        remapped = []
+        for idx in original_mask:
+            if idx in skipped_indices:
+                # This index was in a skipped range (should not happen since
+                # we only skip extractors whose ranges are disjoint from kept)
+                continue
+            # Count how many skipped indices are before this index
+            offset = sum(1 for si in skipped_indices if si < idx)
+            remapped.append(idx - offset)
+
+        old_len = len(self._temporal_feature_mask)
+        self._temporal_feature_mask = np.array(remapped, dtype=np.int64)
+
+        logger.info(
+            f"Remapped temporal feature mask: {old_len} → {len(self._temporal_feature_mask)} "
+            f"indices (offset by {len(skipped_indices)} skipped features)"
+        )
+
     def _apply_temporal_feature_cleaning(
         self, temporal: torch.Tensor,
     ) -> torch.Tensor:
@@ -344,7 +441,7 @@ class SynthesisVerificationPipeline:
         return temporal
 
     def _create_components(self) -> None:
-        """Create verification, queue, and scheduler components."""
+        """Create verification, queue, scheduler, and optional counterfactual components."""
         vocab_sizes = self._schema.vocab_sizes
 
         self._surprisal_computer = SurprisalComputer(
@@ -361,6 +458,20 @@ class SynthesisVerificationPipeline:
             config=self.config.scheduler,
             queue=self._queue,
         )
+
+        if self.config.counterfactual is not None:
+            self._counterfactual = CounterfactualSurprisal(
+                config=self.config.counterfactual,
+                d3pm=self._diffusion,
+                denoiser=self._denoiser,
+                schema=self._schema,
+                device=self.device,
+            )
+            logger.info(
+                f"Counterfactual surprisal enabled: "
+                f"mask_fraction={self.config.counterfactual.mask_fraction}, "
+                f"category_mask_prob={self.config.counterfactual.category_mask_prob}"
+            )
 
     # ─── Mode Switching ───────────────────────────────────────────
 
@@ -403,6 +514,441 @@ class SynthesisVerificationPipeline:
                     )
 
                 logger.info("Entered REFINE mode (denoiser training, tokenizer on CPU)")
+
+    # ─── ADAPT Phase (VQTokenizer Refinement) ──────────────────────
+
+    def _adapt_tokenizer(self) -> Dict[str, float]:
+        """Periodic VQTokenizer refinement on accumulated experiences.
+
+        Fine-tunes the VQTokenizer on a mix of original training data
+        (anti-forgetting) and newly discovered experiences from EXPLORE.
+        Then retokenizes the priority queue, replay buffer, and probe
+        buffer with the updated codebooks.
+
+        Returns:
+            Dict with ADAPT metrics
+        """
+        from spinlock.tokens.trainer import VQTokenizerTrainer
+
+        metrics: Dict[str, float] = {}
+        n_experiences = len(self._experience_buffer)
+        logger.info(f"ADAPT: Starting with {n_experiences} accumulated experiences")
+
+        # Move tokenizer to GPU and re-enable gradients for training
+        # (optimize_for_inference sets requires_grad=False during EXPLORE)
+        self._tokenizer.model.to(self.device)
+
+        # Snapshot codebook state for drift measurement (after .to(device)
+        # so old_state and new_state are on the same device)
+        old_state = {
+            k: v.clone()
+            for k, v in self._tokenizer.model.state_dict().items()
+            if 'embedding.weight' in k
+        }
+        self._tokenizer.model.train()
+        for p in self._tokenizer.model.parameters():
+            p.requires_grad = True
+
+        # 1. Measure losses BEFORE fine-tuning (using tokenizer's own loss config)
+        losses_before = self._compute_tokenizer_losses()
+        metrics['adapt/total_loss_before'] = losses_before['total']
+        metrics['adapt/recon_loss_before'] = losses_before['reconstruction']
+        metrics['adapt/roundtrip_loss_before'] = losses_before['roundtrip']
+
+        # 2. Prepare combined features (discoveries + original data)
+        combined = self._prepare_adapt_features()
+        if combined is None:
+            logger.warning("ADAPT: Failed to prepare features, skipping")
+            return metrics
+
+        # 3. Fine-tune VQTokenizer
+        adapt_config = self._create_adapt_training_config()
+        trainer = VQTokenizerTrainer(
+            model=self._tokenizer.model,
+            config=adapt_config,
+            group_indices=self._tokenizer.group_indices,
+            normalization_stats=self._tokenizer.normalization_stats,
+            feature_metadata=self._tokenizer.feature_metadata,
+        )
+
+        # Override optimizer LR with ADAPT-specific LR
+        for param_group in trainer.optimizer.param_groups:
+            param_group['lr'] = self.config.adapt.learning_rate
+
+        history = trainer.train_on_features(
+            num_epochs=self.config.adapt.num_epochs,
+            **combined,
+        )
+        metrics['adapt/final_train_loss'] = history['train_losses'][-1] if history['train_losses'] else 0.0
+
+        # 4. Measure losses AFTER fine-tuning
+        losses_after = self._compute_tokenizer_losses()
+        metrics['adapt/total_loss_after'] = losses_after['total']
+        metrics['adapt/recon_loss_after'] = losses_after['reconstruction']
+        metrics['adapt/roundtrip_loss_after'] = losses_after['roundtrip']
+        metrics['adapt/total_improvement'] = losses_before['total'] - losses_after['total']
+        metrics['adapt/recon_improvement'] = losses_before['reconstruction'] - losses_after['reconstruction']
+        metrics['adapt/roundtrip_improvement'] = losses_before['roundtrip'] - losses_after['roundtrip']
+
+        # 5. Measure codebook drift
+        new_state = {
+            k: v.clone()
+            for k, v in self._tokenizer.model.state_dict().items()
+            if 'embedding.weight' in k
+        }
+        drift = self._compute_codebook_drift(old_state, new_state)
+        metrics['adapt/codebook_drift'] = drift
+
+        # 6. Retokenize cascade
+        # Queue MUST be retokenized (used for verification/scoring with the
+        # updated codebook). Replay buffer retokenization is optional:
+        # replay items represent the denoiser's training history and retokenizing
+        # them can destabilize training by shifting labels mid-optimization.
+        self._tokenizer.model.eval()
+        queue_changed = self._retokenize_queue()
+        if self.config.adapt.retokenize_replay:
+            replay_changed = self._retokenize_replay_buffer()
+        else:
+            replay_changed = 0
+            logger.info("Skipping replay buffer retokenization (retokenize_replay=False)")
+        metrics['adapt/queue_tokens_changed'] = queue_changed
+        metrics['adapt/replay_tokens_changed'] = replay_changed
+        metrics['adapt/experiences_used'] = n_experiences
+
+        # 7. Clear experience buffer
+        self._experience_buffer.clear()
+
+        # 8. Offload tokenizer back to CPU (REFINE mode expects this)
+        self._tokenizer.model.to('cpu')
+
+        logger.info(
+            f"ADAPT complete: "
+            f"total {losses_before['total']:.4f} → {losses_after['total']:.4f} "
+            f"(Δ={losses_before['total'] - losses_after['total']:+.4f}), "
+            f"roundtrip {losses_before['roundtrip']:.4f} → {losses_after['roundtrip']:.4f} "
+            f"(Δ={losses_before['roundtrip'] - losses_after['roundtrip']:+.4f}), "
+            f"drift={drift:.6f}, "
+            f"retokenized: queue={queue_changed}, replay={replay_changed}"
+        )
+
+        return metrics
+
+    def _compute_tokenizer_losses(self) -> Dict[str, float]:
+        """Compute VQTokenizer losses on experience buffer using its own loss config.
+
+        Evaluates using the same loss function the tokenizer was trained with,
+        including roundtrip consistency loss (the dominant training signal).
+
+        Returns:
+            Dict with 'total', 'reconstruction', 'roundtrip' losses
+        """
+        from spinlock.tokens.losses import VQVAELoss
+
+        if not self._experience_buffer:
+            return {'total': 0.0, 'reconstruction': 0.0, 'roundtrip': 0.0}
+
+        # Use the tokenizer's own loss config
+        loss_fn = VQVAELoss(self._tokenizer.config.loss)
+
+        # Use up to 64 items for a quick measurement
+        sample_size = min(64, len(self._experience_buffer))
+        sample = self._experience_buffer[:sample_size]
+        stacked = self._stack_feature_dicts(sample)
+
+        self._tokenizer.model.eval()
+        with torch.no_grad():
+            features_on_device = {k: v.to(self.device) for k, v in stacked.items()}
+            outputs = self._tokenizer.model(**features_on_device)
+
+            # Extract category embeddings (same as trainer._extract_category_embeddings)
+            category_embeddings = {}
+            if 'encodings' in outputs:
+                for cat, enc in outputs['encodings'].items():
+                    category_embeddings[cat] = enc
+
+            codebooks = {
+                key: quantizer.embedding.weight
+                for key, quantizer in self._tokenizer.model.quantizers.items()
+            }
+
+            losses = loss_fn(
+                original=outputs['original_encoded'],
+                reconstructed=outputs['reconstructed'],
+                vq_loss=outputs['vq_loss'],
+                category_embeddings=category_embeddings,
+                quantized_vectors=outputs.get('encodings'),
+                token_indices=outputs.get('token_indices'),
+                codebooks=codebooks,
+                latent_vectors=outputs.get('latents'),
+                model=self._tokenizer.model,
+                tokens=outputs.get('token_indices'),
+                decoded=outputs.get('decoded'),
+                initial_manual=features_on_device.get('initial_manual'),
+            )
+
+        result = {
+            'total': losses['total'].item(),
+            'reconstruction': losses['reconstruction'].item(),
+        }
+        if 'roundtrip/total' in losses:
+            result['roundtrip'] = losses['roundtrip/total']
+        else:
+            result['roundtrip'] = 0.0
+
+        return result
+
+    def _prepare_adapt_features(self) -> Optional[Dict[str, torch.Tensor]]:
+        """Combine experience buffer with original training data subsample.
+
+        Returns:
+            Dict of combined feature tensors ready for trainer, or None
+        """
+        # Stack discovered features
+        discovered = self._stack_feature_dicts(self._experience_buffer)
+
+        # Load original training data for anti-forgetting mixing.
+        # original_mix_ratio = fraction of COMBINED batch that should be original
+        # e.g., ratio=0.8 with 40 discoveries → 160 original samples (80/20 mix)
+        original = None
+        n_discovery = len(self._experience_buffer)
+        if (
+            self.config.adapt.original_features_path is not None
+            and self.config.adapt.original_mix_ratio > 0
+            and n_discovery > 0
+        ):
+            # Load and cache original features on first use (HDF5 I/O is slow)
+            if self._original_features_cache is None:
+                self._original_features_cache = self._load_original_features_subsample(
+                    self.config.adapt.anchor_cache_size
+                )
+                self._adapt_cycle_count = 0
+
+            # Re-randomize cache periodically for broader coverage
+            self._adapt_cycle_count += 1
+            if (
+                self._adapt_cycle_count > 1
+                and self._adapt_cycle_count % self.config.adapt.anchor_refresh_interval == 0
+            ):
+                logger.info("Refreshing anchor cache with new random samples")
+                self._original_features_cache = self._load_original_features_subsample(
+                    self.config.adapt.anchor_cache_size
+                )
+
+            if self._original_features_cache is not None:
+                ratio = self.config.adapt.original_mix_ratio
+                n_original = max(1, int(n_discovery * ratio / (1 - ratio)))
+                n_cached = next(iter(self._original_features_cache.values())).shape[0]
+                n_use = min(n_original, n_cached)
+                # Random subsample from cache
+                perm = torch.randperm(n_cached)[:n_use]
+                original = {k: v[perm] for k, v in self._original_features_cache.items()}
+
+        if original is not None:
+            # Concatenate along batch dimension
+            combined = {}
+            for key in discovered:
+                if key in original:
+                    combined[key] = torch.cat([discovered[key], original[key]], dim=0)
+                else:
+                    combined[key] = discovered[key]
+        else:
+            combined = discovered
+
+        logger.info(
+            f"ADAPT features: {combined.get('temporal_features', combined.get('theta_features')).shape[0]} total "
+            f"({len(self._experience_buffer)} discovered"
+            f"{f' + {original[list(original.keys())[0]].shape[0]} original' if original else ''})"
+        )
+
+        return combined
+
+    def _load_original_features_subsample(
+        self, n_samples: int,
+    ) -> Optional[Dict[str, torch.Tensor]]:
+        """Load a random subsample of original training features from HDF5.
+
+        Supports both flat format (keys like 'temporal_features') and the
+        QBM dataset format (nested groups like 'features/temporal/features').
+        Applies temporal cleaning mask if available.
+
+        Args:
+            n_samples: Number of original training samples to load
+        """
+        import h5py
+
+        path = self.config.adapt.original_features_path
+
+        # Mapping from ADAPT feature keys to possible HDF5 paths
+        KEY_PATHS = {
+            'temporal_features': ['temporal_features', 'features/temporal/features'],
+            'initial_manual': ['initial_manual', 'features/initial/aggregated/features'],
+            'theta_features': ['theta_features', 'parameters/params'],
+            'initial_raw': ['initial_raw', 'inputs/fields'],
+        }
+
+        try:
+            with h5py.File(path, 'r') as f:
+                n_total = None
+                result = {}
+                indices = None
+
+                for key, paths in KEY_PATHS.items():
+                    for hdf5_path in paths:
+                        if hdf5_path in f:
+                            ds = f[hdf5_path]
+                            if n_total is None:
+                                n_total = ds.shape[0]
+                                n_actual = min(n_samples, n_total)
+                                indices = np.sort(
+                                    np.random.choice(n_total, n_actual, replace=False)
+                                )
+                            data = ds[indices]
+
+                            # Handle initial_raw: [N, M, C, H, W] → [N, C, H, W]
+                            # (take first realization to match tokenizer expectations)
+                            if key == 'initial_raw' and data.ndim == 5:
+                                data = data[:, 0]  # [N, C, H, W]
+
+                            result[key] = torch.tensor(data, dtype=torch.float32)
+                            break
+
+                # Apply temporal cleaning mask (raw 247 → cleaned 152)
+                if 'temporal_features' in result and self._temporal_feature_mask is not None:
+                    raw_dim = result['temporal_features'].shape[-1]
+                    clean_dim = len(self._temporal_feature_mask)
+                    if raw_dim != clean_dim:
+                        mask_idx = torch.tensor(
+                            self._temporal_feature_mask, dtype=torch.long,
+                        )
+                        result['temporal_features'] = result['temporal_features'].index_select(
+                            -1, mask_idx,
+                        )
+                        logger.info(
+                            f"ADAPT: Applied temporal cleaning mask: {raw_dim} → "
+                            f"{result['temporal_features'].shape[-1]} features"
+                        )
+
+                if result:
+                    n_loaded = indices.shape[0] if indices is not None else 0
+                    logger.info(
+                        f"ADAPT: Loaded {n_loaded} original features from {path} "
+                        f"(keys: {list(result.keys())})"
+                    )
+                return result if result else None
+
+        except Exception as e:
+            logger.warning(f"ADAPT: Failed to load original features: {e}")
+            return None
+
+    def _stack_feature_dicts(
+        self, items: List[Dict[str, np.ndarray]],
+    ) -> Dict[str, torch.Tensor]:
+        """Stack a list of per-item feature dicts into batch tensors.
+
+        Args:
+            items: List of {feature_name: np.ndarray} dicts
+
+        Returns:
+            Dict of {feature_name: torch.Tensor[N, ...]}
+        """
+        if not items:
+            return {}
+
+        keys = items[0].keys()
+        result = {}
+        for k in keys:
+            arrays = [item[k] for item in items]
+            result[k] = torch.tensor(np.stack(arrays), dtype=torch.float32)
+        return result
+
+    def _create_adapt_training_config(self):
+        """Create a TokenizerConfig variant for short ADAPT fine-tuning.
+
+        Reuses the tokenizer's original config but overrides training
+        parameters for a lighter, gentler fine-tuning pass.
+        """
+        import copy
+        config = copy.deepcopy(self._tokenizer.config)
+        config.training.num_epochs = self.config.adapt.num_epochs
+        config.training.learning_rate = self.config.adapt.learning_rate
+        # Disable early stopping and dead code resets for short fine-tuning
+        config.training.early_stopping_patience = self.config.adapt.num_epochs + 1
+        config.training.dead_code_reset_interval = self.config.adapt.num_epochs + 1
+        config.verbose = False
+        return config
+
+    def _compute_codebook_drift(
+        self,
+        old_state: Dict[str, torch.Tensor],
+        new_state: Dict[str, torch.Tensor],
+    ) -> float:
+        """Average L2 distance between old and new codebook embeddings."""
+        total_drift = 0.0
+        n_codebooks = 0
+        for key in old_state:
+            if key in new_state:
+                drift = (old_state[key] - new_state[key]).norm(dim=1).mean().item()
+                total_drift += drift
+                n_codebooks += 1
+        return total_drift / max(n_codebooks, 1)
+
+    def _retokenize_queue(self) -> int:
+        """Retokenize all queue items with updated VQTokenizer codebooks.
+
+        Returns:
+            Number of items whose tokens changed
+        """
+        items = self._queue.get_all_items()
+        changed = 0
+
+        for item in items:
+            if item.raw_features is None:
+                continue
+
+            features = {
+                k: torch.tensor(v, dtype=torch.float32, device=self.device).unsqueeze(0)
+                for k, v in item.raw_features.items()
+            }
+            with torch.no_grad():
+                new_tokens = self._tokenizer.tokenize(**features)
+
+            new_token_dict = {k: v.item() for k, v in new_tokens.items()}
+            if new_token_dict != item.retokenized_tokens:
+                changed += 1
+            item.retokenized_tokens = new_token_dict
+
+        self._queue.update_items_in_place(items)
+        logger.info(f"ADAPT: Retokenized {len(items)} queue items ({changed} changed)")
+        return changed
+
+    def _retokenize_replay_buffer(self) -> int:
+        """Retokenize replay buffer items with updated VQTokenizer codebooks.
+
+        Returns:
+            Number of replay items whose tokens changed
+        """
+        changed = 0
+        for item in self._replay_buffer:
+            if item.raw_features is None:
+                continue
+
+            features = {
+                k: torch.tensor(v, dtype=torch.float32, device=self.device).unsqueeze(0)
+                for k, v in item.raw_features.items()
+            }
+            with torch.no_grad():
+                new_tokens = self._tokenizer.tokenize(**features)
+
+            new_token_dict = {k: v.item() for k, v in new_tokens.items()}
+            if new_token_dict != item.retokenized_tokens:
+                changed += 1
+            item.retokenized_tokens = new_token_dict
+
+        if self._replay_buffer:
+            logger.info(
+                f"ADAPT: Retokenized {len(self._replay_buffer)} replay items ({changed} changed)"
+            )
+        return changed
 
     # ─── Exploration ──────────────────────────────────────────────
 
@@ -466,9 +1012,10 @@ class SynthesisVerificationPipeline:
                 case 'temporal':
                     if self._temporal_extractor is not None:
                         temporal = self._temporal_extractor.extract_per_timestep(
-                            trajectory
+                            trajectory,
+                            skip_extractors=self._temporal_skip_extractors or None,
                         )
-                        # Apply feature cleaning (raw 247 → cleaned 152)
+                        # Apply feature cleaning (raw → cleaned)
                         temporal = self._apply_temporal_feature_cleaning(temporal)
                         features['temporal_features'] = temporal
                 case 'skip':
@@ -478,6 +1025,16 @@ class SynthesisVerificationPipeline:
 
     def _explore_step(self) -> Dict[str, float]:
         """One exploration batch: generate → decode → rollout → retokenize → verify → queue.
+
+        When counterfactual surprisal is active:
+        - 1 QBM rollout (physical grounding + experience collection)
+        - Surprisal scored by denoiser's masked prediction cross-entropy
+        - Jaccard computed for monitoring only (not scoring)
+        - No multi-QBM variance estimation (scoring is denoiser-only)
+
+        When counterfactual is inactive (legacy path):
+        - K QBM rollouts for variance estimation
+        - Jaccard-based surprisal scoring
 
         Returns:
             Dict of metrics for this step
@@ -490,7 +1047,7 @@ class SynthesisVerificationPipeline:
         # 2. Decode tokens to (theta, u0)
         theta, u0 = self._tokenizer.decode(generated_tokens)
 
-        # 3. Run QBM simulation
+        # 3. Run QBM simulation (1 rollout for physical grounding)
         # QBMReplayer expects numpy [B, param_dim] in [0,1]
         theta_np = theta.cpu().numpy()
         trajectory, ics = self._replayer.rollout_batch(
@@ -503,11 +1060,21 @@ class SynthesisVerificationPipeline:
         # 4. Extract features per active family
         features = self._extract_features_from_rollout(trajectory, theta, u0, ics=ics)
 
-        # 5. Retokenize (with multiple samples for variance estimation)
-        if self.config.surprisal.verification_samples > 1:
-            retokenized_samples = []
-            for k in range(self.config.surprisal.verification_samples):
-                # Re-run QBM with different seed for stochastic variation
+        # 5. Retokenize (single pass — always needed for queue storage)
+        with torch.no_grad():
+            retokenized = self._tokenizer.tokenize(**features)
+
+        # 6. Compute surprisal (counterfactual or legacy Jaccard-based)
+        if self._counterfactual is not None:
+            # Counterfactual CE on retokenized (physically grounded) tokens.
+            # Measures denoiser's blind spots about real physical co-occurrences,
+            # not artifacts of imperfect sampling (dreamed tokens ~60% Jaccard).
+            surprisal = self._counterfactual.compute(retokenized)
+            variance = torch.zeros(batch_size)
+        elif self.config.surprisal.verification_samples > 1:
+            # Legacy: multi-QBM variance estimation
+            retokenized_samples = [retokenized]
+            for k in range(1, self.config.surprisal.verification_samples):
                 traj_k, ics_k = self._replayer.rollout_batch(
                     theta_np,
                     num_realizations=self.config.rollout.num_realizations,
@@ -520,26 +1087,38 @@ class SynthesisVerificationPipeline:
                     retok_k = self._tokenizer.tokenize(**feats_k)
                 retokenized_samples.append(retok_k)
 
-            mean_surprisal, variance = self._surprisal_computer.verify_with_multiple_samples(
+            surprisal, variance = self._surprisal_computer.verify_with_multiple_samples(
                 generated_tokens, retokenized_samples,
             )
-            # Use mean retokenized for queue storage
-            retokenized = retokenized_samples[0]
-            surprisal = mean_surprisal
         else:
-            with torch.no_grad():
-                retokenized = self._tokenizer.tokenize(**features)
+            # Legacy: single-sample Jaccard surprisal
             surprisal = self._surprisal_computer.compute_surprisal(
                 generated_tokens, retokenized,
             )
             variance = torch.zeros_like(surprisal)
 
-        # 6. Compute Jaccard for logging
+        # 7. Compute Jaccard for monitoring (always, regardless of scoring method)
         jaccard = self._surprisal_computer.compute_jaccard(generated_tokens, retokenized)
 
-        # 7. Queue high-surprisal items
+        # 7b. Accumulate raw features for ADAPT phase
+        if self.config.adapt.enabled:
+            for i in range(batch_size):
+                if len(self._experience_buffer) < self.config.adapt.max_experiences:
+                    item_features = {
+                        k: v[i].cpu().numpy() for k, v in features.items()
+                    }
+                    self._experience_buffer.append(item_features)
+
+        # 8. Queue items (with raw_features for ADAPT retokenization)
+        raw_features_list = None
+        if self.config.adapt.enabled:
+            raw_features_list = [
+                {k: v[i].cpu().numpy() for k, v in features.items()}
+                for i in range(batch_size)
+            ]
         num_queued = self._queue.push_batch(
             generated_tokens, retokenized, surprisal, theta,
+            raw_features_list=raw_features_list,
         )
 
         metrics = {
@@ -550,6 +1129,8 @@ class SynthesisVerificationPipeline:
             'queue_size': self._queue.size,
             'queue_fill': self._queue.fill_fraction,
         }
+        if self._counterfactual is not None:
+            metrics['scoring_method'] = 'counterfactual'
 
         logger.info(
             f"  Explore: surprisal={metrics['avg_surprisal']:.3f}, "
@@ -601,12 +1182,31 @@ class SynthesisVerificationPipeline:
         return total_loss
 
     def _refine_epoch(self) -> Dict[str, float]:
-        """One refinement epoch: pop queue → build batch → train denoiser.
+        """One refinement epoch: pop queue (or sample replay buffer) → train denoiser.
+
+        Training data sources (in priority order):
+        1. Fresh items from the priority queue (highest-surprisal first)
+        2. Random samples from the replay buffer (when queue is empty)
 
         Returns:
             Dict of refinement metrics
         """
+        # Try queue first; fall back to replay buffer
         items = self._queue.pop_batch(self.config.refinement.batch_size)
+        source = 'queue'
+
+        if not items and self._replay_buffer:
+            # Queue exhausted — sample from replay buffer for continued training
+            sample_size = min(
+                self.config.refinement.batch_size,
+                len(self._replay_buffer),
+            )
+            indices = np.random.choice(
+                len(self._replay_buffer), size=sample_size, replace=False,
+            )
+            items = [self._replay_buffer[i] for i in indices]
+            source = 'replay'
+
         if not items:
             return {'refine_loss': 0.0, 'refine_samples': 0}
 
@@ -658,6 +1258,21 @@ class SynthesisVerificationPipeline:
         # Compute loss
         loss = self._compute_refinement_loss(predicted_logits, tokens, target_mask)
 
+        # Compute per-item losses for learned priority training (detached)
+        # Sum cross-entropy across categories per item, then average
+        if source == 'queue' and self._queue._head is not None:
+            with torch.no_grad():
+                per_item = torch.zeros(len(items), device=self.device)
+                for key in predicted_logits.keys():
+                    logits_k = predicted_logits[key]       # [B, V]
+                    targets_k = tokens[key]                # [B]
+                    mask_k = target_mask[key]               # [B]
+                    ce = F.cross_entropy(logits_k, targets_k, reduction='none')
+                    per_item += ce * mask_k.float()
+                per_item /= max(len(predicted_logits), 1)
+                per_item_losses = per_item.cpu().tolist()
+            self._queue.record_refined_features(items, per_item_losses)
+
         # Backward pass
         self._optimizer.zero_grad()
         loss.backward()
@@ -667,26 +1282,98 @@ class SynthesisVerificationPipeline:
         )
         self._optimizer.step()
 
-        # Replay buffer for diversity
-        self._replay_buffer.extend(items)
-        if len(self._replay_buffer) > self.config.refinement.replay_buffer_size:
-            self._replay_buffer = self._replay_buffer[
-                -self.config.refinement.replay_buffer_size:
-            ]
+        # Add fresh queue items to replay buffer (not replay samples — avoid duplicates)
+        if source == 'queue':
+            self._replay_buffer.extend(items)
+            if len(self._replay_buffer) > self.config.refinement.replay_buffer_size:
+                self._replay_buffer = self._replay_buffer[
+                    -self.config.refinement.replay_buffer_size:
+                ]
 
         metrics = {
             'refine_loss': loss.item(),
             'refine_samples': len(items),
+            'refine_source': source,
             'replay_buffer_size': len(self._replay_buffer),
         }
 
         logger.info(
-            f"  Refine: loss={loss.item():.4f}, "
+            f"  Refine [{source}]: loss={loss.item():.4f}, "
             f"samples={len(items)}, "
             f"replay_buffer={len(self._replay_buffer)}"
         )
 
         return metrics
+
+    # ─── Learned Priority ────────────────────────────────────────
+
+    def _compute_cycle_improvement(self, cycle: int) -> Optional[float]:
+        """Compute Jaccard improvement delta for this cycle vs previous.
+
+        Compares the mean Jaccard similarity of explore steps in cycle N
+        against cycle N-1. A positive delta means the diffusion model is
+        generating tokens that better match physical grounding.
+
+        Uses ``_cycle_jaccards`` (populated during explore) rather than
+        indexing into the ragged ``_metrics`` dict-of-lists.
+
+        Args:
+            cycle: Current cycle number
+
+        Returns:
+            Improvement delta, or None if insufficient data
+        """
+        if cycle == 0:
+            return None
+
+        prev_jaccards = self._cycle_jaccards.get(cycle - 1, [])
+        curr_jaccards = self._cycle_jaccards.get(cycle, [])
+
+        if not prev_jaccards or not curr_jaccards:
+            return None
+
+        prev_mean = sum(prev_jaccards) / len(prev_jaccards)
+        curr_mean = sum(curr_jaccards) / len(curr_jaccards)
+        return curr_mean - prev_mean
+
+    def _train_and_log_priority_head(self, cycle: int) -> None:
+        """Train learned priority head and log weights at cycle boundary.
+
+        Called at the end of each cycle in the main loop. Computes the
+        improvement delta, trains the head, and logs the learned weights.
+        """
+        delta = self._compute_cycle_improvement(cycle)
+        if delta is not None:
+            loss = self._queue.train_priority_head(delta, cycle)
+
+            # Log delta
+            self._metrics['improvement_delta'].append(delta)
+            self._metrics['improvement_delta_cycle'].append(cycle)
+
+            if loss is not None:
+                logger.info(
+                    f"  Priority head trained: delta={delta:+.4f}, "
+                    f"loss={loss:.6f}"
+                )
+
+        # Log learned weights (even during warmup for comparison)
+        weights = self._queue.get_learned_weights()
+        if weights is not None:
+            w_alpha, w_delta, w_epsilon, w_gamma, w_bias = weights
+            self._metrics['learned_alpha'].append(w_alpha)
+            self._metrics['learned_delta'].append(w_delta)
+            self._metrics['learned_epsilon'].append(w_epsilon)
+            self._metrics['learned_gamma'].append(w_gamma)
+            self._metrics['learned_bias'].append(w_bias)
+            self._metrics['learned_weights_cycle'].append(cycle)
+
+            active = "LEARNED" if self._queue._head_active else "FIXED"
+            logger.info(
+                f"  Priority weights [{active}]: "
+                f"\u03b1(sur)={w_alpha:.3f}, "
+                f"\u03b4(rt)={w_delta:.3f}, \u03b5(sg)={w_epsilon:.3f}, "
+                f"\u03b3(rar)={w_gamma:.3f}, bias={w_bias:.4f}"
+            )
 
     # ─── Logging & Checkpointing ──────────────────────────────────
 
@@ -713,14 +1400,20 @@ class SynthesisVerificationPipeline:
         checkpoint_dir = self.config.output_dir / "checkpoints"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save denoiser (the only model that changes)
-        path = checkpoint_dir / f"denoiser_cycle_{cycle}.pt"
-        torch.save({
+        # Save denoiser and priority head (the models that change)
+        save_dict = {
             'cycle': cycle,
             'denoiser_state_dict': self._denoiser.state_dict(),
             'queue_size': self._queue.size,
             'metrics': dict(self._metrics),
-        }, path)
+            'experience_buffer_size': len(self._experience_buffer),
+        }
+        if self._queue._head is not None:
+            save_dict['priority_head_state_dict'] = self._queue._head.state_dict()
+            save_dict['priority_head_active'] = self._queue._head_active
+
+        path = checkpoint_dir / f"denoiser_cycle_{cycle}.pt"
+        torch.save(save_dict, path)
 
         # Save metrics as JSON for easy analysis
         metrics_path = self.config.output_dir / "metrics.json"
@@ -740,10 +1433,20 @@ class SynthesisVerificationPipeline:
         torch.manual_seed(self.config.seed)
         self.initialize()
 
+        learned_info = ""
+        if self.config.priority.learned:
+            learned_info = (
+                f", learned_priority=ON (warmup={self.config.priority.warmup_cycles}, "
+                f"lr={self.config.priority.priority_lr})"
+            )
+        else:
+            learned_info = ", learned_priority=OFF"
+
         logger.info(
             f"Starting self-play: {self.config.scheduler.max_cycles} cycles, "
             f"explore={self.config.scheduler.explore_steps} steps, "
             f"refine={self.config.scheduler.refine_epochs} epochs"
+            f"{learned_info}"
         )
 
         while not self._scheduler.is_complete:
@@ -763,6 +1466,7 @@ class SynthesisVerificationPipeline:
                     while self._scheduler.get_explore_steps_remaining() > 0:
                         metrics = self._explore_step()
                         self._log_metrics(cycle, mode, step, metrics)
+                        self._cycle_jaccards[cycle].append(metrics['avg_jaccard'])
                         self._scheduler.step()
                         step += 1
                         if self._scheduler.should_switch():
@@ -782,8 +1486,35 @@ class SynthesisVerificationPipeline:
                             f"{self._queue.size} < {self.config.priority.min_queue_for_refinement}"
                         )
 
+            # Train learned priority head at cycle boundary (after explore+refine)
+            if mode == Mode.REFINE:
+                self._train_and_log_priority_head(cycle)
+
+                # === ADAPT Phase (periodic VQTokenizer refinement) ===
+                if (
+                    self.config.adapt.enabled
+                    and (cycle + 1) % self.config.adapt.frequency == 0
+                    and len(self._experience_buffer) >= self.config.adapt.min_experiences
+                ):
+                    logger.info(f"=== ADAPT Phase (cycle {cycle}) ===")
+                    adapt_metrics = self._adapt_tokenizer()
+                    for k, v in adapt_metrics.items():
+                        self._metrics[k].append(v)
+                    self._metrics['adapt_cycle'].append(cycle)
+
             self._scheduler.advance()
             self._save_cycle_checkpoint(cycle)
+
+        # Log final learned weights
+        weights = self._queue.get_learned_weights()
+        if weights is not None:
+            w_alpha, w_delta, w_epsilon, w_gamma, w_bias = weights
+            logger.info(
+                f"Final learned priority weights: "
+                f"\u03b1(sur)={w_alpha:.3f}, "
+                f"\u03b4(rt)={w_delta:.3f}, \u03b5(sg)={w_epsilon:.3f}, "
+                f"\u03b3(rar)={w_gamma:.3f}, bias={w_bias:.4f}"
+            )
 
         logger.info("Self-play complete!")
         logger.info(

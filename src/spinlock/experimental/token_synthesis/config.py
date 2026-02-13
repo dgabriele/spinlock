@@ -12,7 +12,7 @@ Defines the full configuration hierarchy for the explore-refine loop:
 """
 
 from pathlib import Path
-from typing import Literal, Optional
+from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -79,15 +79,26 @@ class SurprisalConfig(BaseModel):
 class PriorityConfig(BaseModel):
     """Priority queue scoring weights and capacity.
 
-    priority = alpha * surprisal + beta * usage_frequency + gamma * rarity
+    priority = alpha * surprisal + delta * repr_trace
+             + epsilon * structural_growth + gamma * rarity
 
-    Higher priority items are refined first.
+    Higher priority items are refined first. When ``learned=True``, a
+    ``nn.Linear(4, 1)`` head replaces the fixed weights after
+    ``warmup_cycles`` cycles, trained to predict which items yield the
+    greatest refinement improvement (measured by Jaccard delta).
+
+    repr_trace and structural_growth are stubbed (return 0.0) until the
+    DenoisingNetwork exposes hidden-state access.
     """
-    alpha: float = Field(default=0.6, ge=0.0)
-    beta: float = Field(default=0.25, ge=0.0)
-    gamma: float = Field(default=0.15, ge=0.0)
+    alpha: float = Field(default=0.6, ge=0.0)       # surprisal
+    delta: float = Field(default=0.0, ge=0.0)        # repr_trace (stub)
+    epsilon: float = Field(default=0.0, ge=0.0)      # structural_growth (stub)
+    gamma: float = Field(default=0.15, ge=0.0)       # rarity
     queue_capacity: int = Field(default=1000, ge=1)
     min_queue_for_refinement: int = Field(default=64, ge=1)
+    learned: bool = Field(default=True, description="Use learned priority head after warmup")
+    warmup_cycles: int = Field(default=3, ge=0, description="Cycles with fixed weights before learning")
+    priority_lr: float = Field(default=0.01, gt=0.0, description="Learning rate for priority head")
 
 
 class SchedulerConfig(BaseModel):
@@ -115,6 +126,70 @@ class RefinementConfig(BaseModel):
     replay_buffer_size: int = Field(default=5000, ge=1)
 
 
+class CounterfactualConfig(BaseModel):
+    """Counterfactual surprisal: novelty via masked token prediction.
+
+    Masks a subset of token keys, forward-diffuses masked positions to
+    full noise, and has the denoiser predict them from observed context.
+    Cross-entropy on masked positions measures how surprising the token
+    combination is to the current denoiser — high CE = genuinely novel.
+
+    Two masking strategies are mixed:
+    - Category-level: mask all levels of 1+ random categories (structured)
+    - Random: each key independently masked with probability p (unstructured)
+    """
+    mask_fraction: float = Field(default=0.5, ge=0.0, le=1.0,
+        description="Fraction of keys to mask (random strategy)")
+    max_categories_to_mask: int = Field(default=3, ge=1,
+        description="Max categories to mask (category strategy)")
+    category_mask_prob: float = Field(default=0.5, ge=0.0, le=1.0,
+        description="P(category-level masking) vs P(random masking)")
+    t_probe: Optional[int] = Field(default=None,
+        description="Forward-diffusion timestep. None = T (full noise)")
+
+
+class AdaptConfig(BaseModel):
+    """VQTokenizer online refinement configuration.
+
+    When enabled, the pipeline periodically fine-tunes the VQTokenizer
+    on accumulated exploration experiences mixed with original training data.
+    After fine-tuning, the priority queue is retokenized with the updated
+    codebooks.
+    """
+    enabled: bool = Field(default=False,
+        description="Enable periodic VQTokenizer fine-tuning")
+    frequency: int = Field(default=5, ge=1,
+        description="Run ADAPT every N synthesis cycles")
+    num_epochs: int = Field(default=10, ge=1,
+        description="Fine-tuning epochs per ADAPT phase")
+    learning_rate: float = Field(default=1e-5, gt=0.0,
+        description="Lower LR than initial training for stability")
+    original_mix_ratio: float = Field(default=0.3, ge=0.0, le=1.0,
+        description="Fraction of original training data mixed in (anti-forgetting)")
+    max_experiences: int = Field(default=2000, ge=1,
+        description="Max experiences to accumulate in buffer")
+    min_experiences: int = Field(default=100, ge=1,
+        description="Min experiences needed to trigger ADAPT")
+    anchor_cache_size: int = Field(default=5000, ge=100,
+        description="Number of original training samples to cache for anti-forgetting. "
+                    "Should be 10-20% of original training set size.")
+    anchor_refresh_interval: int = Field(default=5, ge=1,
+        description="Re-randomize anchor cache every N ADAPT cycles for broader coverage")
+    retokenize_replay: bool = Field(default=False,
+        description="Whether to retokenize replay buffer after ADAPT. "
+                    "Disabled by default: replay items represent the denoiser's "
+                    "training history and retokenizing them destabilizes training.")
+    original_features_path: Optional[Path] = Field(default=None,
+        description="Path to pre-extracted original training features HDF5")
+
+    @field_validator("original_features_path")
+    @classmethod
+    def validate_features_path(cls, v: Optional[Path]) -> Optional[Path]:
+        if v is not None and not v.exists():
+            raise ValueError(f"Original features path not found: {v}")
+        return v
+
+
 class TokenSynthesisConfig(BaseModel):
     """Top-level configuration for token synthesis self-play pipeline."""
     checkpoints: CheckpointPaths
@@ -124,6 +199,8 @@ class TokenSynthesisConfig(BaseModel):
     priority: PriorityConfig = PriorityConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
     refinement: RefinementConfig = RefinementConfig()
+    adapt: AdaptConfig = AdaptConfig()
+    counterfactual: Optional[CounterfactualConfig] = None
     output_dir: Path = Path("experiments/token_synthesis/results")
     device: str = "cuda"
     seed: int = 42

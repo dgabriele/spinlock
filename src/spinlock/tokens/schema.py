@@ -11,7 +11,7 @@ This extracts logic that was previously duplicated in:
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +161,30 @@ class TokenSchema:
         return sorted(
             k for k, info in self.category_level_info.items()
             if info.family == family
+        )
+
+    def unique_categories(self) -> List[Tuple[str, str]]:
+        """Unique (family, category) tuples across all keys.
+
+        Returns:
+            Sorted list of (family, category) pairs
+        """
+        cats = {(info.family, info.category) for info in self.category_level_info.values()}
+        return sorted(cats)
+
+    def keys_for_category(self, family: str, category: str) -> List[str]:
+        """All keys for a (family, category) pair across all levels.
+
+        Args:
+            family: Family name (e.g., 'temporal')
+            category: Category name (e.g., 'group_1')
+
+        Returns:
+            Sorted list of keys matching this family+category
+        """
+        return sorted(
+            k for k, info in self.category_level_info.items()
+            if info.family == family and info.category == category
         )
 
     def vocab_sizes_dict(self) -> Dict[str, int]:

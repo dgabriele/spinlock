@@ -29,25 +29,52 @@ surprisal:
 
 priority:
   alpha: 0.6       # Surprisal weight
-  beta: 0.25       # Novelty weight
+  delta: 0.0       # Representation trace weight (stub)
+  epsilon: 0.0     # Structural growth weight (stub)
   gamma: 0.15      # Rarity weight
   queue_capacity: 1000
-  min_queue_for_refinement: 64
+  min_queue_for_refinement: 32  # Was 64 — start refining sooner
+  learned: true          # Use nn.Linear(4,1) to learn priority weights from data
+  warmup_cycles: 3       # Cycles with fixed weights before learning kicks in
+  priority_lr: 0.01      # SGD learning rate for priority head (only 5 params)
 
 scheduler:
-  explore_steps: 5
-  refine_epochs: 3
+  explore_steps: 10    # Was 5 — double exploration for broader parameter space coverage
+  refine_epochs: 30   # Was 3 — 30×16=480 gradient updates/cycle (~1.5s, still <1% of runtime)
   max_cycles: 20
   adaptive: true
   queue_threshold_high: 0.8
   queue_threshold_low: 0.2
 
 refinement:
-  learning_rate: 1.0e-5
+  learning_rate: 5.0e-5  # Was 1e-5 — 5× faster (still conservative for fine-tuning)
   gradient_clip_norm: 1.0
   batch_size: 16
   replay_buffer_size: 5000
 
-output_dir: "experiments/token_synthesis/results/qbm_baseline"
+# Counterfactual surprisal: replaces Jaccard-based scoring with
+# information-theoretic novelty (denoiser masked prediction CE).
+# When enabled, verification_samples multi-QBM is skipped (net speedup).
+# Jaccard remains as a monitoring metric.
+counterfactual:
+  mask_fraction: 0.5          # Fraction of keys to mask (random strategy)
+  max_categories_to_mask: 3   # Max categories to mask (category strategy)
+  category_mask_prob: 0.5     # P(category-level) vs P(random) masking
+  # t_probe: null             # Default = T (full noise)
+
+adapt:
+  enabled: true              # Re-enabled with conservative settings
+  frequency: 5               # Every 5 cycles (was 1) — lets denoiser stabilize between updates
+  num_epochs: 50             # ~20s per ADAPT phase, still <5% of cycle time
+  learning_rate: 1.0e-5      # 10x lower than initial tokenizer training LR
+  original_mix_ratio: 0.8    # 80% old data (anti-forgetting), 20% new discoveries
+  original_features_path: "datasets/qbm_50k.h5"  # Original training data for mixing
+  anchor_cache_size: 5000    # 10% of 50K training set (~1.3 GB)
+  anchor_refresh_interval: 5 # New random samples every 5 ADAPT cycles
+  retokenize_replay: false   # Keep denoiser training labels stable after ADAPT
+  max_experiences: 2000      # Max experiences to accumulate
+  min_experiences: 16        # Min to trigger ADAPT (2 explore steps × 8 batch)
+
+output_dir: "experiments/token_synthesis/results/qbm_adapt_freq5_no_replay_retok"
 device: "cuda"
 seed: 42
