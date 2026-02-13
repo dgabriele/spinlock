@@ -8,9 +8,10 @@ Implements discrete diffusion with:
 """
 
 import logging
+import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -42,6 +43,12 @@ class DiffusionSchedule:
     schedule_type: str = "cosine"
 
 
+class TransitionType(str, Enum):
+    """Transition matrix types for discrete diffusion."""
+    UNIFORM = "uniform"
+    ABSORBING = "absorbing"
+
+
 class DiscreteD3PM(nn.Module):
     """Discrete D3PM diffusion for hierarchical dict tokens.
 
@@ -56,10 +63,16 @@ class DiscreteD3PM(nn.Module):
         3. Forward process: x_0 → x_t via Q_t sampling
         4. Reverse process: x_t → x_{t-1} via denoiser + RePaint
 
+    Supports two transition types:
+    - "uniform": Q_t = (1-β)I + β·U where U is uniform (standard D3PM)
+    - "absorbing": Q_t = (1-β)I + β·e_mask·1^T (tokens → mask token)
+
     Args:
         vocab_sizes: Dict mapping "family_category_Ll" → vocab_size
         schedule: Diffusion schedule configuration
         category_level_info: Dict mapping key → {family, category, level}
+        transition_type: "uniform" or "absorbing"
+        beta_scaling: "uniform" or "vocab_aware"
 
     Example:
         >>> vocab_sizes = {
@@ -76,12 +89,30 @@ class DiscreteD3PM(nn.Module):
         vocab_sizes: Dict[str, int],
         schedule: DiffusionSchedule,
         category_level_info: Optional[Dict[str, Dict[str, any]]] = None,
+        transition_type: str = "uniform",
+        beta_scaling: str = "uniform",
     ):
         super().__init__()
 
         self.vocab_sizes = vocab_sizes
         self.schedule = schedule
         self.category_level_info = category_level_info or {}
+        self.transition_type = transition_type
+        self.beta_scaling = beta_scaling
+
+        # For absorbing state, track mask token indices (= vocab_size per key)
+        self.mask_token_indices: Dict[str, int] = {}
+        if transition_type == "absorbing":
+            for key, v in vocab_sizes.items():
+                self.mask_token_indices[key] = v
+
+        # Warn about incompatible config
+        if beta_scaling == "vocab_aware" and transition_type == "absorbing":
+            logger.warning(
+                "beta_scaling='vocab_aware' has no information-theoretic justification "
+                "with absorbing transitions (masking is binary, independent of V). "
+                "Using uniform beta scaling for absorbing mode."
+            )
 
         # Build noise schedule
         self.register_buffer("betas", self._build_schedule())
@@ -94,6 +125,7 @@ class DiscreteD3PM(nn.Module):
         logger.info(
             f"DiscreteD3PM initialized: T={schedule.num_timesteps}, "
             f"schedule={schedule.schedule_type}, "
+            f"transition={transition_type}, beta_scaling={beta_scaling}, "
             f"categories={len(vocab_sizes)}"
         )
 
@@ -143,37 +175,72 @@ class DiscreteD3PM(nn.Module):
     def _build_transition_matrices(self):
         """Build per-category-level transition matrices Q_t.
 
-        Each Q_t[k] is a [T, vocab_size, vocab_size] matrix where:
+        Each Q_t[k] is a [T, V_eff, V_eff] matrix where:
         - Q_t[k][i, j] = P(x_t = j | x_{t-1} = i) at timestep t
-        - Absorbing state model: Q_t = (1 - β_t) * I + β_t * U
-        - U = uniform distribution over vocab
+        - V_eff = vocab_size for uniform, vocab_size+1 for absorbing
+
+        Transition types:
+        - Uniform: Q_t = (1 - β_t) * I + β_t * U, where U = ones/V
+        - Absorbing: Q_t = (1 - β_t) * I + β_t * e_mask * 1^T
+          (clean tokens → mask with prob β_t, mask → mask always)
+
+        Beta scaling:
+        - "uniform": same β for all vocab sizes
+        - "vocab_aware": scale β by log(V)/log(V_max) per key (uniform only)
 
         Stored as nn.ParameterDict for per-category-level handling.
         """
         self.transition_matrices = nn.ParameterDict()
 
+        # Compute vocab-aware beta scaling factors
+        v_max = max(self.vocab_sizes.values())
+        log_v_max = math.log(v_max) if v_max > 1 else 1.0
+
         for key, vocab_size in self.vocab_sizes.items():
-            # Create identity and uniform matrices
-            I = torch.eye(vocab_size)  # [V, V]
-            U = torch.ones(vocab_size, vocab_size) / vocab_size  # [V, V]
+            # Determine per-key beta schedule
+            if (self.beta_scaling == "vocab_aware"
+                    and self.transition_type != "absorbing"
+                    and vocab_size > 1):
+                scale = math.log(vocab_size) / log_v_max
+                scaled_betas = self.betas * scale
+            else:
+                scaled_betas = self.betas
 
-            # Q_t = (1 - β_t) * I + β_t * U for each timestep
-            # Shape: [T, V, V]
-            Q_t = []
-            for t in range(self.schedule.num_timesteps):
-                beta_t = self.betas[t]
-                Q = (1 - beta_t) * I + beta_t * U
-                Q_t.append(Q)
+            if self.transition_type == "absorbing":
+                # Absorbing state: extended vocab V+1
+                V_ext = vocab_size + 1
+                I_ext = torch.eye(V_ext)
 
-            Q_t = torch.stack(Q_t, dim=0)  # [T, V, V]
+                Q_t = []
+                for t in range(self.schedule.num_timesteps):
+                    beta_t = scaled_betas[t]
+                    # Absorbing transition: clean → mask with prob β_t
+                    absorb = torch.zeros(V_ext, V_ext)
+                    absorb[:vocab_size, V_ext - 1] = 1.0  # clean → mask
+                    absorb[V_ext - 1, V_ext - 1] = 1.0     # mask → mask (absorbing)
+                    Q = (1 - beta_t) * I_ext + beta_t * absorb
+                    Q_t.append(Q)
 
-            # Register as non-trainable parameter (frozen transition matrices)
+                Q_t = torch.stack(Q_t, dim=0)  # [T, V+1, V+1]
+            else:
+                # Uniform transition: standard D3PM
+                I = torch.eye(vocab_size)
+                U = torch.ones(vocab_size, vocab_size) / vocab_size
+
+                Q_t = []
+                for t in range(self.schedule.num_timesteps):
+                    beta_t = scaled_betas[t]
+                    Q = (1 - beta_t) * I + beta_t * U
+                    Q_t.append(Q)
+
+                Q_t = torch.stack(Q_t, dim=0)  # [T, V, V]
+
             self.transition_matrices[key] = nn.Parameter(Q_t, requires_grad=False)
 
     def forward_process(
         self,
         tokens_dict: Dict[str, torch.Tensor],
-        t: int,
+        t: Union[int, torch.Tensor],
         mask_dict: Optional[Dict[str, torch.BoolTensor]] = None,
     ) -> tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         """Add noise to tokens via forward diffusion.
@@ -182,7 +249,8 @@ class DiscreteD3PM(nn.Module):
 
         Args:
             tokens_dict: Dict mapping key → token indices [B]
-            t: Timestep (0 to T-1)
+            t: Timestep (0 to T-1). Either a scalar int for uniform noise
+               across the batch, or a Tensor[B] for per-sample timesteps.
             mask_dict: Optional dict of masks [B] (True = apply noise, False = keep)
 
         Returns:
@@ -190,8 +258,15 @@ class DiscreteD3PM(nn.Module):
             - noisy_tokens_dict: Dict mapping key → noisy token indices [B]
             - log_probs_dict: Dict mapping key → log P(x_t | x_0) [B, V]
         """
-        if t < 0 or t >= self.schedule.num_timesteps:
-            raise ValueError(f"Invalid timestep t={t} (must be 0 to {self.schedule.num_timesteps - 1})")
+        # Validate timestep bounds
+        if isinstance(t, int):
+            if t < 0 or t >= self.schedule.num_timesteps:
+                raise ValueError(f"Invalid timestep t={t} (must be 0 to {self.schedule.num_timesteps - 1})")
+        else:
+            if (t < 0).any() or (t >= self.schedule.num_timesteps).any():
+                raise ValueError(f"Invalid timesteps in tensor (must be 0 to {self.schedule.num_timesteps - 1})")
+
+        batched = not isinstance(t, int)
 
         noisy_dict = {}
         log_probs_dict = {}
@@ -200,15 +275,25 @@ class DiscreteD3PM(nn.Module):
             B = tokens.shape[0]
             V = self.vocab_sizes[key]
 
-            # Get transition matrix Q_t for this category-level
-            Q_t = self.transition_matrices[key][t]  # [V, V]
+            # Effective vocab size for transition matrices
+            V_eff = V + 1 if self.transition_type == "absorbing" else V
 
-            # Convert tokens to one-hot [B, V]
-            x_0_onehot = F.one_hot(tokens.long(), num_classes=V).float()
+            # Convert tokens to one-hot [B, V_eff]
+            x_0_onehot = F.one_hot(tokens.long(), num_classes=V_eff).float()
 
-            # Apply transition: q(x_t | x_0) = x_0 @ Q_t
-            # x_0_onehot: [B, V], Q_t: [V, V] → probs: [B, V]
-            probs = torch.matmul(x_0_onehot, Q_t)
+            if batched:
+                # Batched path: per-sample timesteps
+                # Q_all: [T, V_eff, V_eff], t: [B] → Q_t: [B, V_eff, V_eff]
+                Q_t = self.transition_matrices[key][t]
+
+                # Apply transition: q(x_t | x_0) = x_0 @ Q_t (batched)
+                probs = torch.bmm(x_0_onehot.unsqueeze(1), Q_t).squeeze(1)
+            else:
+                # Scalar path: uniform timestep across batch
+                Q_t = self.transition_matrices[key][t]  # [V_eff, V_eff]
+
+                # Apply transition: q(x_t | x_0) = x_0 @ Q_t
+                probs = torch.matmul(x_0_onehot, Q_t)  # [B, V_eff]
 
             # Sample noisy tokens
             noisy_tokens = torch.multinomial(probs, num_samples=1).squeeze(-1)  # [B]
@@ -220,7 +305,7 @@ class DiscreteD3PM(nn.Module):
 
             # Store results
             noisy_dict[key] = noisy_tokens
-            log_probs_dict[key] = torch.log(probs + 1e-8)  # [B, V]
+            log_probs_dict[key] = torch.log(probs + 1e-8)  # [B, V_eff]
 
         return noisy_dict, log_probs_dict
 
@@ -335,12 +420,20 @@ class DiscreteD3PM(nn.Module):
             }
             x_t, _ = self.forward_process(x_0_on_device, actual_start - 1, all_mask)
         else:
-            # Full start: uniform random noise
+            # Full start: initialize with noise
             x_t = {}
             for key, vocab_size in self.vocab_sizes.items():
-                x_t[key] = torch.randint(
-                    0, vocab_size, (batch_size,), device=device
-                )
+                if self.transition_type == "absorbing":
+                    # Absorbing: all tokens start as mask token
+                    x_t[key] = torch.full(
+                        (batch_size,), self.mask_token_indices[key],
+                        device=device, dtype=torch.long
+                    )
+                else:
+                    # Uniform: random tokens
+                    x_t[key] = torch.randint(
+                        0, vocab_size, (batch_size,), device=device
+                    )
 
         # Iterative denoising actual_start → 0
         for t in reversed(range(actual_start)):

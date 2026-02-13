@@ -9,6 +9,7 @@ Transformer-based architecture that:
 
 import logging
 import math
+from collections import defaultdict
 from typing import Dict, Optional
 
 import torch
@@ -87,6 +88,8 @@ class DenoisingNetwork(nn.Module):
         dropout: float = 0.1,
         use_hierarchical_guidance: bool = True,
         hierarchical_guidance_weight: float = 0.1,
+        guidance_mode: str = "global",
+        transition_type: str = "uniform",
     ):
         super().__init__()
 
@@ -95,6 +98,7 @@ class DenoisingNetwork(nn.Module):
         self.hidden_dim = hidden_dim
         self.use_hierarchical_guidance = use_hierarchical_guidance
         self.hierarchical_guidance_weight = hierarchical_guidance_weight
+        self.guidance_mode = guidance_mode
 
         # Sort keys for deterministic ordering
         self.sorted_keys = sorted(vocab_sizes.keys())
@@ -110,10 +114,15 @@ class DenoisingNetwork(nn.Module):
                 level = int(key.split('_L')[-1])
                 self.key_levels[key] = level
 
+        # Determine effective vocab size for embeddings (absorbing adds mask token)
+        self.effective_vocab_sizes = {}
+        for key, v in vocab_sizes.items():
+            self.effective_vocab_sizes[key] = v + 1 if transition_type == "absorbing" else v
+
         # Token embeddings (per-category-level with variable vocab sizes)
         self.token_embeddings = nn.ModuleDict({
-            key: nn.Embedding(vocab_size, hidden_dim)
-            for key, vocab_size in vocab_sizes.items()
+            key: nn.Embedding(self.effective_vocab_sizes[key], hidden_dim)
+            for key in vocab_sizes
         })
 
         # Time embedding
@@ -145,8 +154,16 @@ class DenoisingNetwork(nn.Module):
         # Hierarchical guidance projection
         if use_hierarchical_guidance:
             self.guidance_proj = nn.Linear(hidden_dim, hidden_dim)
+            # Build L0 indices for global mode
+            self._l0_indices = [
+                i for i, key in enumerate(self.sorted_keys)
+                if self.key_levels[key] == 0
+            ]
+            # Build parent mask for per-category mode
+            if guidance_mode == "per_category":
+                self._build_hierarchy_map()
 
-        # Output projections (per-category-level)
+        # Output projections predict clean tokens only (no mask token in output)
         self.output_heads = nn.ModuleDict({
             key: nn.Linear(hidden_dim, vocab_size)
             for key, vocab_size in vocab_sizes.items()
@@ -155,8 +172,45 @@ class DenoisingNetwork(nn.Module):
         logger.info(
             f"DenoisingNetwork initialized: "
             f"hidden_dim={hidden_dim}, layers={num_layers}, heads={num_heads}, "
-            f"num_tokens={self.num_tokens}, hierarchical_guidance={use_hierarchical_guidance}"
+            f"num_tokens={self.num_tokens}, hierarchical_guidance={use_hierarchical_guidance}, "
+            f"guidance_mode={guidance_mode}"
         )
+
+    def _build_hierarchy_map(self):
+        """Build [N, N] parent mask for per-category hierarchical guidance.
+
+        Each position attends to the L0 parent(s) of its own (family, category)
+        group. The mask is row-normalized so guidance is a weighted average.
+        """
+        N = self.num_tokens
+        parent_mask = torch.zeros(N, N)
+
+        # Group positions by (family, category)
+        cat_groups = defaultdict(list)
+        for idx, key in enumerate(self.sorted_keys):
+            if key in self.category_level_info:
+                info = self.category_level_info[key]
+                cat_groups[(info['family'], info['category'])].append(
+                    (idx, info['level'])
+                )
+            else:
+                # Fallback: parse from key name
+                parts = key.rsplit('_L', 1)
+                level = int(parts[1])
+                family_cat = parts[0]
+                cat_groups[family_cat].append((idx, level))
+
+        # For each group, connect all positions to their L0 parent(s)
+        for positions in cat_groups.values():
+            l0_indices = [idx for idx, level in positions if level == 0]
+            if l0_indices:
+                for idx, _ in positions:
+                    for l0_idx in l0_indices:
+                        parent_mask[idx, l0_idx] = 1.0
+
+        # Row-normalize (positions with no L0 parent get zero guidance)
+        row_sums = parent_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+        self.register_buffer('parent_mask', parent_mask / row_sums)
 
     def _flatten_dict_to_sequence(
         self, tokens_dict: Dict[str, torch.Tensor]
@@ -203,8 +257,10 @@ class DenoisingNetwork(nn.Module):
     ) -> torch.Tensor:
         """Add hierarchical guidance from L0 (coarse) tokens.
 
-        Extracts L0 embeddings, projects them, and adds as residual
-        to all token embeddings (including L0 itself).
+        Two modes:
+        - "global": All L0 embeddings mean-pooled → broadcast to all positions
+        - "per_category": Each position receives guidance only from its own
+          family/category L0 parent(s) via a sparse parent_mask
 
         Args:
             embeddings: Token embeddings [B, N_total, hidden_dim]
@@ -215,25 +271,20 @@ class DenoisingNetwork(nn.Module):
         if not self.use_hierarchical_guidance:
             return embeddings
 
-        # Extract L0 (coarse) embeddings
-        l0_indices = []
-        for i, key in enumerate(self.sorted_keys):
-            if self.key_levels[key] == 0:
-                l0_indices.append(i)
+        if self.guidance_mode == "per_category" and hasattr(self, 'parent_mask'):
+            # Per-category: each position attends to its own L0 parent(s)
+            # parent_mask: [N, N], embeddings: [B, N, H] → guidance: [B, N, H]
+            guidance = torch.einsum('ij,bjd->bid', self.parent_mask, embeddings)
+        else:
+            # Global: all L0 embeddings mean-pooled and broadcast
+            if len(self._l0_indices) == 0:
+                return embeddings
+            l0_embeddings = embeddings[:, self._l0_indices, :]  # [B, N_L0, H]
+            guidance = l0_embeddings.mean(dim=1, keepdim=True)  # [B, 1, H]
 
-        if len(l0_indices) == 0:
-            # No L0 tokens, skip guidance
-            return embeddings
-
-        # Extract and aggregate L0 embeddings
-        l0_embeddings = embeddings[:, l0_indices, :]  # [B, N_L0, hidden_dim]
-        l0_guidance = l0_embeddings.mean(dim=1, keepdim=True)  # [B, 1, hidden_dim]
-
-        # Project and broadcast to all tokens
-        l0_guidance = self.guidance_proj(l0_guidance)  # [B, 1, hidden_dim]
-
-        # Add as residual
-        embeddings = embeddings + self.hierarchical_guidance_weight * l0_guidance
+        # Project and add as residual
+        guidance = self.guidance_proj(guidance)
+        embeddings = embeddings + self.hierarchical_guidance_weight * guidance
 
         return embeddings
 
@@ -271,17 +322,17 @@ class DenoisingNetwork(nn.Module):
         # Add hierarchical guidance from L0
         embeddings = self._add_hierarchical_guidance(embeddings)
 
-        # Create attention mask for observed tokens (optional conditioning)
+        # Create attention mask for observed tokens (training only)
+        # During training: mask unobserved positions so predictions come from
+        # observed context only. During eval/inference: allow full attention
+        # since unobserved tokens need to coordinate, and observed values are
+        # re-injected by RePaint at each reverse step anyway.
         src_key_padding_mask = None
-        if observed_dict is not None:
-            # Create mask: True = ignore this position
-            # For conditioning: we want to attend to observed tokens
-            # So we set mask=False for observed, mask=True for unobserved
-            # But transformers expect True=ignore, so we invert
+        if observed_dict is not None and self.training:
             mask = []
             for key in self.sorted_keys:
                 if key in observed_dict:
-                    mask.append(~observed_dict[key])  # Invert: True = ignore unobserved
+                    mask.append(~observed_dict[key])  # True = ignore unobserved
                 else:
                     mask.append(torch.zeros(B, dtype=torch.bool, device=embeddings.device))
             src_key_padding_mask = torch.stack(mask, dim=1)  # [B, N_total]

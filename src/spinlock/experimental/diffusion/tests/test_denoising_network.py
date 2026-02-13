@@ -245,5 +245,172 @@ def test_gradient_flow(denoiser):
             assert torch.any(param.grad != 0), f"Zero gradient for {name}"
 
 
+def test_per_category_guidance(vocab_sizes, category_level_info):
+    """Test per-category hierarchical guidance mode."""
+    denoiser = DenoisingNetwork(
+        vocab_sizes=vocab_sizes,
+        category_level_info=category_level_info,
+        hidden_dim=128,
+        num_layers=2,
+        num_heads=4,
+        use_hierarchical_guidance=True,
+        guidance_mode="per_category",
+    )
+
+    batch_size = 4
+    tokens_dict = {
+        "temporal_group_1_L0": torch.randint(0, 28, (batch_size,)),
+        "temporal_group_1_L1": torch.randint(0, 14, (batch_size,)),
+        "temporal_group_1_L2": torch.randint(0, 7, (batch_size,)),
+        "initial_group_1_L0": torch.randint(0, 20, (batch_size,)),
+        "initial_group_1_L1": torch.randint(0, 10, (batch_size,)),
+    }
+    timesteps = torch.randint(0, 50, (batch_size,))
+
+    # Should run without errors
+    logits = denoiser(tokens_dict, timesteps)
+    for key, vocab_size in vocab_sizes.items():
+        assert logits[key].shape == (batch_size, vocab_size)
+        assert torch.all(torch.isfinite(logits[key]))
+
+
+def test_per_category_guidance_parent_mask(vocab_sizes, category_level_info):
+    """Test that parent_mask correctly maps positions to their L0 parents."""
+    denoiser = DenoisingNetwork(
+        vocab_sizes=vocab_sizes,
+        category_level_info=category_level_info,
+        hidden_dim=128,
+        num_layers=2,
+        num_heads=4,
+        use_hierarchical_guidance=True,
+        guidance_mode="per_category",
+    )
+
+    # Check parent_mask structure
+    mask = denoiser.parent_mask  # [N, N]
+    sorted_keys = denoiser.sorted_keys
+
+    for i, key_i in enumerate(sorted_keys):
+        info_i = category_level_info[key_i]
+        for j, key_j in enumerate(sorted_keys):
+            info_j = category_level_info[key_j]
+
+            if info_j['level'] == 0 and (
+                info_i['family'] == info_j['family']
+                and info_i['category'] == info_j['category']
+            ):
+                # Same family+category L0 → should have nonzero weight
+                assert mask[i, j].item() > 0, (
+                    f"{key_i} should attend to its L0 parent {key_j}"
+                )
+            else:
+                # Different family/category or not L0 → should be zero
+                assert mask[i, j].item() == 0, (
+                    f"{key_i} should NOT attend to {key_j}"
+                )
+
+
+def test_per_category_vs_global_guidance_differ(vocab_sizes, category_level_info):
+    """Test that per-category and global guidance produce different outputs."""
+    torch.manual_seed(42)
+    denoiser_global = DenoisingNetwork(
+        vocab_sizes=vocab_sizes,
+        category_level_info=category_level_info,
+        hidden_dim=128,
+        num_layers=2,
+        num_heads=4,
+        use_hierarchical_guidance=True,
+        guidance_mode="global",
+    )
+
+    torch.manual_seed(42)
+    denoiser_per_cat = DenoisingNetwork(
+        vocab_sizes=vocab_sizes,
+        category_level_info=category_level_info,
+        hidden_dim=128,
+        num_layers=2,
+        num_heads=4,
+        use_hierarchical_guidance=True,
+        guidance_mode="per_category",
+    )
+
+    batch_size = 4
+    tokens_dict = {
+        "temporal_group_1_L0": torch.randint(0, 28, (batch_size,)),
+        "temporal_group_1_L1": torch.randint(0, 14, (batch_size,)),
+        "temporal_group_1_L2": torch.randint(0, 7, (batch_size,)),
+        "initial_group_1_L0": torch.randint(0, 20, (batch_size,)),
+        "initial_group_1_L1": torch.randint(0, 10, (batch_size,)),
+    }
+    timesteps = torch.randint(0, 50, (batch_size,))
+
+    logits_global = denoiser_global(tokens_dict, timesteps)
+    logits_per_cat = denoiser_per_cat(tokens_dict, timesteps)
+
+    # They share the same weights but different guidance paths → different outputs
+    any_differ = any(
+        not torch.allclose(logits_global[key], logits_per_cat[key], atol=1e-5)
+        for key in vocab_sizes
+    )
+    assert any_differ, "Per-category and global guidance should produce different outputs"
+
+
+def test_eval_mode_drops_attention_mask(denoiser):
+    """Test that eval mode drops the src_key_padding_mask."""
+    batch_size = 4
+    tokens_dict = {
+        "temporal_group_1_L0": torch.randint(0, 28, (batch_size,)),
+        "temporal_group_1_L1": torch.randint(0, 14, (batch_size,)),
+        "temporal_group_1_L2": torch.randint(0, 7, (batch_size,)),
+        "initial_group_1_L0": torch.randint(0, 20, (batch_size,)),
+        "initial_group_1_L1": torch.randint(0, 10, (batch_size,)),
+    }
+    timesteps = torch.randint(0, 50, (batch_size,))
+
+    observed_dict = {
+        key: torch.tensor([True, True, False, False])
+        for key in tokens_dict
+    }
+
+    # Train mode: with mask (should work)
+    denoiser.train()
+    logits_train = denoiser(tokens_dict, timesteps, observed_dict=observed_dict)
+
+    # Eval mode: should drop mask (full attention)
+    denoiser.eval()
+    logits_eval = denoiser(tokens_dict, timesteps, observed_dict=observed_dict)
+
+    # Both should produce valid outputs
+    for key in tokens_dict:
+        assert torch.all(torch.isfinite(logits_train[key]))
+        assert torch.all(torch.isfinite(logits_eval[key]))
+
+    # Outputs should differ since masking changes attention patterns
+    any_differ = any(
+        not torch.allclose(logits_train[key], logits_eval[key], atol=1e-5)
+        for key in tokens_dict
+    )
+    assert any_differ, "Train and eval mode should produce different outputs with observed_dict"
+
+
+def test_absorbing_state_embeddings(vocab_sizes, category_level_info):
+    """Test that absorbing mode creates V+1 embeddings but V output heads."""
+    denoiser = DenoisingNetwork(
+        vocab_sizes=vocab_sizes,
+        category_level_info=category_level_info,
+        hidden_dim=128,
+        num_layers=2,
+        num_heads=4,
+        transition_type="absorbing",
+    )
+
+    for key, vocab_size in vocab_sizes.items():
+        # Embeddings should have V+1 entries (for mask token)
+        assert denoiser.token_embeddings[key].num_embeddings == vocab_size + 1
+
+        # Output heads should still predict V clean tokens only
+        assert denoiser.output_heads[key].out_features == vocab_size
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -86,6 +86,20 @@ class DiffusionTrainer:
             'learning_rate': [],
         }
 
+        # Cache SNR weights if enabled
+        self.snr_weights = None
+        if config.training.use_snr_weighting:
+            snr = self.diffusion.get_timestep_weights()  # [T], normalized mean=1
+            self.snr_weights = snr.to(device)
+
+        # Cache vocab-size loss weights if enabled
+        self.vocab_loss_weights = {}
+        if config.training.use_vocab_size_weighting:
+            v_max = max(self.diffusion.vocab_sizes.values())
+            log_v_max = math.log(v_max)
+            for key, v in self.diffusion.vocab_sizes.items():
+                self.vocab_loss_weights[key] = math.log(v) / log_v_max
+
         # Optional wandb logging
         self.use_wandb = config.training.use_wandb
         if self.use_wandb:
@@ -230,14 +244,14 @@ class DiffusionTrainer:
                 0, self.diffusion.schedule.num_timesteps, (batch_size,), device=self.device
             )
 
-            # Forward diffusion: add noise to tokens
-            noisy_tokens, _ = self.diffusion.forward_process(tokens, t[0].item(), mask_dict=target)
+            # Forward diffusion: add noise to tokens (per-sample timesteps)
+            noisy_tokens, _ = self.diffusion.forward_process(tokens, t, mask_dict=target)
 
             # Predict clean tokens
             predicted_logits = self.denoiser(noisy_tokens, t, observed_dict=observed)
 
-            # Compute loss on target positions only
-            loss = self._compute_loss(predicted_logits, tokens, target)
+            # Compute loss on target positions only (with optional SNR/vocab weighting)
+            loss = self._compute_loss(predicted_logits, tokens, target, t=t)
 
             # Backward pass
             self.optimizer.zero_grad()
@@ -276,19 +290,25 @@ class DiffusionTrainer:
         predicted_logits: Dict[str, torch.Tensor],
         target_tokens: Dict[str, torch.Tensor],
         target_mask: Dict[str, torch.BoolTensor],
+        t: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Compute per-category-level cross-entropy on target positions.
+
+        Supports optional SNR timestep weighting and vocab-size normalization.
 
         Args:
             predicted_logits: Dict mapping key → logits [B, V]
             target_tokens: Dict mapping key → true tokens [B]
             target_mask: Dict mapping key → mask [B] (True = predict this position)
+            t: Optional timestep tensor [B] for SNR weighting
 
         Returns:
             Scalar loss tensor
         """
-        total_loss = 0.0
-        total_count = 0
+        B = next(iter(predicted_logits.values())).shape[0]
+        device = next(iter(predicted_logits.values())).device
+        per_sample_loss = torch.zeros(B, device=device)
+        per_sample_count = torch.zeros(B, device=device)
 
         for key in predicted_logits.keys():
             logits = predicted_logits[key]  # [B, V]
@@ -298,20 +318,21 @@ class DiffusionTrainer:
             # Compute cross-entropy loss
             loss = F.cross_entropy(logits, targets, reduction='none')  # [B]
 
-            # Apply mask (only count target positions)
-            masked_loss = loss * mask.float()
+            # Apply vocab-size weighting
+            w_v = self.vocab_loss_weights.get(key, 1.0)
 
-            # Accumulate
-            total_loss += masked_loss.sum()
-            total_count += mask.sum()
+            # Accumulate per-sample weighted loss
+            per_sample_loss = per_sample_loss + loss * mask.float() * w_v
+            per_sample_count = per_sample_count + mask.float() * w_v
 
-        # Average over all target positions
-        if total_count > 0:
-            avg_loss = total_loss / total_count
-        else:
-            avg_loss = total_loss
+        # Normalize per sample
+        per_sample_loss = per_sample_loss / per_sample_count.clamp(min=1.0)
 
-        return avg_loss
+        # Apply SNR timestep weighting
+        if self.snr_weights is not None and t is not None:
+            per_sample_loss = per_sample_loss * self.snr_weights[t]
+
+        return per_sample_loss.mean()
 
     @torch.no_grad()
     def validate(self) -> Dict[str, float]:
@@ -337,14 +358,14 @@ class DiffusionTrainer:
                 0, self.diffusion.schedule.num_timesteps, (batch_size,), device=self.device
             )
 
-            # Forward diffusion
-            noisy_tokens, _ = self.diffusion.forward_process(tokens, t[0].item(), mask_dict=target)
+            # Forward diffusion (per-sample timesteps)
+            noisy_tokens, _ = self.diffusion.forward_process(tokens, t, mask_dict=target)
 
             # Predict
             predicted_logits = self.denoiser(noisy_tokens, t, observed_dict=observed)
 
-            # Compute loss
-            loss = self._compute_loss(predicted_logits, tokens, target)
+            # Compute loss (with optional SNR/vocab weighting)
+            loss = self._compute_loss(predicted_logits, tokens, target, t=t)
             val_loss += loss.item()
 
             # Compute accuracy on target positions

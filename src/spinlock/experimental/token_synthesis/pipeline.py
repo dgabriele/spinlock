@@ -1417,10 +1417,9 @@ class SynthesisVerificationPipeline:
             0, self._diffusion.schedule.num_timesteps,
             (len(items),), device=self.device,
         )
-        # Forward process needs a scalar timestep — use the first element
-        # (batched timestep handling varies by implementation)
+        # Forward process with per-sample timesteps
         noisy_tokens, _ = self._diffusion.forward_process(
-            tokens, t[0].item(), mask_dict=target_mask,
+            tokens, t, mask_dict=target_mask,
         )
 
         # Predict clean tokens
