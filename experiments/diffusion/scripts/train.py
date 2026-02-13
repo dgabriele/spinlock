@@ -133,16 +133,27 @@ def main(args):
     # Set seed
     torch.manual_seed(config.seed)
 
-    # Extract vocab sizes
-    if config.dataset.use_pretokenized:
-        logger.info("Extracting vocab sizes from pre-tokenized dataset")
+    # Extract vocab sizes — prefer tokenizer codebook sizes (authoritative)
+    # over pretokenized max+1 (which underestimates for underutilized codes)
+    if config.dataset.tokenizer_checkpoint is not None:
+        logger.info(
+            "Extracting vocab sizes from tokenizer (authoritative codebook sizes)"
+        )
+        vocab_sizes, category_level_info = extract_vocab_sizes_and_info(
+            config.dataset.tokenizer_checkpoint
+        )
+    elif config.dataset.use_pretokenized:
+        logger.warning(
+            "No tokenizer_checkpoint provided — inferring vocab sizes from "
+            "pretokenized data (max+1). This may underestimate vocab sizes "
+            "for codebooks with unused entries."
+        )
         vocab_sizes, category_level_info = extract_vocab_sizes_from_pretokenized(
             config.dataset.tokenized_path
         )
     else:
-        logger.info("Extracting vocab sizes from tokenizer")
-        vocab_sizes, category_level_info = extract_vocab_sizes_and_info(
-            config.dataset.tokenizer_checkpoint
+        raise ValueError(
+            "Either tokenizer_checkpoint or use_pretokenized must be set"
         )
 
     # Create mask generator

@@ -192,6 +192,8 @@ Output:
             logger.warning("Pipeline interrupted by user")
             return 130
         except Exception as e:
+            import traceback
+            logger.error(f"Pipeline failed:\n{traceback.format_exc()}")
             return self.error(f"Pipeline failed: {e}")
 
         # Print results

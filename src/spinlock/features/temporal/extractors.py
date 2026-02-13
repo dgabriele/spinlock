@@ -12,7 +12,7 @@ Use get_feature_dimensions() to query actual dimension counts dynamically.
 
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, Any, Tuple
+from typing import Dict, Optional, Any, Set, Tuple
 import numpy as np
 
 from spinlock.features.base import FeatureExtractorBase
@@ -110,63 +110,47 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 grid_size=64  # Will be updated based on actual data
             )
 
-    def extract_per_timestep(self, trajectories: torch.Tensor) -> torch.Tensor:
-        """Extract per-timestep features (v3.1 method).
+    def _extract_spatial(self, fields: torch.Tensor) -> torch.Tensor:
+        """Extract spatial features from mean fields.
 
         Args:
-            trajectories: [N, M, T, C, H, W] trajectory tensor
-                N: number of operators
-                M: number of realizations per operator
-                T: number of timesteps
-                C: number of channels
-                H, W: spatial dimensions
+            fields: [N, T, C, H, W] mean fields (realization-averaged)
 
         Returns:
-            features: [N, T, 209] per-timestep features
-
-        Note:
-            The realization dimension M is averaged out before extraction,
-            as we compute features on the mean field across realizations.
+            [N, T, D_spatial] spatial features
         """
-        N, M, T, C, H, W = trajectories.shape
-
-        # Apply channel selection if configured (e.g., density-only for MNO/CNO compatibility)
-        if self.config is not None and hasattr(self.config, 'channel_indices') and self.config.channel_indices is not None:
-            # Select only specified channels (e.g., [0] for density-only)
-            trajectories = trajectories[:, :, :, self.config.channel_indices, :, :]
-            C = len(self.config.channel_indices)
-
-        # Average across realizations: [N, M, T, C, H, W] → [N, T, C, H, W]
-        fields = trajectories.mean(dim=1)
-
-        # Extract spatial features (24D)
-        # The extractors return dicts with features of shape [N, T, C] or [N, T]
+        N, T = fields.shape[:2]
         spatial_result = self.spatial_extractor.extract(fields)
         if isinstance(spatial_result, dict):
-            # Collect all features and flatten to [N, T, D]
             spatial_features = []
             for key in sorted(spatial_result.keys()):
-                feat = spatial_result[key]  # [N, T, C] or [N, T]
+                feat = spatial_result[key]
                 if feat.dim() == 3:
-                    # [N, T, C] → keep as is, will be flattened to [N, T, C]
                     spatial_features.append(feat)
                 elif feat.dim() == 2:
-                    # [N, T] → [N, T, 1]
                     spatial_features.append(feat.unsqueeze(-1))
-            # Concatenate: [N, T, D_spatial]
             spatial = torch.cat(spatial_features, dim=-1) if spatial_features else torch.zeros(N, T, 24, device=self.device)
         else:
             spatial = spatial_result
-        # Flatten last dimension: [N, T, D_spatial]
         if spatial.dim() > 2:
             spatial = spatial.flatten(start_dim=2)
+        return spatial
 
-        # Extract spectral features (27D)
+    def _extract_spectral(self, fields: torch.Tensor) -> torch.Tensor:
+        """Extract spectral features from mean fields.
+
+        Args:
+            fields: [N, T, C, H, W] mean fields
+
+        Returns:
+            [N, T, D_spectral] spectral features
+        """
+        N, T = fields.shape[:2]
         spectral_result = self.spectral_extractor.extract(fields)
         if isinstance(spectral_result, dict):
             spectral_features = []
             for key in sorted(spectral_result.keys()):
-                feat = spectral_result[key]  # [N, T, C] or [N, T]
+                feat = spectral_result[key]
                 if feat.dim() == 3:
                     spectral_features.append(feat)
                 elif feat.dim() == 2:
@@ -176,75 +160,138 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
             spectral = spectral_result
         if spectral.dim() > 2:
             spectral = spectral.flatten(start_dim=2)
+        return spectral
 
-        # Extract cross-channel features (12D) - SKIP if C=1 (single channel)
-        # Cross-channel features require C >= 2 and will be NaN for single-channel data
-        if C == 1:
-            # Single channel: skip cross-channel extraction (produces NaN features)
-            cross = torch.zeros(N, T, 0, device=self.device)  # 0D placeholder
+    def _extract_cross_channel(self, fields: torch.Tensor, num_channels: int) -> Optional[torch.Tensor]:
+        """Extract cross-channel features from mean fields.
+
+        Args:
+            fields: [N, T, C, H, W] mean fields
+            num_channels: Number of channels (C)
+
+        Returns:
+            [N, T, D_cross] cross-channel features, or zero-dim tensor if C=1
+        """
+        N, T = fields.shape[:2]
+        if num_channels == 1:
+            return torch.zeros(N, T, 0, device=self.device)
+
+        cross_result = self.cross_channel_extractor.extract(fields)
+        if isinstance(cross_result, dict):
+            cross_features = []
+            for key in sorted(cross_result.keys()):
+                feat = cross_result[key]
+                if feat.dim() == 3 and feat.shape[1] == 1:
+                    feat = feat.squeeze(1)
+                if feat.dim() == 3:
+                    cross_features.append(feat)
+                elif feat.dim() == 2:
+                    cross_features.append(feat.unsqueeze(-1))
+            cross = torch.cat(cross_features, dim=-1) if cross_features else torch.zeros(N, T, 12, device=self.device)
         else:
-            # Multi-channel: extract cross-channel features
-            cross_result = self.cross_channel_extractor.extract(fields)
-            if isinstance(cross_result, dict):
-                cross_features = []
-                for key in sorted(cross_result.keys()):
-                    feat = cross_result[key]  # [N, T, C], [N, M, T], or [N, T]
-                    # Handle [N, M, T] from cross-channel extractor (squeeze M if M=1)
-                    if feat.dim() == 3 and feat.shape[1] == 1:
-                        feat = feat.squeeze(1)  # [N, 1, T] → [N, T]
-                    if feat.dim() == 3:
-                        cross_features.append(feat)
-                    elif feat.dim() == 2:
-                        cross_features.append(feat.unsqueeze(-1))
-                cross = torch.cat(cross_features, dim=-1) if cross_features else torch.zeros(N, T, 12, device=self.device)
-            else:
-                cross = cross_result
-            if cross.dim() > 2:
-                cross = cross.flatten(start_dim=2)
+            cross = cross_result
+        if cross.dim() > 2:
+            cross = cross.flatten(start_dim=2)
+        return cross
 
-        # Extract enhanced temporal features (130D)
+    def _extract_temporal(self, fields: torch.Tensor) -> torch.Tensor:
+        """Extract enhanced temporal features from mean fields.
+
+        Args:
+            fields: [N, T, C, H, W] mean fields
+
+        Returns:
+            [N, T, D_temporal] temporal features
+        """
+        T = fields.shape[1]
         if self.use_batch_mode:
-            # NEW: Batch-parallel path (GPU-only, fast)
-            # Process entire trajectory at once: [N, T, C, H, W] → [N, T, D]
             temporal = self.temporal_extractor_batch.extract_batch(fields)
         else:
-            # OLD: Sequential path (for validation/backward compat)
-            # Process timestep by timestep to maintain history
             temporal_features = []
-            self.temporal_extractor.reset()  # Reset history buffers
-
+            self.temporal_extractor.reset()
             for t in range(T):
-                # Get all samples at timestep t: [N, C, H, W]
                 u_t = fields[:, t, :, :, :]
-
-                # Extract temporal features: [N, 130]
                 temporal_t = self.temporal_extractor.extract(u_t)
-
                 temporal_features.append(temporal_t)
-
-            # Stack: [T, N, 130] → [N, T, 130]
             temporal = torch.stack(temporal_features, dim=0).transpose(0, 1)
+        return temporal
 
-        # Extract quantum features if enabled
-        quantum = None
-        if self.quantum_extractor is not None:
-            # Quantum features require exactly 2 channels (Re, Im) for wavefunctions
-            if C == 2:
-                # Update grid size based on actual data
-                if fields.shape[-1] != self.quantum_extractor.grid_size:
-                    self.quantum_extractor.grid_size = fields.shape[-1]
-                    self.quantum_extractor._setup_grids()
+    def _extract_quantum(self, fields: torch.Tensor, num_channels: int) -> Optional[torch.Tensor]:
+        """Extract quantum features from mean fields.
 
-                quantum = self.quantum_extractor.extract(fields)  # [N, T, D_quantum]
-            else:
-                # Skip quantum features for non-quantum data (C != 2)
-                # This handles classical PDE systems or systems with multiple physical fields
-                pass
+        Args:
+            fields: [N, T, C, H, W] mean fields
+            num_channels: Number of channels (C)
 
-        # Now all features are [N, T, D_i], concatenate along last dimension
-        feature_list = [spatial, spectral, cross, temporal]
-        if quantum is not None:
-            feature_list.append(quantum)
+        Returns:
+            [N, T, D_quantum] quantum features, or None if not applicable
+        """
+        if self.quantum_extractor is None:
+            return None
+        if num_channels != 2:
+            return None
+
+        if fields.shape[-1] != self.quantum_extractor.grid_size:
+            self.quantum_extractor.grid_size = fields.shape[-1]
+            self.quantum_extractor._setup_grids()
+
+        return self.quantum_extractor.extract(fields)
+
+    def extract_per_timestep(
+        self,
+        trajectories: torch.Tensor,
+        skip_extractors: Optional[Set[str]] = None,
+    ) -> torch.Tensor:
+        """Extract per-timestep features (v3.1 method).
+
+        Args:
+            trajectories: [N, M, T, C, H, W] trajectory tensor
+                N: number of operators
+                M: number of realizations per operator
+                T: number of timesteps
+                C: number of channels
+                H, W: spatial dimensions
+            skip_extractors: Optional set of sub-extractor names to skip.
+                Valid names: 'spatial', 'spectral', 'cross_channel', 'temporal', 'quantum'.
+                When a sub-extractor is skipped, its features are omitted from output,
+                reducing the output dimension accordingly.
+
+        Returns:
+            features: [N, T, D] per-timestep features (D depends on skipped extractors)
+
+        Note:
+            The realization dimension M is averaged out before extraction,
+            as we compute features on the mean field across realizations.
+        """
+        N, M, T, C, H, W = trajectories.shape
+
+        # Apply channel selection if configured (e.g., density-only for MNO/CNO compatibility)
+        if self.config is not None and hasattr(self.config, 'channel_indices') and self.config.channel_indices is not None:
+            trajectories = trajectories[:, :, :, self.config.channel_indices, :, :]
+            C = len(self.config.channel_indices)
+
+        # Average across realizations: [N, M, T, C, H, W] → [N, T, C, H, W]
+        fields = trajectories.mean(dim=1)
+
+        skip = skip_extractors or set()
+        feature_list = []
+
+        if 'spatial' not in skip:
+            feature_list.append(self._extract_spatial(fields))
+
+        if 'spectral' not in skip:
+            feature_list.append(self._extract_spectral(fields))
+
+        if 'cross_channel' not in skip:
+            feature_list.append(self._extract_cross_channel(fields, C))
+
+        if 'temporal' not in skip:
+            feature_list.append(self._extract_temporal(fields))
+
+        if 'quantum' not in skip:
+            quantum = self._extract_quantum(fields, C)
+            if quantum is not None:
+                feature_list.append(quantum)
 
         features = torch.cat(feature_list, dim=-1)
 
@@ -280,6 +327,44 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
             'per_trajectory': torch.zeros(N, M, 0, device=self.device),
             'aggregated_mean': torch.zeros(N, 0, device=self.device),
         }
+
+    def get_feature_ranges(self, num_channels: int) -> Dict[str, range]:
+        """Return the feature index range per sub-extractor via dummy forward pass.
+
+        This dynamically determines which indices in the concatenated feature
+        vector belong to each sub-extractor. Used by the synthesis pipeline
+        to identify which sub-extractors produce features that are entirely
+        masked out by the cleaning mask (and can therefore be skipped).
+
+        Args:
+            num_channels: Number of channels in the data
+
+        Returns:
+            Dict mapping sub-extractor name to range of indices
+        """
+        # Create a small dummy batch: [N=1, M=2, T=5, C=num_channels, H=64, W=64]
+        dummy = torch.zeros(1, 2, 5, num_channels, 64, 64, device=self.device)
+        fields = dummy.mean(dim=1)  # [1, T, C, H, W]
+
+        ranges = {}
+        offset = 0
+
+        with torch.no_grad():
+            # Run each extraction block individually, measure output dim
+            for name, extract_fn in [
+                ('spatial', lambda: self._extract_spatial(fields)),
+                ('spectral', lambda: self._extract_spectral(fields)),
+                ('cross_channel', lambda: self._extract_cross_channel(fields, num_channels)),
+                ('temporal', lambda: self._extract_temporal(fields)),
+                ('quantum', lambda: self._extract_quantum(fields, num_channels)),
+            ]:
+                feat = extract_fn()
+                if feat is not None and feat.shape[-1] > 0:
+                    dim = feat.shape[-1]
+                    ranges[name] = range(offset, offset + dim)
+                    offset += dim
+
+        return ranges
 
     def get_actual_per_timestep_dim(self, num_channels: int = 3) -> int:
         """Get actual per-timestep feature dimension by runtime extraction.

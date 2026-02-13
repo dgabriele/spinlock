@@ -427,7 +427,7 @@ class DiffusionTrainer:
         Args:
             checkpoint_path: Path to checkpoint file
         """
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
 
         self.denoiser.load_state_dict(checkpoint['denoiser_state_dict'])
         self.diffusion.load_state_dict(checkpoint['diffusion_state_dict'])

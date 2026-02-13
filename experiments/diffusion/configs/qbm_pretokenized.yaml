@@ -5,6 +5,7 @@
 # Dataset paths
 dataset:
   tokenized_path: "datasets/qbm_50k_tokenized.h5"  # Pre-tokenized with QBM VQTokenizer (from project root)
+  tokenizer_checkpoint: "checkpoints/v2/vqvae/vq_tokenizer_best.pt"  # For authoritative vocab sizes
   use_pretokenized: true  # Use pre-tokenized data (fast)
 
 # Masking strategy

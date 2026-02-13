@@ -48,10 +48,14 @@ class DatasetConfig(BaseModel):
     @field_validator("tokenizer_checkpoint")
     @classmethod
     def validate_tokenizer(cls, v, info):
-        """Validate tokenizer exists if not using pre-tokenized."""
-        if not info.data.get("use_pretokenized") and v is not None:
-            if not v.exists():
-                raise ValueError(f"Tokenizer checkpoint not found: {v}")
+        """Validate tokenizer exists when provided.
+
+        Required in on-the-fly mode. Optional in pretokenized mode (used
+        to extract authoritative vocab sizes from actual codebooks rather
+        than inferring from max observed token values).
+        """
+        if v is not None and not v.exists():
+            raise ValueError(f"Tokenizer checkpoint not found: {v}")
         return v
 
     def model_post_init(self, __context):

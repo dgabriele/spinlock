@@ -372,8 +372,12 @@ class CrossChannelFeatureExtractor:
             features['cross_channel_corr_min'] = pairwise_corr.amin(dim=1)
 
         # Std of pairwise correlations
+        # For C=2, there's only 1 pair → std is undefined with Bessel's correction.
+        # Use correction=0 when there's a single pair (returns 0.0, mathematically correct).
         if config is None or config.include_corr_std:
-            features['cross_channel_corr_std'] = pairwise_corr.std(dim=1)
+            num_pairs = pairwise_corr.shape[1]
+            correction = 0 if num_pairs <= 1 else 1
+            features['cross_channel_corr_std'] = pairwise_corr.std(dim=1, correction=correction)
 
         return features
 

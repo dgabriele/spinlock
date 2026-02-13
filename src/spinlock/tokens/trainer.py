@@ -250,6 +250,62 @@ class VQTokenizerTrainer:
 
         return self.training_history
 
+    def train_on_features(
+        self,
+        temporal_features: Optional[torch.Tensor] = None,
+        initial_manual: Optional[torch.Tensor] = None,
+        initial_raw: Optional[torch.Tensor] = None,
+        theta_features: Optional[torch.Tensor] = None,
+        temporal_mask: Optional[torch.Tensor] = None,
+        temporal_lengths: Optional[torch.Tensor] = None,
+        num_epochs: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Fine-tune on pre-extracted features (for ADAPT phase).
+
+        Unlike train(), this does NOT save checkpoints, run early stopping,
+        or compute final metrics. It runs a short training loop and returns
+        the history for the caller to evaluate.
+
+        Args:
+            temporal_features: [N, T, D_t] temporal features (optional)
+            initial_manual: [N, D_i] manual initial features (optional)
+            initial_raw: [N, C, H, W] raw initial conditions (optional)
+            theta_features: [N, param_dim] operator parameters (optional)
+            temporal_mask: [N, T] validity mask (optional)
+            temporal_lengths: [N] sequence lengths (optional)
+            num_epochs: Override config epoch count (for short fine-tuning)
+
+        Returns:
+            Dict with 'train_losses' and 'val_losses' lists
+        """
+        epochs = num_epochs or self.config.training.num_epochs
+
+        train_loader, val_loader = self._create_dataloaders(
+            temporal_features, initial_manual, initial_raw,
+            theta_features, temporal_mask, temporal_lengths,
+        )
+
+        logger.info(
+            f"ADAPT fine-tuning: {epochs} epochs, "
+            f"lr={self.optimizer.param_groups[0]['lr']:.1e}, "
+            f"train_batches={len(train_loader)}"
+        )
+
+        history = {'train_losses': [], 'val_losses': []}
+
+        for epoch in range(epochs):
+            train_metrics = self._train_epoch(train_loader, epoch)
+            history['train_losses'].append(train_metrics['loss'])
+
+            if (epoch + 1) % max(1, self.config.training.val_every_n_epochs) == 0:
+                val_metrics = self._validate_epoch(val_loader)
+                history['val_losses'].append(val_metrics['loss'])
+
+            if self.scheduler is not None and epoch >= self.config.training.warmup_epochs:
+                self.scheduler.step()
+
+        return history
+
     def _create_dataloaders(
         self,
         temporal_features: Optional[torch.Tensor],
