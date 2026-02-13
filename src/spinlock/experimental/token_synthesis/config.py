@@ -148,6 +148,18 @@ class CounterfactualConfig(BaseModel):
         description="Forward-diffusion timestep. None = T (full noise)")
 
 
+class ResamplingConfig(BaseModel):
+    """Physically-guided resampling: fix sampling errors via RePaint inpainting.
+
+    After the first QBM roundtrip identifies mismatched tokens (~15%), uses
+    D3PM inpainting to re-generate only mismatched keys conditioned on
+    physically-grounded matching keys. Then re-runs QBM for better grounding.
+    """
+    max_correction_steps: Optional[int] = Field(default=None,
+        description="Max denoising steps for correction sampling. "
+                    "None = full T. Lower values trade quality for speed.")
+
+
 class AdaptConfig(BaseModel):
     """VQTokenizer online refinement configuration.
 
@@ -201,6 +213,7 @@ class TokenSynthesisConfig(BaseModel):
     refinement: RefinementConfig = RefinementConfig()
     adapt: AdaptConfig = AdaptConfig()
     counterfactual: Optional[CounterfactualConfig] = None
+    resampling: Optional[ResamplingConfig] = None
     output_dir: Path = Path("experiments/token_synthesis/results")
     device: str = "cuda"
     seed: int = 42

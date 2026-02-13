@@ -62,8 +62,15 @@ counterfactual:
   category_mask_prob: 0.5     # P(category-level) vs P(random) masking
   # t_probe: null             # Default = T (full noise)
 
+# Physically-guided resampling: after the first QBM roundtrip identifies
+# mismatched tokens, use D3PM RePaint inpainting to re-generate only those
+# keys conditioned on the matching (physically-grounded) context.
+# ~87% slower per explore step, but improves Jaccard beyond 0.88 plateau.
+resampling:
+  max_correction_steps: null  # Full T=50 steps. Set lower (e.g. 10) for speed.
+
 adapt:
-  enabled: true              # Re-enabled with conservative settings
+  enabled: false             # Disabled — codebook drift destabilizes denoiser (see cycle 4→5 regression)
   frequency: 5               # Every 5 cycles (was 1) — lets denoiser stabilize between updates
   num_epochs: 50             # ~20s per ADAPT phase, still <5% of cycle time
   learning_rate: 1.0e-5      # 10x lower than initial tokenizer training LR
