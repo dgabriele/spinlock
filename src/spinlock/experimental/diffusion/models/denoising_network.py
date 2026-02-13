@@ -10,7 +10,7 @@ Transformer-based architecture that:
 import logging
 import math
 from collections import defaultdict
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple, Union, overload
 
 import torch
 import torch.nn as nn
@@ -293,16 +293,24 @@ class DenoisingNetwork(nn.Module):
         tokens_dict: Dict[str, torch.Tensor],
         timesteps: torch.Tensor,
         observed_dict: Optional[Dict[str, torch.BoolTensor]] = None,
-    ) -> Dict[str, torch.Tensor]:
+        return_hidden: bool = False,
+    ) -> Union[Dict[str, torch.Tensor], Tuple[Dict[str, torch.Tensor], torch.Tensor]]:
         """Predict clean tokens from noisy tokens and timestep.
 
         Args:
             tokens_dict: Dict mapping key → noisy token indices [B]
             timesteps: Timestep values [B]
             observed_dict: Optional dict of observed masks [B] (for conditioning)
+            return_hidden: If True, also return the transformer's encoded
+                hidden states [B, N_total, hidden_dim] alongside logits.
 
         Returns:
-            Dict mapping key → predicted logits [B, vocab_size]
+            If return_hidden is False:
+                Dict mapping key → predicted logits [B, vocab_size]
+            If return_hidden is True:
+                Tuple of (logits_dict, encoded) where encoded is
+                [B, N_total, hidden_dim] — the transformer's output
+                before the per-key output heads.
         """
         B = timesteps.shape[0]
 
@@ -342,5 +350,8 @@ class DenoisingNetwork(nn.Module):
 
         # Unflatten to dict logits
         logits_dict = self._unflatten_sequence_to_dict(encoded)
+
+        if return_hidden:
+            return logits_dict, encoded
 
         return logits_dict
