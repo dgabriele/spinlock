@@ -67,7 +67,8 @@ counterfactual:
 # keys conditioned on the matching (physically-grounded) context.
 # ~87% slower per explore step, but improves Jaccard beyond 0.88 plateau.
 resampling:
-  max_correction_steps: null  # Full T=50 steps. Set lower (e.g. 10) for speed.
+  noise_scale: 1.0            # T_correction = T × mismatch_rate × noise_scale (adaptive)
+  max_correction_steps: null  # Optional hard cap on correction steps
 
 adapt:
   enabled: false             # Disabled — codebook drift destabilizes denoiser (see cycle 4→5 regression)

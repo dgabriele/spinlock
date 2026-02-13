@@ -154,10 +154,19 @@ class ResamplingConfig(BaseModel):
     After the first QBM roundtrip identifies mismatched tokens (~15%), uses
     D3PM inpainting to re-generate only mismatched keys conditioned on
     physically-grounded matching keys. Then re-runs QBM for better grounding.
+
+    The correction timestep is adaptive: T_correction = T × mismatch_rate × noise_scale.
+    This ensures the noise level matches the correction difficulty — high mismatch
+    rates get more noise (exploration), low rates get less (conservative refinement).
+    Both T and mismatch_rate are auto-detected from the model and data.
     """
-    max_correction_steps: Optional[int] = Field(default=None,
-        description="Max denoising steps for correction sampling. "
-                    "None = full T. Lower values trade quality for speed.")
+    noise_scale: float = Field(default=1.0, gt=0.0,
+        description="Scale factor for adaptive correction timestep. "
+                    "T_correction = T × mismatch_rate × noise_scale. "
+                    "Values > 1.0 allow more exploration, < 1.0 keep corrections conservative.")
+    max_correction_steps: Optional[int] = Field(default=None, ge=1,
+        description="Hard cap on correction steps regardless of adaptive formula. "
+                    "None = no cap (adaptive only). Useful as a safety valve.")
 
 
 class AdaptConfig(BaseModel):

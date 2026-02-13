@@ -292,8 +292,19 @@ class DiscreteD3PM(nn.Module):
         x_0_dict: Optional[Dict[str, torch.Tensor]] = None,
         denoising_network: Optional[nn.Module] = None,
         device: str = "cuda",
+        start_step: Optional[int] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Full sampling loop T → 0 with optional inpainting.
+        """Sampling loop with optional partial start and inpainting.
+
+        When ``start_step`` is None (default), runs the full T → 0 reverse
+        loop from uniform noise — standard unconditional generation.
+
+        When ``start_step < T`` and ``x_0_dict`` is provided, runs a partial
+        reverse loop: forward-diffuses x_0 to ``start_step`` to initialize,
+        then denoises from ``start_step`` → 0.  This produces corrections
+        that stay close to x_0 (less noise = more conservative), useful for
+        physically-guided resampling where the retokenized tokens are
+        already approximately correct.
 
         Args:
             batch_size: Number of samples to generate
@@ -301,6 +312,8 @@ class DiscreteD3PM(nn.Module):
             x_0_dict: Optional clean tokens dict [B] (for inpainting)
             denoising_network: Trained denoising network
             device: Device for computation
+            start_step: Start reverse loop from this timestep instead of T.
+                None = full T (standard sampling). Must have x_0_dict for < T.
 
         Returns:
             Dict mapping key → generated tokens [B]
@@ -310,15 +323,27 @@ class DiscreteD3PM(nn.Module):
 
         denoising_network.eval()
 
-        # Initialize with uniform random tokens
-        x_t = {}
-        for key, vocab_size in self.vocab_sizes.items():
-            x_t[key] = torch.randint(
-                0, vocab_size, (batch_size,), device=device
-            )
+        T = self.schedule.num_timesteps
+        actual_start = T if start_step is None else min(start_step, T)
 
-        # Iterative denoising T → 0
-        for t in reversed(range(self.schedule.num_timesteps)):
+        if actual_start < T and x_0_dict is not None:
+            # Partial start: forward-diffuse x_0 to actual_start
+            x_0_on_device = {k: v.to(device) for k, v in x_0_dict.items()}
+            all_mask = {
+                k: torch.ones(batch_size, dtype=torch.bool, device=device)
+                for k in x_0_on_device
+            }
+            x_t, _ = self.forward_process(x_0_on_device, actual_start - 1, all_mask)
+        else:
+            # Full start: uniform random noise
+            x_t = {}
+            for key, vocab_size in self.vocab_sizes.items():
+                x_t[key] = torch.randint(
+                    0, vocab_size, (batch_size,), device=device
+                )
+
+        # Iterative denoising actual_start → 0
+        for t in reversed(range(actual_start)):
             # Predict clean tokens
             t_tensor = torch.full((batch_size,), t, device=device, dtype=torch.long)
             predicted_logits = denoising_network(
