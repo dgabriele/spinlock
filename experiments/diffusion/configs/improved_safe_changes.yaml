@@ -5,8 +5,8 @@
 
 dataset:
   use_pretokenized: true
-  tokenized_path: "datasets/50k_tokenized_v2_cleaned.h5"
-  tokenizer_checkpoint: "checkpoints/vqvae/vq_tokenizer_best.pt"
+  tokenized_path: "datasets/qbm_50k_pretokenized.h5"
+  tokenizer_checkpoint: "checkpoints/qbm_tokenizer_50k/vq_tokenizer_best.pt"
 
 masking:
   strategy: "random"

@@ -143,7 +143,7 @@ grouping:
 # are inferred from encoder config at runtime for framework flexibility
 
 inverse_heads:
-  theta_hidden_dim: 64
+  theta_hidden_dim: 128  # Was 64 — wider MLP for better Sobol parameter precision
   theta_dropout: 0.15
   initial_base_channels: 256
 
