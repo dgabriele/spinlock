@@ -658,8 +658,12 @@ class VQTokenizer:
                 verbose=self.config.verbose,
             )
 
-            # Generate generic feature names
-            original_feature_names = [f"temporal_feature_{i}" for i in range(D_t)]
+            # Build semantic feature names from the orchestrator if possible.
+            # This requires num_channels to reconstruct the feature registry.
+            # Detect from initial_raw [N, C, H, W] or fall back to generic.
+            original_feature_names = self._build_semantic_feature_names(
+                D_t, features
+            )
 
             # Clean features
             temporal_cleaned_np, feature_mask, cleaned_feature_names, cleaning_report = processor.clean(
@@ -699,6 +703,75 @@ class VQTokenizer:
         cleaned['theta'] = features.get('theta')
 
         return cleaned
+
+    def _build_semantic_feature_names(
+        self,
+        D_t: int,
+        features: Dict[str, Optional[torch.Tensor]],
+    ) -> list:
+        """Build semantic feature names for temporal features.
+
+        Uses TemporalFeatureOrchestrator.get_all_feature_names() to produce
+        names like 'spatial_mean_ch0', 'spectral_entropy_ch1' instead of
+        'temporal_feature_0'. Falls back to generic names if the orchestrator
+        is unavailable or produces a dimension mismatch.
+
+        Args:
+            D_t: Number of temporal features (raw, before cleaning).
+            features: Full feature dict (used to detect num_channels from
+                initial_raw shape [N, C, H, W]).
+
+        Returns:
+            List of D_t feature names.
+        """
+        # Detect num_channels from initial_raw [N, C, H, W]
+        initial_raw = features.get('initial_raw')
+        if initial_raw is not None and initial_raw.dim() == 4:
+            num_channels = initial_raw.shape[1]
+        else:
+            logger.warning(
+                "Cannot detect num_channels from initial_raw — "
+                "falling back to generic feature names"
+            )
+            return [f"temporal_feature_{i}" for i in range(D_t)]
+
+        try:
+            from spinlock.features.temporal.config import TemporalFeatureConfig
+            from spinlock.features.temporal.extractors import (
+                TemporalFeatureOrchestrator,
+            )
+
+            # Create a temporary orchestrator on CPU for name generation.
+            # Use default TemporalFeatureConfig (which has quantum.enabled=True)
+            # to match the dataset generation pipeline (MNOFeatureExtractor).
+            feature_config = TemporalFeatureConfig()
+            orchestrator = TemporalFeatureOrchestrator(
+                device=torch.device('cpu'),
+                config=feature_config,
+            )
+            names = orchestrator.get_all_feature_names(num_channels)
+
+            if len(names) == D_t:
+                logger.info(
+                    f"Semantic feature names: {len(names)} names for "
+                    f"{num_channels}-channel data "
+                    f"(e.g. {names[0]}, {names[-1]})"
+                )
+                return names
+            else:
+                logger.warning(
+                    f"Feature name count mismatch: orchestrator produced "
+                    f"{len(names)} but data has {D_t}. "
+                    f"Falling back to generic names."
+                )
+                return [f"temporal_feature_{i}" for i in range(D_t)]
+
+        except Exception as e:
+            logger.warning(
+                f"Failed to build semantic feature names: {e}. "
+                f"Falling back to generic names."
+            )
+            return [f"temporal_feature_{i}" for i in range(D_t)]
 
     def _build_feature_metadata(
         self,
@@ -1056,8 +1129,12 @@ class VQTokenizer:
             # Aggregate over time for grouping (mean)
             temporal_agg = temporal.mean(dim=1).numpy()  # [N, D_t]
 
-            # Get feature names
-            temporal_names = [f"temporal_{i}" for i in range(temporal_agg.shape[1])]
+            # Get feature names from metadata (semantic) or fall back to generic
+            if (self.feature_metadata is not None
+                    and 'temporal' in self.feature_metadata.families):
+                temporal_names = self.feature_metadata.families['temporal'].kept_feature_names
+            else:
+                temporal_names = [f"temporal_{i}" for i in range(temporal_agg.shape[1])]
 
             # Create grouper
             grouper = create_grouper("temporal", config=self.config.grouping)
@@ -1133,11 +1210,13 @@ class VQTokenizer:
             # Build mapping from cleaned index to original index
             cleaned_to_original = {i: orig_idx for i, orig_idx in enumerate(kept_indices)}
         else:
-            # Fallback if no temporal family (shouldn't happen in practice)
+            # Fallback if no temporal family (shouldn't happen after _clean_features)
             temporal = features.get('temporal')
             if temporal is not None:
                 D_t = temporal.shape[2]
-                cleaned_feature_names = [f"temporal_feature_{i}" for i in range(D_t)]
+                cleaned_feature_names = self._build_semantic_feature_names(
+                    D_t, features
+                )
                 cleaned_to_original = {i: i for i in range(D_t)}
             else:
                 cleaned_feature_names = []
