@@ -133,13 +133,23 @@ class SynthesisVerificationPipeline:
         config = checkpoint['config']
 
         # Extract vocab sizes from D3PM transition matrices (authoritative source)
-        # transition_matrices.<key> has shape [T, V, V] → vocab_size = V
+        # transition_matrices.<key> has shape [T, V_eff, V_eff]
+        # For uniform: V_eff = vocab_size
+        # For absorbing: V_eff = vocab_size + 1 (extra mask token)
         diffusion_state = checkpoint['diffusion_state_dict']
+        diffusion_config = config.diffusion if hasattr(config, 'diffusion') else config
+        transition_type = getattr(diffusion_config, 'transition_type', 'uniform')
+
         vocab_sizes = {}
         for param_key, param in diffusion_state.items():
             if param_key.startswith('transition_matrices.'):
                 token_key = param_key[len('transition_matrices.'):]
-                vocab_sizes[token_key] = param.shape[1]  # [T, V, V] → V
+                V_eff = param.shape[1]  # [T, V_eff, V_eff]
+                # Absorbing state stores V+1 in transition matrices;
+                # subtract 1 to get the base vocab size expected by DiscreteD3PM
+                if transition_type == "absorbing":
+                    V_eff -= 1
+                vocab_sizes[token_key] = V_eff
 
         # Build category_level_info from discovered keys
         category_level_info = {}
@@ -152,7 +162,6 @@ class SynthesisVerificationPipeline:
             }
 
         # Reconstruct schedule
-        diffusion_config = config.diffusion if hasattr(config, 'diffusion') else config
         schedule = DiffusionSchedule(
             num_timesteps=getattr(diffusion_config, 'num_timesteps', 50),
             beta_start=getattr(diffusion_config, 'beta_start', 0.0001),
@@ -161,7 +170,6 @@ class SynthesisVerificationPipeline:
         )
 
         # Create models
-        transition_type = getattr(diffusion_config, 'transition_type', 'uniform')
         beta_scaling = getattr(diffusion_config, 'beta_scaling', 'uniform')
         self._diffusion = DiscreteD3PM(
             vocab_sizes, schedule, category_level_info,

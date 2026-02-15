@@ -4,8 +4,8 @@
 # that are physically grounded via QBM simulation.
 
 checkpoints:
-  diffusion_checkpoint: "experiments/diffusion/results/improved_safe_5ep/diffusion_improved_best.pt"
-  vqvae_checkpoint: "checkpoints/qbm_tokenizer_50k/vq_tokenizer_wider_inverse.pt"
+  diffusion_checkpoint: "experiments/diffusion/results/qbm/diffusion_qbm_best.pt"
+  vqvae_checkpoint: "checkpoints/qbm_tokenizer_50k/vq_tokenizer_best.pt"
   # theta_inverse_path and initial_inverse_path omitted:
   # Uses V2 tokenizer's built-in inverse heads (trained via roundtrip loss)
   # which produce QBM-native dimensions (9 Sobol params, 2-channel ICs)
@@ -41,7 +41,7 @@ priority:
 scheduler:
   explore_steps: 10    # Was 5 — double exploration for broader parameter space coverage
   refine_epochs: 30   # Was 3 — 30×16=480 gradient updates/cycle (~1.5s, still <1% of runtime)
-  max_cycles: 20
+  max_cycles: 50
   adaptive: true
   queue_threshold_high: 0.8
   queue_threshold_low: 0.2
