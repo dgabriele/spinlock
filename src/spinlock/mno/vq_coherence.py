@@ -371,12 +371,15 @@ class VQCoherenceAdapter(nn.Module):
         cleaned_features: torch.Tensor,
         params: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
-        """Run VQ pipeline on pre-extracted features (no gradient needed).
+        """Run VQ pipeline on pre-extracted features.
 
         This is the second half of the extract_and_encode pipeline. Takes
         already-cleaned features and runs normalization → VQ encoding →
-        quantization → decoding. Intended to be called with detached features
-        for monitoring (recon loss, commit loss, token diversity).
+        quantization → decoding.
+
+        Can be called with gradient-carrying features (for commit loss training)
+        or with detached features (for monitoring only). The VQ model is frozen
+        but passes input gradients through its MLPs.
 
         Args:
             cleaned_features: [B, T, D_clean] — pre-extracted temporal features

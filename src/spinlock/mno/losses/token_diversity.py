@@ -198,25 +198,38 @@ class TokenDiversityLoss(BaseNOALoss):
         cleaned_features = None
 
         if self.vq_adapter is not None:
-            # Split gradient flow: features WITH grad, VQ encoding WITHOUT.
             # extract_features() preserves gradient through feature extractors
             # so contrastive loss can train MNO diversity in VQ feature space.
-            # LayerNorm + ±100 clamping stabilize the gradient (see Fix 1/2).
+            # LayerNorm + ±100 clamping stabilize the gradient.
             cleaned_features = self.vq_adapter.extract_features(pred_trajectory)
 
-            # VQ encoding for monitoring only — detached features prevent
-            # VQ encoder/decoder Jacobian from doubling unstable gradient.
             if self.lambda_recon > 0 or self.lambda_commit > 0:
-                with torch.no_grad():
+                if self.lambda_commit > 0:
+                    # Commit loss WITH gradient — pulls features toward VQ
+                    # codebook entries for roundtrip tokenization consistency.
+                    # VQ encoder path is all frozen MLPs (well-conditioned,
+                    # no volatile ops). Recon stays detached (decoder + STE).
                     vq_metrics = self.vq_adapter.encode_and_quantize(
-                        cleaned_features.detach(), params=params,
+                        cleaned_features, params=params,
                     )
-                    recon_loss = vq_metrics['recon_loss']
                     commit_loss = vq_metrics['vq_loss']
+                    recon_loss = vq_metrics['recon_loss'].detach()
 
-                    token_diversity = self._compute_token_diversity(
-                        vq_metrics['token_indices']
-                    )
+                    with torch.no_grad():
+                        token_diversity = self._compute_token_diversity(
+                            vq_metrics['token_indices']
+                        )
+                else:
+                    # Recon monitoring only — no commit gradient needed
+                    with torch.no_grad():
+                        vq_metrics = self.vq_adapter.encode_and_quantize(
+                            cleaned_features.detach(), params=params,
+                        )
+                        recon_loss = vq_metrics['recon_loss']
+                        commit_loss = vq_metrics['vq_loss']
+                        token_diversity = self._compute_token_diversity(
+                            vq_metrics['token_indices']
+                        )
 
         # ── 2. Contrastive diversity (PRIMARY) ──────────────────────────────
 

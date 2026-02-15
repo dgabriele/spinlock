@@ -57,7 +57,7 @@ training:
   gradient_accumulation_steps: 4
   epochs: 3
   learning_rate: 1.2e-4
-  warmup_steps: 4000
+  warmup_steps: 200
   weight_decay: 1.0e-4
   clip_grad: 1.0
 
@@ -89,8 +89,12 @@ loss:
   # VQ training distribution). Contrastive (InfoNCE) is bounded by ~4.2.
   # Scale lambdas so weighted contributions are similar magnitude:
   #   0.0002 × 15000 ≈ 3.0 ≈ contrastive scale
-  lambda_recon: 0.0002          # VQ reconstruction quality (scaled for ~3.0 contribution)
-  lambda_commit: 0.001          # VQ manifold adherence (raw commit ~0.01 → ~0.00001)
+  lambda_recon: 0.0002          # VQ reconstruction quality (monitoring only, no gradient)
+  # COMMIT — gradient-carrying VQ manifold adherence.
+  # Pulls MNO features toward VQ codebook entries for roundtrip consistency.
+  # Raw commit ~0.01; lambda=10 → ~0.1 weighted contribution.
+  # Gradient flows: commit → VQ encoder (frozen MLPs) → features → MNO.
+  lambda_commit: 10.0
 
   # AUXILIARY — physics regularizers
   # Raw traj/IC losses start ~100, fall to ~5-10 in epoch 1.

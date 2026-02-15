@@ -45,7 +45,7 @@ model:
   checkpoint_every: 16
 
 training:
-  n_samples: 50000
+  n_samples: 10000
   sampling_strategy: "sequential"
   batch_size: 2
   gradient_accumulation_steps: 4

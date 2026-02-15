@@ -234,6 +234,10 @@ class LossConfig(BaseModel):
     lambda_contrastive: float = Field(default=0.3, ge=0.0)
     lambda_param_sensitivity: float = Field(default=0.2, ge=0.0)
 
+    # Token diversity mode lambdas (VQ coherence)
+    lambda_recon: float = Field(default=1.0, ge=0.0)
+    lambda_commit: float = Field(default=0.5, ge=0.0)
+
     # Contrastive loss config
     contrastive: Optional[Dict[str, Any]] = None
 
