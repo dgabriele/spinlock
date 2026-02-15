@@ -1,0 +1,125 @@
+# MNO Token Diversity Training Configuration - "Diverse Dreamer" Mode
+#
+# Trains MNO to produce diverse, tokenizable trajectories that cover the VQ
+# vocabulary well, rather than exact QBM emulation. Contrastive + VQ coherence
+# as primary objectives, physics MSE as optional regularizer.
+#
+# When lambda_traj=0 and lambda_ic=0, the QBM replayer rollout is skipped
+# entirely — significantly faster training.
+#
+# Framework-compliant: ALL data-dependent dimensions auto-detected at runtime.
+
+model:
+  # ============================================================================
+  # DATA-DEPENDENT DIMENSIONS (AUTO-DETECTED - DO NOT SET!)
+  # ============================================================================
+  # spatial_dim: auto-detected from inputs/fields shape
+  # in_channels: auto-detected from dataset metadata (QBM: 2 channels Re/Im)
+  # out_channels: auto-detected from dataset metadata
+  # param_dim: auto-detected from parameters/params shape (QBM: 9 params)
+
+  # ============================================================================
+  # ALGORITHMIC CHOICES (USER-SPECIFIED)
+  # ============================================================================
+  base_channels: 40
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  dropout: 0.1
+
+  # Parameter conditioning
+  param_conditioning: true
+  param_embed_dim: 128
+  conditioning_mode: "film"
+
+  # FiLM configuration
+  film:
+    enabled: true
+    embed_dim: 128
+    hidden_dim: 256
+    init_gamma: 1.0
+    init_beta: 0.0
+    post_norm: true
+    modulate_encoder: true
+    modulate_decoder: true
+
+  # Update mode
+  update_mode: "residual"
+
+  # Gradient checkpointing (memory optimization)
+  use_checkpointing: true
+  checkpoint_every: 16
+
+training:
+  n_samples: 10000
+  sampling_strategy: "sequential"
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  epochs: 3
+  learning_rate: 1.2e-4
+  warmup_steps: 4000
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  timesteps: 256
+  bptt_window: 32
+
+  use_torch_compile: false
+  replayer_cache_size: 16
+  early_stopping_patience: 10
+  film_lr_multiplier: 5.0
+
+  # Mixed precision (AMP) — autocast MNO forward pass to BF16/FP16
+  # NOTE: Incompatible with gradient checkpointing (model.use_checkpointing).
+  # Set use_checkpointing: false to enable AMP for ~1.5x speedup.
+  # Loss computation always runs in FP32 (feature extraction needs full precision).
+  use_amp: false
+
+loss:
+  mode: "token_diversity"
+
+  # PRIMARY — behavioral diversity (contrastive)
+  lambda_contrastive: 1.0       # InfoNCE: different params -> different trajectories
+
+  # VQ COHERENCE — uses VQCoherenceAdapter with modern VQTokenizer
+  # Requires vqvae.checkpoint section below. Contrastive loss automatically
+  # switches to VQ feature space when adapter is loaded.
+  #
+  # NOTE: Raw recon MSE starts at ~15,000 (untrained MNO → features far from
+  # VQ training distribution). Contrastive (InfoNCE) is bounded by ~4.2.
+  # Scale lambdas so weighted contributions are similar magnitude:
+  #   0.0002 × 15000 ≈ 3.0 ≈ contrastive scale
+  lambda_recon: 0.0002          # VQ reconstruction quality (scaled for ~3.0 contribution)
+  lambda_commit: 0.001          # VQ manifold adherence (raw commit ~0.01 → ~0.00001)
+
+  # AUXILIARY — physics regularizers
+  # Raw traj/IC losses start ~100, fall to ~5-10 in epoch 1.
+  # Scaled so initial contribution ≈ contrastive: 0.03 × 100 ≈ 3.0
+  # lambda_traj > 0 enables QBM replayer rollout (slower per batch)
+  lambda_traj: 0.03             # Trajectory MSE (physics grounding)
+  lambda_ic: 0.03               # IC preservation (prevents NaN divergence)
+
+  contrastive:
+    temperature: 0.1
+    queue_size: 64              # MoCo-style memory bank: 64 recent embeddings as extra negatives
+
+# VQ-VAE checkpoint (required when lambda_recon > 0 or lambda_commit > 0)
+vqvae:
+  checkpoint: "checkpoints/qbm_tokenizer_50k/vq_tokenizer_best.pt"
+
+data:
+  dataset_path: "datasets/qbm_50k.h5"
+  config: "configs/qbm/substrate.yaml"
+  val_split: 0.2
+  num_workers: 8
+  pin_memory: true              # Pre-stage batches in pinned (page-locked) memory for faster GPU transfer
+  persistent_workers: true      # Keep worker processes alive between epochs (avoids respawn overhead)
+  prefetch_factor: 2            # Number of batches pre-loaded per worker
+
+checkpointing:
+  save_dir: "checkpoints/mno/qbm_token_diversity"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42

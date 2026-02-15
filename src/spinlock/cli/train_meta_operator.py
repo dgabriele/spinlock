@@ -861,6 +861,70 @@ Output:
             print(f"  ✓ VQ-led loss (L_recon={config['loss'].get('lambda_recon', 1.0)}, "
                   f"L_commit={config['loss'].get('lambda_commit', 0.5)}, "
                   f"L_traj={config['loss'].get('lambda_traj', 0.3)})")
+        elif loss_mode == "token_diversity":
+            # Token diversity: contrastive primary, VQ coherence optional
+            from spinlock.mno.losses import TokenDiversityLoss
+
+            loss_config = config["loss"]
+            lambda_recon = loss_config.get("lambda_recon", 0.0)
+            lambda_commit = loss_config.get("lambda_commit", 0.0)
+
+            # Load VQ coherence adapter only if VQ losses are enabled
+            vq_adapter = None
+            contrastive_feature_dim = None
+            if lambda_recon > 0 or lambda_commit > 0:
+                vqvae_config = config.get("vqvae")
+                if not vqvae_config:
+                    return self.error(
+                        "token_diversity mode with lambda_recon > 0 or lambda_commit > 0 "
+                        "requires 'vqvae' section in config.\n"
+                        "Either add vqvae.checkpoint or set lambda_recon=0, lambda_commit=0."
+                    )
+
+                vqvae_checkpoint = vqvae_config.get("checkpoint")
+                if not vqvae_checkpoint:
+                    return self.error("VQ losses require vqvae.checkpoint path")
+
+                print(f"  Loading VQ coherence adapter from: {vqvae_checkpoint}")
+                from spinlock.mno.vq_coherence import VQCoherenceAdapter
+
+                vq_adapter = VQCoherenceAdapter.from_checkpoint(
+                    checkpoint_path=vqvae_checkpoint,
+                    device=device,
+                )
+                contrastive_feature_dim = vq_adapter.cleaned_feature_dim
+                print(f"  ✓ VQ coherence adapter loaded (feature_dim={contrastive_feature_dim})")
+
+            contrastive_config = loss_config.get("contrastive", {})
+            loss_fn = TokenDiversityLoss(
+                lambda_contrastive=loss_config.get("lambda_contrastive", 1.0),
+                lambda_recon=lambda_recon,
+                lambda_commit=lambda_commit,
+                lambda_traj=loss_config.get("lambda_traj", 0.0),
+                lambda_ic=loss_config.get("lambda_ic", 0.0),
+                vq_adapter=vq_adapter,
+                param_dim=config["model"]["param_dim"],
+                contrastive_temperature=contrastive_config.get("temperature", 0.1),
+                contrastive_queue_size=contrastive_config.get("queue_size", 0),
+                contrastive_feature_dim=contrastive_feature_dim,
+            )
+            loss_fn = loss_fn.to(device)
+            print(f"  ✓ Token diversity loss:")
+            print(f"    L_contrastive={loss_config.get('lambda_contrastive', 1.0)}, "
+                  f"L_recon={lambda_recon}, "
+                  f"L_commit={lambda_commit}")
+            print(f"    L_traj={loss_config.get('lambda_traj', 0.0)}, "
+                  f"L_ic={loss_config.get('lambda_ic', 0.0)}")
+            if vq_adapter is None:
+                print(f"    VQ coherence: disabled (lambda_recon=0, lambda_commit=0)")
+            else:
+                print(f"    Contrastive space: VQ feature-space ({contrastive_feature_dim}D)")
+            queue_size = contrastive_config.get("queue_size", 0)
+            if queue_size > 0:
+                print(f"    Contrastive queue: {queue_size} (MoCo-style memory bank)")
+            if not loss_fn.needs_target_trajectory:
+                print(f"    ⚡ Replayer-skip mode: QBM rollout will be skipped (faster training)")
+
         elif loss_mode == "mse_led_param_sensitive":
             # MSE-led + parameter sensitivity losses
             from spinlock.mno.losses import ParameterSensitiveLoss
@@ -1029,19 +1093,30 @@ Output:
             if rank == 0:
                 print(f"  ✓ Using DistributedSampler (world_size={world_size})")
 
+        num_workers = config["data"].get("num_workers", 4)
+        use_cuda = torch.cuda.is_available() and "cuda" in str(device)
+        pin_memory = config["data"].get("pin_memory", use_cuda) and num_workers > 0
+        persistent_workers = config["data"].get("persistent_workers", True) and num_workers > 0
+        prefetch_factor = config["data"].get("prefetch_factor", 2) if num_workers > 0 else None
         train_loader = DataLoader(
             train_dataset,
             batch_size=config["training"]["batch_size"],
             shuffle=use_shuffle if train_sampler is None else False,
             sampler=train_sampler,
-            num_workers=config["data"].get("num_workers", 4),
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            prefetch_factor=prefetch_factor,
         )
 
         val_loader = DataLoader(
             val_dataset,
             batch_size=config["training"]["batch_size"],
             shuffle=False,
-            num_workers=config["data"].get("num_workers", 4),
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            prefetch_factor=prefetch_factor,
         )
 
         print(f"  ✓ Dataset loaded: {len(train_dataset)} train, {len(val_dataset)} val")
@@ -1169,6 +1244,21 @@ Output:
         save_every_batches = config["checkpointing"].get("save_every_batches", None)
         global_batch_counter = resume_batch_counter  # Start from resumed position
 
+        # AMP (Automatic Mixed Precision) setup
+        # Default: disabled when gradient checkpointing is enabled (incompatible
+        # with torch.utils.checkpoint — recomputed tensor graph doesn't match
+        # under autocast). Enable manually with use_amp: true + use_checkpointing: false.
+        use_checkpointing = config.get("model", {}).get("use_checkpointing", False)
+        amp_default = not use_checkpointing
+        use_amp = config["training"].get("use_amp", amp_default) and use_cuda
+        amp_dtype = torch.bfloat16 if (use_amp and torch.cuda.is_bf16_supported()) else torch.float16
+        scaler = torch.amp.GradScaler("cuda", enabled=(use_amp and amp_dtype == torch.float16))
+        if use_amp:
+            print(f"  ✓ AMP enabled (dtype={amp_dtype})")
+        else:
+            reason = " (gradient checkpointing active)" if use_checkpointing else ""
+            print(f"  ✗ AMP disabled{reason}")
+
         # Training loop
         for epoch in range(start_epoch, config["training"]["epochs"]):
             print(f"Epoch {epoch + 1}/{config['training']['epochs']}")
@@ -1199,6 +1289,10 @@ Output:
                 # Distributed training
                 rank=rank,
                 noa_base=noa_base,
+                # AMP
+                scaler=scaler,
+                use_amp=use_amp,
+                amp_dtype=amp_dtype,
             )
 
             # Validate
@@ -1214,6 +1308,8 @@ Output:
                 timesteps=config["training"]["timesteps"],
                 ground_truth_tokens=ground_truth_tokens,
                 max_batches=max_val_batches,
+                use_amp=use_amp,
+                amp_dtype=amp_dtype,
             )
 
             # Note: Scheduler is now stepped per-batch (inside _train_epoch)
@@ -1337,8 +1433,14 @@ Output:
         # Distributed training
         rank=0,
         noa_base=None,  # Unwrapped model for checkpointing
+        # AMP
+        scaler=None,
+        use_amp=False,
+        amp_dtype=torch.float32,
     ) -> tuple:
         """Train for one epoch with gradient accumulation."""
+        if scaler is None:
+            scaler = torch.amp.GradScaler("cuda", enabled=False)
         mno.train()
         total_loss = 0.0
         component_losses = {}  # Track individual loss components
@@ -1376,69 +1478,79 @@ Output:
                 # ground_truth_tokens is indexed by original dataset index
                 batch_tokens = ground_truth_tokens[indices].to(device)
 
-            # Generate MNO rollout (with truncated BPTT if configured)
-            pred_trajectory = noa_rollout.rollout(ic, params=params, tokens=batch_tokens)
+            # Generate MNO rollout under AMP autocast
+            with torch.amp.autocast("cuda", enabled=use_amp, dtype=amp_dtype):
+                pred_trajectory = noa_rollout.rollout(ic, params=params, tokens=batch_tokens)
 
-            # Generate CNO targets
-            # Only clear cache if memory usage > 90% (avoid unnecessary serialization)
-            if torch.cuda.is_available():
-                allocated = torch.cuda.memory_allocated(device)
-                max_allocated = torch.cuda.max_memory_allocated(device)
-                if max_allocated > 0 and allocated / max_allocated > 0.9:
-                    torch.cuda.empty_cache()
+            # Check if loss needs target trajectories (replayer-skip optimization)
+            needs_target = not hasattr(loss_fn, 'needs_target_trajectory') or loss_fn.needs_target_trajectory
 
-            # Generate ground truth trajectories using batch rollout (parallel on GPU)
-            # Check if replayer supports batch rollout (QBMReplayer does, CNOReplayer might not)
-            try:
-                if hasattr(replayer, 'rollout_batch'):
-                    # Batch rollout: run all simulations in parallel on GPU
-                    target_trajectory = replayer.rollout_batch(
-                        params_batch=params.cpu().numpy(),  # [B, param_dim]
-                        num_realizations=1,
-                        num_timesteps=timesteps,
-                        timesteps=timesteps,  # Alias for compatibility
-                        return_all_steps=True,
-                    )
-                    # rollout_batch returns [B, M, T, C, H, W], squeeze M=1 -> [B, T, C, H, W]
-                    target_trajectory = target_trajectory.squeeze(1)
-                else:
-                    # Fallback: sequential rollout (for CNOReplayer compatibility)
-                    target_trajectories = []
-                    skip_batch = False
-                    for b in range(B):
-                        try:
-                            target_traj = replayer.rollout(
-                                params_vector=params[b].cpu().numpy(),
-                                ic=ic[b:b+1],  # [1, C, H, W]
-                                timesteps=timesteps,
-                                num_realizations=1,
-                                return_all_steps=True,
-                            )
-                            target_trajectories.append(target_traj)
-                        except (ValueError, RuntimeError) as e:
-                            print(f"  Warning: Replayer rollout failed for sample {b}: {e}")
-                            skip_batch = True
-                            break
+            if needs_target:
+                # Generate CNO/QBM targets (outside autocast — replayer is not a neural net)
+                # Only clear cache if memory usage > 90% (avoid unnecessary serialization)
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated(device)
+                    max_allocated = torch.cuda.max_memory_allocated(device)
+                    if max_allocated > 0 and allocated / max_allocated > 0.9:
+                        torch.cuda.empty_cache()
 
-                    if skip_batch:
-                        continue
-                    target_trajectory = torch.cat(target_trajectories, dim=0)
-            except Exception as e:
-                print(f"  Warning: Batch rollout failed: {e}, skipping batch")
-                continue
+                # Generate ground truth trajectories using batch rollout (parallel on GPU)
+                # Check if replayer supports batch rollout (QBMReplayer does, CNOReplayer might not)
+                try:
+                    if hasattr(replayer, 'rollout_batch'):
+                        # Batch rollout: run all simulations in parallel on GPU
+                        target_trajectory = replayer.rollout_batch(
+                            params_batch=params.cpu().numpy(),  # [B, param_dim]
+                            num_realizations=1,
+                            num_timesteps=timesteps,
+                            timesteps=timesteps,  # Alias for compatibility
+                            return_all_steps=True,
+                        )
+                        # rollout_batch returns [B, M, T, C, H, W], squeeze M=1 -> [B, T, C, H, W]
+                        target_trajectory = target_trajectory.squeeze(1)
+                    else:
+                        # Fallback: sequential rollout (for CNOReplayer compatibility)
+                        target_trajectories = []
+                        skip_batch = False
+                        for b in range(B):
+                            try:
+                                target_traj = replayer.rollout(
+                                    params_vector=params[b].cpu().numpy(),
+                                    ic=ic[b:b+1],  # [1, C, H, W]
+                                    timesteps=timesteps,
+                                    num_realizations=1,
+                                    return_all_steps=True,
+                                )
+                                target_trajectories.append(target_traj)
+                            except (ValueError, RuntimeError) as e:
+                                print(f"  Warning: Replayer rollout failed for sample {b}: {e}")
+                                skip_batch = True
+                                break
 
-            # Align predicted and target states for loss computation
-            # (handles truncated BPTT windowing automatically)
-            pred_states, target_states = noa_rollout.align_for_loss(
-                pred_trajectory,
-                target_trajectory,
-                skip_ic=True,
-            )
+                        if skip_batch:
+                            continue
+                        target_trajectory = torch.cat(target_trajectories, dim=0)
+                except Exception as e:
+                    print(f"  Warning: Batch rollout failed: {e}, skipping batch")
+                    continue
 
-            # Compute loss
+                # Align predicted and target states for loss computation
+                # (handles truncated BPTT windowing automatically)
+                pred_states, target_states = noa_rollout.align_for_loss(
+                    pred_trajectory,
+                    target_trajectory,
+                    skip_ic=True,
+                )
+            else:
+                # No target needed — skip expensive replayer rollout
+                pred_states = pred_trajectory[:, 1:, :, :, :]  # Skip IC step
+                target_states = None
+
+            # Compute loss in FP32 — feature extraction includes ops that don't
+            # support reduced precision (linalg_eigh, FFT, bincount)
             try:
                 loss_output = loss_fn.compute(
-                    pred_trajectory=pred_states,
+                    pred_trajectory=pred_states.float() if pred_states is not None else None,
                     target_trajectory=target_states,
                     ic=ic,
                     mno=mno,
@@ -1454,12 +1566,14 @@ Output:
 
             # Gradient accumulation: scale loss and accumulate gradients
             scaled_loss = loss_output.total / accumulation_steps
-            scaled_loss.backward()
+            scaler.scale(scaled_loss).backward()
 
             # Only step optimizer every N batches
             if (batch_idx + 1) % accumulation_steps == 0:
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(mno.parameters(), clip_grad)
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 optimizer.zero_grad()
                 # Step scheduler after optimizer step (per effective batch)
                 if scheduler is not None:
@@ -1519,6 +1633,8 @@ Output:
                     device=device,
                     timesteps=timesteps,
                     ground_truth_tokens=ground_truth_tokens,
+                    use_amp=use_amp,
+                    amp_dtype=amp_dtype,
                 )
                 mno.train()  # Back to training mode
 
@@ -1570,8 +1686,10 @@ Output:
 
         # Handle leftover gradients at end of epoch
         if (batch_idx + 1) % accumulation_steps != 0:
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(mno.parameters(), clip_grad)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             optimizer.zero_grad()
 
         elapsed = time.time() - start_time
@@ -1596,6 +1714,8 @@ Output:
         ground_truth_tokens=None,
         token_indices=None,
         max_batches=None,
+        use_amp=False,
+        amp_dtype=torch.float32,
     ) -> dict:
         """Validate for one epoch."""
         mno.eval()
@@ -1621,59 +1741,68 @@ Output:
                     # ground_truth_tokens is indexed by original dataset index
                     batch_tokens = ground_truth_tokens[indices].to(device)
 
-                # Generate MNO rollout (with truncated BPTT if configured)
-                pred_trajectory = noa_rollout.rollout(ic, params=params, tokens=batch_tokens)
+                # Generate MNO rollout under AMP
+                with torch.amp.autocast("cuda", enabled=use_amp, dtype=amp_dtype):
+                    pred_trajectory = noa_rollout.rollout(ic, params=params, tokens=batch_tokens)
 
-                # Generate ground truth trajectories using batch rollout (parallel on GPU)
-                try:
-                    if hasattr(replayer, 'rollout_batch'):
-                        # Batch rollout: run all simulations in parallel on GPU
-                        target_trajectory = replayer.rollout_batch(
-                            params_batch=params.cpu().numpy(),  # [B, param_dim]
-                            num_realizations=1,
-                            num_timesteps=timesteps,
-                            timesteps=timesteps,  # Alias for compatibility
-                            return_all_steps=True,
-                        )
-                        # rollout_batch returns [B, M, T, C, H, W], squeeze M=1 -> [B, T, C, H, W]
-                        target_trajectory = target_trajectory.squeeze(1)
-                    else:
-                        # Fallback: sequential rollout (for CNOReplayer compatibility)
-                        target_trajectories = []
-                        skip_batch = False
-                        for b in range(B):
-                            try:
-                                target_traj = replayer.rollout(
-                                    params_vector=params[b].cpu().numpy(),
-                                    ic=ic[b:b+1],  # [1, C, H, W]
-                                    timesteps=timesteps,
-                                    num_realizations=1,
-                                    return_all_steps=True,
-                                )
-                                target_trajectories.append(target_traj)
-                            except (ValueError, RuntimeError):
-                                skip_batch = True
-                                break
+                # Check if loss needs target trajectories (replayer-skip optimization)
+                needs_target = not hasattr(loss_fn, 'needs_target_trajectory') or loss_fn.needs_target_trajectory
 
-                        if skip_batch:
-                            continue
-                        target_trajectory = torch.cat(target_trajectories, dim=0)
-                except Exception as e:
-                    print(f"  Warning: Batch rollout failed: {e}, skipping batch")
-                    continue
+                if needs_target:
+                    # Generate ground truth trajectories using batch rollout (parallel on GPU)
+                    try:
+                        if hasattr(replayer, 'rollout_batch'):
+                            # Batch rollout: run all simulations in parallel on GPU
+                            target_trajectory = replayer.rollout_batch(
+                                params_batch=params.cpu().numpy(),  # [B, param_dim]
+                                num_realizations=1,
+                                num_timesteps=timesteps,
+                                timesteps=timesteps,  # Alias for compatibility
+                                return_all_steps=True,
+                            )
+                            # rollout_batch returns [B, M, T, C, H, W], squeeze M=1 -> [B, T, C, H, W]
+                            target_trajectory = target_trajectory.squeeze(1)
+                        else:
+                            # Fallback: sequential rollout (for CNOReplayer compatibility)
+                            target_trajectories = []
+                            skip_batch = False
+                            for b in range(B):
+                                try:
+                                    target_traj = replayer.rollout(
+                                        params_vector=params[b].cpu().numpy(),
+                                        ic=ic[b:b+1],  # [1, C, H, W]
+                                        timesteps=timesteps,
+                                        num_realizations=1,
+                                        return_all_steps=True,
+                                    )
+                                    target_trajectories.append(target_traj)
+                                except (ValueError, RuntimeError):
+                                    skip_batch = True
+                                    break
 
-                # Align predicted and target states for loss computation
-                # (handles truncated BPTT windowing automatically)
-                pred_states, target_states = noa_rollout.align_for_loss(
-                    pred_trajectory,
-                    target_trajectory,
-                    skip_ic=True,
-                )
+                            if skip_batch:
+                                continue
+                            target_trajectory = torch.cat(target_trajectories, dim=0)
+                    except Exception as e:
+                        print(f"  Warning: Batch rollout failed: {e}, skipping batch")
+                        continue
 
-                # Compute loss
+                    # Align predicted and target states for loss computation
+                    # (handles truncated BPTT windowing automatically)
+                    pred_states, target_states = noa_rollout.align_for_loss(
+                        pred_trajectory,
+                        target_trajectory,
+                        skip_ic=True,
+                    )
+                else:
+                    # No target needed — skip expensive replayer rollout
+                    pred_states = pred_trajectory[:, 1:, :, :, :]  # Skip IC step
+                    target_states = None
+
+                # Compute loss in FP32 (feature extraction needs full precision)
                 try:
                     loss_output = loss_fn.compute(
-                        pred_trajectory=pred_states,
+                        pred_trajectory=pred_states.float() if pred_states is not None else None,
                         target_trajectory=target_states,
                         ic=ic,
                         mno=mno,
