@@ -17,6 +17,7 @@ Usage:
 """
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +25,7 @@ import numpy as np
 import torch
 
 from spinlock.experimental.llm_agent.config import AgentConfig
+from spinlock.experimental.llm_agent.gpu_manager import LLMGpuManager
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,7 @@ class ChatResponse:
     intent: str = "explore"
     scores: Optional[List[float]] = None
     alignment_metrics: Optional[Dict[str, float]] = None
+    background_iterations: int = 0
 
 
 class ConversationalAgent:
@@ -84,6 +87,21 @@ class ConversationalAgent:
         self._last_query_embedding = None
         self._last_results: List[ExplorationResult] = []
         self._initialized = False
+
+        # Background exploration (continuous mode)
+        self._stop_event = threading.Event()
+        self._error_event = threading.Event()
+        self._error_message: Optional[str] = None
+        self._worker_thread: Optional[threading.Thread] = None
+        self._accumulated_results: List[ExplorationResult] = []
+        self._results_lock = threading.Lock()
+        self._background_iteration_count = 0
+
+        # GPU memory management
+        self._gpu_manager: Optional[LLMGpuManager] = None
+
+        # Temporal feature name mapping (built during initialize)
+        self._temporal_feature_names: Optional[List[str]] = None
 
     def initialize(self) -> None:
         """Load LLM, create LoRA adapter, build all components.
@@ -203,6 +221,18 @@ class ConversationalAgent:
             system_prompt=self.config.system_prompt,
         )
 
+        # 8. Build GPU manager for LLM ↔ CPU swapping
+        self._gpu_manager = LLMGpuManager(
+            self._llm, llm_cfg.device, self.config.memory_mode
+        )
+        # In swap mode, offload LLM immediately — exploration owns the GPU
+        if self.config.memory_mode == "swap":
+            self._gpu_manager.offload_llm()
+            logger.info("Swap mode: LLM offloaded to CPU after init")
+
+        # 9. Read temporal feature names from tokenizer checkpoint metadata
+        self._temporal_feature_names = self._read_feature_names_from_checkpoint()
+
         self._initialized = True
         logger.info("ConversationalAgent initialized successfully")
 
@@ -214,8 +244,9 @@ class ConversationalAgent:
         - Refinement: adjust from previous query → re-explore → respond
         - Question: retrieve relevant context → LLM summarizes → respond
 
-        All paths end with ConversationManager.compose_response() to produce
-        natural language grounded in the physical findings.
+        If continuous exploration is enabled, a background thread continues
+        exploring after the initial response is returned. Accumulated results
+        from a previous background run are merged into the current response.
 
         Args:
             message: User's natural language message.
@@ -226,24 +257,38 @@ class ConversationalAgent:
         if not self._initialized:
             raise RuntimeError("Call initialize() before chat()")
 
+        # 1. Stop any running background exploration and collect its results
+        bg_iterations = self._background_iteration_count
+        self._stop_background()
+        background_results = self._drain_accumulated()
+
+        # 2. Classify intent
         intent = self._classify_intent(message)
         logger.info(f"Intent: {intent} | Message: {message[:80]}")
 
-        if intent == "explore":
-            results = self._explore(message)
-        elif intent == "refine":
-            results = self._refine(message)
-        else:
-            results = []
+        # 3. Run initial exploration with LLM on GPU for scoring + response
+        with self._gpu_manager.llm_on_gpu():
+            if intent == "explore":
+                results = self._explore(message)
+            elif intent == "refine":
+                results = self._refine(message)
+            else:
+                results = []
 
-        # Build grounding context for response composition
-        context = self._build_context(intent, results)
+            # Merge background findings if relevant
+            if background_results and intent in ("explore", "refine"):
+                results = self._merge_results(results, background_results)
 
-        # Compose natural language response
-        text = self.conversation.compose_response(message, context)
+            # Build grounding context and compose response
+            context = self._build_context(intent, results)
+            text = self.conversation.compose_response(message, context)
 
-        # Maybe train alignment if enough pairs accumulated
-        alignment_metrics = self._maybe_train_alignment()
+            # Maybe train alignment if enough pairs accumulated
+            alignment_metrics = self._maybe_train_alignment()
+
+        # 4. Start background exploration for this query
+        if self.config.continuous.enabled and intent in ("explore", "refine"):
+            self._start_background(message, seed_results=results[:4])
 
         return ChatResponse(
             text=text,
@@ -251,6 +296,7 @@ class ConversationalAgent:
             intent=intent,
             scores=[r.score for r in results if r.score is not None] or None,
             alignment_metrics=alignment_metrics,
+            background_iterations=bg_iterations,
         )
 
     def _classify_intent(self, message: str) -> str:
@@ -427,19 +473,106 @@ class ConversationalAgent:
                 break
         return ", ".join(highlights)
 
-    @staticmethod
+    def _read_feature_names_from_checkpoint(self) -> List[str]:
+        """Read semantic feature names from the VQTokenizer checkpoint metadata.
+
+        The tokenizer's feature_metadata (populated during training) stores
+        the kept_feature_names with semantic names like 'spatial_mean_ch0',
+        'spectral_entropy_ch1', etc. These are used by the TemplateDescriptor
+        for pattern-based natural language descriptions.
+
+        Returns:
+            List of feature names, or empty list if metadata unavailable.
+        """
+        tokenizer = getattr(self.pipeline, '_tokenizer', None)
+        if tokenizer is None:
+            logger.warning("No tokenizer on pipeline — no feature names available")
+            return []
+
+        metadata = getattr(tokenizer, 'feature_metadata', None)
+        if metadata is None:
+            logger.warning(
+                "Tokenizer has no feature_metadata — "
+                "retrain with semantic names to enable rich descriptions"
+            )
+            return []
+
+        families = getattr(metadata, 'families', {})
+        if 'temporal' not in families:
+            logger.warning("No 'temporal' family in feature metadata")
+            return []
+
+        names = families['temporal'].kept_feature_names
+        if names and not names[0].startswith('temporal_feature_'):
+            logger.info(
+                f"Loaded {len(names)} semantic feature names from checkpoint "
+                f"(e.g. {names[0]}, {names[-1]})"
+            )
+        else:
+            logger.info(
+                f"Loaded {len(names)} feature names from checkpoint "
+                f"(generic — retrain tokenizer for semantic names)"
+            )
+        return names
+
     def _extract_sample_features(
-        features_batch: Dict[str, Any], index: int
+        self, features_batch: Dict[str, Any], index: int
     ) -> Dict[str, float]:
-        """Extract a single sample's features from batched feature tensors."""
+        """Extract a single sample's features from batched feature tensors.
+
+        Handles the key feature families from the pipeline:
+        - temporal_features: [B, T, D] → time-averaged, named per feature
+        - theta_features: [B, 9] → named Sobol parameters
+        - initial_manual: [B, D] → summarized
+        """
         sample = {}
+
         for key, val in features_batch.items():
-            if isinstance(val, torch.Tensor) and val.ndim >= 1 and val.shape[0] > index:
-                sample[key] = float(val[index].item()) if val[index].numel() == 1 else float(val[index].mean().item())
-            elif isinstance(val, np.ndarray) and val.ndim >= 1 and val.shape[0] > index:
-                sample[key] = float(val[index].mean()) if val[index].size > 1 else float(val[index])
-            elif isinstance(val, (int, float)):
-                sample[key] = float(val)
+            if not isinstance(val, (torch.Tensor, np.ndarray)):
+                if isinstance(val, (int, float)):
+                    sample[key] = float(val)
+                continue
+
+            if isinstance(val, np.ndarray):
+                val = torch.from_numpy(val)
+
+            if val.ndim < 1 or val.shape[0] <= index:
+                continue
+
+            item = val[index]  # Remove batch dim
+
+            if key == 'temporal_features' and item.ndim == 2:
+                # [T, D] → time-average → [D], then assign named features
+                time_avg = item.mean(dim=0)  # [D]
+                names = self._temporal_feature_names or []
+                for i, v in enumerate(time_avg):
+                    feat_name = names[i] if i < len(names) else f"temporal_{i}"
+                    sample[feat_name] = float(v.item())
+
+            elif key == 'theta_features' and item.ndim == 1:
+                # [9] Sobol parameters
+                theta_names = [
+                    'theta_sigma', 'theta_epsilon', 'theta_coupling',
+                    'theta_mass', 'theta_damping', 'theta_driving',
+                    'theta_nonlinearity', 'theta_boundary', 'theta_scale',
+                ]
+                for i, v in enumerate(item):
+                    name = theta_names[i] if i < len(theta_names) else f"theta_{i}"
+                    sample[name] = float(v.item())
+
+            elif key == 'initial_raw':
+                # Skip raw ICs — not useful for descriptions
+                continue
+
+            elif key == 'initial_manual' and item.ndim == 1:
+                # Summarize initial condition features
+                sample['initial_energy'] = float(item.mean().item())
+                sample['initial_variance'] = float(item.var().item())
+
+            else:
+                # Fallback: scalar or mean
+                sample[key] = float(item.mean().item())
+
         return sample
 
     def _maybe_train_alignment(self) -> Optional[Dict[str, float]]:
@@ -452,6 +585,251 @@ class ConversationalAgent:
         if epoch_metrics:
             return epoch_metrics[-1]  # return final epoch metrics
         return None
+
+    # ------------------------------------------------------------------
+    # Background exploration (continuous mode)
+    # ------------------------------------------------------------------
+
+    def _start_background(
+        self, query: str, seed_results: List[ExplorationResult]
+    ) -> None:
+        """Start background exploration thread.
+
+        The thread runs _background_loop, which generates candidates
+        using only the denoiser + QBM (no LLM calls). The LLM is
+        offloaded in swap mode to free GPU memory for exploration.
+
+        Args:
+            query: The user query to explore.
+            seed_results: Top results from initial batch for frontier seeding.
+        """
+        self._stop_event.clear()
+        self._error_event.clear()
+        self._error_message = None
+        self._background_iteration_count = 0
+        with self._results_lock:
+            self._accumulated_results.clear()
+
+        # In swap mode, offload LLM before background thread starts
+        self._gpu_manager.offload_llm()
+
+        self._worker_thread = threading.Thread(
+            target=self._background_loop,
+            args=(query, seed_results),
+            daemon=True,
+            name="AgentExplorer",
+        )
+        self._worker_thread.start()
+        logger.info("Background exploration started")
+
+    def _stop_background(self) -> None:
+        """Stop background exploration thread if running.
+
+        Blocks until the current batch finishes (up to 10s timeout).
+        Reports any errors that occurred during background exploration.
+        """
+        if self._worker_thread is None or not self._worker_thread.is_alive():
+            return
+
+        self._stop_event.set()
+        self._worker_thread.join(timeout=10.0)
+
+        if self._worker_thread.is_alive():
+            logger.warning("Background thread did not stop within timeout")
+
+        if self._error_event.is_set():
+            logger.warning(
+                f"Background exploration error: {self._error_message}"
+            )
+
+        logger.info(
+            f"Background exploration stopped after "
+            f"{self._background_iteration_count} iterations"
+        )
+
+    def _drain_accumulated(self) -> List[ExplorationResult]:
+        """Drain all accumulated background results (thread-safe)."""
+        with self._results_lock:
+            results = list(self._accumulated_results)
+            self._accumulated_results.clear()
+        return results
+
+    def _background_loop(
+        self, query: str, seed_results: List[ExplorationResult]
+    ) -> None:
+        """Background thread: keep exploring until stopped.
+
+        Runs headless exploration batches (no LLM calls). Periodically
+        loads the LLM for batch scoring if the evaluator is enabled.
+
+        Args:
+            query: User query to explore around.
+            seed_results: Initial frontier seeds for refinement.
+        """
+        try:
+            cfg = self.config.continuous
+            iteration = 0
+
+            while (
+                not self._stop_event.is_set()
+                and iteration < cfg.max_iterations
+            ):
+                # GPU: denoiser + QBM own the GPU (LLM offloaded in swap)
+                batch_results = self._explore_batch_headless(
+                    query, seed_results
+                )
+
+                # Accumulate results (thread-safe)
+                with self._results_lock:
+                    self._accumulated_results.extend(batch_results)
+
+                # Accumulate alignment pairs
+                for r in batch_results:
+                    if r.description:
+                        sample_t = {
+                            k: torch.tensor([v])
+                            for k, v in r.tokens_dict.items()
+                        }
+                        self.trainer.accumulate(sample_t, r.description)
+
+                # Update seeds for frontier refinement
+                if cfg.use_frontier_refinement and batch_results:
+                    seed_results = self._best_results(4)
+
+                iteration += 1
+                self._background_iteration_count = iteration
+
+                # Periodic LLM scoring (batch results, load LLM, score, offload)
+                if (
+                    self.evaluator is not None
+                    and iteration % cfg.score_batch_size == 0
+                    and not self._stop_event.is_set()
+                ):
+                    self._background_score_batch(query)
+
+            logger.debug(
+                f"Background loop finished: {iteration} iterations"
+            )
+
+        except Exception as e:
+            self._error_message = str(e)
+            self._error_event.set()
+            logger.error(f"Background exploration error: {e}")
+
+    def _explore_batch_headless(
+        self,
+        query: str,
+        seed_results: List[ExplorationResult],
+    ) -> List[ExplorationResult]:
+        """One exploration batch WITHOUT LLM calls.
+
+        In swap mode, the LLM is on CPU during this method. Only uses:
+        denoiser (generate), tokenizer (decode/retokenize), QBM replayer
+        (rollout), and template descriptor (no LLM needed).
+
+        Args:
+            query: User query (unused here, kept for future guided generation).
+            seed_results: Frontier seeds for guided generation.
+
+        Returns:
+            List of ExplorationResult with score=None (scored later).
+        """
+        batch_size = min(16, self.pipeline.config.generation.batch_size)
+
+        # Generate tokens (unconditional for now; frontier seeding is future)
+        generated_tokens = self.pipeline._generate_tokens(batch_size)
+
+        # Decode → QBM → features
+        theta, u0 = self.pipeline._tokenizer.decode(generated_tokens)
+        theta_np = theta.cpu().numpy()
+        trajectory, ics = self.pipeline._replayer.rollout_batch(
+            theta_np,
+            num_realizations=self.pipeline.config.rollout.num_realizations,
+            num_timesteps=self.pipeline.config.rollout.num_timesteps,
+            return_ics=True,
+        )
+        features_batch = self.pipeline._extract_features_from_rollout(
+            trajectory, theta, u0, ics=ics
+        )
+
+        # Retokenize
+        with torch.no_grad():
+            retokenized = self.pipeline._tokenizer.tokenize(**features_batch)
+
+        # Build results with template descriptions only (no LLM)
+        results = []
+        for i in range(batch_size):
+            sample_features = self._extract_sample_features(features_batch, i)
+            # TemplateDescriptor.describe() is pure computation — no LLM
+            description = self.descriptor.describe(sample_features)
+            sample_tokens = {k: v[i].item() for k, v in retokenized.items()}
+
+            results.append(
+                ExplorationResult(
+                    tokens_dict=sample_tokens,
+                    description=description,
+                    features=sample_features,
+                    score=None,  # Scored later in batch
+                )
+            )
+
+        return results
+
+    def _background_score_batch(self, query: str) -> None:
+        """Score accumulated results using the LLM evaluator.
+
+        In swap mode, loads LLM to GPU, scores all unscored results,
+        then offloads LLM back to CPU. Called periodically from the
+        background loop.
+        """
+        with self._results_lock:
+            unscored = [
+                r for r in self._accumulated_results if r.score is None
+            ]
+        if not unscored:
+            return
+
+        descriptions = [r.description for r in unscored]
+
+        with self._gpu_manager.llm_on_gpu():
+            scores = self.evaluator.score_batch(query, descriptions)
+
+        # Update scores (thread-safe: we only write to individual result objects)
+        for result, score in zip(unscored, scores):
+            result.score = score
+
+        logger.debug(f"Background scored {len(unscored)} results")
+
+    def _best_results(self, n: int) -> List[ExplorationResult]:
+        """Get the top-n accumulated results by score (or most recent if unscored)."""
+        with self._results_lock:
+            all_results = list(self._accumulated_results)
+
+        scored = [r for r in all_results if r.score is not None]
+        if scored:
+            scored.sort(key=lambda r: r.score, reverse=True)
+            return scored[:n]
+        # Fall back to most recent if nothing scored yet
+        return all_results[-n:] if all_results else []
+
+    @staticmethod
+    def _merge_results(
+        foreground: List[ExplorationResult],
+        background: List[ExplorationResult],
+    ) -> List[ExplorationResult]:
+        """Merge foreground and background results, preferring higher scores.
+
+        Combines both lists and sorts by score (best first). Unscored
+        results sort after scored ones.
+        """
+        combined = foreground + background
+
+        # Partition into scored and unscored
+        scored = [r for r in combined if r.score is not None]
+        unscored = [r for r in combined if r.score is None]
+
+        scored.sort(key=lambda r: r.score, reverse=True)
+        return scored + unscored
 
     def fit_descriptor(self, features_list: List[Dict[str, float]]) -> None:
         """Fit the template descriptor from dataset statistics.

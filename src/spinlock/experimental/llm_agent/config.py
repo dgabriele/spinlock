@@ -5,6 +5,7 @@ discrete token language and a pretrained English LLM (frozen + LoRA).
 Follows the same patterns as token_synthesis/config.py.
 """
 
+from pathlib import Path
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -90,12 +91,95 @@ class EvaluatorConfig(BaseModel):
     )
 
 
+class ContinuousExplorationConfig(BaseModel):
+    """Background exploration between user prompts.
+
+    When enabled, the agent continues exploring in a background thread
+    after returning the initial response. Each iteration progressively
+    refines results (best-so-far become frontier seeds). The loop stops
+    cleanly when the next user message arrives.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable continuous background exploration",
+    )
+    max_iterations: int = Field(
+        default=50,
+        ge=1,
+        description="Max background batches before auto-stop",
+    )
+    use_frontier_refinement: bool = Field(
+        default=True,
+        description="Use best-so-far as frontier seeds after first batch",
+    )
+    score_batch_size: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "In swap mode, batch this many iterations of results "
+            "before loading LLM for scoring"
+        ),
+    )
+
+
+class AutonomousTrainingConfig(BaseModel):
+    """Configuration for autonomous alignment self-play training.
+
+    Controls the DISCOVER/LEARN loop that bootstraps the Rosetta alignment
+    without human interaction. NOT nested inside AgentConfig — this is a
+    training-loop concern, passed separately to AutonomousAlignmentTrainer.
+    """
+
+    num_cycles: int = Field(default=50, ge=1, description="Number of DISCOVER/LEARN cycles")
+    queries_per_cycle: int = Field(default=10, ge=1, description="Queries generated per cycle")
+    candidates_per_query: int = Field(
+        default=16, ge=1, description="Exploration candidates per query"
+    )
+    checkpoint_frequency: int = Field(
+        default=5, ge=1, description="Save checkpoint every N cycles"
+    )
+    enabled_categories: Optional[List[str]] = Field(
+        default=None, description="Category filter (None = all categories)"
+    )
+    discovery_history_size: int = Field(
+        default=50, ge=1, description="Max discoveries to keep for query context"
+    )
+    use_hybrid_descriptions: bool = Field(
+        default=False,
+        description="If True, enrich template descriptions with LLM in Phase 3",
+    )
+    max_enrichments_per_cycle: int = Field(
+        default=8, ge=0, description="Max LLM-enriched descriptions per cycle"
+    )
+    accumulate_all: bool = Field(
+        default=False,
+        description=(
+            "If True, accumulate ALL pairs regardless of score. "
+            "If False (default), only accumulate pairs scoring >= threshold."
+        ),
+    )
+    output_dir: Path = Field(
+        default=Path("experiments/alignment/results"),
+        description="Output directory for checkpoints and metrics",
+    )
+
+
 class AgentConfig(BaseModel):
     """Top-level conversational agent configuration."""
 
     llm: LLMConfig = LLMConfig()
     alignment: AlignmentConfig = AlignmentConfig()
     evaluator: EvaluatorConfig = EvaluatorConfig()
+    continuous: ContinuousExplorationConfig = ContinuousExplorationConfig()
+    memory_mode: Literal["resident", "swap"] = Field(
+        default="resident",
+        description=(
+            "'resident': LLM stays on GPU at all times. "
+            "'swap': LLM offloads to CPU during exploration, "
+            "loads back for scoring/response."
+        ),
+    )
     denoiser_hidden_dim: Optional[int] = Field(
         default=None,
         description="Auto-detected from denoiser checkpoint",

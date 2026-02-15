@@ -18,6 +18,8 @@ Requires optional dependencies: poetry install --with llm
 from spinlock.experimental.llm_agent.config import (
     AgentConfig,
     AlignmentConfig,
+    AutonomousTrainingConfig,
+    ContinuousExplorationConfig,
     EvaluatorConfig,
     LLMConfig,
 )
@@ -25,6 +27,8 @@ from spinlock.experimental.llm_agent.config import (
 __all__ = [
     "AgentConfig",
     "AlignmentConfig",
+    "AutonomousTrainingConfig",
+    "ContinuousExplorationConfig",
     "EvaluatorConfig",
     "LLMConfig",
 ]

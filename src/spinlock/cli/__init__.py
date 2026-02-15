@@ -31,6 +31,7 @@ from .train_token_to_rollout_vae import TrainTokenToRolloutVAECommand
 from .visualize_qbm import VisualizeQBMCommand
 from .visualize_diffusion_inpainting import VisualizeDiffusionInpaintingCommand
 from .run_token_synthesis import RunTokenSynthesisCommand
+from .train_alignment import TrainAlignmentCommand
 
 __all__ = [
     "CLICommand",
@@ -57,6 +58,7 @@ __all__ = [
     "VisualizeQBMCommand",
     "VisualizeDiffusionInpaintingCommand",
     "RunTokenSynthesisCommand",
+    "TrainAlignmentCommand",
     "main",
 ]
 
@@ -119,6 +121,7 @@ For more help on a specific command:
         ValidateMNOVQVAECommand(),
         TrainTokenToRolloutVAECommand(),
         RunTokenSynthesisCommand(),
+        TrainAlignmentCommand(),
     ]
 
     for command in commands:
