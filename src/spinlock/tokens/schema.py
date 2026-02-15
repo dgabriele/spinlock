@@ -112,6 +112,27 @@ class TokenSchema:
         return cls(vocab_sizes, category_level_info)
 
     @classmethod
+    def from_pretokenized_store(cls, store: "PretokenizedTokenStore") -> 'TokenSchema':
+        """Infer schema from a loaded PretokenizedTokenStore.
+
+        Vocab size = max(token_values) + 1 per key.
+
+        Args:
+            store: Loaded PretokenizedTokenStore instance
+
+        Returns:
+            TokenSchema with inferred vocab sizes
+        """
+        vocab_sizes = {}
+        category_level_info = {}
+
+        for key in store.keys:
+            vocab_sizes[key] = int(store.tokens[key].max().item()) + 1
+            category_level_info[key] = cls.parse_key(key)
+
+        return cls(vocab_sizes, category_level_info)
+
+    @classmethod
     def from_checkpoint(cls, checkpoint_path: Path) -> 'TokenSchema':
         """Load schema from diffusion checkpoint metadata.
 

@@ -45,10 +45,12 @@ from spinlock.mno.losses.mse_led import MSELedLoss
 from spinlock.mno.losses.vq_led import VQLedLoss
 from spinlock.mno.losses.parameter_sensitive import ParameterSensitiveLoss
 from spinlock.mno.losses.token_diversity import TokenDiversityLoss
+from spinlock.mno.losses.roundtrip_consistency import RoundtripConsistencyLoss
 
 __all__ = [
     "MSELedLoss",
     "VQLedLoss",
     "ParameterSensitiveLoss",
     "TokenDiversityLoss",
+    "RoundtripConsistencyLoss",
 ]

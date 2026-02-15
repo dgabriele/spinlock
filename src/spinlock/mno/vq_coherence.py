@@ -403,6 +403,180 @@ class VQCoherenceAdapter(nn.Module):
             'quantized': vq_output['quantized'],
         }
 
+    def extract_soft_logits_and_hard_tokens(
+        self,
+        cleaned_features: torch.Tensor,
+        params: Optional[torch.Tensor] = None,
+        temperature: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Extract per-quantizer soft logits (differentiable) and hard token indices.
+
+        For each quantizer, computes squared L2 distances from the projected
+        latent to all codebook entries. Returns:
+        - soft_logits: -distances/temperature (differentiable through encoder)
+        - hard_tokens: argmin(distances) per quantizer (non-differentiable)
+
+        This is the core of the roundtrip consistency loss gradient path:
+        features → encoder → projector → distances → soft_logits → CrossEntropy
+
+        Args:
+            cleaned_features: [B, T, D_clean] pre-extracted temporal features
+            params: [B, param_dim] QBM parameters (for theta family)
+            temperature: Softmax temperature for soft logits
+
+        Returns:
+            Dict with:
+                'soft_logits': Dict[str, [B, K]] per-quantizer log-probabilities
+                'hard_tokens': Dict[str, [B]] per-quantizer hard indices
+        """
+        # Normalize and encode (same path as encode_and_quantize)
+        normalized = self._normalize_temporal(cleaned_features)
+
+        model = self.model
+        batch_size = normalized.shape[0]
+        device = normalized.device
+
+        # Build all_encoded (families sorted alphabetically)
+        all_encoded = torch.zeros(
+            batch_size, self._total_encoded_dim,
+            device=device, dtype=normalized.dtype,
+        )
+
+        if 'temporal' in model.families:
+            temp_encoded = model.temporal_encoder(normalized)
+            offset = self._family_offsets['temporal']
+            dim = self._family_dims['temporal']
+            all_encoded[:, offset:offset + dim] = temp_encoded
+
+        if 'theta' in model.families and params is not None:
+            theta_encoded = model.theta_encoder(params)
+            offset = self._family_offsets['theta']
+            dim = self._family_dims['theta']
+            all_encoded[:, offset:offset + dim] = theta_encoded
+
+        # Per-quantizer: project → compute distances → soft logits + hard tokens
+        soft_logits = {}
+        hard_tokens = {}
+
+        for family_cat, indices in model.group_indices.items():
+            cat_features = all_encoded[:, indices]
+            projector = model.projectors[family_cat]
+            latents = projector(cat_features)
+
+            num_levels = model.config.hierarchy.num_levels
+            for level_idx, latent in enumerate(latents):
+                quantizer_key = f"{family_cat}_L{level_idx}"
+                quantizer = model.quantizers[quantizer_key]
+                codebook = quantizer.embedding.weight  # [K, D]
+
+                # Squared L2 distances: [B, K]
+                distances = torch.cdist(
+                    latent.unsqueeze(1), codebook.unsqueeze(0), p=2.0
+                ).squeeze(1).pow(2)
+
+                soft_logits[quantizer_key] = -distances / temperature
+                hard_tokens[quantizer_key] = distances.argmin(dim=1)
+
+        return {
+            'soft_logits': soft_logits,
+            'hard_tokens': hard_tokens,
+        }
+
+    @torch.no_grad()
+    def decode_tokens_to_params(
+        self,
+        tokens_dict: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """Decode hard token indices to physics parameters via frozen VQ pipeline.
+
+        Looks up codebook embeddings for each token, concatenates, passes through
+        the shared decoder, then applies inverse heads (theta_inverse, initial_inverse)
+        to recover physics parameters.
+
+        This is used by Mode B of the roundtrip consistency loss: decode MNO's
+        predicted tokens → (θ', IC') → re-simulate with QBM.
+
+        Requires inverse heads to be loaded via load_inverse_heads() first.
+
+        Args:
+            tokens_dict: Dict mapping quantizer key -> [B] token indices
+
+        Returns:
+            Dict with:
+                'theta': [B, param_dim] decoded Sobol parameters (if theta_inverse loaded)
+                'u0': [B, C, H, W] decoded initial conditions (if initial_inverse loaded)
+
+        Raises:
+            RuntimeError: If no inverse heads are loaded
+        """
+        if not hasattr(self, '_theta_inverse') and not hasattr(self, '_initial_inverse'):
+            raise RuntimeError(
+                "No inverse heads loaded. Call load_inverse_heads() first, "
+                "or use Mode A (pretokenized GT tokens) instead."
+            )
+
+        model = self.model
+
+        # Lookup codebook embeddings
+        embeddings = []
+        for family_cat, indices in model.group_indices.items():
+            num_levels = model.config.hierarchy.num_levels
+            for level_idx in range(num_levels):
+                quantizer_key = f"{family_cat}_L{level_idx}"
+                if quantizer_key not in tokens_dict:
+                    continue
+                quantizer = model.quantizers[quantizer_key]
+                emb = quantizer.embedding(tokens_dict[quantizer_key])  # [B, D]
+                embeddings.append(emb)
+
+        latent = torch.cat(embeddings, dim=-1)
+        reconstructed = model.decoder(latent)
+
+        # Split by family and apply inverse heads
+        result = {}
+        for family in sorted(model.families):
+            offset = self._family_offsets[family]
+            dim = self._family_dims[family]
+            if dim == 0:
+                continue
+            family_recon = reconstructed[:, offset:offset + dim]
+
+            if family == 'theta' and hasattr(self, '_theta_inverse'):
+                result['theta'] = self._theta_inverse(family_recon)
+            elif family == 'initial' and hasattr(self, '_initial_inverse'):
+                result['u0'] = self._initial_inverse(family_recon)
+
+        return result
+
+    def load_inverse_heads(
+        self,
+        theta_inverse_path: Optional[str] = None,
+        initial_inverse_path: Optional[str] = None,
+    ) -> None:
+        """Load trained inverse heads for Mode B token decoding.
+
+        Args:
+            theta_inverse_path: Path to theta inverse head checkpoint
+            initial_inverse_path: Path to initial condition inverse head checkpoint
+        """
+        device = next(self.model.parameters()).device
+
+        if theta_inverse_path is not None:
+            checkpoint = torch.load(theta_inverse_path, map_location=device, weights_only=False)
+            self._theta_inverse = checkpoint['model'] if 'model' in checkpoint else checkpoint
+            self._theta_inverse.eval()
+            for p in self._theta_inverse.parameters():
+                p.requires_grad_(False)
+            logger.info(f"Loaded theta inverse head from {theta_inverse_path}")
+
+        if initial_inverse_path is not None:
+            checkpoint = torch.load(initial_inverse_path, map_location=device, weights_only=False)
+            self._initial_inverse = checkpoint['model'] if 'model' in checkpoint else checkpoint
+            self._initial_inverse.eval()
+            for p in self._initial_inverse.parameters():
+                p.requires_grad_(False)
+            logger.info(f"Loaded initial inverse head from {initial_inverse_path}")
+
     def _forward_with_padding(
         self,
         temporal_features: torch.Tensor,

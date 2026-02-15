@@ -103,9 +103,27 @@ loss:
   lambda_traj: 0.03             # Trajectory MSE (physics grounding)
   lambda_ic: 0.03               # IC preservation (prevents NaN divergence)
 
+  # ROUNDTRIP — token self-consistency through frozen VQ pipeline
+  # CrossEntropy(soft_logits, GT_hard_tokens) makes MNO produce the same
+  # tokens as QBM for the same (θ, IC). Raw CE ~3.3 (log(28)); lambda=0.5
+  # → ~1.65 weighted contribution ≈ contrastive scale.
+  lambda_roundtrip: 0.5
+
   contrastive:
     temperature: 0.1
     queue_size: 64              # MoCo-style memory bank: 64 recent embeddings as extra negatives
+
+  roundtrip:
+    temperature: 1.0
+    enable_batch: 200           # Enable after LR warmup finishes
+    warmup_batches: 400         # Cosine ramp to full lambda over ~1/10 epoch
+    families: null              # null = all families; or ["temporal", "theta"]
+    gt_timesteps: 256           # Only used in Mode B
+    # Mode A (preferred): pretokenized GT tokens
+    pretokenized_path: "datasets/qbm_50k_tokenized.h5"
+    # Mode B (no pretokenized): needs inverse heads
+    # theta_inverse_path: "checkpoints/qbm_tokenizer_50k/theta_inverse.pt"
+    # initial_inverse_path: "checkpoints/qbm_tokenizer_50k/initial_inverse.pt"
 
 # VQ-VAE checkpoint (required when lambda_recon > 0 or lambda_commit > 0)
 vqvae:

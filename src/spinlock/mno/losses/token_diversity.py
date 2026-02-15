@@ -31,10 +31,11 @@ Documentation:
 """
 
 import logging
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, List, TYPE_CHECKING
+from typing import Any, Dict, Optional, List, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ from spinlock.mno.losses.components import ContrastiveLoss
 
 if TYPE_CHECKING:
     from spinlock.mno.vq_coherence import VQCoherenceAdapter
+    from spinlock.mno.losses.roundtrip_consistency import RoundtripConsistencyLoss
 
 
 class TokenDiversityLoss(BaseNOALoss):
@@ -75,8 +77,13 @@ class TokenDiversityLoss(BaseNOALoss):
         lambda_commit: float = 0.0,
         lambda_traj: float = 0.0,
         lambda_ic: float = 0.0,
+        lambda_roundtrip: float = 0.0,
         # VQ coherence adapter (replaces old vqvae_alignment)
         vq_adapter: Optional["VQCoherenceAdapter"] = None,
+        # Roundtrip consistency loss (optional)
+        roundtrip_loss: Optional["RoundtripConsistencyLoss"] = None,
+        roundtrip_enable_batch: int = 0,
+        roundtrip_warmup_batches: int = 0,
         # Contrastive config
         param_dim: int = 14,
         contrastive_embed_dim: int = 128,
@@ -93,8 +100,12 @@ class TokenDiversityLoss(BaseNOALoss):
             lambda_commit: Weight for VQ commitment loss (default: 0.0)
             lambda_traj: Weight for trajectory MSE (default: 0.0 = disabled)
             lambda_ic: Weight for IC preservation MSE (default: 0.0 = disabled)
+            lambda_roundtrip: Weight for roundtrip token consistency loss (default: 0.0)
             vq_adapter: Optional VQCoherenceAdapter. Required when
                        lambda_recon > 0 or lambda_commit > 0.
+            roundtrip_loss: Optional RoundtripConsistencyLoss instance
+            roundtrip_enable_batch: Batch number to start roundtrip loss (curriculum)
+            roundtrip_warmup_batches: Batches for cosine warmup to full lambda
             param_dim: Dimensionality of parameter vector (auto-detected from dataset)
             contrastive_embed_dim: Embedding dim for contrastive projectors
             contrastive_hidden_dim: Hidden dim for contrastive projectors
@@ -117,12 +128,25 @@ class TokenDiversityLoss(BaseNOALoss):
         self.lambda_commit = lambda_commit
         self.lambda_traj = lambda_traj
         self.lambda_ic = lambda_ic
+        self.lambda_roundtrip = lambda_roundtrip
+
+        # Roundtrip consistency
+        self.roundtrip_loss = roundtrip_loss
+        self._roundtrip_enable_batch = roundtrip_enable_batch
+        self._roundtrip_warmup_batches = roundtrip_warmup_batches
+        self._current_batch = 0
 
         # Validate: VQ losses require adapter
         if (lambda_recon > 0 or lambda_commit > 0) and vq_adapter is None:
             raise ValueError(
                 "lambda_recon > 0 or lambda_commit > 0 requires vq_adapter. "
                 "Either provide a VQCoherenceAdapter or set lambda_recon=0, lambda_commit=0."
+            )
+
+        if lambda_roundtrip > 0 and roundtrip_loss is None:
+            raise ValueError(
+                "lambda_roundtrip > 0 requires roundtrip_loss. "
+                "Either provide a RoundtripConsistencyLoss or set lambda_roundtrip=0."
             )
 
         # Contrastive component (has learnable projectors)
@@ -149,6 +173,31 @@ class TokenDiversityLoss(BaseNOALoss):
         """
         return self.lambda_traj > 0
 
+    def set_batch(self, batch_number: int) -> None:
+        """Update current batch counter for curriculum scheduling."""
+        self._current_batch = batch_number
+
+    def _get_roundtrip_lambda(self) -> float:
+        """Get effective roundtrip lambda with curriculum scheduling.
+
+        Returns 0 before enable_batch, then cosine-ramps from 0 to
+        lambda_roundtrip over warmup_batches.
+        """
+        if self.lambda_roundtrip <= 0 or self.roundtrip_loss is None:
+            return 0.0
+
+        if self._current_batch < self._roundtrip_enable_batch:
+            return 0.0
+
+        elapsed = self._current_batch - self._roundtrip_enable_batch
+        if self._roundtrip_warmup_batches > 0 and elapsed < self._roundtrip_warmup_batches:
+            # Cosine warmup: 0 → lambda_roundtrip
+            progress = elapsed / self._roundtrip_warmup_batches
+            scale = 0.5 * (1 - math.cos(math.pi * progress))
+            return self.lambda_roundtrip * scale
+
+        return self.lambda_roundtrip
+
     def compute(
         self,
         pred_trajectory: torch.Tensor,
@@ -156,6 +205,7 @@ class TokenDiversityLoss(BaseNOALoss):
         ic: Optional[torch.Tensor] = None,
         mno: Optional[nn.Module] = None,
         params: Optional[torch.Tensor] = None,
+        gt_tokens: Optional[Dict[str, torch.Tensor]] = None,
     ) -> LossOutput:
         """Compute token diversity loss components.
 
@@ -166,6 +216,8 @@ class TokenDiversityLoss(BaseNOALoss):
             ic: Initial condition [B, C, H, W] (for feature extraction)
             mno: MNO backbone reference (unused in this loss)
             params: PDE parameters [B, param_dim] (required for contrastive loss)
+            gt_tokens: Pretokenized GT tokens {key: [B] long} for roundtrip loss
+                      Mode A. If None and roundtrip enabled, falls back to Mode B.
 
         Returns:
             LossOutput with total, components, and monitoring metrics.
@@ -267,7 +319,20 @@ class TokenDiversityLoss(BaseNOALoss):
         if self.lambda_ic > 0 and ic is not None:
             ic_loss = F.mse_loss(pred_trajectory[:, 0], ic)
 
-        # ── 4. Total weighted loss ──────────────────────────────────────────
+        # ── 4. Roundtrip token consistency ───────────────────────────────────
+
+        roundtrip_loss_val = torch.tensor(0.0, device=device)
+        token_agreement_rate = 0.0
+
+        effective_roundtrip_lambda = self._get_roundtrip_lambda()
+        if effective_roundtrip_lambda > 0 and cleaned_features is not None:
+            rt_out = self.roundtrip_loss.compute(
+                cleaned_features, params=params, gt_tokens=gt_tokens,
+            )
+            roundtrip_loss_val = rt_out['loss']
+            token_agreement_rate = rt_out['token_agreement_rate']
+
+        # ── 5. Total weighted loss ──────────────────────────────────────────
 
         total = (
             self.lambda_contrastive * contrastive_loss_val
@@ -275,9 +340,10 @@ class TokenDiversityLoss(BaseNOALoss):
             + self.lambda_commit * commit_loss
             + self.lambda_traj * traj_loss
             + self.lambda_ic * ic_loss
+            + effective_roundtrip_lambda * roundtrip_loss_val
         )
 
-        # ── 5. Monitoring metrics (detached) ────────────────────────────────
+        # ── 6. Monitoring metrics (detached) ────────────────────────────────
 
         metrics = {
             'contrastive': contrastive_loss_val.item(),
@@ -285,11 +351,14 @@ class TokenDiversityLoss(BaseNOALoss):
             'commit': commit_loss.item(),
             'traj': traj_loss.item(),
             'ic': ic_loss.item(),
+            'roundtrip': roundtrip_loss_val.item(),
             'total': total.item(),
             'contrastive_accuracy': contrastive_accuracy,
             'mean_positive_sim': mean_positive_sim,
             'mean_negative_sim': mean_negative_sim,
             'token_set_diversity': token_diversity,
+            'token_agreement_rate': token_agreement_rate,
+            'roundtrip_lambda_effective': effective_roundtrip_lambda,
         }
 
         # Relative L2 (only when target available)
@@ -308,6 +377,7 @@ class TokenDiversityLoss(BaseNOALoss):
                 'commit': commit_loss,
                 'traj': traj_loss,
                 'ic': ic_loss,
+                'roundtrip': roundtrip_loss_val,
             },
             metrics=metrics,
         )
@@ -348,19 +418,21 @@ class TokenDiversityLoss(BaseNOALoss):
 
     @property
     def auxiliary_loss_names(self) -> List[str]:
-        """Auxiliary losses: VQ coherence and physics regularizers."""
-        return ["recon", "commit", "traj", "ic"]
+        """Auxiliary losses: VQ coherence, physics regularizers, roundtrip."""
+        return ["recon", "commit", "traj", "ic", "roundtrip"]
 
     def __repr__(self) -> str:
         vq_status = "with VQ adapter" if self.vq_adapter is not None else "no VQ"
         contrastive_space = "feature-space" if self._use_feature_contrastive else "raw-trajectory"
+        rt_status = f", λ_roundtrip={self.lambda_roundtrip}" if self.lambda_roundtrip > 0 else ""
         return (
             f"TokenDiversityLoss("
             f"λ_contrastive={self.lambda_contrastive}, "
             f"λ_recon={self.lambda_recon}, "
             f"λ_commit={self.lambda_commit}, "
             f"λ_traj={self.lambda_traj}, "
-            f"λ_ic={self.lambda_ic}, "
+            f"λ_ic={self.lambda_ic}"
+            f"{rt_status}, "
             f"{vq_status}, "
             f"contrastive={contrastive_space})"
         )

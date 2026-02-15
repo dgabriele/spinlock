@@ -520,6 +520,98 @@ class QBMReplayer:
 
         return trajectories
 
+    def rollout_batch_with_explicit_ic(
+        self,
+        params_batch: NDArray[np.float64],
+        psi_0: "torch.Tensor",
+        num_timesteps: int = 256,
+    ) -> "torch.Tensor":
+        """Rollout with explicitly provided initial conditions.
+
+        Unlike rollout_batch() which generates random ICs, this method uses
+        the provided psi_0 directly. Used by Mode B of the roundtrip
+        consistency loss: decoded ICs from the VQ pipeline are fed back
+        into the simulator for ground-truth trajectory generation.
+
+        Args:
+            params_batch: Sobol vectors [B, 9] in [0,1]
+            psi_0: Explicit initial conditions [B, 2, H, W]
+            num_timesteps: Number of simulation timesteps
+
+        Returns:
+            trajectories: [B, T, 2, H, W] float32
+        """
+        batch_size = params_batch.shape[0]
+
+        # Convert Sobol → physical parameters → potential
+        all_params = [self._sobol_to_physical(params_batch[i]) for i in range(batch_size)]
+
+        potential_types = [p.get("potential_type", "harmonic") for p in all_params]
+        strengths = torch.tensor([p.get("potential_strength", 1.0) for p in all_params], device=self.device)
+        widths = torch.tensor([p.get("potential_width", 1.0) for p in all_params], device=self.device)
+        gammas = torch.tensor([p.get("gamma", 0.01) for p in all_params], device=self.device)
+        kTs = torch.tensor([p.get("kT", 1.0) for p in all_params], device=self.device)
+        masses = torch.tensor([p.get("mass", 1.0) for p in all_params], device=self.device)
+
+        # Generate potentials (same logic as rollout_batch)
+        if len(set(potential_types)) == 1:
+            ptype = potential_types[0]
+            if ptype == "harmonic":
+                V_batch = self.potential_generator.harmonic_2d(
+                    batch_size=batch_size,
+                    omega=strengths,
+                    center_x=torch.zeros(batch_size, device=self.device),
+                    center_y=torch.zeros(batch_size, device=self.device)
+                )
+            elif ptype == "double_well":
+                V_batch = self.potential_generator.double_well(
+                    batch_size=batch_size,
+                    barrier_height=strengths,
+                    separation=widths
+                )
+            elif ptype == "quartic":
+                V_batch = self.potential_generator.quartic(
+                    batch_size=batch_size,
+                    c0=torch.zeros(batch_size, device=self.device),
+                    c2=widths,
+                    c4=strengths
+                )
+            elif ptype == "random":
+                V_batch = torch.stack([
+                    self.potential_generator.random_potential(
+                        batch_size=1,
+                        correlation_length=widths[i].item(),
+                        amplitude=strengths[i].item()
+                    ).squeeze(0) for i in range(batch_size)
+                ], dim=0)
+            else:
+                raise ValueError(f"Unknown potential type: {ptype}")
+        else:
+            V_list = []
+            for i, ptype in enumerate(potential_types):
+                V = self._generate_potential(all_params[i], batch_size=1)
+                V_list.append(V.squeeze(0))
+            V_batch = torch.stack(V_list, dim=0)
+
+        # Use provided ICs directly (move to device if needed)
+        psi_0_device = psi_0.to(self.device)
+
+        # Simulation parameters
+        sim_params = torch.stack([gammas, kTs, masses], dim=1)  # [B, 3]
+
+        # Single batched simulation
+        trajectory = self.simulator.rollout(
+            psi_0=psi_0_device,
+            potential=V_batch,
+            params=sim_params,
+            num_steps=num_timesteps,
+            dt=self.dt,
+            return_all_steps=True,
+        )
+
+        # Exclude IC step: [B, T+1, 2, H, W] -> [B, T, 2, H, W]
+        return trajectory[:, 1:, :, :, :].to(torch.float32)
+
     @classmethod
     def from_config(cls, config_path: str, device: str = "cuda") -> "QBMReplayer":
         """Create replayer from YAML config file.

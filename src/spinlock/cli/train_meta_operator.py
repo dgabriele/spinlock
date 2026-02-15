@@ -822,6 +822,7 @@ Output:
         # Create loss function
         print("Creating loss function...")
         loss_mode = config["loss"].get("mode", "mse_led")  # Default: MSE-led (Stage 1)
+        roundtrip_token_store = None  # Only set for token_diversity mode with roundtrip
 
         # Check if VQ-led mode (Stage 2)
         if loss_mode == "vq_led":
@@ -895,6 +896,30 @@ Output:
                 contrastive_feature_dim = vq_adapter.cleaned_feature_dim
                 print(f"  ✓ VQ coherence adapter loaded (feature_dim={contrastive_feature_dim})")
 
+            # Roundtrip token consistency loss (optional)
+            lambda_roundtrip = loss_config.get("lambda_roundtrip", 0.0)
+            roundtrip_config = loss_config.get("roundtrip", {})
+            roundtrip_loss_obj = None
+            roundtrip_token_store = None
+
+            if lambda_roundtrip > 0 and vq_adapter is not None:
+                from spinlock.mno.losses.roundtrip_consistency import RoundtripConsistencyLoss
+
+                pretokenized_path = roundtrip_config.get("pretokenized_path")
+                if pretokenized_path:
+                    # Mode A: pretokenized GT tokens (fast)
+                    from spinlock.tokens.pretokenized_store import PretokenizedTokenStore
+                    roundtrip_token_store = PretokenizedTokenStore(Path(pretokenized_path))
+                    print(f"  Roundtrip GT tokens: {roundtrip_token_store.num_samples} "
+                          f"samples from {pretokenized_path}")
+
+                roundtrip_loss_obj = RoundtripConsistencyLoss(
+                    vq_adapter=vq_adapter,
+                    temperature=roundtrip_config.get("temperature", 1.0),
+                    families_to_compare=roundtrip_config.get("families"),
+                    num_gt_timesteps=roundtrip_config.get("gt_timesteps", 256),
+                )
+
             contrastive_config = loss_config.get("contrastive", {})
             loss_fn = TokenDiversityLoss(
                 lambda_contrastive=loss_config.get("lambda_contrastive", 1.0),
@@ -902,7 +927,11 @@ Output:
                 lambda_commit=lambda_commit,
                 lambda_traj=loss_config.get("lambda_traj", 0.0),
                 lambda_ic=loss_config.get("lambda_ic", 0.0),
+                lambda_roundtrip=lambda_roundtrip,
                 vq_adapter=vq_adapter,
+                roundtrip_loss=roundtrip_loss_obj,
+                roundtrip_enable_batch=roundtrip_config.get("enable_batch", 0),
+                roundtrip_warmup_batches=roundtrip_config.get("warmup_batches", 0),
                 param_dim=config["model"]["param_dim"],
                 contrastive_temperature=contrastive_config.get("temperature", 0.1),
                 contrastive_queue_size=contrastive_config.get("queue_size", 0),
@@ -915,6 +944,10 @@ Output:
                   f"L_commit={lambda_commit}")
             print(f"    L_traj={loss_config.get('lambda_traj', 0.0)}, "
                   f"L_ic={loss_config.get('lambda_ic', 0.0)}")
+            if lambda_roundtrip > 0:
+                print(f"    L_roundtrip={lambda_roundtrip} "
+                      f"(enable_batch={roundtrip_config.get('enable_batch', 0)}, "
+                      f"warmup={roundtrip_config.get('warmup_batches', 0)})")
             if vq_adapter is None:
                 print(f"    VQ coherence: disabled (lambda_recon=0, lambda_commit=0)")
             else:
@@ -1277,6 +1310,7 @@ Output:
                 log_every=args.log_every,
                 accumulation_steps=config["training"].get("gradient_accumulation_steps", 1),
                 ground_truth_tokens=ground_truth_tokens,
+                roundtrip_token_store=roundtrip_token_store,
                 # Mid-epoch validation/checkpointing
                 val_loader=val_loader if save_every_batches else None,
                 save_every_batches=save_every_batches,
@@ -1421,6 +1455,8 @@ Output:
         accumulation_steps=1,
         ground_truth_tokens=None,
         token_indices=None,
+        # Roundtrip token consistency (Mode A)
+        roundtrip_token_store=None,
         # Mid-epoch validation/checkpointing
         val_loader=None,
         save_every_batches=None,
@@ -1546,16 +1582,31 @@ Output:
                 pred_states = pred_trajectory[:, 1:, :, :, :]  # Skip IC step
                 target_states = None
 
+            # Get GT tokens for roundtrip loss (Mode A)
+            batch_gt_tokens = None
+            if roundtrip_token_store is not None and indices is not None:
+                batch_gt_tokens = {
+                    k: v.to(device)
+                    for k, v in roundtrip_token_store.get_batch(indices).items()
+                }
+
+            # Update batch counter for curriculum scheduling
+            if hasattr(loss_fn, 'set_batch'):
+                loss_fn.set_batch(global_batch_counter)
+
             # Compute loss in FP32 — feature extraction includes ops that don't
             # support reduced precision (linalg_eigh, FFT, bincount)
             try:
-                loss_output = loss_fn.compute(
+                loss_kwargs = dict(
                     pred_trajectory=pred_states.float() if pred_states is not None else None,
                     target_trajectory=target_states,
                     ic=ic,
                     mno=mno,
-                    params=params,  # For parameter-sensitive losses
+                    params=params,
                 )
+                if batch_gt_tokens is not None:
+                    loss_kwargs['gt_tokens'] = batch_gt_tokens
+                loss_output = loss_fn.compute(**loss_kwargs)
             except Exception as e:
                 print(f"  Warning: Loss computation failed: {e}")
                 continue
@@ -1590,7 +1641,7 @@ Output:
                 component_losses[component_name] += component_value.item()
 
             # Accumulate normalized metrics
-            for metric_name in ['nrmse', 'relative_l2', 'energy_norm_mse']:
+            for metric_name in ['nrmse', 'relative_l2', 'energy_norm_mse', 'token_agreement_rate']:
                 if metric_name in loss_output.metrics:
                     if metric_name not in normalized_metrics:
                         normalized_metrics[metric_name] = 0.0
