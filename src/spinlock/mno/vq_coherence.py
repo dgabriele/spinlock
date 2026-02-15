@@ -1,0 +1,549 @@
+"""VQ Coherence Adapter — connects MNO trajectories to frozen VQTokenizer.
+
+Replaces the broken VQVAEAlignmentLoss (which depends on deleted
+CategoricalHierarchicalVQVAE) with the modern VQTokenizer/JointHierarchicalVQVAE
+architecture.
+
+Responsibilities:
+1. Load frozen VQTokenizer from checkpoint
+2. Extract temporal features from MNO trajectories on-the-fly
+3. Apply feature cleaning mask (kept_feature_indices from checkpoint)
+4. Apply normalization stats from checkpoint
+5. Run VQ forward pass with available families (zero-pad unavailable ones)
+6. Provide cleaned features for contrastive loss (same feature space as tokenizer)
+
+Architecture:
+    MNO trajectory [B, T, C, H, W]
+        → MNOFeatureExtractor.extract() → raw features [B, T, D_raw]
+        → kept_feature_indices mask → cleaned features [B, T, D_clean]
+        → normalization → normalized features [B, T, D_clean]
+        → VQ forward (encode available families, zero-pad unavailable)
+        → VQ losses (L_recon, L_commit) + token_indices (diversity metric)
+
+Note: The VQ model's group_indices are cross-family — each quantizer group
+can index features from any family's encoded portion. This means we cannot
+simply skip families. Instead, unavailable families (e.g., initial) are
+zero-padded in the encoded space.
+
+Gradient flow: All loss paths flow through feature extraction → trajectory → MNO.
+The VQ model is frozen (requires_grad=False) but passes input gradients via STE.
+"""
+
+import logging
+from pathlib import Path
+from typing import Dict, Any, Optional, Union, List
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+logger = logging.getLogger(__name__)
+
+
+class VQCoherenceAdapter(nn.Module):
+    """Connects MNO trajectories to frozen VQTokenizer for coherence losses.
+
+    The adapter owns a frozen VQTokenizer and an MNOFeatureExtractor. Given
+    an MNO-predicted trajectory, it:
+    1. Extracts temporal features (same pipeline as dataset generation)
+    2. Applies the checkpoint's feature cleaning mask
+    3. Applies the checkpoint's normalization statistics
+    4. Runs VQ forward with zero-padded unavailable families
+    5. Exposes cleaned features for contrastive loss computation
+
+    All VQ model parameters are frozen — only input gradients propagate
+    back to the MNO.
+
+    Attributes:
+        model: Frozen JointHierarchicalVQVAE
+        extractor: MNOFeatureExtractor for temporal feature extraction
+        kept_feature_indices: Feature cleaning mask from checkpoint
+        normalization_stats: Per-category normalization statistics
+        cleaned_feature_dim: Dimension of cleaned temporal features (D_clean)
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        extractor,
+        kept_feature_indices: list,
+        normalization_stats: Optional[Dict[str, Any]],
+        group_indices: Dict[str, list],
+        config: Any,
+    ):
+        """Initialize adapter with pre-loaded components.
+
+        Use `from_checkpoint()` classmethod for standard construction.
+
+        Args:
+            model: Frozen JointHierarchicalVQVAE
+            extractor: MNOFeatureExtractor for temporal feature extraction
+            kept_feature_indices: Feature indices kept after cleaning
+            normalization_stats: Per-category normalization statistics (or None)
+            group_indices: VQ category → feature index mapping
+            config: TokenizerConfig from checkpoint
+        """
+        super().__init__()
+
+        self.model = model
+        self.extractor = extractor
+        self._kept_feature_indices = kept_feature_indices
+        self._normalization_stats = normalization_stats
+        self._group_indices = group_indices
+        self._config = config
+
+        # Register kept_feature_indices as buffer for device tracking
+        self.register_buffer(
+            'kept_indices',
+            torch.tensor(kept_feature_indices, dtype=torch.long),
+        )
+
+        # Pre-compute normalization tensors for temporal features
+        self._norm_means = {}
+        self._norm_stds = {}
+        if normalization_stats is not None:
+            for cat_name, stats in normalization_stats.items():
+                if cat_name.startswith('temporal_'):
+                    mean = stats.mean if isinstance(stats.mean, torch.Tensor) else torch.tensor(stats.mean, dtype=torch.float32)
+                    std = stats.std if isinstance(stats.std, torch.Tensor) else torch.tensor(stats.std, dtype=torch.float32)
+                    self.register_buffer(f'norm_mean_{cat_name}', mean)
+                    self.register_buffer(f'norm_std_{cat_name}', std)
+                    self._norm_means[cat_name] = f'norm_mean_{cat_name}'
+                    self._norm_stds[cat_name] = f'norm_std_{cat_name}'
+
+        # Build temporal category → cleaned-feature-index mapping
+        self._temporal_cat_cleaned_indices = {}
+        kept_set = set(kept_feature_indices)
+        orig_to_cleaned = {orig: i for i, orig in enumerate(kept_feature_indices)}
+        for cat_name, orig_indices in group_indices.items():
+            if cat_name.startswith('temporal_'):
+                cleaned = [orig_to_cleaned[idx] for idx in orig_indices if idx in kept_set]
+                if cleaned:
+                    self._temporal_cat_cleaned_indices[cat_name] = cleaned
+
+        # Pre-compute family offset and dim in the concatenated encoded vector
+        # Families are sorted alphabetically in forward()
+        self._family_offsets = {}
+        self._family_dims = {}
+        offset = 0
+        for family in sorted(model.families):
+            if family == 'temporal':
+                dim = model.temporal_dim
+            elif family == 'initial':
+                dim = model.initial_dim
+            elif family == 'theta':
+                dim = model.theta_dim
+            else:
+                dim = 0
+            self._family_offsets[family] = offset
+            self._family_dims[family] = dim
+            offset += dim
+
+        self._total_encoded_dim = offset
+        logger.info(
+            f"Encoded space: {self._total_encoded_dim}D "
+            f"({', '.join(f'{f}={self._family_dims[f]}' for f in sorted(model.families))})"
+        )
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        checkpoint_path: Union[str, Path],
+        device: str = "cuda",
+    ) -> "VQCoherenceAdapter":
+        """Load from VQTokenizer checkpoint file or directory.
+
+        Loads the model, feature_metadata (kept_indices), normalization stats,
+        and group_indices. Validates feature dimensions at construction time.
+
+        Args:
+            checkpoint_path: Path to VQTokenizer checkpoint (.pt file or directory)
+            device: Device to load model onto
+
+        Returns:
+            Initialized VQCoherenceAdapter with frozen VQ model
+
+        Raises:
+            ValueError: If checkpoint missing required metadata
+            ValueError: If feature dimensions don't match extractor output
+        """
+        from spinlock.tokens.tokenizer import VQTokenizer
+
+        # Resolve directory → file (checkpoint dirs contain best_model.pt)
+        checkpoint_path = Path(checkpoint_path)
+        if checkpoint_path.is_dir():
+            best_model = checkpoint_path / "best_model.pt"
+            if best_model.exists():
+                checkpoint_path = best_model
+            else:
+                pt_files = list(checkpoint_path.glob("*.pt"))
+                if pt_files:
+                    checkpoint_path = pt_files[0]
+                else:
+                    raise FileNotFoundError(
+                        f"No .pt checkpoint file found in {checkpoint_path}"
+                    )
+
+        logger.info(f"Loading VQTokenizer from: {checkpoint_path}")
+        tokenizer = VQTokenizer.from_checkpoint(checkpoint_path)
+
+        # Extract components
+        model = tokenizer.model
+        if model is None:
+            raise ValueError(f"Checkpoint at {checkpoint_path} has no model")
+
+        feature_metadata = tokenizer.feature_metadata
+        if feature_metadata is None:
+            raise ValueError(
+                f"Checkpoint at {checkpoint_path} has no feature_metadata. "
+                f"Retrain VQTokenizer to generate v2.1+ checkpoint."
+            )
+
+        # Get kept_feature_indices for temporal family
+        if 'temporal' not in feature_metadata.families:
+            raise ValueError("Checkpoint has no temporal family metadata")
+
+        temporal_meta = feature_metadata.families['temporal']
+        kept_feature_indices = temporal_meta.kept_feature_indices
+
+        logger.info(
+            f"Temporal features: {temporal_meta.original_feature_count} original → "
+            f"{temporal_meta.cleaned_feature_count} cleaned"
+        )
+
+        # Freeze VQ model
+        model.eval()
+        for param in model.parameters():
+            param.requires_grad_(False)
+        model = model.to(device)
+
+        # Create feature extractor
+        from spinlock.mno.feature_extraction import MNOFeatureExtractor
+        extractor = MNOFeatureExtractor(device=device)
+
+        # Validate feature dimensions
+        probe_result = extractor.probe_dimensions(
+            timesteps=32, channels=2, height=64, width=64
+        )
+        actual_raw_dim = probe_result['temporal_dim']
+        expected_raw_dim = temporal_meta.original_feature_count
+
+        if actual_raw_dim != expected_raw_dim:
+            raise ValueError(
+                f"Feature dimension mismatch: MNOFeatureExtractor produces "
+                f"{actual_raw_dim} features but VQTokenizer checkpoint expects "
+                f"{expected_raw_dim}. Retrain VQTokenizer with current feature "
+                f"extractors."
+            )
+
+        logger.info(
+            f"Feature dimension validated: {actual_raw_dim} raw → "
+            f"{len(kept_feature_indices)} cleaned"
+        )
+
+        adapter = cls(
+            model=model,
+            extractor=extractor,
+            kept_feature_indices=kept_feature_indices,
+            normalization_stats=tokenizer.normalization_stats,
+            group_indices=tokenizer.group_indices,
+            config=tokenizer.config,
+        )
+
+        return adapter
+
+    def extract_and_encode(
+        self,
+        trajectory: torch.Tensor,
+        ic: Optional[torch.Tensor] = None,
+        params: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
+        """Full pipeline: trajectory → features → VQ forward pass.
+
+        Encodes available families (temporal, theta) normally and zero-pads
+        unavailable families (initial) in the concatenated encoded space.
+        The VQ model's cross-family group indices index into this combined
+        vector, so all quantizers can operate normally.
+
+        Args:
+            trajectory: MNO output [B, T, C, H, W]
+            ic: Initial condition [B, C, H, W] (unused — initial family zero-padded)
+            params: QBM parameters [B, param_dim] (for theta family)
+
+        Returns:
+            Dict with:
+                'cleaned_features': [B, T, D_clean] — for contrastive loss
+                'reconstructed': [B, total_encoded_dim]
+                'vq_loss': scalar — commitment loss
+                'recon_loss': scalar — MSE(reconstructed, original_encoded)
+                'token_indices': Dict[str, [B]] — per-quantizer indices
+                'latents': Dict[str, [B, latent_dim]] — pre-quantization
+                'quantized': [B, total_latent_dim]
+        """
+        # Convenience wrapper: calls extract_features() then encode_and_quantize()
+        cleaned = self.extract_features(trajectory)
+
+        vq_output = self.encode_and_quantize(cleaned, params=params)
+
+        return {
+            'cleaned_features': cleaned,  # Un-normalized for contrastive
+            'reconstructed': vq_output['reconstructed'],
+            'vq_loss': vq_output['vq_loss'],
+            'recon_loss': vq_output['recon_loss'],
+            'token_indices': vq_output['token_indices'],
+            'latents': vq_output.get('latents', {}),
+            'quantized': vq_output['quantized'],
+        }
+
+    def extract_features(
+        self,
+        trajectory: torch.Tensor,
+    ) -> torch.Tensor:
+        """Extract cleaned temporal features WITH gradient to trajectory.
+
+        This is the first half of the extract_and_encode pipeline, split out
+        so contrastive loss can backprop through feature extraction → MNO
+        while VQ encoding runs separately without gradient.
+
+        Args:
+            trajectory: MNO output [B, T, C, H, W] (should already be sanitized)
+
+        Returns:
+            cleaned_features: [B, T, D_clean] with gradient to trajectory
+        """
+        # 1. Sanitize — same logic as extract_and_encode
+        nan_mask = torch.isnan(trajectory) | torch.isinf(trajectory)
+        if nan_mask.any():
+            nan_frac = nan_mask.float().mean().item()
+            if nan_frac > 0.5:
+                logger.warning(
+                    f"VQCoherenceAdapter.extract_features: {nan_frac:.1%} of trajectory "
+                    f"values are NaN/Inf — MNO may be diverging"
+                )
+            trajectory = torch.nan_to_num(
+                trajectory, nan=0.0, posinf=1e6, neginf=-1e6
+            )
+
+        # 2. Extract temporal features
+        feat_output = self.extractor.extract(trajectory)
+        raw_temporal = feat_output['temporal']  # [B, T, D_raw]
+
+        # Sanitize extracted features (FFT, skewness/kurtosis can produce NaN)
+        raw_temporal = torch.nan_to_num(raw_temporal, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        # 3. Apply feature cleaning mask
+        cleaned = raw_temporal[:, :, self.kept_indices]  # [B, T, D_clean]
+
+        # 4. Clamp extreme values (tight bound for gradient stability)
+        cleaned = torch.clamp(cleaned, min=-100, max=100)
+
+        return cleaned
+
+    def encode_and_quantize(
+        self,
+        cleaned_features: torch.Tensor,
+        params: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
+        """Run VQ pipeline on pre-extracted features (no gradient needed).
+
+        This is the second half of the extract_and_encode pipeline. Takes
+        already-cleaned features and runs normalization → VQ encoding →
+        quantization → decoding. Intended to be called with detached features
+        for monitoring (recon loss, commit loss, token diversity).
+
+        Args:
+            cleaned_features: [B, T, D_clean] — pre-extracted temporal features
+            params: QBM parameters [B, param_dim] (for theta family)
+
+        Returns:
+            Dict with recon_loss, vq_loss, token_indices, reconstructed, etc.
+        """
+        # Normalize (match training-time normalization)
+        normalized = self._normalize_temporal(cleaned_features)
+
+        # Run VQ forward with zero-padded unavailable families
+        vq_output = self._forward_with_padding(normalized, params)
+
+        return {
+            'recon_loss': vq_output['recon_loss'],
+            'vq_loss': vq_output['vq_loss'],
+            'token_indices': vq_output['token_indices'],
+            'reconstructed': vq_output['reconstructed'],
+            'latents': vq_output.get('latents', {}),
+            'quantized': vq_output['quantized'],
+        }
+
+    def _forward_with_padding(
+        self,
+        temporal_features: torch.Tensor,
+        params: Optional[torch.Tensor],
+    ) -> Dict[str, Any]:
+        """Run VQ model forward with zero-padded unavailable families.
+
+        Constructs the full all_encoded vector by:
+        - Encoding temporal and theta families normally
+        - Zero-padding the initial family's positions
+        Then runs the standard quantization and decoding pipeline.
+
+        Args:
+            temporal_features: Normalized cleaned temporal [B, T, D_clean]
+            params: QBM parameters [B, param_dim] (or None)
+
+        Returns:
+            Dict with reconstructed, vq_loss, recon_loss, token_indices, etc.
+        """
+        model = self.model
+        batch_size = temporal_features.shape[0]
+        device = temporal_features.device
+
+        # Build all_encoded (families sorted alphabetically)
+        all_encoded = torch.zeros(
+            batch_size, self._total_encoded_dim,
+            device=device, dtype=temporal_features.dtype,
+        )
+
+        # Encode temporal
+        if 'temporal' in model.families:
+            from spinlock.tokens.encoders import PyramidTemporalEncoder
+            if isinstance(model.temporal_encoder, PyramidTemporalEncoder):
+                temp_encoded = model.temporal_encoder(temporal_features)
+            else:
+                temp_encoded = model.temporal_encoder(temporal_features)
+
+            offset = self._family_offsets['temporal']
+            dim = self._family_dims['temporal']
+            all_encoded[:, offset:offset + dim] = temp_encoded
+
+        # Encode theta
+        if 'theta' in model.families and params is not None:
+            theta_encoded = model.theta_encoder(params)
+
+            offset = self._family_offsets['theta']
+            dim = self._family_dims['theta']
+            all_encoded[:, offset:offset + dim] = theta_encoded
+
+        # initial family is left as zeros (not available at MNO training time)
+
+        # ── Quantize per-category (standard VQ pipeline) ─────────────
+        all_quantized = []
+        vq_losses = []
+        encodings_dict = {}
+        latents_dict = {}
+
+        for family_cat, indices in model.group_indices.items():
+            # Extract features for this category from all_encoded
+            cat_features = all_encoded[:, indices]  # [B, cat_dim]
+
+            # Project to hierarchical latents
+            projector = model.projectors[family_cat]
+            latents = projector(cat_features)
+
+            # Quantize each level
+            num_levels = model.config.hierarchy.num_levels
+            for level_idx, latent in enumerate(latents):
+                quantizer_key = f"{family_cat}_L{level_idx}"
+                quantizer = model.quantizers[quantizer_key]
+
+                latents_dict[quantizer_key] = latent
+                quantized, encodings, losses = quantizer(latent)
+
+                all_quantized.append(quantized)
+                vq_losses.append(losses['loss'])
+                encodings_dict[quantizer_key] = quantized
+
+        all_quantized_cat = torch.cat(all_quantized, dim=1)
+
+        # ── Decode ───────────────────────────────────────────────────
+        reconstructed = model.decoder(all_quantized_cat)
+
+        # ── Losses ───────────────────────────────────────────────────
+        total_vq_loss = torch.stack(vq_losses).mean()
+
+        # Reconstruction loss: compare only the available family portions
+        # (skip initial's zero-padded region to avoid penalizing zero→zero)
+        recon_parts = []
+        encoded_parts = []
+
+        for family in ['temporal', 'theta']:
+            if family in self._family_offsets:
+                offset = self._family_offsets[family]
+                dim = self._family_dims[family]
+                if dim > 0:
+                    recon_parts.append(reconstructed[:, offset:offset + dim])
+                    encoded_parts.append(all_encoded[:, offset:offset + dim])
+
+        if recon_parts:
+            recon_cat = torch.cat(recon_parts, dim=1)
+            encoded_cat = torch.cat(encoded_parts, dim=1)
+            recon_loss = F.mse_loss(recon_cat, encoded_cat)
+        else:
+            recon_loss = torch.tensor(0.0, device=device)
+
+        # Token indices
+        token_indices = {}
+        for quantizer_key, quantizer in model.quantizers.items():
+            if quantizer_key in encodings_dict:
+                quantized = encodings_dict[quantizer_key]
+                distances = torch.cdist(
+                    quantized, quantizer.embedding.weight, p=2.0
+                )
+                token_indices[quantizer_key] = distances.argmin(dim=1)
+
+        return {
+            'reconstructed': reconstructed,
+            'vq_loss': total_vq_loss,
+            'recon_loss': recon_loss,
+            'token_indices': token_indices,
+            'latents': latents_dict,
+            'quantized': all_quantized_cat,
+        }
+
+    def _normalize_temporal(self, cleaned: torch.Tensor) -> torch.Tensor:
+        """Apply checkpoint normalization to cleaned temporal features.
+
+        Replicates the per-category normalization applied during VQTokenizer
+        training, using stored normalization stats.
+
+        Args:
+            cleaned: Cleaned temporal features [B, T, D_clean]
+
+        Returns:
+            Normalized features [B, T, D_clean]
+        """
+        if not self._norm_means:
+            # No normalization stats — pass through
+            return cleaned
+
+        normalized = cleaned.clone()
+
+        for cat_name, cleaned_indices in self._temporal_cat_cleaned_indices.items():
+            mean_key = self._norm_means.get(cat_name)
+            std_key = self._norm_stds.get(cat_name)
+
+            if mean_key is None or std_key is None:
+                continue
+
+            mean = getattr(self, mean_key).to(cleaned.device)
+            std = getattr(self, std_key).to(cleaned.device)
+
+            idx = torch.tensor(cleaned_indices, device=cleaned.device, dtype=torch.long)
+            normalized[:, :, idx] = (cleaned[:, :, idx] - mean) / std
+
+        clip_val = getattr(self._config.normalization, 'clip_std_multiplier', None)
+        if clip_val is not None:
+            normalized = torch.clamp(normalized, -clip_val, clip_val)
+
+        return normalized
+
+    @property
+    def cleaned_feature_dim(self) -> int:
+        """D_clean — dimension of cleaned temporal features."""
+        return len(self._kept_feature_indices)
+
+    def __repr__(self) -> str:
+        return (
+            f"VQCoherenceAdapter("
+            f"cleaned_dim={self.cleaned_feature_dim}, "
+            f"families={sorted(self.model.families)}, "
+            f"frozen=True)"
+        )

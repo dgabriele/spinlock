@@ -16,7 +16,7 @@ Design principles:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple
+from typing import Optional, Tuple
 
 from spinlock.mno.features import RolloutFeatureExtractor
 
@@ -61,6 +61,7 @@ class ContrastiveSimilarity(nn.Module):
         param_dim: int = 14,
         embed_dim: int = 128,
         hidden_dim: int = 256,
+        feature_dim: Optional[int] = None,
     ):
         """Initialize contrastive similarity module.
 
@@ -68,6 +69,9 @@ class ContrastiveSimilarity(nn.Module):
             param_dim: Dimensionality of parameter vector (default: 14)
             embed_dim: Shared embedding dimensionality (default: 128)
             hidden_dim: Hidden layer size for projectors (default: 256)
+            feature_dim: When provided, creates a feature_projector for
+                pre-computed VQ tokenizer features (e.g., D_clean=152).
+                Enables embed_features() for feature-space contrastive.
         """
         super().__init__()
         self.param_dim = param_dim
@@ -76,11 +80,11 @@ class ContrastiveSimilarity(nn.Module):
 
         # Reusable feature extractor (DRY principle)
         self.feature_extractor = RolloutFeatureExtractor()
-        feature_dim = self.feature_extractor.feature_dim  # 32
+        rollout_feature_dim = self.feature_extractor.feature_dim  # 32
 
-        # Rollout projector: features → embedding
+        # Rollout projector: features → embedding (for raw trajectory path)
         self.rollout_projector = nn.Sequential(
-            nn.Linear(feature_dim, hidden_dim),
+            nn.Linear(rollout_feature_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, embed_dim),
         )
@@ -91,6 +95,19 @@ class ContrastiveSimilarity(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, embed_dim),
         )
+
+        # Feature projector: VQ tokenizer features → embedding (optional)
+        # LayerNorm first: normalizes 152D features so volatile extractors
+        # (kurtosis, skewness) don't dominate gradient — same pattern as
+        # SimCLR/BYOL (BN before projection heads).
+        self.feature_projector: Optional[nn.Sequential] = None
+        if feature_dim is not None:
+            self.feature_projector = nn.Sequential(
+                nn.LayerNorm(feature_dim),
+                nn.Linear(feature_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, embed_dim),
+            )
 
     def embed_rollout(self, rollout: torch.Tensor) -> torch.Tensor:
         """Embed rollout into shared space.
@@ -110,6 +127,27 @@ class ContrastiveSimilarity(nn.Module):
         # L2 normalize for cosine similarity
         embed = F.normalize(embed, p=2, dim=1)
 
+        return embed
+
+    def embed_features(self, features: torch.Tensor) -> torch.Tensor:
+        """Embed pre-computed VQ tokenizer features into shared space.
+
+        Args:
+            features: Temporal features [B, D_clean] (time-aggregated)
+
+        Returns:
+            feature_embed: L2-normalized embedding [B, embed_dim]
+
+        Raises:
+            RuntimeError: If feature_projector was not created (feature_dim=None)
+        """
+        if self.feature_projector is None:
+            raise RuntimeError(
+                "embed_features() requires feature_dim to be set in __init__"
+            )
+
+        embed = self.feature_projector(features)  # [B, embed_dim]
+        embed = F.normalize(embed, p=2, dim=1)
         return embed
 
     def embed_params(self, params: torch.Tensor) -> torch.Tensor:
