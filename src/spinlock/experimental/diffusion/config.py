@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, Field, field_validator
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 from enum import Enum
 
 
@@ -111,6 +111,30 @@ class LRSchedulerConfig(BaseModel):
     min_lr: float = Field(default=1e-6, gt=0.0)
 
 
+class PhysicsLossConfig(BaseModel):
+    """Physics-aware auxiliary loss configuration.
+
+    Soft-decodes denoiser logits through the frozen VQTokenizer decode pipeline
+    (codebooks → shared decoder → inverse heads) and computes MSE against
+    ground-truth decoded physics parameters. This encourages the denoiser to
+    produce token distributions that decode to physically consistent values.
+    """
+    enabled: bool = False
+    weight: float = Field(default=0.1, ge=0.0)
+    temperature: float = Field(default=1.0, gt=0.0)
+    warmup_epochs: int = Field(default=3, ge=0)
+    families: Optional[List[str]] = Field(
+        default=None,
+        description="Families to decode: ['theta', 'initial']. None = all available."
+    )
+    theta_weight: float = Field(default=1.0, ge=0.0)
+    initial_weight: float = Field(default=1.0, ge=0.0)
+    timestep_gate: str = Field(
+        default="cosine",
+        pattern="^(none|linear|cosine)$"
+    )
+
+
 class TrainingConfig(BaseModel):
     """Training configuration."""
     batch_size: int = Field(default=32, ge=1)
@@ -121,6 +145,7 @@ class TrainingConfig(BaseModel):
     gradient_clip_norm: float = Field(default=1.0, gt=0.0)
     use_snr_weighting: bool = False
     use_vocab_size_weighting: bool = False
+    physics_loss: PhysicsLossConfig = Field(default_factory=PhysicsLossConfig)
 
     lr_scheduler: LRSchedulerConfig = Field(default_factory=LRSchedulerConfig)
 

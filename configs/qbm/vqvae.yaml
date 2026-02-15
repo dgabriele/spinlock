@@ -1,0 +1,226 @@
+# VQ Tokenizer Configuration - QBM 50K
+#
+# Train VQ tokenizer on qbm_50k.h5 using:
+# - Quantum Brownian Motion trajectories (50K samples)
+# - Initial features: 27D statistical features from quantum states
+# - Temporal features: 247D per timestep (256 timesteps)
+# - Quantum parameters: 9D (vs 14D for PDE systems)
+#
+# Key differences from PDE config:
+# - No pretrained CNN (quantum systems different from PDE)
+# - Smaller initial feature dimension (27 vs 42)
+# - 9 quantum parameters vs 14 PDE parameters
+# - Input has 2 species (6 effective channels)
+#
+# Uses Pydantic-based TokenizerConfig structure
+
+# ═══════════════════════════════════════════════════════════════
+# Dataset
+# ═══════════════════════════════════════════════════════════════
+
+dataset_path: "datasets/qbm_50k.h5"
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  # Initial condition encoder (CNN + manual features)
+  # Note: manual_dim and in_channels are AUTO-DETECTED from dataset
+  initial:
+    variant: "hybrid"  # CNN + manual features
+    # manual_dim: auto-detected from /features/initial/aggregated/features
+    cnn_embedding_dim: 384  # CNN output dimension
+    # in_channels: auto-detected from /inputs/fields shape
+    pretrained_cnn_path: null  # No pretrained CNN for QBM (train from scratch)
+    use_final_batchnorm: true  # Enable for training stability
+    encode_manual: true  # Use extracted statistical features
+
+  # Temporal encoder (PyramidTemporalEncoder)
+  temporal:
+    variant: "pyramid"
+    level_dims: [32, 64, 96, 128]  # Pyramid level dimensions (total: 320D)
+    downsample_factors: [1, 2, 4, 8]  # Pyramid downsample factors
+    variable_length: true  # Support variable-length trajectories
+    min_timesteps: 16
+    max_timesteps: 256  # Will be validated against dataset
+    adaptive_pyramid: true  # Adapt pyramid to sequence length
+
+  # Theta (parameter) encoder
+  # Note: param_dim is AUTO-DETECTED from dataset
+  theta:
+    variant: "mlp"
+    # param_dim: auto-detected from /parameters/params shape
+    hidden_dim: 64
+    output_dim: 32  # Output embedding dimension
+    dropout: 0.15
+    use_layer_norm: true
+
+  # Projection layers
+  embedding_dim: 64  # Target embedding dimension per feature
+  hidden_dim: 128  # Hidden dimension for projection
+  dropout: 0.1  # Dropout probability
+  use_layer_norm: true  # Use layer normalization
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer Configuration
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  # NOTE: num_embeddings (codebook size) is computed adaptively per quantizer
+  # using v1's formula: base_tokens = log2(category_size) * 5
+  # with dataset-aware minimums and hierarchical progression (L0 > L1 > L2)
+  # Do NOT specify num_embeddings in config - it will be ignored!
+
+  embedding_dim: 64  # Embedding dimension (matches encoder.embedding_dim)
+  commitment_cost: 0.45  # Commitment loss weight
+  use_ema: true  # Use exponential moving average for codebook updates
+  ema_decay: 0.99  # EMA decay rate
+  epsilon: 1.0e-5  # Small constant for numerical stability
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchical Quantization Configuration
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3  # Number of hierarchical levels
+  compression_ratios: "0.5:1.0:1.5"  # Compression ratios per level
+  min_latent_dim: 4  # Minimum latent dimension
+  max_latent_dim: 64  # Maximum latent dimension
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Cleaning Configuration
+# ═══════════════════════════════════════════════════════════════
+
+feature_cleaning:
+  enabled: true
+  pre_categorization: true  # Clean before feature grouping
+  variance_threshold: 1.0e-8  # Remove features with std < 1e-8
+  deduplicate_threshold: 0.99  # Remove features with |corr| > 0.99
+  use_intelligent_dedup: true  # Keep more informative feature from correlated pairs
+  outlier_method: "percentile"  # Use percentile-based outlier capping
+  percentile_range: [0.5, 99.5]  # Clip at 0.5% and 99.5% percentiles
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Grouping Configuration (Optional)
+# ═══════════════════════════════════════════════════════════════
+
+grouping:
+  # Automatic feature grouping via hierarchical clustering + gradient refinement
+  preprocessing:
+    method: "mad"  # Median absolute deviation normalization
+    clip_outliers: false
+
+  clustering:
+    linkage_method: "ward"
+    distance_metric: "correlation"
+    k_selection_method: "silhouette"  # Automatic K selection
+    min_groups: 8
+    max_groups: 20
+    use_gpu: true  # Use CuPy acceleration if available
+
+  gradient:
+    num_epochs: 500
+    learning_rate: 0.01
+    temperature_start: 1.0
+    temperature_end: 0.5
+    orthogonality_weight: 1.0  # Minimize inter-group correlation
+    informativeness_weight: 1.0  # Maximize per-group variance
+    orthogonality_target: 0.15  # Stop early if reached
+    device: "auto"
+
+  splitting:
+    enabled: false  # Disable recursive splitting for now
+    max_group_size: 40
+
+  skip_gradient_refinement: false  # Enable refinement
+  random_seed: 42
+
+# ═══════════════════════════════════════════════════════════════
+# Inverse Heads Configuration (for roundtrip consistency)
+# ═══════════════════════════════════════════════════════════════
+# Dimensions (theta_param_dim, initial_channels, initial_spatial_size)
+# are inferred from encoder config at runtime for framework flexibility
+
+inverse_heads:
+  theta_hidden_dim: 128  # Was 64 — wider MLP for better Sobol parameter precision
+  theta_dropout: 0.15
+  initial_base_channels: 256
+
+# ═══════════════════════════════════════════════════════════════
+# Training Configuration
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 1000  # Keep original proven setting
+  batch_size: 768  # Maximize GPU utilization (8GB VRAM)
+  learning_rate: 0.001  # Keep original proven setting
+  val_split: 0.1  # 10% validation split
+  val_every_n_epochs: 5  # Validate every 5 epochs
+
+  # Optimizer
+  optimizer: "adam"
+  weight_decay: 0.0
+  gradient_clip_norm: 1.0  # Clip gradients for stability
+
+  # Learning rate scheduler
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 10
+
+  # Early stopping
+  early_stopping_patience: 50
+  early_stopping_min_delta: 0.0001
+
+  # Dead code reset (disabled - EMA handles this naturally)
+  dead_code_reset_interval: 999999  # Effectively disabled
+  dead_code_threshold: 0.0  # Disabled
+
+  # Hardware
+  device: "auto"  # Auto-detect CUDA
+  compile_model: false  # Set to true for torch.compile optimization
+
+# ═══════════════════════════════════════════════════════════════
+# Loss Configuration
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  reconstruction_weight: 0.0  # Pure roundtrip objective (no encoded-space reconstruction)
+  orthogonality_weight: 0.1  # Encourage orthogonal code embeddings
+  informativeness_weight: 0.1  # Encourage informative codes
+  topographic_weight: 0.2  # Topographic organization (preserve topology in codebook)
+  normalize_reconstruction: true  # Normalize reconstruction loss
+
+  # Roundtrip consistency loss (PRIMARY objective - ensure decode(tokens) re-encodes to same tokens)
+  roundtrip:
+    enabled: true
+    weight: 5.0  # PRIMARY objective - roundtrip consistency is what matters
+    theta_weight: 1.0
+    initial_weight: 1.0
+    # NOTE: Roundtrip loss uses CACHED features from dataset, not re-extracted.
+    # Initial features must match what was used during dataset generation.
+    # For QBM: 93D statistical features from InitialConditionsFeatureExtractor
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization Configuration
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "none"  # Disabled - normalization reduced codebook diversity
+  clip_std_multiplier: null  # Optional: clip outliers at N*std
+
+# ═══════════════════════════════════════════════════════════════
+# System Configuration
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 42
+verbose: true
+log_level: "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR"
+
+# ═══════════════════════════════════════════════════════════════
+# Training Command
+# ═══════════════════════════════════════════════════════════════
+#
+#   poetry run spinlock train-vq-tokenizer --config configs/qbm/vqvae.yaml
+#
+# Output checkpoint: checkpoints/qbm_tokenizer_50k/

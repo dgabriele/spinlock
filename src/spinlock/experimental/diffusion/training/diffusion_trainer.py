@@ -15,6 +15,10 @@ import math
 
 from spinlock.experimental.diffusion.models import DiscreteD3PM, DenoisingNetwork
 from spinlock.experimental.diffusion.config import DiffusionExperimentConfig
+from spinlock.experimental.diffusion.training.physics_loss import (
+    PhysicsDecodeHead,
+    PhysicsAwareLoss,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +114,24 @@ class DiffusionTrainer:
                 logger.warning("wandb not installed, disabling logging")
                 self.use_wandb = False
 
+        # Physics-aware auxiliary loss (frozen tokenizer decode pipeline)
+        self.physics_loss = None
+        if config.training.physics_loss.enabled:
+            tokenizer_ckpt = config.dataset.tokenizer_checkpoint
+            if tokenizer_ckpt is None:
+                raise ValueError(
+                    "physics_loss.enabled=True requires dataset.tokenizer_checkpoint"
+                )
+            decode_head = PhysicsDecodeHead.from_tokenizer_checkpoint(
+                tokenizer_ckpt,
+                families=config.training.physics_loss.families,
+                device=self.device,
+            )
+            self.physics_loss = PhysicsAwareLoss(
+                decode_head, config.training.physics_loss
+            )
+            self.physics_loss.to(self.device)
+
         logger.info(f"DiffusionTrainer initialized: device={device}, output_dir={output_dir}")
 
     def _create_optimizer(self) -> torch.optim.Optimizer:
@@ -185,12 +207,15 @@ class DiffusionTrainer:
                 val_metrics = self.validate()
 
                 # Log
-                logger.info(
+                val_log = (
                     f"Epoch {self.current_epoch}/{num_epochs}: "
                     f"train_loss={train_metrics['loss']:.4f}, "
                     f"val_loss={val_metrics['loss']:.4f}, "
                     f"val_acc={val_metrics['accuracy']:.4f}"
                 )
+                if 'physics_loss' in val_metrics:
+                    val_log += f", val_phys={val_metrics['physics_loss']:.6f}"
+                logger.info(val_log)
 
                 # Track history
                 self.history['train_loss'].append(train_metrics['loss'])
@@ -201,13 +226,16 @@ class DiffusionTrainer:
 
                 # Wandb logging
                 if self.use_wandb:
-                    self.wandb.log({
+                    wandb_metrics = {
                         'epoch': self.current_epoch,
                         'train_loss': train_metrics['loss'],
                         'val_loss': val_metrics['loss'],
                         'val_accuracy': val_metrics['accuracy'],
                         'learning_rate': self.optimizer.param_groups[0]['lr'],
-                    })
+                    }
+                    if 'physics_loss' in val_metrics:
+                        wandb_metrics['val_physics_loss'] = val_metrics['physics_loss']
+                    self.wandb.log(wandb_metrics)
 
                 # Save best model
                 if self.config.training.save_best and val_metrics['loss'] < self.best_val_loss:
@@ -229,6 +257,8 @@ class DiffusionTrainer:
             Dict with epoch metrics
         """
         self.denoiser.train()
+        if self.physics_loss is not None:
+            self.physics_loss.eval()
         epoch_loss = 0.0
         num_batches = 0
 
@@ -252,6 +282,19 @@ class DiffusionTrainer:
 
             # Compute loss on target positions only (with optional SNR/vocab weighting)
             loss = self._compute_loss(predicted_logits, tokens, target, t=t)
+
+            # Physics-aware auxiliary loss (after warmup)
+            physics_loss_val = 0.0
+            if (
+                self.physics_loss is not None
+                and self.current_epoch > self.config.training.physics_loss.warmup_epochs
+            ):
+                p_loss = self.physics_loss(
+                    predicted_logits, tokens, target, t,
+                    T=self.diffusion.schedule.num_timesteps,
+                )
+                loss = loss + self.config.training.physics_loss.weight * p_loss
+                physics_loss_val = p_loss.item()
 
             # Backward pass
             self.optimizer.zero_grad()
@@ -277,10 +320,13 @@ class DiffusionTrainer:
 
             # Log
             if batch_idx % self.config.training.log_frequency == 0:
-                logger.info(
+                log_msg = (
                     f"Epoch {self.current_epoch}, Batch {batch_idx}/{len(self.train_loader)}: "
                     f"loss={loss.item():.4f}, lr={self.optimizer.param_groups[0]['lr']:.6f}"
                 )
+                if physics_loss_val > 0:
+                    log_msg += f", phys={physics_loss_val:.6f}"
+                logger.info(log_msg)
 
         avg_loss = epoch_loss / num_batches
         return {'loss': avg_loss}
@@ -339,12 +385,18 @@ class DiffusionTrainer:
         """Run validation.
 
         Returns:
-            Dict with validation metrics
+            Dict with validation metrics (loss, accuracy, and optionally physics_loss)
         """
         self.denoiser.eval()
         val_loss = 0.0
+        val_physics_loss = 0.0
         val_accuracy = 0.0
         num_batches = 0
+
+        physics_active = (
+            self.physics_loss is not None
+            and self.current_epoch > self.config.training.physics_loss.warmup_epochs
+        )
 
         for batch in self.val_loader:
             # Move to device
@@ -368,6 +420,14 @@ class DiffusionTrainer:
             loss = self._compute_loss(predicted_logits, tokens, target, t=t)
             val_loss += loss.item()
 
+            # Physics loss (monitoring only, no gradient in validation)
+            if physics_active:
+                p_loss = self.physics_loss(
+                    predicted_logits, tokens, target, t,
+                    T=self.diffusion.schedule.num_timesteps,
+                )
+                val_physics_loss += p_loss.item()
+
             # Compute accuracy on target positions
             accuracy = self._compute_accuracy(predicted_logits, tokens, target)
             val_accuracy += accuracy
@@ -377,7 +437,11 @@ class DiffusionTrainer:
         avg_loss = val_loss / num_batches
         avg_accuracy = val_accuracy / num_batches
 
-        return {'loss': avg_loss, 'accuracy': avg_accuracy}
+        metrics = {'loss': avg_loss, 'accuracy': avg_accuracy}
+        if physics_active:
+            metrics['physics_loss'] = val_physics_loss / num_batches
+
+        return metrics
 
     def _compute_accuracy(
         self,
