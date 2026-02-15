@@ -35,6 +35,7 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
         short_window: int = 5,
         medium_window: int = 20,
         long_window: int = 50,
+        differentiable: bool = False,
     ):
         """Initialize batch-parallel temporal extractor.
 
@@ -44,6 +45,10 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
             short_window: Short-term window (default: 5)
             medium_window: Medium-term window (default: 20)
             long_window: Long-term window (default: 50)
+            differentiable: When True, preserve gradient through window
+                slicing (needed for contrastive training). When False
+                (default), detach windows to save memory during dataset
+                generation and offline feature extraction.
         """
         super().__init__(
             device=device,
@@ -51,6 +56,7 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
             short_window=short_window,
             medium_window=medium_window,
             long_window=long_window,
+            differentiable=differentiable,
         )
 
     def extract_batch(self, fields: torch.Tensor) -> torch.Tensor:
@@ -209,8 +215,9 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
             for t in range(T):
                 # Get window [max(0, t-w+1), t+1]
                 start = max(0, t - effective_window + 1)
-                # Detach to break computation graph across timesteps
-                window_t_raw = fields[:, start:t+1].detach()  # [N, w_len, C, H, W]
+                window_t_raw = fields[:, start:t+1]  # [N, w_len, C, H, W]
+                if not self.differentiable:
+                    window_t_raw = window_t_raw.detach()
                 w_len = t - start + 1
 
                 # Transpose to [w_len, N, C, H, W] for compatibility with helper methods
@@ -372,8 +379,9 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
 
         for t in range(T):
             start = max(0, t - window + 1)
-            # CRITICAL: Detach to avoid accumulating computation graph
-            window_t = fields[:, start:t+1].detach()  # [N, w_len, C, H, W]
+            window_t = fields[:, start:t+1]  # [N, w_len, C, H, W]
+            if not self.differentiable:
+                window_t = window_t.detach()
             w_len = t - start + 1
 
             if w_len >= 3:
@@ -485,8 +493,9 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
 
         for t in range(T):
             start = max(0, t - window + 1)
-            # CRITICAL: Detach to avoid accumulating computation graph
-            window_t = fields[:, start:t+1].detach()  # [N, w_len, C, H, W]
+            window_t = fields[:, start:t+1]  # [N, w_len, C, H, W]
+            if not self.differentiable:
+                window_t = window_t.detach()
             w_len = t - start + 1
 
             if w_len >= 5:
@@ -583,8 +592,9 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
         for t in range(T):
             # Short-term window
             start_short = max(0, t - self.short_window + 1)
-            # CRITICAL: Detach to avoid accumulating computation graph
-            short_hist = fields[:, start_short:t+1].detach()  # [N, w_len, C, H, W]
+            short_hist = fields[:, start_short:t+1]  # [N, w_len, C, H, W]
+            if not self.differentiable:
+                short_hist = short_hist.detach()
             w_short = t - start_short + 1
 
             if w_short >= 2:
@@ -600,8 +610,9 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
 
             # Medium-term window
             start_medium = max(0, t - self.medium_window + 1)
-            # CRITICAL: Detach to avoid accumulating computation graph
-            medium_hist = fields[:, start_medium:t+1].detach()
+            medium_hist = fields[:, start_medium:t+1]
+            if not self.differentiable:
+                medium_hist = medium_hist.detach()
             w_medium = t - start_medium + 1
 
             if w_medium >= 2:
@@ -617,8 +628,9 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
 
             # Long-term window
             start_long = max(0, t - self.long_window + 1)
-            # CRITICAL: Detach to avoid accumulating computation graph
-            long_hist = fields[:, start_long:t+1].detach()
+            long_hist = fields[:, start_long:t+1]
+            if not self.differentiable:
+                long_hist = long_hist.detach()
             w_long = t - start_long + 1
 
             if w_long >= 2:

@@ -12,7 +12,7 @@ Use get_feature_dimensions() to query actual dimension counts dynamically.
 
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, Any, Set, Tuple
+from typing import Dict, List, Optional, Any, Set, Tuple
 import numpy as np
 
 from spinlock.features.base import FeatureExtractorBase
@@ -50,17 +50,27 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
         >>> print(f"Feature dimensions: {features.shape}")  # [100, 256, D]
     """
 
-    def __init__(self, device: torch.device, config: Optional[Any] = None, use_batch_mode: bool = True):
+    def __init__(
+        self,
+        device: torch.device,
+        config: Optional[Any] = None,
+        use_batch_mode: bool = True,
+        differentiable: bool = False,
+    ):
         """Initialize temporal feature orchestrator.
 
         Args:
             device: Torch device
             config: TemporalFeatureConfig (optional)
             use_batch_mode: If True, use batch-parallel temporal extraction (GPU-optimized)
+            differentiable: When True, preserve gradient through temporal
+                feature extraction (needed for contrastive training).
+                When False (default), detach windows to save memory.
         """
         self.device = device
         self.config = config
         self.use_batch_mode = use_batch_mode
+        self.differentiable = differentiable
 
         # Initialize sub-extractors
         self.spatial_extractor = SpatialFeatureExtractor(device=device)
@@ -86,6 +96,7 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
             short_window=short_window,
             medium_window=medium_window,
             long_window=long_window,
+            differentiable=differentiable,
         )
 
         # Create batch-parallel extractor if requested
@@ -97,6 +108,7 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 short_window=short_window,
                 medium_window=medium_window,
                 long_window=long_window,
+                differentiable=differentiable,
             )
 
         # Initialize quantum extractor if enabled (subset of temporal family, registered as category="temporal")
@@ -526,6 +538,97 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 registry.register(name=f"temporal_quantum_{feat_name}", category="temporal")
 
         return registry
+
+    def get_all_feature_names(self, num_channels: int) -> List[str]:
+        """Get ordered feature names matching extract_per_timestep() output.
+
+        Uses a dummy forward pass through each sub-extractor to discover the
+        actual dict keys (for dict-returning extractors) and their per-channel
+        expansion. This is self-describing: if extractors add features, the
+        names update automatically.
+
+        For the temporal sub-extractor (which returns a raw tensor, not a dict),
+        uses positional names with subcategory prefix (temporal_dynamics_0, ...).
+
+        Args:
+            num_channels: Number of channels in the data
+
+        Returns:
+            Ordered list of feature names, one per element in the last dim of
+            extract_per_timestep() output.
+        """
+        # Use randn to avoid division-by-zero in variance/correlation computations
+        dummy = torch.randn(1, 2, 5, num_channels, 64, 64, device=self.device)
+        fields = dummy.mean(dim=1)  # [1, T=5, C, H, W]
+
+        all_names: List[str] = []
+
+        with torch.no_grad():
+            # --- Spatial (dict-based, per-channel) ---
+            spatial_result = self.spatial_extractor.extract(fields)
+            if isinstance(spatial_result, dict):
+                for key in sorted(spatial_result.keys()):
+                    feat = spatial_result[key]
+                    # After reshape inside extractor: [N, T, C] or [N, T]
+                    if feat.dim() >= 3 and feat.shape[-1] > 1:
+                        for ch in range(feat.shape[-1]):
+                            all_names.append(f"{key}_ch{ch}")
+                    else:
+                        all_names.append(key)
+
+            # --- Spectral (dict-based, per-channel) ---
+            spectral_result = self.spectral_extractor.extract(fields)
+            if isinstance(spectral_result, dict):
+                for key in sorted(spectral_result.keys()):
+                    feat = spectral_result[key]
+                    if feat.dim() >= 3 and feat.shape[-1] > 1:
+                        for ch in range(feat.shape[-1]):
+                            all_names.append(f"{key}_ch{ch}")
+                    else:
+                        all_names.append(key)
+
+            # --- Cross-channel (dict-based, scalar per timestep) ---
+            if num_channels >= 2:
+                cross_result = self.cross_channel_extractor.extract(fields)
+                if isinstance(cross_result, dict):
+                    for key in sorted(cross_result.keys()):
+                        feat = cross_result[key]
+                        # Cross-channel features may be [N, T] (scalar) or
+                        # [N, T, something]. Handle like the orchestrator does:
+                        # squeeze dim=1 if shape[1]==1, then unsqueeze(-1) if 2D.
+                        if feat.dim() == 3 and feat.shape[1] == 1:
+                            feat = feat.squeeze(1)
+                        if feat.dim() >= 3 and feat.shape[-1] > 1:
+                            for ch in range(feat.shape[-1]):
+                                all_names.append(f"{key}_ch{ch}")
+                        else:
+                            all_names.append(key)
+
+            # --- Temporal dynamics (tensor-based, no dict) ---
+            temporal_feat = self._extract_temporal(fields)
+            D_temporal = temporal_feat.shape[-1]
+            for i in range(D_temporal):
+                all_names.append(f"temporal_dynamics_{i}")
+
+            # --- Quantum (tensor-based, known names) ---
+            quantum = self._extract_quantum(fields, num_channels)
+            if quantum is not None and quantum.shape[-1] > 0:
+                _quantum_names = [
+                    'quantum_purity', 'quantum_linear_entropy',
+                    'quantum_von_neumann_entropy', 'quantum_coherence',
+                    'quantum_position_uncertainty_x',
+                    'quantum_position_uncertainty_y',
+                    'quantum_momentum_uncertainty_px',
+                    'quantum_momentum_uncertainty_py',
+                    'quantum_uncertainty_product_x',
+                    'quantum_uncertainty_product_y',
+                ]
+                D_q = quantum.shape[-1]
+                for i in range(D_q):
+                    name = _quantum_names[i] if i < len(_quantum_names) else f"quantum_{i}"
+                    all_names.append(name)
+
+        return all_names
 
 
 # Legacy alias for backward compatibility

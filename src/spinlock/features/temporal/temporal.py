@@ -37,6 +37,10 @@ class TemporalFeatureExtractor:
         short_window: Short-term window (default: 5)
         medium_window: Medium-term window (default: 20)
         long_window: Long-term window (default: 50)
+        differentiable: When True, keep tensors on-device with gradient
+            attached (needed for contrastive training through feature
+            extractors). When False (default), detach and move to CPU
+            to save memory during dataset generation.
     """
 
     def __init__(
@@ -46,12 +50,14 @@ class TemporalFeatureExtractor:
         short_window: int = 5,
         medium_window: int = 20,
         long_window: int = 50,
+        differentiable: bool = False,
     ):
         self.device = device
         self.window_size = window_size
         self.short_window = short_window
         self.medium_window = medium_window
         self.long_window = long_window
+        self.differentiable = differentiable
 
         # History buffers
         self.history_buffer = deque(maxlen=long_window)
@@ -108,7 +114,10 @@ class TemporalFeatureExtractor:
             features: [B, D] temporal features where D depends on configuration
         """
         # Update history
-        self.history_buffer.append(u.detach().cpu())
+        if self.differentiable:
+            self.history_buffer.append(u)
+        else:
+            self.history_buffer.append(u.detach().cpu())
 
         # Extract each component
         inst = self._extract_instantaneous(u)
@@ -180,7 +189,10 @@ class TemporalFeatureExtractor:
                 features.append(torch.zeros(B, 1, device=u.device))
 
             # Store for second derivative
-            self.derivative_buffer.append(dt_u.detach().cpu())
+            if self.differentiable:
+                self.derivative_buffer.append(dt_u)
+            else:
+                self.derivative_buffer.append(dt_u.detach().cpu())
 
             # 4. Second derivative (acceleration) (C = 3D)
             if len(self.derivative_buffer) >= 2:

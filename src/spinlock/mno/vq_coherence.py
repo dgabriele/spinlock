@@ -40,6 +40,26 @@ import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 
+class _GradientSanitizer(torch.autograd.Function):
+    """Replace NaN/Inf in backward gradient with zero.
+
+    Used as a gradient barrier between feature extractors (which can produce
+    NaN Jacobians from volatile ops like kurtosis x⁴/σ⁴ and Lyapunov log)
+    and the MNO trajectory tensor (which must receive clean gradients).
+
+    Forward: identity (no-op).
+    Backward: nan_to_num on incoming gradient.
+    """
+
+    @staticmethod
+    def forward(ctx, x):
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return torch.nan_to_num(grad_output, nan=0.0, posinf=0.0, neginf=0.0)
+
+
 class VQCoherenceAdapter(nn.Module):
     """Connects MNO trajectories to frozen VQTokenizer for coherence losses.
 
@@ -217,9 +237,10 @@ class VQCoherenceAdapter(nn.Module):
             param.requires_grad_(False)
         model = model.to(device)
 
-        # Create feature extractor
+        # Create feature extractor with differentiable=True so gradient
+        # flows from contrastive loss through features back to the MNO
         from spinlock.mno.feature_extraction import MNOFeatureExtractor
-        extractor = MNOFeatureExtractor(device=device)
+        extractor = MNOFeatureExtractor(device=device, differentiable=True)
 
         # Validate feature dimensions
         probe_result = extractor.probe_dimensions(
@@ -324,17 +345,23 @@ class VQCoherenceAdapter(nn.Module):
                 trajectory, nan=0.0, posinf=1e6, neginf=-1e6
             )
 
-        # 2. Extract temporal features
+        # 2. Gradient barrier: wrap trajectory so NaN gradients produced by
+        # volatile feature extractors (kurtosis, Lyapunov) are sanitized to
+        # zero before reaching the MNO parameters.
+        if trajectory.requires_grad:
+            trajectory = _GradientSanitizer.apply(trajectory)
+
+        # 3. Extract temporal features
         feat_output = self.extractor.extract(trajectory)
         raw_temporal = feat_output['temporal']  # [B, T, D_raw]
 
         # Sanitize extracted features (FFT, skewness/kurtosis can produce NaN)
         raw_temporal = torch.nan_to_num(raw_temporal, nan=0.0, posinf=1e6, neginf=-1e6)
 
-        # 3. Apply feature cleaning mask
+        # 4. Apply feature cleaning mask
         cleaned = raw_temporal[:, :, self.kept_indices]  # [B, T, D_clean]
 
-        # 4. Clamp extreme values (tight bound for gradient stability)
+        # 5. Clamp extreme values (tight bound for gradient stability)
         cleaned = torch.clamp(cleaned, min=-100, max=100)
 
         return cleaned

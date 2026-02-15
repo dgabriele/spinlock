@@ -49,12 +49,16 @@ class MNOFeatureExtractor:
         self,
         device: str = "cuda",
         preprocessor: Optional['FeaturePreprocessor'] = None,
+        differentiable: bool = False,
     ):
         """Initialize MNO feature extractor.
 
         Args:
             device: Computation device
             preprocessor: Optional FeaturePreprocessor to clean NaN features
+            differentiable: When True, preserve gradient through temporal
+                feature extraction (needed for contrastive training).
+                When False (default), detach windows to save memory.
         """
         from spinlock.features.temporal.config import SummaryConfig
         from spinlock.features.temporal.extractors import SummaryExtractor
@@ -68,6 +72,7 @@ class MNOFeatureExtractor:
             device=self.device,
             config=summary_config,
             use_batch_mode=True,
+            differentiable=differentiable,
         )
 
         # Dimensions determined on first extraction
