@@ -16,8 +16,11 @@ Use get_feature_dimensions() to query actual dimension counts dynamically.
 import torch
 import torch.nn as nn
 from collections import deque
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
 import numpy as np
+
+if TYPE_CHECKING:
+    from spinlock.features.ops import FeatureOps
 
 class TemporalFeatureExtractor:
     """Extract enhanced temporal dynamics features per timestep.
@@ -51,6 +54,7 @@ class TemporalFeatureExtractor:
         medium_window: int = 20,
         long_window: int = 50,
         differentiable: bool = False,
+        ops: Optional['FeatureOps'] = None,
     ):
         self.device = device
         self.window_size = window_size
@@ -58,6 +62,10 @@ class TemporalFeatureExtractor:
         self.medium_window = medium_window
         self.long_window = long_window
         self.differentiable = differentiable
+        if ops is None:
+            from spinlock.features.ops import StandardOps
+            ops = StandardOps()
+        self.ops = ops
 
         # History buffers
         self.history_buffer = deque(maxlen=long_window)
@@ -281,17 +289,14 @@ class TemporalFeatureExtractor:
             features.append(temp_var_norm)
 
             # 3b. Temporal skewness per channel (NEW: C = 3D)
-            # Skewness = E[(X - μ)³] / σ³
-            eps = 1e-8
             centered = history - temp_mean.unsqueeze(0)  # [T, B, C, H, W]
             temp_std_full = history.std(dim=0)  # [B, C, H, W]
-            temp_skew = ((centered ** 3).mean(dim=0)) / (temp_std_full ** 3 + eps)  # [B, C, H, W]
+            temp_skew = self.ops.safe_div((centered ** 3).mean(dim=0), temp_std_full ** 3)
             temp_skew_norm = torch.norm(temp_skew, p=2, dim=(2, 3))  # [B, C]
             features.append(temp_skew_norm)
 
             # 3c. Temporal kurtosis per channel (NEW: C = 3D)
-            # Kurtosis = E[(X - μ)⁴] / σ⁴
-            temp_kurt = ((centered ** 4).mean(dim=0)) / (temp_std_full ** 4 + eps)  # [B, C, H, W]
+            temp_kurt = self.ops.safe_div((centered ** 4).mean(dim=0), temp_std_full ** 4)
             temp_kurt_norm = torch.norm(temp_kurt, p=2, dim=(2, 3))  # [B, C]
             features.append(temp_kurt_norm)
 
@@ -398,12 +403,12 @@ class TemporalFeatureExtractor:
             # Compute log(|u(t) - u(t-1)| / |u(t-1) - u(t-2)|)
             diff_curr = torch.norm(history[0] - history[1], p=2, dim=(2, 3))  # [B, C]
             diff_prev = torch.norm(history[1] - history[2], p=2, dim=(2, 3))  # [B, C]
-            lyap = torch.log((diff_curr + 1e-8) / (diff_prev + 1e-8))
+            lyap = self.ops.safe_log(self.ops.safe_div(diff_curr, diff_prev))
             features.append(lyap)
 
             # 2. Divergence rate (C = 3D)
             # Rate of change of distances
-            divergence = (diff_curr - diff_prev) / (diff_prev + 1e-8)
+            divergence = self.ops.safe_div(diff_curr - diff_prev, diff_prev)
             features.append(divergence)
 
             # 3. Stability indicator (variance of differences) (C = 3D)
@@ -433,7 +438,7 @@ class TemporalFeatureExtractor:
                 torch.norm(history[i] - history[i+1], p=2, dim=(2, 3))
                 for i in range(half, window - 1)
             ], dim=0).mean(dim=0)  # [B, C]
-            expansion = (dist_late - dist_early) / (dist_early + 1e-8)
+            expansion = self.ops.safe_div(dist_late - dist_early, dist_early)
             features.append(expansion)
 
             # 7. Maximum Lyapunov (C = 3D)
@@ -508,11 +513,11 @@ class TemporalFeatureExtractor:
 
             # 4. Straightness (end-to-end / path length) (C = 3D)
             end_to_end = torch.norm(history[0] - history[-1], p=2, dim=(2, 3))  # [B, C]
-            straightness = end_to_end / (length + 1e-8)
+            straightness = self.ops.safe_div(end_to_end, length)
             features.append(straightness)
 
             # 5. Tortuosity (path length / end-to-end) (C = 3D)
-            tortuosity = length / (end_to_end + 1e-8)
+            tortuosity = self.ops.safe_div(length, end_to_end)
             features.append(tortuosity)
 
             # 6. Direction changes (C = 3D)
@@ -613,19 +618,19 @@ class TemporalFeatureExtractor:
 
         # Cross-scale ratios (C*3 = 9D)
         if short_window >= 2 and medium_window >= 2:
-            short_to_medium = short_mean / (medium_mean + 1e-8)
+            short_to_medium = self.ops.safe_div(short_mean, medium_mean)
             features.append(short_to_medium)
         else:
             features.append(torch.zeros(B, C, device=u.device))
 
         if medium_window >= 2 and long_window >= 2:
-            medium_to_long = medium_mean / (long_mean + 1e-8)
+            medium_to_long = self.ops.safe_div(medium_mean, long_mean)
             features.append(medium_to_long)
         else:
             features.append(torch.zeros(B, C, device=u.device))
 
         if short_window >= 2 and long_window >= 2:
-            short_to_long = short_mean / (long_mean + 1e-8)
+            short_to_long = self.ops.safe_div(short_mean, long_mean)
             features.append(short_to_long)
         else:
             features.append(torch.zeros(B, C, device=u.device))
@@ -665,7 +670,7 @@ class TemporalFeatureExtractor:
         corr = (centered[:-lag] * centered[lag:]).sum(dim=(0, 3))  # [B, C]
         var = (centered ** 2).sum(dim=(0, 3))  # [B, C]
 
-        autocorr = corr / (var + 1e-8)
+        autocorr = self.ops.safe_div(corr, var)
 
         return autocorr
 
@@ -692,7 +697,7 @@ class TemporalFeatureExtractor:
         cov = ((t.unsqueeze(1).unsqueeze(2) - t_mean) * (norms - y_mean)).sum(dim=0)  # [B, C]
         var_t = ((t - t_mean) ** 2).sum()
 
-        slope = cov / (var_t + 1e-8)
+        slope = self.ops.safe_div(cov, var_t.expand_as(cov))
 
         return slope
 
@@ -721,8 +726,10 @@ class TemporalFeatureExtractor:
                 dists[j, i] = dist
 
         # Recurrence: fraction of distances below threshold (median)
-        threshold = dists.median()
-        recurrence = (dists < threshold).float().mean(dim=(0, 1))  # [B, C]
+        threshold = self.ops.soft_median(dists.flatten(), dim=0)
+        # soft_step(x, threshold) gives 1 where x > threshold
+        # We want fraction where x < threshold = 1 - soft_step
+        recurrence = (1.0 - self.ops.soft_step(dists, threshold)).mean(dim=(0, 1))  # [B, C]
 
         return recurrence
 
@@ -809,7 +816,8 @@ class TemporalFeatureExtractor:
         dots = (velocities[:-1] * velocities[1:]).sum(dim=(3, 4))  # [T-2, B, C]
 
         # Direction changes when dot product is negative
-        changes = (dots < 0).float().sum(dim=0)  # [B, C]
+        # soft_step(x, 0) gives 1 where x > 0; we want 1 where x < 0
+        changes = (1.0 - self.ops.soft_step(dots, 0.0)).sum(dim=0)  # [B, C]
 
         return changes
 

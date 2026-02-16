@@ -1,0 +1,247 @@
+# VQ Tokenizer - Diversity-Enhanced Configuration
+#
+# Improvements over baseline vqvae.yaml:
+# 1. Lower commitment cost → more exploration
+# 2. Token diversity loss → encourage combinatorial coverage
+# 3. Higher codebook capacity → more tokens available (if needed)
+# 4. Perplexity regularization → prevent mode collapse
+# 5. Lower reconstruction weight → prioritize token diversity over exact feature match
+#
+# Philosophy: COMBINATORIAL DIVERSITY > PER-CODEBOOK UTILIZATION
+# - Sparse codes (few active tokens per book) are OK
+# - Rich combinations across books are the goal
+# - Current: 2841 unique combos / 50K rollouts (5.7%)
+# - Target: 10K-20K unique combos (20-40%)
+
+# ═══════════════════════════════════════════════════════════════
+# Dataset
+# ═══════════════════════════════════════════════════════════════
+
+dataset_path: "datasets/qbm_50k.h5"
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration (UNCHANGED - proven architecture)
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  initial:
+    variant: "hybrid"
+    cnn_embedding_dim: 384
+    pretrained_cnn_path: null
+    use_final_batchnorm: true
+    encode_manual: true
+
+  temporal:
+    variant: "pyramid"
+    level_dims: [32, 64, 96, 128]
+    downsample_factors: [1, 2, 4, 8]
+    variable_length: true
+    min_timesteps: 16
+    max_timesteps: 256
+    adaptive_pyramid: true
+
+  theta:
+    variant: "mlp"
+    hidden_dim: 64
+    output_dim: 32
+    dropout: 0.15
+    use_layer_norm: true
+
+  embedding_dim: 64
+  hidden_dim: 128
+  dropout: 0.4
+  use_layer_norm: true
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer Configuration - DIVERSITY IMPROVEMENTS
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  embedding_dim: 64
+
+  # CHANGE 1: Lower commitment cost (0.45 → 0.25)
+  # Rationale: Allow features to explore more codebook entries
+  # before committing. Reduces premature mode collapse.
+  commitment_cost: 0.25
+
+  use_ema: true
+  ema_decay: 0.99
+  epsilon: 1.0e-5
+
+  # CHANGE 2: Entropy regularization (NEW)
+  # Encourage uniform usage of codebook entries within each quantizer
+  # This is applied PER-QUANTIZER, so doesn't conflict with sparse codes
+  use_entropy_regularization: true
+  entropy_weight: 0.1  # Bonus for high-entropy token distributions
+
+  # CHANGE 3: Perplexity monitoring (NEW)
+  # Perplexity = exp(entropy) ≈ "effective codebook size"
+  # If perplexity << num_embeddings, mode collapse occurred
+  min_perplexity_ratio: 0.3  # Warn if perplexity < 0.3 * num_embeddings
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchical Quantization Configuration
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3
+  compression_ratios: "0.5:1.0:1.5"
+  min_latent_dim: 4
+
+  # CHANGE 4: Increase max latent dim (64 → 96)
+  # Rationale: More capacity per quantizer → potentially more active codes
+  max_latent_dim: 96
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Cleaning Configuration (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+feature_cleaning:
+  enabled: true
+  pre_categorization: true
+  variance_threshold: 1.0e-8
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
+  outlier_method: "percentile"
+  percentile_range: [0.5, 99.5]
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Grouping Configuration (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+grouping:
+  preprocessing:
+    method: "mad"
+    clip_outliers: false
+
+  clustering:
+    linkage_method: "ward"
+    distance_metric: "correlation"
+    k_selection_method: "silhouette"
+    min_groups: 8
+    max_groups: 20
+    use_gpu: true
+
+  gradient:
+    num_epochs: 500
+    learning_rate: 0.01
+    temperature_start: 1.0
+    temperature_end: 0.5
+    orthogonality_weight: 1.0
+    informativeness_weight: 1.0
+    orthogonality_target: 0.15
+    device: "auto"
+
+  splitting:
+    enabled: false
+    max_group_size: 40
+
+  skip_gradient_refinement: false
+  random_seed: 42
+
+# ═══════════════════════════════════════════════════════════════
+# Inverse Heads Configuration (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+inverse_heads:
+  theta_hidden_dim: 128
+  theta_dropout: 0.15
+  initial_base_channels: 256
+
+# ═══════════════════════════════════════════════════════════════
+# Training Configuration
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 1000
+  batch_size: 768
+  learning_rate: 0.001
+  val_split: 0.1
+  val_every_n_epochs: 5
+
+  optimizer: "adamw"
+  weight_decay: 0.02
+  gradient_clip_norm: 1.0
+
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 10
+
+  early_stopping_patience: 50
+  early_stopping_min_delta: 0.0001
+
+  dead_code_reset_interval: 999999
+  dead_code_threshold: 0.0
+
+  device: "auto"
+  compile_model: false
+
+# ═══════════════════════════════════════════════════════════════
+# Loss Configuration - DIVERSITY IMPROVEMENTS
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  # CHANGE 5: Lower reconstruction weight (0.001 → 0.0005)
+  # Rationale: Reduce pressure for exact feature reconstruction
+  # Allow more freedom for diverse token assignments
+  reconstruction_weight: 0.0005
+
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topographic_weight: 0.2
+  normalize_reconstruction: true
+
+  # Roundtrip consistency (KEEP HIGH - this is what matters downstream)
+  roundtrip:
+    enabled: true
+    weight: 5.0  # Keep high - roundtrip >> reconstruction
+    theta_weight: 1.0
+    initial_weight: 1.0
+
+  # CHANGE 6: Token diversity loss (NEW)
+  # Measures combinatorial diversity across ALL quantizers
+  # Rewards unique token combinations, penalizes duplicates
+  token_diversity:
+    enabled: true
+    weight: 0.5  # Explicit bonus for unique combinations
+    measure: "batch_jaccard"  # Average pairwise Jaccard in batch
+    target_jaccard: 0.3  # Target: batches should have <30% overlap
+    # Higher weight if combinations are too similar
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization Configuration (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "none"
+  clip_std_multiplier: null
+
+# ═══════════════════════════════════════════════════════════════
+# System Configuration
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 42
+verbose: true
+log_level: "INFO"
+
+# ═══════════════════════════════════════════════════════════════
+# Checkpoint Configuration
+# ═══════════════════════════════════════════════════════════════
+
+checkpoint:
+  save_dir: "checkpoints/v3/vqvae_diverse"
+  save_every_n_epochs: 10
+  keep_best: true
+  metric: "val_token_diversity"  # NEW: optimize for combinatorial diversity
+
+# ═══════════════════════════════════════════════════════════════
+# Training Command
+# ═══════════════════════════════════════════════════════════════
+#
+#   poetry run spinlock train-vq-tokenizer --config configs/qbm/vqvae_diverse.yaml
+#
+# Expected improvements:
+# - Unique combinations: 2841 → 10K-20K (5.7% → 20-40%)
+# - Parameter clustering: Same-token distance 1.02 → <0.8
+# - Behavioral equivalence classes: sharper, more discriminative
+#

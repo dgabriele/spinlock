@@ -237,7 +237,7 @@ to detect overfitting and assess generalization.
             return False
         if not self.validate_file_exists(args.dataset, "Dataset"):
             return False
-        if not self.validate_file_exists(args.substrate_config, "Substrate config"):
+        if not self.validate_file_exists(args.substrate_config, "Ground truth config"):
             return False
         return True
 

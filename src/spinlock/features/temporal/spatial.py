@@ -17,6 +17,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from spinlock.features.temporal.config import SummarySpatialConfig
+    from spinlock.features.ops import FeatureOps
 
 
 class SpatialFeatureExtractor:
@@ -32,14 +33,20 @@ class SpatialFeatureExtractor:
         >>> features = extractor.extract(fields)  # Dict of features
     """
 
-    def __init__(self, device: torch.device = torch.device('cuda')):
+    def __init__(self, device: torch.device = torch.device('cuda'), ops: Optional['FeatureOps'] = None):
         """
         Initialize spatial feature extractor.
 
         Args:
             device: Computation device (cuda or cpu)
+            ops: FeatureOps provider for gradient-safe operations.
+                 If None, creates StandardOps (backward-compatible).
         """
         self.device = device
+        if ops is None:
+            from spinlock.features.ops import StandardOps
+            ops = StandardOps()
+        self.ops = ops
 
     def extract(
         self,
@@ -167,7 +174,7 @@ class SpatialFeatureExtractor:
             # Anisotropy: std(|grad_x|) / std(|grad_y|) or similar directional bias measure
             grad_x_abs = torch.abs(grad_x)
             grad_y_abs = torch.abs(grad_y)
-            anisotropy = grad_x_abs.std(dim=(-2, -1)) / (grad_y_abs.std(dim=(-2, -1)) + 1e-10)
+            anisotropy = self.ops.safe_div(grad_x_abs.std(dim=(-2, -1)), grad_y_abs.std(dim=(-2, -1)))
             features['gradient_anisotropy'] = anisotropy
 
         # Curvature
@@ -198,13 +205,19 @@ class SpatialFeatureExtractor:
             features['correlation_anisotropy'] = coherence['correlation_anisotropy']
             features['structure_factor_peak'] = coherence['structure_factor_peak']
 
-        # Reshape all features back to [N*M, T, C]
+        # Orthogonal spatial features (NEW in v3.2)
+        if include_all or (config is not None and getattr(config, 'include_orthogonal_spatial', False)):
+            orthogonal = self._extract_orthogonal_spatial(fields_flat)
+            features.update(orthogonal)
+
+        # Reshape all features back to [N*M, T, C] or [N*M, T, D] for scalar features
         for name, feat in features.items():
-            if feat.ndim == 2:  # [NT, C]
+            if feat.ndim == 2:  # [NT, D] where D is either C or 1 (or other feature dim)
+                D = feat.shape[-1]  # Get actual feature dimension
                 if has_realizations:
-                    features[name] = feat.reshape(N, M, T, C)
+                    features[name] = feat.reshape(N, M, T, D)
                 else:
-                    features[name] = feat.reshape(N, T, C)
+                    features[name] = feat.reshape(N, T, D)
 
         return features
 
@@ -308,16 +321,13 @@ class SpatialFeatureExtractor:
         Returns 0 for zero-variance fields (symmetric by definition when all values equal).
         Returns 0 for symmetric distributions (e.g., structured ICs like sine waves).
         """
-        mean = x.mean(dim=(-2, -1), keepdim=True)
         std = x.std(dim=(-2, -1), keepdim=True)
 
-        # Variance threshold for numerical stability (prevents overflow from near-zero division)
+        # Variance threshold for numerical stability
         variance_threshold = 1e-4
         zero_variance_mask = (std < variance_threshold)
 
-        # Standardize with clamped denominator to prevent overflow
-        z = (x - mean) / torch.clamp(std, min=variance_threshold)
-        skew = (z ** 3).mean(dim=(-2, -1))  # [NT, C]
+        skew = self.ops.skewness(x, dim=(-2, -1))
 
         # Zero for zero-variance fields (uniform distribution = no asymmetry)
         skew = torch.where(
@@ -326,12 +336,7 @@ class SpatialFeatureExtractor:
             skew
         )
 
-        # Adaptive outlier protection: clip extreme numerical errors while preserving valid extremes
-        # Use IQR-based bounds computed from non-NaN values in current batch
-        skew = self._adaptive_outlier_clip(skew, iqr_multiplier=10.0)
-
-        # Final safety: replace any remaining NaN/Inf with 0
-        # (can occur for symmetric distributions like structured ICs)
+        skew = self.ops.outlier_clip(skew, iqr_multiplier=10.0)
         skew = torch.nan_to_num(skew, nan=0.0, posinf=0.0, neginf=0.0)
 
         return skew
@@ -344,16 +349,13 @@ class SpatialFeatureExtractor:
         Returns 0 for zero-variance fields (degenerate distribution).
         Returns 0 for symmetric distributions (e.g., structured ICs like sine waves).
         """
-        mean = x.mean(dim=(-2, -1), keepdim=True)
         std = x.std(dim=(-2, -1), keepdim=True)
 
-        # Variance threshold for numerical stability (prevents overflow from near-zero division)
+        # Variance threshold for numerical stability
         variance_threshold = 1e-4
         zero_variance_mask = (std < variance_threshold)
 
-        # Standardize with clamped denominator to prevent overflow
-        z = (x - mean) / torch.clamp(std, min=variance_threshold)
-        kurt = (z ** 4).mean(dim=(-2, -1)) - 3.0  # Excess kurtosis [NT, C]
+        kurt = self.ops.kurtosis(x, dim=(-2, -1))
 
         # Zero for zero-variance fields (degenerate distribution)
         kurt = torch.where(
@@ -362,12 +364,7 @@ class SpatialFeatureExtractor:
             kurt
         )
 
-        # Adaptive outlier protection: clip extreme numerical errors while preserving valid extremes
-        # Kurtosis can be very large for heavy-tailed distributions, so use wider multiplier
-        kurt = self._adaptive_outlier_clip(kurt, iqr_multiplier=15.0)
-
-        # Final safety: replace any remaining NaN/Inf with 0
-        # (can occur for symmetric distributions like structured ICs)
+        kurt = self.ops.outlier_clip(kurt, iqr_multiplier=15.0)
         kurt = torch.nan_to_num(kurt, nan=0.0, posinf=0.0, neginf=0.0)
 
         return kurt
@@ -402,10 +399,10 @@ class SpatialFeatureExtractor:
         x_flat = x.flatten(start_dim=2)  # [NT, C, H*W]
 
         # Compute median
-        median = torch.median(x_flat, dim=2, keepdim=True).values  # [NT, C, 1]
+        median = self.ops.soft_median(x_flat, dim=2).unsqueeze(-1)  # [NT, C, 1]
 
         # Compute MAD
-        mad = torch.median(torch.abs(x_flat - median), dim=2).values  # [NT, C]
+        mad = self.ops.soft_median(torch.abs(x_flat - median), dim=2)  # [NT, C]
 
         return mad
 
@@ -449,7 +446,8 @@ class SpatialFeatureExtractor:
         """
         Compute histogram/occupancy features (state space coverage).
 
-        Vectorized implementation for efficiency.
+        Uses ops.soft_histogram for differentiable histogramming when
+        gradients are needed. Fully vectorized — no Python loops.
 
         Measures how values are distributed across bins, capturing:
         - Histogram entropy: Uniformity of state space coverage
@@ -468,41 +466,22 @@ class SpatialFeatureExtractor:
         # Flatten spatial dimensions
         x_flat = x.flatten(start_dim=2)  # [NT, C, H*W]
 
-        # Initialize output tensors
-        entropy = torch.zeros(NT, C, device=x.device)
-        peak_fraction = torch.zeros(NT, C, device=x.device)
-        effective_bins = torch.zeros(NT, C, device=x.device)
-
-        # Vectorized histogram computation using torch.bucketize
-        # Compute global min/max for stable binning
+        # Per-sample, per-channel min/max
         x_min = x_flat.min(dim=2, keepdim=True).values  # [NT, C, 1]
         x_max = x_flat.max(dim=2, keepdim=True).values  # [NT, C, 1]
 
-        # Create bin edges [NT, C, num_bins+1]
-        bin_edges = torch.linspace(0, 1, num_bins + 1, device=x.device).view(1, 1, -1)
-        bin_edges = x_min.unsqueeze(-1) + bin_edges * (x_max - x_min).unsqueeze(-1)
+        # Compute histogram via ops (soft or hard depending on mode)
+        # soft_histogram expects x: [..., N], x_min/x_max: [..., 1]
+        hist = self.ops.soft_histogram(x_flat, num_bins, x_min, x_max)  # [NT, C, num_bins]
 
-        # Normalize values to [0, num_bins-1] range for indexing
-        x_normalized = (x_flat - x_min) / (x_max - x_min + 1e-10) * (num_bins - 1e-6)
-        x_normalized = x_normalized.clamp(0, num_bins - 1).long()  # [NT, C, H*W]
+        # 1. Histogram entropy: -sum(p * log(p))
+        entropy = -(hist * self.ops.safe_log(hist, eps=1e-10)).sum(dim=-1)  # [NT, C]
 
-        # Compute histograms using scatter_add (vectorized binning)
-        for nt in range(NT):
-            for c in range(C):
-                # Compute histogram for this sample
-                hist = torch.bincount(x_normalized[nt, c], minlength=num_bins).float()
-                hist = hist / (hist.sum() + 1e-10)  # Normalize to probabilities
+        # 2. Peak bin fraction
+        peak_fraction = hist.max(dim=-1).values  # [NT, C]
 
-                # 1. Histogram entropy: -sum(p * log(p))
-                nonzero_bins = hist[hist > 1e-10]
-                if len(nonzero_bins) > 0:
-                    entropy[nt, c] = -(nonzero_bins * torch.log(nonzero_bins)).sum()
-
-                # 2. Peak bin fraction
-                peak_fraction[nt, c] = hist.max()
-
-                # 3. Effective bins: Number of bins with > 1% of mass
-                effective_bins[nt, c] = (hist > 0.01).sum().float()
+        # 3. Effective bins: Number of bins with > 1% of mass
+        effective_bins = self.ops.soft_step(hist, threshold=0.01).sum(dim=-1)  # [NT, C]
 
         return {
             'histogram_entropy': entropy,
@@ -547,7 +526,7 @@ class SpatialFeatureExtractor:
         grad_x = self._compute_gradient_x(x)
         grad_y = self._compute_gradient_y(x)
 
-        grad_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2)
+        grad_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2 + 1e-10)
 
         return grad_mag
 
@@ -566,7 +545,7 @@ class SpatialFeatureExtractor:
         mean_grad_y = grad_y.abs().mean(dim=(-2, -1))
 
         # Anisotropy ratio
-        anisotropy = mean_grad_x / (mean_grad_y + 1e-8)
+        anisotropy = self.ops.safe_div(mean_grad_x, mean_grad_y)
 
         return anisotropy
 
@@ -621,8 +600,7 @@ class SpatialFeatureExtractor:
         x_flat = x.reshape(NT * C, H, W)
 
         # Batched SVD: Process all samples at once
-        # torch.linalg.svd can handle batched input [N, H, W]
-        U, S, Vh = torch.linalg.svd(x_flat, full_matrices=False)
+        U, S, Vh = self.ops.safe_svd(x_flat)
         # S has shape [NT*C, K] where K = min(H, W)
 
         # Vectorized metric computation (no loops!)
@@ -630,14 +608,16 @@ class SpatialFeatureExtractor:
         total_variance = S_squared.sum(dim=1, keepdim=True)  # [NT*C, 1]
 
         # Normalize to get variance explained per sample
-        variance_explained = S_squared / (total_variance + 1e-8)  # [NT*C, K]
+        variance_explained = self.ops.safe_div(S_squared, total_variance)  # [NT*C, K]
 
         # 1. Effective rank (stable rank): sum(S²) / max(S²)
-        # For each sample: sum over K dimension, divide by first element
-        effective_rank = S_squared.sum(dim=1) / (S_squared[:, 0] + 1e-8)  # [NT*C]
+        effective_rank = self.ops.safe_div(S_squared.sum(dim=1), S_squared[:, 0])  # [NT*C]
 
         # 2. Participation ratio: 1 / sum(p_i²) where p_i are normalized SVs
-        participation_ratio = 1.0 / ((variance_explained ** 2).sum(dim=1) + 1e-8)  # [NT*C]
+        participation_ratio = self.ops.safe_div(
+            torch.ones(S_squared.shape[0], device=S_squared.device),
+            (variance_explained ** 2).sum(dim=1),
+        )  # [NT*C]
 
         # 3. Explained variance 90: Number of SVs needed to explain 90% variance
         cumulative_variance = torch.cumsum(variance_explained, dim=1)  # [NT*C, K]
@@ -686,17 +666,13 @@ class SpatialFeatureExtractor:
         # Use adaptive threshold: 5% of the maximum gradient per sample
         grad_max = grad_mag.amax(dim=(-2, -1), keepdim=True)  # [NT, C, 1, 1]
         threshold = 0.05 * grad_max
-        saturation_mask = grad_mag < threshold  # [NT, C, H, W]
-        saturation_ratio = saturation_mask.float().mean(dim=(-2, -1))  # [NT, C]
+        # soft_step(x, threshold) returns 1 where x > threshold
+        # We want fraction where x < threshold, so use 1 - soft_step
+        saturation_ratio = (1.0 - self.ops.soft_step(grad_mag, threshold)).mean(dim=(-2, -1))  # [NT, C]
 
         # 2. Gradient flatness: kurtosis of gradient magnitude distribution
-        # High kurtosis = heavy tails (intermittent sharp edges + flat regions)
-        # Low kurtosis = uniform gradients
         grad_mag_flat = grad_mag.flatten(start_dim=2)  # [NT, C, H*W]
-        mean = grad_mag_flat.mean(dim=2, keepdim=True)  # [NT, C, 1]
-        std = grad_mag_flat.std(dim=2, keepdim=True)  # [NT, C, 1]
-        z = (grad_mag_flat - mean) / (std + 1e-8)  # Standardize
-        flatness = (z ** 4).mean(dim=2) - 3.0  # Excess kurtosis [NT, C]
+        flatness = self.ops.kurtosis(grad_mag_flat, dim=2)  # [NT, C]
 
         return {
             'saturation_ratio': saturation_ratio,
@@ -706,6 +682,107 @@ class SpatialFeatureExtractor:
     # =========================================================================
     # Coherence Structure (spatial correlation metrics)
     # =========================================================================
+
+    # =========================================================================
+    # Orthogonal Spatial Features (NEW in v3.2)
+    # =========================================================================
+
+    def _extract_orthogonal_spatial(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Extract orthogonal spatial features (complementary to existing features).
+
+        Helmholtz decomposition + curvature structure that are orthogonal to
+        existing spatial features (mean, std, gradients).
+
+        Args:
+            x: Input fields [NT, C, H, W]
+
+        Returns:
+            Dictionary with 15 features:
+                - curl: 3D [mean, std, max] - Vorticity (⊥ to divergence)
+                - hessian: 6D [λ1_mean, λ1_std, λ2_mean, λ2_std, anisotropy_mean, anisotropy_std]
+                - structure_tensor: 6D [coherence_mean, coherence_std, orientation_mean,
+                                        orientation_std, strength_mean, strength_std]
+        """
+        NT, C, H, W = x.shape
+        features = {}
+
+        # --- 1. Curl (vorticity) - orthogonal to divergence ---
+        # Curl = ∂u_y/∂x - ∂u_x/∂y for 2D vector field
+        # For scalar fields (or treating channels as components), compute per-channel
+        grad_x = self._compute_gradient_x(x)  # [NT, C, H, W]
+        grad_y = self._compute_gradient_y(x)  # [NT, C, H, W]
+
+        # For multi-channel: treat first 2 channels as vector field components
+        if C >= 2:
+            # Curl = ∂u[1]/∂x - ∂u[0]/∂y
+            curl = self._compute_gradient_x(x[:, 1:2]) - self._compute_gradient_y(x[:, 0:1])  # [NT, 1, H, W]
+            features['curl_mean'] = curl.mean(dim=(-2, -1))  # [NT, 1]
+            features['curl_std'] = curl.std(dim=(-2, -1))  # [NT, 1]
+            features['curl_max'] = curl.abs().amax(dim=(-2, -1))  # [NT, 1]
+        else:
+            # Single channel: use gradient curl proxy (∇ × ∇u = 0 identically, so use |∇u|)
+            curl_proxy = torch.sqrt(grad_x**2 + grad_y**2 + 1e-10)
+            features['curl_mean'] = curl_proxy.mean(dim=(-2, -1))  # [NT, C]
+            features['curl_std'] = curl_proxy.std(dim=(-2, -1))  # [NT, C]
+            features['curl_max'] = curl_proxy.amax(dim=(-2, -1))  # [NT, C]
+
+        # --- 2. Hessian eigenvalues (principal curvatures) ---
+        # Hessian = [[∂²u/∂x², ∂²u/∂x∂y], [∂²u/∂y∂x, ∂²u/∂y²]]
+        hess_xx = self._compute_gradient_x(grad_x)  # [NT, C, H, W] (may be smaller due to padding)
+        hess_yy = self._compute_gradient_y(grad_y)  # [NT, C, H, W]
+        hess_xy = self._compute_gradient_x(grad_y)  # [NT, C, H, W]
+
+        # Eigenvalues of 2x2 Hessian matrix (per pixel, per channel)
+        # λ = (trace ± sqrt(trace² - 4*det)) / 2
+        trace = hess_xx + hess_yy  # [NT, C, H, W]
+        det = hess_xx * hess_yy - hess_xy ** 2  # [NT, C, H, W]
+        discriminant = torch.sqrt((trace ** 2 - 4 * det).clamp(min=0) + 1e-10)
+
+        lambda1 = (trace + discriminant) / 2  # Larger eigenvalue
+        lambda2 = (trace - discriminant) / 2  # Smaller eigenvalue
+
+        # Statistics of eigenvalues
+        features['hessian_lambda1_mean'] = lambda1.mean(dim=(-2, -1))  # [NT, C]
+        features['hessian_lambda1_std'] = lambda1.std(dim=(-2, -1))  # [NT, C]
+        features['hessian_lambda2_mean'] = lambda2.mean(dim=(-2, -1))  # [NT, C]
+        features['hessian_lambda2_std'] = lambda2.std(dim=(-2, -1))  # [NT, C]
+
+        # Anisotropy: |λ1| / |λ2| (ratio of curvatures in principal directions)
+        anisotropy = self.ops.safe_div(lambda1.abs(), lambda2.abs() + 1e-8)
+        features['hessian_anisotropy_mean'] = anisotropy.mean(dim=(-2, -1))  # [NT, C]
+        features['hessian_anisotropy_std'] = anisotropy.std(dim=(-2, -1))  # [NT, C]
+
+        # --- 3. Structure tensor (gradient outer product) ---
+        # J = [[grad_x², grad_x*grad_y], [grad_x*grad_y, grad_y²]]
+        # Measures line-like (anisotropic) vs blob-like (isotropic) structure
+        J11 = grad_x ** 2
+        J12 = grad_x * grad_y
+        J22 = grad_y ** 2
+
+        # Eigenvalues of structure tensor
+        trace_J = J11 + J22
+        det_J = J11 * J22 - J12 ** 2
+        disc_J = torch.sqrt((trace_J ** 2 - 4 * det_J).clamp(min=0) + 1e-10)
+
+        mu1 = (trace_J + disc_J) / 2  # Larger eigenvalue
+        mu2 = (trace_J - disc_J) / 2  # Smaller eigenvalue
+
+        # Coherence: (mu1 - mu2) / (mu1 + mu2) - ranges [0, 1], high for line-like
+        coherence = self.ops.safe_div(mu1 - mu2, mu1 + mu2 + 1e-8)
+        features['structure_coherence_mean'] = coherence.mean(dim=(-2, -1))  # [NT, C]
+        features['structure_coherence_std'] = coherence.std(dim=(-2, -1))  # [NT, C]
+
+        # Orientation: arctan(2*J12 / (J11 - J22)) - principal gradient direction
+        orientation = torch.atan2(2 * J12, J11 - J22 + 1e-8)
+        features['structure_orientation_mean'] = orientation.mean(dim=(-2, -1))  # [NT, C]
+        features['structure_orientation_std'] = orientation.std(dim=(-2, -1))  # [NT, C]
+
+        # Strength: sqrt(mu1) - overall gradient magnitude
+        strength = torch.sqrt(mu1 + 1e-8)
+        features['structure_strength_mean'] = strength.mean(dim=(-2, -1))  # [NT, C]
+        features['structure_strength_std'] = strength.std(dim=(-2, -1))  # [NT, C]
+
+        return features
 
     def _compute_coherence_structure(
         self,
@@ -739,7 +816,7 @@ class SpatialFeatureExtractor:
         autocorr = torch.fft.irfft2(power, s=(H, W), dim=(-2, -1))  # [NT, C, H, W]
 
         # Normalize autocorrelation by zero-lag value
-        autocorr_normalized = autocorr / (autocorr[:, :, 0:1, 0:1] + 1e-8)  # [NT, C, H, W]
+        autocorr_normalized = self.ops.safe_div(autocorr, autocorr[:, :, 0:1, 0:1])  # [NT, C, H, W]
 
         # Compute radial autocorrelation profile
         # Create radial distance grid
@@ -784,7 +861,7 @@ class SpatialFeatureExtractor:
         autocorr_y = autocorr_centered[:, :, :, W//2].abs().mean(dim=-1)  # [NT, C] (average along y-axis)
 
         # Anisotropy ratio
-        correlation_anisotropy = autocorr_x / (autocorr_y + 1e-8)  # [NT, C]
+        correlation_anisotropy = self.ops.safe_div(autocorr_x, autocorr_y)  # [NT, C]
 
         # 3. Structure factor peak: Characteristic length scale from power spectrum (batched version)
         # Find dominant spatial frequency (peak in radial power spectrum)
@@ -815,7 +892,9 @@ class SpatialFeatureExtractor:
         peak_freq = freq_radial_flat[max_indices]  # [NT*C]
 
         # Characteristic length = 1 / peak_freq
-        structure_factor_peak = 1.0 / (peak_freq + 1e-8)  # [NT*C]
+        structure_factor_peak = self.ops.safe_div(
+            torch.ones_like(peak_freq), peak_freq,
+        )  # [NT*C]
 
         structure_factor_peak = structure_factor_peak.reshape(NT, C)  # [NT, C]
 

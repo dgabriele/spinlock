@@ -1,0 +1,209 @@
+# VQ Tokenizer - Diversity-Enhanced Configuration (v2 - Higher Capacity)
+#
+# v2 improvements over v1:
+# 1. max_latent_dim: 96 → 192 (2× codebook capacity)
+# 2. roundtrip_weight: 8.0 → 10.0 (stronger consistency for larger codebooks)
+#
+# v1 results (baseline → v1):
+# - Unique patterns: 2,841 → 8,536 (3.0× improvement)
+# - Temporal utilization: 10% → 91.9% (near saturation)
+# - Jaccard similarity: 0.850 → 0.821 (modest improvement)
+#
+# v2 hypothesis:
+# Near-saturation (91.9%) indicates capacity exhaustion, not training collapse.
+# Doubling codebook sizes should unlock more combinatorial diversity:
+# - Expected codebook sizes: L0 ~56, L1/L2 ~12 (was 28, 6, 6)
+# - Combinatorial space: 10^40 → 10^47 theoretical combinations
+# - Target: 15K-20K unique patterns (30-40% of 50K)
+# - Target: Jaccard similarity <0.75
+#
+# If v2 still shows limited diversity → feature extractors need enrichment.
+
+dataset_path: "datasets/qbm_50k.h5"
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  initial:
+    variant: "hybrid"
+    cnn_embedding_dim: 384
+    pretrained_cnn_path: null
+    use_final_batchnorm: true
+    encode_manual: true
+
+  temporal:
+    variant: "pyramid"
+    level_dims: [32, 64, 96, 128]
+    downsample_factors: [1, 2, 4, 8]
+    variable_length: true
+    min_timesteps: 16
+    max_timesteps: 256
+    adaptive_pyramid: true
+
+  theta:
+    variant: "mlp"
+    hidden_dim: 64
+    output_dim: 32
+    dropout: 0.15
+    use_layer_norm: true
+
+  embedding_dim: 64
+  hidden_dim: 128
+  dropout: 0.4
+  use_layer_norm: true
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer - Low commitment cost for exploration
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  embedding_dim: 64
+  commitment_cost: 0.25  # Low commitment → exploration enabled
+  use_ema: true
+  ema_decay: 0.99
+  epsilon: 1.0e-5
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchy - DOUBLED CAPACITY
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3
+  compression_ratios: "0.5:1.0:1.5"  # Keep ratios
+  min_latent_dim: 4
+  max_latent_dim: 192  # CHANGE: 96 → 192 (2× capacity per quantizer)
+  # Expected: L0 ~56 embeddings, L1/L2 ~12 embeddings (was 28, 6, 6)
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Cleaning (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+feature_cleaning:
+  enabled: true
+  pre_categorization: true
+  variance_threshold: 1.0e-8
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
+  outlier_method: "percentile"
+  percentile_range: [0.5, 99.5]
+
+# ═══════════════════════════════════════════════════════════════
+# Grouping (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+grouping:
+  preprocessing:
+    method: "mad"
+    clip_outliers: false
+
+  clustering:
+    linkage_method: "ward"
+    distance_metric: "correlation"
+    k_selection_method: "silhouette"
+    min_groups: 8
+    max_groups: 20
+    use_gpu: true
+
+  gradient:
+    num_epochs: 500
+    learning_rate: 0.01
+    temperature_start: 1.0
+    temperature_end: 0.5
+    orthogonality_weight: 1.0
+    informativeness_weight: 1.0
+    orthogonality_target: 0.15
+    device: "auto"
+
+  splitting:
+    enabled: false
+
+  skip_gradient_refinement: false
+  random_seed: 42
+
+# ═══════════════════════════════════════════════════════════════
+# Inverse Heads (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+inverse_heads:
+  theta_hidden_dim: 128
+  theta_dropout: 0.15
+  initial_base_channels: 256
+
+# ═══════════════════════════════════════════════════════════════
+# Training (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 1000
+  batch_size: 768
+  learning_rate: 0.001
+  val_split: 0.1
+  val_every_n_epochs: 5
+
+  optimizer: "adamw"
+  weight_decay: 0.02
+  gradient_clip_norm: 1.0
+
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 10
+
+  early_stopping_patience: 50
+  early_stopping_min_delta: 0.0001
+
+  dead_code_reset_interval: 999999
+  dead_code_threshold: 0.0
+
+  device: "auto"
+  compile_model: false
+
+# ═══════════════════════════════════════════════════════════════
+# Loss - Maintain low reconstruction, increase roundtrip
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  reconstruction_weight: 0.0003  # Keep low (less exact-match pressure)
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topographic_weight: 0.2
+  normalize_reconstruction: true
+
+  roundtrip:
+    enabled: true
+    weight: 10.0  # CHANGE: 8.0 → 10.0 (stronger consistency for larger codebooks)
+    theta_weight: 1.0
+    initial_weight: 1.0
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "none"
+  clip_std_multiplier: null
+
+# ═══════════════════════════════════════════════════════════════
+# System
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 42
+verbose: true
+log_level: "INFO"
+
+# ═══════════════════════════════════════════════════════════════
+# Training Command
+# ═══════════════════════════════════════════════════════════════
+#
+# poetry run spinlock train-vq-tokenizer --config configs/qbm/vqvae_diverse_v2.yaml
+#
+# Output: checkpoints/v2/vqvae/  (default output dir)
+#
+# Expected results:
+# - Unique patterns: 15K-20K / 50K (30-40%)
+# - Jaccard similarity: <0.75 (down from 0.82)
+# - Temporal utilization: 50-70% (healthy headroom)
+#
+# If diversity still limited → feature extractor enrichment needed.
+#

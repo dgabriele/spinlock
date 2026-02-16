@@ -68,6 +68,7 @@ class RoundtripConsistencyLoss(nn.Module):
         cleaned_features: torch.Tensor,
         params: Optional[torch.Tensor] = None,
         gt_tokens: Optional[Dict[str, torch.Tensor]] = None,
+        precomputed: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, torch.Tensor]:
         """Compute roundtrip consistency loss.
 
@@ -77,6 +78,9 @@ class RoundtripConsistencyLoss(nn.Module):
             params: [B, param_dim] QBM Sobol parameters
             gt_tokens: Mode A — pretokenized GT tokens {key: [B] long}.
                 If None, falls back to Mode B (full roundtrip).
+            precomputed: Optional pre-extracted soft logits + hard tokens from
+                extract_soft_logits_and_hard_tokens(). When provided, skips
+                the redundant VQ encoder call (DRY with token contrastive).
 
         Returns:
             Dict with:
@@ -87,9 +91,12 @@ class RoundtripConsistencyLoss(nn.Module):
         device = cleaned_features.device
 
         # Step 1: MNO side — soft logits WITH gradient
-        mno_out = self.vq_adapter.extract_soft_logits_and_hard_tokens(
-            cleaned_features, params=params, temperature=self.temperature,
-        )
+        if precomputed is not None:
+            mno_out = precomputed
+        else:
+            mno_out = self.vq_adapter.extract_soft_logits_and_hard_tokens(
+                cleaned_features, params=params, temperature=self.temperature,
+            )
 
         if gt_tokens is not None:
             # Mode A: pretokenized GT targets (fast path)

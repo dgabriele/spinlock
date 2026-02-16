@@ -181,15 +181,45 @@ class VQTokenizerTrainer:
 
                 val_loss = val_metrics['loss']
 
-                # Check for improvement
-                if val_loss < self.best_val_loss - self.config.training.early_stopping_min_delta:
-                    self.best_val_loss = val_loss
+                # Compute custom "best model" metric that prioritizes:
+                # 1. Reconstruction quality (recon)
+                # 2. Roundtrip consistency (roundtrip)
+                # 3. Codebook diversity (util_epoch: perplexity / avg_codebook_size)
+                # 4. De-emphasize topographic loss (topo)
+                recon = val_metrics['reconstruction']
+                roundtrip = val_metrics.get('roundtrip', 0.0)  # 0 if not enabled
+                topo = val_metrics['topographic']
+                perplexity = val_metrics['perplexity']
+
+                # Compute util_epoch (same as logging)
+                total_codes = sum(q.num_embeddings for q in self.model.quantizers.values())
+                num_quantizers = len(self.model.quantizers)
+                avg_codebook_size = total_codes / num_quantizers if num_quantizers > 0 else 1
+                util_epoch = (perplexity / avg_codebook_size) * 100  # Percentage
+
+                # Custom metric: lower is better, so we subtract utilization bonus
+                # Utilization is in [0, 100], scaled by 0.0001 to avoid overwhelming recon
+                # Prioritize reconstruction quality over utilization
+                best_metric = (
+                    recon
+                    + roundtrip
+                    + 0.1 * topo  # De-emphasize topo (was dominating)
+                    - 0.0001 * util_epoch  # Tiny utilization bonus (was 0.01, too large!)
+                )
+
+                # Check for improvement using custom metric
+                if best_metric < self.best_val_loss - self.config.training.early_stopping_min_delta:
+                    self.best_val_loss = best_metric
                     self.epochs_without_improvement = 0
 
                     # Save best checkpoint
                     best_path = output_dir / f"{checkpoint_prefix}_best.pt"
                     self._save_checkpoint(best_path, epoch, val_loss)
-                    logger.info(f"New best model saved: val_loss={val_loss:.6f}")
+                    logger.info(
+                        f"New best model saved: metric={best_metric:.6f} "
+                        f"(recon={recon:.4f}, roundtrip={roundtrip:.4f}, "
+                        f"topo={topo:.4f}, util_epoch={util_epoch:.1f}%)"
+                    )
                 else:
                     self.epochs_without_improvement += 1
 

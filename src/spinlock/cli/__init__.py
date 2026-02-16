@@ -32,6 +32,8 @@ from .visualize_qbm import VisualizeQBMCommand
 from .visualize_diffusion_inpainting import VisualizeDiffusionInpaintingCommand
 from .run_token_synthesis import RunTokenSynthesisCommand
 from .train_alignment import TrainAlignmentCommand
+from .launch_salad_generation import LaunchSaladGenerationCommand
+from .merge_datasets import MergeDatasetsCommand
 
 __all__ = [
     "CLICommand",
@@ -59,6 +61,8 @@ __all__ = [
     "VisualizeDiffusionInpaintingCommand",
     "RunTokenSynthesisCommand",
     "TrainAlignmentCommand",
+    "LaunchSaladGenerationCommand",
+    "MergeDatasetsCommand",
     "main",
 ]
 
@@ -122,6 +126,8 @@ For more help on a specific command:
         TrainTokenToRolloutVAECommand(),
         RunTokenSynthesisCommand(),
         TrainAlignmentCommand(),
+        LaunchSaladGenerationCommand(),
+        MergeDatasetsCommand(),
     ]
 
     for command in commands:

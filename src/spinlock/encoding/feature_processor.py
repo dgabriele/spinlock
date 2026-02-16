@@ -11,6 +11,8 @@ Applies cleaning steps before VQ-VAE training:
 This ensures clean, numerically stable features for categorical VQ-VAE training.
 """
 
+import warnings
+
 import numpy as np
 from typing import Tuple, Optional, List
 import logging
@@ -267,7 +269,11 @@ class FeatureProcessor:
         Returns:
             Tuple of (filtered_features [N, D'], mask [D])
         """
-        stds = np.nanstd(features, axis=0)
+        # Suppress "Degrees of freedom <= 0" for all-NaN columns —
+        # those produce NaN std which the variance filter removes below.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Degrees of freedom <= 0")
+            stds = np.nanstd(features, axis=0)
         vars = np.var(features, axis=0)
         means = np.mean(features, axis=0)
 

@@ -870,16 +870,17 @@ Output:
             lambda_recon = loss_config.get("lambda_recon", 0.0)
             lambda_commit = loss_config.get("lambda_commit", 0.0)
 
-            # Load VQ coherence adapter only if VQ losses are enabled
+            # Load VQ coherence adapter if any loss needs it
+            lambda_roundtrip = loss_config.get("lambda_roundtrip", 0.0)
             vq_adapter = None
             contrastive_feature_dim = None
-            if lambda_recon > 0 or lambda_commit > 0:
+            if lambda_recon > 0 or lambda_commit > 0 or lambda_roundtrip > 0:
                 vqvae_config = config.get("vqvae")
                 if not vqvae_config:
                     return self.error(
-                        "token_diversity mode with lambda_recon > 0 or lambda_commit > 0 "
+                        "token_diversity mode with VQ losses (recon, commit, or roundtrip > 0) "
                         "requires 'vqvae' section in config.\n"
-                        "Either add vqvae.checkpoint or set lambda_recon=0, lambda_commit=0."
+                        "Either add vqvae.checkpoint or set VQ lambdas to 0."
                     )
 
                 vqvae_checkpoint = vqvae_config.get("checkpoint")
@@ -897,7 +898,6 @@ Output:
                 print(f"  ✓ VQ coherence adapter loaded (feature_dim={contrastive_feature_dim})")
 
             # Roundtrip token consistency loss (optional)
-            lambda_roundtrip = loss_config.get("lambda_roundtrip", 0.0)
             roundtrip_config = loss_config.get("roundtrip", {})
             roundtrip_loss_obj = None
             roundtrip_token_store = None
@@ -920,6 +920,20 @@ Output:
                     num_gt_timesteps=roundtrip_config.get("gt_timesteps", 256),
                 )
 
+            # Token contrastive loss (optional — diversity in token probability space)
+            tc_config = loss_config.get("token_contrastive", {})
+            lambda_tc = loss_config.get("lambda_token_contrastive", 0.0)
+            token_contrastive_obj = None
+
+            if lambda_tc > 0 and vq_adapter is not None:
+                from spinlock.mno.losses.components.token_contrastive import TokenContrastiveLoss
+                token_contrastive_obj = TokenContrastiveLoss(
+                    param_dim=config["model"]["param_dim"],
+                    nce_temperature=tc_config.get("nce_temperature", 0.1),
+                    token_temperature=tc_config.get("token_temperature", 0.5),
+                    queue_size=tc_config.get("queue_size", 64),
+                ).to(device)
+
             contrastive_config = loss_config.get("contrastive", {})
             loss_fn = TokenDiversityLoss(
                 lambda_contrastive=loss_config.get("lambda_contrastive", 1.0),
@@ -928,10 +942,14 @@ Output:
                 lambda_traj=loss_config.get("lambda_traj", 0.0),
                 lambda_ic=loss_config.get("lambda_ic", 0.0),
                 lambda_roundtrip=lambda_roundtrip,
+                lambda_token_contrastive=lambda_tc,
                 vq_adapter=vq_adapter,
                 roundtrip_loss=roundtrip_loss_obj,
                 roundtrip_enable_batch=roundtrip_config.get("enable_batch", 0),
                 roundtrip_warmup_batches=roundtrip_config.get("warmup_batches", 0),
+                token_contrastive_loss=token_contrastive_obj,
+                token_contrastive_enable_batch=tc_config.get("enable_batch", 0),
+                token_contrastive_warmup_batches=tc_config.get("warmup_batches", 0),
                 param_dim=config["model"]["param_dim"],
                 contrastive_temperature=contrastive_config.get("temperature", 0.1),
                 contrastive_queue_size=contrastive_config.get("queue_size", 0),
@@ -948,6 +966,12 @@ Output:
                 print(f"    L_roundtrip={lambda_roundtrip} "
                       f"(enable_batch={roundtrip_config.get('enable_batch', 0)}, "
                       f"warmup={roundtrip_config.get('warmup_batches', 0)})")
+            if lambda_tc > 0:
+                print(f"    Token contrastive: tau_nce={tc_config.get('nce_temperature', 0.1)}, "
+                      f"tau_token={tc_config.get('token_temperature', 0.5)}, "
+                      f"queue={tc_config.get('queue_size', 64)} "
+                      f"(enable_batch={tc_config.get('enable_batch', 0)}, "
+                      f"warmup={tc_config.get('warmup_batches', 0)})")
             if vq_adapter is None:
                 print(f"    VQ coherence: disabled (lambda_recon=0, lambda_commit=0)")
             else:
@@ -1003,17 +1027,17 @@ Output:
             else:
                 print(f"  ✓ Pure physics loss (L_traj = {config['loss'].get('lambda_traj', 1.0)})")
 
-        # Create substrate replayer (CNO or QBM based on substrate config structure)
-        print("Loading substrate replayer...")
+        # Create ground truth replayer (CNO or QBM based on config structure)
+        print("Loading ground truth replayer...")
         substrate_config_path = config["data"].get("config")
 
         if not substrate_config_path:
             return self.error(
-                "Data section missing substrate configuration.\n"
-                "Required field: config (path to substrate config YAML)"
+                "Data section missing ground truth replayer configuration.\n"
+                "Required field: config (path to replayer config YAML)"
             )
 
-        # Detect replayer type from substrate config structure
+        # Detect replayer type from ground truth config structure
         # CNO: has 'operators' section
         # QBM: has 'parameter_space' section
         import yaml
@@ -1021,15 +1045,15 @@ Output:
             substrate_config = yaml.safe_load(f)
 
         if 'parameter_space' in substrate_config:
-            # QBM substrate - use QBMReplayer
+            # QBM ground truth - use QBMReplayer
             from spinlock.qbm import QBMReplayer
             replayer = QBMReplayer.from_config(
                 config_path=substrate_config_path,
                 device=device
             )
-            print(f"  ✓ QBM replayer loaded")
+            print("  ✓ QBM ground truth replayer loaded")
         elif 'operators' in substrate_config:
-            # CNO substrate - use CNOReplayer
+            # CNO ground truth - use CNOReplayer
             cache_size = config.get("training", {}).get("replayer_cache_size", 512)
             replayer = CNOReplayer.from_config(
                 config_path=substrate_config_path,
@@ -1039,7 +1063,7 @@ Output:
             print(f"  ✓ CNO replayer loaded (cache_size={cache_size})")
         else:
             return self.error(
-                f"Unknown substrate config format: {substrate_config_path}\n"
+                f"Unknown ground truth config format: {substrate_config_path}\n"
                 f"Expected either 'operators' (CNO) or 'parameter_space' (QBM) section"
             )
 
@@ -1616,6 +1640,49 @@ Output:
                 continue
 
             # Gradient accumulation: scale loss and accumulate gradients
+            # Skip backward if loss has no grad_fn (e.g., all-zero lambdas
+            # during curriculum warmup) — avoids RuntimeError
+            if not loss_output.total.requires_grad and loss_output.total.grad_fn is None:
+                continue
+
+            # ── Gradient diagnostic (every 50 batches) ────────────────
+            if batch_idx % 50 == 0 and batch_idx > 0:
+                diag_components = ['roundtrip', 'traj', 'ic', 'token_contrastive']
+                diag_lambdas = {
+                    'roundtrip': config['loss'].get('lambda_roundtrip', 1.0),
+                    'traj': config['loss'].get('lambda_traj', 0.03),
+                    'ic': config['loss'].get('lambda_ic', 0.03),
+                    'token_contrastive': config['loss'].get('lambda_token_contrastive', 0.5),
+                }
+                # Phase 1: check grad_fn existence
+                grad_fn_info = {}
+                for comp_name in diag_components:
+                    comp_val = loss_output.components.get(comp_name)
+                    if comp_val is not None:
+                        grad_fn_info[comp_name] = (
+                            f"req_grad={comp_val.requires_grad}, "
+                            f"grad_fn={type(comp_val.grad_fn).__name__ if comp_val.grad_fn else None}"
+                        )
+                print(f"  [GRAD DIAG batch {batch_idx}] grad_fn: {grad_fn_info}")
+                # Phase 2: per-component gradient norms
+                grad_norms = {}
+                for comp_name in diag_components:
+                    comp_val = loss_output.components.get(comp_name)
+                    if comp_val is None or not comp_val.requires_grad:
+                        grad_norms[comp_name] = -1.0  # mark as non-differentiable
+                        continue
+                    optimizer.zero_grad()
+                    lam = diag_lambdas.get(comp_name, 1.0)
+                    (lam * comp_val).backward(retain_graph=True)
+                    total_norm = 0.0
+                    for p in mno.parameters():
+                        if p.grad is not None:
+                            total_norm += p.grad.data.norm(2).item() ** 2
+                    grad_norms[comp_name] = total_norm ** 0.5
+                optimizer.zero_grad()
+                parts = [f"{k}={v:.6f}" for k, v in sorted(grad_norms.items())]
+                print(f"  [GRAD DIAG batch {batch_idx}] param grad norms: {', '.join(parts)}")
+
             scaled_loss = loss_output.total / accumulation_steps
             scaler.scale(scaled_loss).backward()
 

@@ -49,7 +49,7 @@ the physical roundtrip, discovering novel coherent dynamics.
 Prerequisites:
   - Trained diffusion model checkpoint (D3PM + DenoisingNetwork)
   - Trained VQTokenizer checkpoint with inverse models (theta + initial)
-  - QBM substrate configuration
+  - QBM ground truth configuration
 
 Examples:
   # Run with default QBM config
@@ -174,7 +174,7 @@ Output:
         logger.info("=" * 70)
         logger.info(f"Diffusion:  {config.checkpoints.diffusion_checkpoint}")
         logger.info(f"VQ-VAE:     {config.checkpoints.vqvae_checkpoint}")
-        logger.info(f"QBM:        {config.checkpoints.qbm_substrate_config}")
+        logger.info(f"Ground truth: {config.checkpoints.qbm_substrate_config}")
         logger.info(f"Cycles:     {config.scheduler.max_cycles}")
         logger.info(f"Explore:    {config.scheduler.explore_steps} steps/cycle")
         logger.info(f"Refine:     {config.scheduler.refine_epochs} epochs/cycle")

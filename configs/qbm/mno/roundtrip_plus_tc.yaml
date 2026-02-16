@@ -1,0 +1,120 @@
+# MNO Roundtrip + Token Contrastive + Physics Regularizers
+#
+# PRIMARY discrete-token losses:
+#   - Roundtrip: CE(soft_logits, GT_tokens) — "match GT tokens for this input"
+#   - Token contrastive: InfoNCE on softmax probs — "different inputs → different tokens"
+#
+# REGULARIZERS (physics grounding so discrete losses have tractable gradients):
+#   - IC preservation (cheap, prevents NaN divergence)
+#   - Commit (pulls features toward VQ codebook for meaningful soft_logits)
+#   - Trajectory MSE (strong physics signal, requires QBM replayer)
+
+model:
+  base_channels: 40
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  dropout: 0.1
+
+  param_conditioning: true
+  param_embed_dim: 128
+  conditioning_mode: "film"
+
+  film:
+    enabled: true
+    embed_dim: 128
+    hidden_dim: 256
+    init_gamma: 1.0
+    init_beta: 0.0
+    post_norm: true
+    modulate_encoder: true
+    modulate_decoder: true
+
+  update_mode: "residual"
+  use_checkpointing: true
+  checkpoint_every: 16
+
+training:
+  n_samples: 2000
+  sampling_strategy: "sequential"
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  epochs: 3
+  learning_rate: 1.2e-4
+  warmup_steps: 100
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  timesteps: 256
+  bptt_window: 32
+
+  use_torch_compile: false
+  replayer_cache_size: 16
+  early_stopping_patience: 10
+  film_lr_multiplier: 5.0
+  use_amp: false
+
+loss:
+  mode: "token_diversity"
+
+  # Continuous contrastive off (token contrastive replaces it)
+  lambda_contrastive: 0.0
+  lambda_recon: 0.0
+
+  # REGULARIZERS — physics grounding for the discrete losses
+  # Commit: structurally near-zero with frozen VQ projector (useless gradient).
+  # Roundtrip CE already optimizes for correct token selection.
+  lambda_commit: 0.0
+  # Trajectory MSE: physics grounding (requires QBM replayer, ~2x slower)
+  # Raw traj ~100 early, falls to ~5-10; 0.03 × 100 ≈ 3.0
+  lambda_traj: 0.03
+  # IC preservation: prevents NaN divergence (very cheap)
+  lambda_ic: 0.03
+
+  # ROUNDTRIP — accuracy signal
+  # 10x boost: gradient through frozen VQ encoder is heavily attenuated
+  lambda_roundtrip: 10.0
+
+  # TOKEN CONTRASTIVE — diversity signal
+  # Raw InfoNCE ≈ log(B+Q) ≈ 4.2 (B=2, Q=64), similar scale to roundtrip CE ~3.3
+  lambda_token_contrastive: 0.5
+
+  contrastive:
+    temperature: 0.1
+    queue_size: 0                 # No queue needed (continuous contrastive disabled)
+
+  roundtrip:
+    temperature: 1.0
+    enable_batch: 0               # Active from batch 0
+    warmup_batches: 100           # Short cosine ramp
+    families: null
+    gt_timesteps: 256
+    pretokenized_path: "datasets/qbm_50k_tokenized.h5"
+
+  token_contrastive:
+    nce_temperature: 0.1
+    token_temperature: 0.5
+    queue_size: 64                # MoCo queue essential for B=2
+    enable_batch: 0               # Active from batch 0 (same as roundtrip)
+    warmup_batches: 100           # Same cosine ramp as roundtrip
+
+# VQ-VAE checkpoint (provides frozen encoder for both losses)
+vqvae:
+  checkpoint: "checkpoints/v2/vqvae/vq_tokenizer_best.pt"
+
+data:
+  dataset_path: "datasets/qbm_50k.h5"
+  config: "configs/qbm/substrate.yaml"
+  val_split: 0.2
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+checkpointing:
+  save_dir: "checkpoints/mno/qbm_roundtrip_plus_tc"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42

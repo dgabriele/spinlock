@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Any, Set, Tuple
 import numpy as np
 
 from spinlock.features.base import FeatureExtractorBase
+from spinlock.features.ops import create_ops
 from spinlock.features.temporal.spatial import SpatialFeatureExtractor
 from spinlock.features.temporal.spectral import SpectralFeatureExtractor
 from spinlock.features.temporal.cross_channel import CrossChannelFeatureExtractor
@@ -72,10 +73,13 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
         self.use_batch_mode = use_batch_mode
         self.differentiable = differentiable
 
-        # Initialize sub-extractors
-        self.spatial_extractor = SpatialFeatureExtractor(device=device)
-        self.spectral_extractor = SpectralFeatureExtractor(device=device)
-        self.cross_channel_extractor = CrossChannelFeatureExtractor(device=device)
+        # Create ops provider (gradient-safe when differentiable=True)
+        self.ops = create_ops(differentiable)
+
+        # Initialize sub-extractors with shared ops
+        self.spatial_extractor = SpatialFeatureExtractor(device=device, ops=self.ops)
+        self.spectral_extractor = SpectralFeatureExtractor(device=device, ops=self.ops)
+        self.cross_channel_extractor = CrossChannelFeatureExtractor(device=device, ops=self.ops)
 
         # Enhanced temporal extractor with configurable windows
         window_size = 5
@@ -97,6 +101,7 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
             medium_window=medium_window,
             long_window=long_window,
             differentiable=differentiable,
+            ops=self.ops,
         )
 
         # Create batch-parallel extractor if requested
@@ -109,6 +114,7 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 medium_window=medium_window,
                 long_window=long_window,
                 differentiable=differentiable,
+                ops=self.ops,
             )
 
         # Initialize quantum extractor if enabled (subset of temporal family, registered as category="temporal")
@@ -121,6 +127,148 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 config=config.quantum,
                 grid_size=64  # Will be updated based on actual data
             )
+
+    # =========================================================================
+    # Parameter-Sensitive Feature Extraction (NEW in v3.2)
+    # =========================================================================
+
+    def _extract_parameter_encoding(
+        self,
+        parameters: torch.Tensor,  # [N, param_dim]
+        num_timesteps: int,
+    ) -> torch.Tensor:
+        """Extract parameter encoding features (direct parameter injection).
+
+        Broadcasts parameters to all timesteps using memory-efficient expand()
+        instead of repeat() (creates views, not copies).
+
+        Args:
+            parameters: [N, param_dim] operator parameters (e.g., QBM theta)
+            num_timesteps: Number of timesteps T
+
+        Returns:
+            [N, T, param_dim] parameter features (broadcasted to timesteps)
+
+        Note:
+            Works for any param_dim (QBM: 9-14, NOA: varies, CNO: varies).
+            Guaranteed non-zero variance (parameters vary across samples).
+        """
+        N, param_dim = parameters.shape
+        # Memory-efficient broadcast: expand() creates view, not copy
+        return parameters.unsqueeze(1).expand(-1, num_timesteps, -1)  # [N, T, param_dim]
+
+    def _extract_regime_indicators(
+        self,
+        fields: torch.Tensor,  # [N, T, C, H, W]
+        parameters: torch.Tensor,  # [N, param_dim]
+    ) -> torch.Tensor:
+        """Extract dynamical regime indicators (parameter-dependent classification).
+
+        Detects which dynamical regime each trajectory is in based on features
+        that depend on operator parameters. GPU-native batch processing.
+
+        Args:
+            fields: [N, T, C, H, W] trajectories
+            parameters: [N, param_dim] operator parameters
+
+        Returns:
+            [N, T, 6] regime indicators:
+                0. periodicity_score: Autocorr at dominant freq
+                1. energy_growth_rate: d/dt(||u||²)
+                2. modal_dominance: Max FFT / total power
+                3. symmetry_breaking: ||u - flip(u)||
+                4. attractor_volume: Phase space expansion/contraction
+                5. lyapunov_estimate: Local Lyapunov exponent (chaos indicator)
+
+        Note:
+            All operations vectorized over N (no Python loops).
+            Uses FFT for O(T log T) complexity instead of O(T²).
+        """
+        N, T, C, H, W = fields.shape
+
+        # --- 1. Periodicity: Autocorr at dominant frequency (FFT-based) ---
+        # Spatially average fields
+        fields_mean = fields.mean(dim=(-2, -1))  # [N, T, C]
+
+        # Compute autocorrelation via FFT (O(T log T))
+        # R(τ) = F^{-1}[|F[x]|²] (Wiener-Khinchin theorem)
+        fft = torch.fft.rfft(fields_mean, dim=1)  # [N, T//2+1, C]
+        autocorr_fft = fft * fft.conj()
+        autocorr = torch.fft.irfft(autocorr_fft, n=T, dim=1)  # [N, T, C]
+
+        # Normalize by zero-lag value
+        autocorr_norm = self.ops.safe_div(autocorr, autocorr[:, 0:1, :])  # [N, T, C]
+
+        # Find dominant frequency (peak in power spectrum)
+        power = autocorr_fft.abs() ** 2  # [N, T//2+1, C]
+        dominant_freq_idx = power.argmax(dim=1)  # [N, C]
+
+        # Get autocorr value at dominant freq (batch indexing)
+        batch_idx = torch.arange(N, device=fields.device)[:, None].expand(N, C)
+        chan_idx = torch.arange(C, device=fields.device)[None, :].expand(N, C)
+        freq_idx = dominant_freq_idx.clamp(0, T-1)  # Clamp to valid range
+        periodicity = autocorr_norm[batch_idx, freq_idx, chan_idx].mean(dim=-1, keepdim=True)  # [N, 1]
+        periodicity = periodicity.expand(-1, T)  # [N, T]
+
+        # --- 2. Energy growth rate: d/dt(||u||²) ---
+        energy = (fields ** 2).sum(dim=(-3, -2, -1))  # [N, T]
+        energy_rate = torch.diff(energy, dim=1, prepend=energy[:, :1])  # [N, T]
+
+        # --- 3. Modal dominance: Max FFT / total power ---
+        # Spatial FFT
+        fft_spatial = torch.fft.rfft2(fields, dim=(-2, -1))  # [N, T, C, H', W']
+        power_spatial = fft_spatial.abs() ** 2
+        total_power = power_spatial.sum(dim=(-3, -2, -1))  # [N, T]
+        max_power = power_spatial.flatten(start_dim=2).max(dim=-1).values  # [N, T]
+        modal_dom = self.ops.safe_div(max_power, total_power)  # [N, T]
+
+        # --- 4. Symmetry breaking: L1 distance to flipped ---
+        fields_flipped = torch.flip(fields, dims=[-1])  # Horizontal flip
+        symmetry = (fields - fields_flipped).abs().mean(dim=(-3, -2, -1))  # [N, T]
+
+        # --- 5. Attractor volume: Phase space expansion (velocity magnitude) ---
+        velocity = torch.diff(fields, dim=1, prepend=fields[:, :1])  # [N, T, C, H, W]
+        attractor_vol = torch.sqrt((velocity ** 2).sum(dim=(-3, -2, -1)))  # [N, T]
+
+        # --- 6. Lyapunov estimate: Local divergence rate ---
+        # Simple proxy: log of velocity magnitude
+        lyap = torch.log(torch.sqrt((velocity ** 2).sum(dim=(-3, -2, -1))) + 1e-8)  # [N, T]
+
+        # Stack all features
+        regime_features = torch.stack([
+            periodicity,
+            energy_rate,
+            modal_dom,
+            symmetry,
+            attractor_vol,
+            lyap,
+        ], dim=-1)  # [N, T, 6]
+
+        return regime_features
+
+    def _extract_parameter_gradients(
+        self,
+        sensitivities: torch.Tensor,  # [N, param_dim] pre-computed ∂||u||/∂θ
+        num_timesteps: int,
+    ) -> torch.Tensor:
+        """Extract parameter gradient features (parameter sensitivity).
+
+        Broadcasts pre-computed parameter sensitivities to all timesteps.
+        Sensitivities are computed offline during dataset generation via
+        finite differences or automatic differentiation.
+
+        Args:
+            sensitivities: [N, param_dim] pre-computed ∂||u||/∂θ[i]
+            num_timesteps: Number of timesteps T
+
+        Returns:
+            [N, T, param_dim] sensitivity features (broadcasted to timesteps)
+
+        Note:
+            Requires pre-computation in dataset generation. If not available,
+            skip this feature (call without parameter_sensitivities argument).
+        """
+        return sensitivities.unsqueeze(1).expand(-1, num_timesteps, -1)  # [N, T, param_dim]
 
     def _extract_spatial(self, fields: torch.Tensor) -> torch.Tensor:
         """Extract spatial features from mean fields.
@@ -206,18 +354,19 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
             cross = cross.flatten(start_dim=2)
         return cross
 
-    def _extract_temporal(self, fields: torch.Tensor) -> torch.Tensor:
+    def _extract_temporal(self, fields: torch.Tensor, include_complexity: bool = True) -> torch.Tensor:
         """Extract enhanced temporal features from mean fields.
 
         Args:
             fields: [N, T, C, H, W] mean fields
+            include_complexity: Whether to include orthogonal complexity features (default: True)
 
         Returns:
             [N, T, D_temporal] temporal features
         """
         T = fields.shape[1]
         if self.use_batch_mode:
-            temporal = self.temporal_extractor_batch.extract_batch(fields)
+            temporal = self.temporal_extractor_batch.extract_batch(fields, include_complexity=include_complexity)
         else:
             temporal_features = []
             self.temporal_extractor.reset()
@@ -226,6 +375,7 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 temporal_t = self.temporal_extractor.extract(u_t)
                 temporal_features.append(temporal_t)
             temporal = torch.stack(temporal_features, dim=0).transpose(0, 1)
+            # Note: Sequential mode doesn't support complexity features yet
         return temporal
 
     def _extract_quantum(self, fields: torch.Tensor, num_channels: int) -> Optional[torch.Tensor]:
@@ -253,6 +403,8 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
         self,
         trajectories: torch.Tensor,
         skip_extractors: Optional[Set[str]] = None,
+        parameters: Optional[torch.Tensor] = None,
+        parameter_sensitivities: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Extract per-timestep features (v3.1 method).
 
@@ -264,9 +416,13 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 C: number of channels
                 H, W: spatial dimensions
             skip_extractors: Optional set of sub-extractor names to skip.
-                Valid names: 'spatial', 'spectral', 'cross_channel', 'temporal', 'quantum'.
+                Valid names: 'spatial', 'spectral', 'cross_channel', 'temporal', 'quantum', 'parameter'.
                 When a sub-extractor is skipped, its features are omitted from output,
                 reducing the output dimension accordingly.
+            parameters: Optional [N, param_dim] operator parameters (e.g., QBM theta)
+                When provided, enables parameter-sensitive feature extraction (+35D).
+            parameter_sensitivities: Optional [N, param_dim] pre-computed ∂||u||/∂θ
+                When provided (along with parameters), enables parameter gradient features.
 
         Returns:
             features: [N, T, D] per-timestep features (D depends on skipped extractors)
@@ -304,6 +460,18 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
             quantum = self._extract_quantum(fields, C)
             if quantum is not None:
                 feature_list.append(quantum)
+
+        # NEW: Parameter-sensitive features
+        if 'parameter' not in skip and parameters is not None:
+            # Parameter encoding (14D)
+            feature_list.append(self._extract_parameter_encoding(parameters, T))
+
+            # Regime indicators (6D)
+            feature_list.append(self._extract_regime_indicators(fields, parameters))
+
+            # Parameter gradients (14D) - only if sensitivities provided
+            if parameter_sensitivities is not None:
+                feature_list.append(self._extract_parameter_gradients(parameter_sensitivities, T))
 
         features = torch.cat(feature_list, dim=-1)
 
@@ -539,7 +707,41 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
 
         return registry
 
-    def get_all_feature_names(self, num_channels: int) -> List[str]:
+    def get_parameter_feature_names(self, param_dim: int, include_gradients: bool = False) -> List[str]:
+        """Get ordered parameter feature names.
+
+        Args:
+            param_dim: Dimensionality of parameter vector (e.g., 9-14 for QBM)
+            include_gradients: Whether to include gradient features
+
+        Returns:
+            List of parameter feature names
+        """
+        names = []
+
+        # Parameter encoding (direct injection)
+        for i in range(param_dim):
+            names.append(f'param_{i}')
+
+        # Regime indicators (6D)
+        regime_names = [
+            'periodicity_score',
+            'energy_growth_rate',
+            'modal_dominance',
+            'symmetry_breaking',
+            'attractor_volume',
+            'lyapunov_estimate',
+        ]
+        names.extend(regime_names)
+
+        # Parameter gradients (optional)
+        if include_gradients:
+            for i in range(param_dim):
+                names.append(f'dparam_{i}')
+
+        return names
+
+    def get_all_feature_names(self, num_channels: int, param_dim: Optional[int] = None, include_param_gradients: bool = False) -> List[str]:
         """Get ordered feature names matching extract_per_timestep() output.
 
         Uses a dummy forward pass through each sub-extractor to discover the
@@ -552,6 +754,8 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
 
         Args:
             num_channels: Number of channels in the data
+            param_dim: Optional parameter dimensionality (if parameter features included)
+            include_param_gradients: Whether parameter gradient features are included
 
         Returns:
             Ordered list of feature names, one per element in the last dim of
@@ -627,6 +831,14 @@ class TemporalFeatureOrchestrator(FeatureExtractorBase):
                 for i in range(D_q):
                     name = _quantum_names[i] if i < len(_quantum_names) else f"quantum_{i}"
                     all_names.append(name)
+
+            # --- Parameter-sensitive features (NEW in v3.2) ---
+            if param_dim is not None and param_dim > 0:
+                param_names = self.get_parameter_feature_names(
+                    param_dim=param_dim,
+                    include_gradients=include_param_gradients
+                )
+                all_names.extend(param_names)
 
         return all_names
 

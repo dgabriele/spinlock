@@ -22,6 +22,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from spinlock.features.temporal.config import SummaryCrossChannelConfig
+    from spinlock.features.ops import FeatureOps
 
 
 class CrossChannelFeatureExtractor:
@@ -40,42 +41,20 @@ class CrossChannelFeatureExtractor:
         >>> # Returns dict with ~10 features shaped [N, M, T, C] or [N, M, T]
     """
 
-    def __init__(self, device: torch.device = torch.device('cuda')):
+    def __init__(self, device: torch.device = torch.device('cuda'), ops: Optional['FeatureOps'] = None):
         """
         Initialize cross-channel feature extractor.
 
         Args:
             device: Computation device (cuda or cpu)
+            ops: FeatureOps provider for gradient-safe operations.
+                 If None, creates StandardOps (backward-compatible).
         """
         self.device = device
-
-    def _adaptive_outlier_clip(
-        self,
-        values: torch.Tensor,
-        iqr_multiplier: float = 10.0
-    ) -> torch.Tensor:
-        """Adaptive outlier clipping based on IQR."""
-        # Convert to float if needed (quantile requires float/double)
-        if not values.is_floating_point():
-            values = values.float()
-
-        values_flat = values.flatten()
-        valid_mask = ~torch.isnan(values_flat)
-        valid_values = values_flat[valid_mask]
-
-        if valid_values.numel() < 4:
-            return values
-
-        q1 = torch.quantile(valid_values, 0.25)
-        q3 = torch.quantile(valid_values, 0.75)
-        iqr = q3 - q1
-
-        lower_bound = q1 - iqr_multiplier * iqr
-        upper_bound = q3 + iqr_multiplier * iqr
-
-        values_clipped = torch.clamp(values, min=lower_bound, max=upper_bound)
-
-        return values_clipped
+        if ops is None:
+            from spinlock.features.ops import StandardOps
+            ops = StandardOps()
+        self.ops = ops
 
     def extract(
         self,
@@ -183,7 +162,7 @@ class CrossChannelFeatureExtractor:
 
         # Apply adaptive outlier clipping to prevent extreme values
         for name in features:
-            features[name] = self._adaptive_outlier_clip(features[name], iqr_multiplier=10.0)
+            features[name] = self.ops.outlier_clip(features[name], iqr_multiplier=10.0)
 
         return features
 
@@ -284,8 +263,7 @@ class CrossChannelFeatureExtractor:
         ) / (H * W)  # [NMT, C, C]
 
         # Eigendecomposition (symmetric matrices)
-        # torch.linalg.eigh returns eigenvalues in ascending order
-        eigenvalues = torch.linalg.eigvalsh(corr)  # [NMT, C]
+        eigenvalues = self.ops.safe_eigvalsh(corr)  # [NMT, C]
 
         # Flip to descending order (largest first)
         eigenvalues = eigenvalues.flip(dims=[-1])  # [NMT, C]
@@ -303,14 +281,14 @@ class CrossChannelFeatureExtractor:
 
         # Condition number (λ_max / λ_min)
         lambda_max = eigenvalues[:, 0]  # Largest eigenvalue
-        lambda_min = eigenvalues[:, -1] + 1e-8  # Smallest eigenvalue
-        features['cross_channel_condition_number'] = lambda_max / lambda_min
+        lambda_min = eigenvalues[:, -1]  # Smallest eigenvalue
+        features['cross_channel_condition_number'] = self.ops.safe_div(lambda_max, lambda_min)
 
         # Participation ratio: (Σλ_i)² / Σ(λ_i²)
         # Effective dimensionality measure
         sum_lambda = eigenvalues.sum(dim=1)
         sum_lambda_sq = (eigenvalues ** 2).sum(dim=1)
-        features['cross_channel_participation_ratio'] = (sum_lambda ** 2) / (sum_lambda_sq + 1e-8)
+        features['cross_channel_participation_ratio'] = self.ops.safe_div(sum_lambda ** 2, sum_lambda_sq)
 
         return features
 
@@ -471,9 +449,9 @@ class CrossChannelFeatureExtractor:
             # Peak frequency (where max coherence occurs)
             # Flatten and find argmax
             all_coherences_flat = all_coherences_stack.reshape(NMT, -1)
-            peak_idx = all_coherences_flat.argmax(dim=1)
+            peak_idx = self.ops.soft_argmax(all_coherences_flat, dim=1)
             # Normalize to [0, 1]
-            features['cross_spectral_coherence_peak_freq'] = peak_idx.float() / all_coherences_flat.shape[1]
+            features['cross_spectral_coherence_peak_freq'] = peak_idx / all_coherences_flat.shape[1]
 
         return features
 
@@ -511,56 +489,48 @@ class CrossChannelFeatureExtractor:
         # Normalize all channels to [0, 1] per sample
         c_min = fields_flat.min(dim=2, keepdim=True).values
         c_max = fields_flat.max(dim=2, keepdim=True).values
-        fields_norm = (fields_flat - c_min) / (c_max - c_min + 1e-8)
+        fields_norm = self.ops.safe_div(fields_flat - c_min, c_max - c_min)
 
-        # Discretize to bins
-        fields_discrete = torch.floor(fields_norm * (num_bins - 1)).long()
-        fields_discrete = torch.clamp(fields_discrete, 0, num_bins - 1)
-
-        # Compute MI for all channel pairs
+        # Compute MI for all channel pairs using soft histograms
         num_pairs = C * (C - 1) // 2
         mi_tensor = torch.zeros(NMT, num_pairs, device=fields.device)
-
-        # OPTIMIZATION: Vectorized histogram using scatter_add
-        # Create sample indices for scatter_add
-        sample_idx = torch.arange(NMT, device=fields.device, dtype=torch.long).unsqueeze(1).expand(-1, HW)
 
         pair_idx = 0
         for i in range(C):
             for j in range(i + 1, C):
-                # Extract channels for all samples
-                c_i = fields_discrete[:, i, :]  # [NMT, H*W]
-                c_j = fields_discrete[:, j, :]  # [NMT, H*W]
+                # Extract normalised channels: [NMT, HW] in [0, 1]
+                c_i = fields_norm[:, i, :]  # [NMT, H*W]
+                c_j = fields_norm[:, j, :]  # [NMT, H*W]
 
-                # Vectorized 2D histogram for all samples at once
-                # Linear index: sample_idx * num_bins² + c_i * num_bins + c_j
-                linear_idx = sample_idx * num_bins_sq + c_i * num_bins + c_j
-                linear_idx_flat = linear_idx.flatten()
+                # Soft 2D histogram via outer product of 1D soft histograms
+                # 1D soft histograms: [NMT, HW] → [NMT, num_bins]
+                zeros = torch.zeros(NMT, 1, device=fields.device)
+                ones_t = torch.ones(NMT, 1, device=fields.device)
+                hist_i = self.ops.soft_histogram(c_i, num_bins, zeros, ones_t)  # [NMT, num_bins]
+                hist_j = self.ops.soft_histogram(c_j, num_bins, zeros, ones_t)  # [NMT, num_bins]
 
-                # Scatter-add to compute all histograms
-                ones = torch.ones(NMT * HW, device=fields.device, dtype=torch.float32)
-                joint_hist_flat = torch.zeros(NMT * num_bins_sq, device=fields.device, dtype=torch.float32)
-                joint_hist_flat.scatter_add_(0, linear_idx_flat, ones)
-
-                # Reshape to [NMT, num_bins, num_bins]
-                joint_hist = joint_hist_flat.reshape(NMT, num_bins, num_bins)
-
-                # Normalize to probabilities
-                joint_prob = joint_hist / HW
+                # Joint histogram via soft 2D assignment
+                # For each spatial point, compute soft bin assignment for both channels
+                centers = torch.linspace(0, 1, num_bins, device=fields.device)
+                bin_width = 1.0 / max(num_bins - 1, 1)
+                # c_i: [NMT, HW], centers: [num_bins] → [NMT, HW, num_bins]
+                wi = torch.exp(-0.5 * ((c_i.unsqueeze(-1) - centers) / (bin_width * 0.5)) ** 2)
+                wj = torch.exp(-0.5 * ((c_j.unsqueeze(-1) - centers) / (bin_width * 0.5)) ** 2)
+                wi = wi / (wi.sum(dim=-1, keepdim=True) + 1e-8)
+                wj = wj / (wj.sum(dim=-1, keepdim=True) + 1e-8)
+                # Joint: [NMT, HW, num_bins_i, num_bins_j] via outer product, summed over HW
+                joint_hist = torch.einsum('nhi,nhj->nij', wi, wj) / HW  # [NMT, num_bins, num_bins]
 
                 # Marginal probabilities
-                prob_i = joint_prob.sum(dim=2)  # [NMT, num_bins]
-                prob_j = joint_prob.sum(dim=1)  # [NMT, num_bins]
+                prob_i = joint_hist.sum(dim=2)  # [NMT, num_bins]
+                prob_j = joint_hist.sum(dim=1)  # [NMT, num_bins]
 
-                # Mutual information (vectorized over all samples)
-                # I(X;Y) = Σ p(x,y) log(p(x,y) / (p(x)p(y)))
+                # Mutual information: I(X;Y) = Σ p(x,y) log(p(x,y) / (p(x)p(y)))
                 outer_prod = prob_i.unsqueeze(2) * prob_j.unsqueeze(1)  # [NMT, num_bins, num_bins]
-                mask = joint_prob > 1e-10
-                mi = torch.where(
-                    mask,
-                    joint_prob * torch.log(joint_prob / (outer_prod + 1e-10)),
-                    torch.zeros_like(joint_prob)
-                ).sum(dim=(1, 2))  # [NMT]
+                ratio = self.ops.safe_div(joint_hist, outer_prod)
+                mi = (joint_hist * self.ops.safe_log(ratio)).sum(dim=(1, 2))  # [NMT]
+                # Clamp to non-negative (MI is non-negative by definition)
+                mi = mi.clamp(min=0.0)
 
                 mi_tensor[:, pair_idx] = mi
                 pair_idx += 1
@@ -602,21 +572,23 @@ class CrossChannelFeatureExtractor:
         # Flatten spatial dimensions: [NMT, C, H*W]
         fields_flat = fields.reshape(NMT, C, HW)
 
-        # Normalize and discretize once for all channels
+        # Normalize all channels to [0, 1] per sample
         c_min = fields_flat.min(dim=2, keepdim=True).values
         c_max = fields_flat.max(dim=2, keepdim=True).values
-        fields_norm = (fields_flat - c_min) / (c_max - c_min + 1e-8)
-
-        # Discretize to bins
-        fields_discrete = torch.floor(fields_norm * (num_bins - 1)).long()
-        fields_discrete = torch.clamp(fields_discrete, 0, num_bins - 1)
+        fields_norm = self.ops.safe_div(fields_flat - c_min, c_max - c_min)
 
         # Compute CMI for all triplets
         num_triplets = C * (C - 1) // 2 * (C - 2)
         cmi_tensor = torch.zeros(NMT, num_triplets, device=fields.device)
 
-        # OPTIMIZATION: Vectorized histogram using scatter_add
-        sample_idx = torch.arange(NMT, device=fields.device, dtype=torch.long).unsqueeze(1).expand(-1, HW)
+        # Precompute soft bin assignments for all channels
+        centers = torch.linspace(0, 1, num_bins, device=fields.device)
+        bin_width = 1.0 / max(num_bins - 1, 1)
+        # weights_per_channel: [NMT, C, HW, num_bins]
+        all_weights = torch.exp(
+            -0.5 * ((fields_norm.unsqueeze(-1) - centers) / (bin_width * 0.5)) ** 2
+        )
+        all_weights = all_weights / (all_weights.sum(dim=-1, keepdim=True) + 1e-8)
 
         triplet_idx = 0
         for i in range(C):
@@ -625,41 +597,26 @@ class CrossChannelFeatureExtractor:
                     if k == i or k == j:
                         continue
 
-                    # Extract channels for all samples
-                    c_i = fields_discrete[:, i, :]  # [NMT, H*W]
-                    c_j = fields_discrete[:, j, :]  # [NMT, H*W]
-                    c_k = fields_discrete[:, k, :]  # [NMT, H*W]
+                    wi = all_weights[:, i]  # [NMT, HW, num_bins]
+                    wj = all_weights[:, j]
+                    wk = all_weights[:, k]
 
-                    # Vectorized 3D histogram for all samples
-                    linear_idx = sample_idx * num_bins_cubed + (c_i * num_bins + c_j) * num_bins + c_k
-                    linear_idx_flat = linear_idx.flatten()
-
-                    # Scatter-add to compute all histograms
-                    ones = torch.ones(NMT * HW, device=fields.device, dtype=torch.float32)
-                    joint_hist_flat = torch.zeros(NMT * num_bins_cubed, device=fields.device, dtype=torch.float32)
-                    joint_hist_flat.scatter_add_(0, linear_idx_flat, ones)
-
-                    # Reshape to [NMT, num_bins, num_bins, num_bins]
-                    joint_hist = joint_hist_flat.reshape(NMT, num_bins, num_bins, num_bins)
-
-                    # Normalize to probabilities
-                    joint_prob = joint_hist / HW
+                    # 3D joint histogram: [NMT, num_bins_i, num_bins_j, num_bins_k]
+                    # Use einsum to compute outer product summed over spatial dim
+                    joint_hist = torch.einsum('nhi,nhj,nhk->nijk', wi, wj, wk) / HW
 
                     # Marginal probabilities
-                    prob_k = joint_prob.sum(dim=(1, 2))  # p(z) [NMT, num_bins]
-                    prob_ik = joint_prob.sum(dim=2)      # p(x,z) [NMT, num_bins, num_bins]
-                    prob_jk = joint_prob.sum(dim=1)      # p(y,z) [NMT, num_bins, num_bins]
+                    prob_k = joint_hist.sum(dim=(1, 2))    # p(z) [NMT, num_bins]
+                    prob_ik = joint_hist.sum(dim=2)         # p(x,z) [NMT, num_bins, num_bins]
+                    prob_jk = joint_hist.sum(dim=1)         # p(y,z) [NMT, num_bins, num_bins]
 
                     # CMI: I(X;Y|Z) = Σ p(x,y,z) log(p(x,y,z)p(z) / (p(x,z)p(y,z)))
-                    numerator = joint_prob * prob_k.view(NMT, 1, 1, -1)
+                    numerator = joint_hist * prob_k.view(NMT, 1, 1, -1)
                     denominator = prob_ik.unsqueeze(2) * prob_jk.unsqueeze(1)
 
-                    mask = joint_prob > 1e-10
-                    cmi = torch.where(
-                        mask,
-                        joint_prob * torch.log((numerator + 1e-10) / (denominator + 1e-10)),
-                        torch.zeros_like(joint_prob)
-                    ).sum(dim=(1, 2, 3))
+                    ratio = self.ops.safe_div(numerator, denominator)
+                    cmi = (joint_hist * self.ops.safe_log(ratio)).sum(dim=(1, 2, 3))
+                    cmi = cmi.clamp(min=0.0)
 
                     cmi_tensor[:, triplet_idx] = cmi
                     triplet_idx += 1

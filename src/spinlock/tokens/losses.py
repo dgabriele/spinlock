@@ -200,9 +200,11 @@ def compute_topographic_loss(
 
     # Total loss: penalize low correlation (correlation in [0, 1], loss in [0, 2])
     # Higher correlation = better topology preservation
+    # Weight POST-quantization more heavily (0.75) since quantization quality is more critical
+    # than encoder topology preservation (0.25)
     pre_loss = 1.0 - pre_correlation
     post_loss = 1.0 - post_correlation
-    total_loss = (pre_loss + post_loss) / 2.0
+    total_loss = 0.25 * pre_loss + 0.75 * post_loss
 
     metrics = {
         'topo_pre': pre_correlation.item(),
@@ -250,22 +252,40 @@ class RoundtripConsistencyLoss(nn.Module):
         losses = []
         metrics = {}
 
+        # Re-encode all families (matching forward pass)
+        encoded_rt = {}
         if 'theta' in decoded:
-            theta_losses = self._compute_theta_roundtrip(model, tokens, decoded['theta'])
-            losses.extend(theta_losses['losses'])
-            metrics.update(theta_losses['metrics'])
-
+            encoded_rt['theta'] = model.theta_encoder(decoded['theta'])
         if 'initial' in decoded:
-            initial_losses = self._compute_initial_roundtrip(
-                model,
-                tokens,
-                decoded['initial'],
-                cached_manual_features=initial_manual
-            )
-            losses.extend(initial_losses['losses'])
-            metrics.update(initial_losses['metrics'])
+            encoded_rt['initial'] = self._encode_initial(model, decoded['initial'], initial_manual)
 
-        device = next(iter(decoded.values())).device
+        # Concatenate all encodings (matching forward pass: temporal + initial + theta)
+        all_encoded_rt = []
+        for family in sorted(model.families):
+            if family in encoded_rt:
+                all_encoded_rt.append(encoded_rt[family])
+        all_encoded_rt = torch.cat(all_encoded_rt, dim=1) if all_encoded_rt else None
+
+        # Compute roundtrip loss for each category
+        if all_encoded_rt is not None:
+            for family_cat, indices in model.group_indices.items():
+                family, _ = family_cat.split('_', 1)
+
+                # Determine weight based on family
+                if family == 'theta':
+                    weight = self.theta_weight
+                elif family == 'initial':
+                    weight = self.initial_weight
+                else:
+                    continue  # Skip temporal (no inverse head)
+
+                cat_losses = self._compute_category_roundtrip(
+                    model, tokens, all_encoded_rt, family_cat, indices, weight
+                )
+                losses.extend(cat_losses['losses'])
+                metrics.update(cat_losses['metrics'])
+
+        device = all_encoded_rt.device if all_encoded_rt is not None else next(iter(decoded.values())).device
         total_loss = torch.stack(losses).mean() if losses else torch.tensor(0.0, device=device)
         metrics['roundtrip/total'] = total_loss.item()
 
@@ -383,8 +403,12 @@ class RoundtripConsistencyLoss(nn.Module):
         losses = []
         metrics = {}
 
-        # Extract category features and project to hierarchical latents
-        cat_features_rt = encoded_rt[:, indices]
+        # Extract category features from concatenated encoding (matching forward pass)
+        # encoded_rt is the full concatenation (temporal + initial + theta)
+        # indices reference positions in this concatenated space
+        cat_features_rt = encoded_rt[:, indices]  # [B, cat_dim]
+
+        # Project to hierarchical latents
         projector = model.projectors[family_cat]
         latents_rt = projector(cat_features_rt)
 

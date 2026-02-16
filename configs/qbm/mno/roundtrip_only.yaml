@@ -1,0 +1,105 @@
+# MNO Roundtrip-Only Training — Baseline for discrete-output loss
+#
+# Isolates the roundtrip token consistency loss to establish a clean baseline.
+# All other loss terms are zeroed out. With lambda_traj=0 and lambda_ic=0,
+# the QBM replayer rollout is skipped entirely — significantly faster.
+#
+# The only gradient signal is:
+#   MNO → trajectory → features → VQ encoder → soft_logits → CE(GT_tokens)
+#
+# This tests: can the MNO learn to produce the same tokens as the QBM
+# for the same (θ, IC) parameters, using only discrete token supervision?
+
+model:
+  base_channels: 40
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  dropout: 0.1
+
+  param_conditioning: true
+  param_embed_dim: 128
+  conditioning_mode: "film"
+
+  film:
+    enabled: true
+    embed_dim: 128
+    hidden_dim: 256
+    init_gamma: 1.0
+    init_beta: 0.0
+    post_norm: true
+    modulate_encoder: true
+    modulate_decoder: true
+
+  update_mode: "residual"
+  use_checkpointing: true
+  checkpoint_every: 16
+
+training:
+  n_samples: 10000
+  sampling_strategy: "sequential"
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  epochs: 3
+  learning_rate: 1.2e-4
+  warmup_steps: 100               # Shorter warmup — only one loss term
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  timesteps: 256
+  bptt_window: 32
+
+  use_torch_compile: false
+  replayer_cache_size: 16
+  early_stopping_patience: 10
+  film_lr_multiplier: 5.0
+  use_amp: false
+
+loss:
+  mode: "token_diversity"
+
+  # ALL OTHER TERMS ZEROED — roundtrip is the sole training signal
+  lambda_contrastive: 0.0
+  lambda_recon: 0.0
+  lambda_commit: 0.0
+  lambda_traj: 0.0                # 0 → replayer-skip mode (fast!)
+  lambda_ic: 0.0
+
+  # ROUNDTRIP — the only active loss
+  lambda_roundtrip: 1.0           # Full weight, sole signal
+
+  # Token contrastive — not used in roundtrip-only baseline
+  lambda_token_contrastive: 0.0
+
+  contrastive:
+    temperature: 0.1
+    queue_size: 0                 # No queue needed (contrastive disabled)
+
+  roundtrip:
+    temperature: 1.0
+    enable_batch: 0               # Active from batch 0 (no warmup delay)
+    warmup_batches: 100           # Short cosine ramp for stability
+    families: null
+    gt_timesteps: 256
+    pretokenized_path: "datasets/qbm_50k_tokenized.h5"
+
+# VQ-VAE checkpoint (required for roundtrip loss — provides the frozen encoder)
+vqvae:
+  checkpoint: "checkpoints/v2/vqvae/vq_tokenizer_best.pt"
+
+data:
+  dataset_path: "datasets/qbm_50k.h5"
+  config: "configs/qbm/substrate.yaml"
+  val_split: 0.2
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+checkpointing:
+  save_dir: "checkpoints/mno/qbm_roundtrip_only"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42

@@ -1,0 +1,57 @@
+metadata:
+  job_type: "dataset_generation"
+  description: "QBM dataset generation on Salad Cloud (1M samples with wide parameter ranges)"
+
+distributed:
+  enabled: true
+  backend: "salad"
+
+  salad:
+    enabled: true
+    api_key: "${SALAD_API_KEY}"
+    organization: "spinlock"
+    project: "spinlock-datasets"
+
+    container:
+      image: "psilogon/spinlock:latest"
+      registry_auth:
+        username: "${DOCKER_USERNAME}"
+        password: "${DOCKER_PASSWORD}"
+
+    resources:
+      # GPU-accelerated for faster QBM simulation (~20-30 mins/job vs 2-3 hours CPU)
+      gpu_class: "rtx_4060_ti"  # Or rtx_4070_ti if available
+      num_replicas: 10  # Not used for generation, but kept for compatibility
+      cpu: 4
+      memory: 16384  # 16GB RAM (increased for GPU workloads)
+      storage: 21474836480  # 20GB storage (100K samples ≈ 15GB compressed)
+
+    storage:
+      backend: "minio"
+      endpoint_url: "https://calculator-cargo-intend-mixer.trycloudflare.com"
+      bucket: "spinlock-datasets"  # NEW bucket for datasets (separate from training)
+      dataset_path: "qbm_1m_wide"  # Output directory in bucket
+      use_ssl: true  # Cloudflare tunnel uses HTTPS
+      credentials:
+        aws_access_key_id: "${MINIO_ACCESS_KEY}"
+        aws_secret_access_key: "${MINIO_SECRET_KEY}"
+
+    networking:
+      coordination_backend: "env"  # No DDP coordination needed
+
+    monitoring:
+      log_streaming: false  # Generation jobs just poll status
+      poll_interval: 30  # Check status every 30s
+
+# Generation-specific configuration
+generation:
+  total_samples: 1000000  # 1M samples total
+  samples_per_job: 100000  # 100K samples per job (10 jobs total)
+  dataset_config: "configs/experiments/qbm_1m_wide.yaml"  # Dataset generation config
+  output_prefix: "qbm_1m_wide_part"  # Output filename prefix (→ part00.h5, part01.h5, ...)
+
+# Expected resources:
+# - Duration: ~2-3 hours total (10 jobs × 20-30 mins with GPU)
+# - Cost: ~$2-3 total (10× RTX 4060 Ti × 30 mins @ ~$0.07/hr)
+# - Storage: ~150GB compressed HDF5 (features only, no trajectories)
+# - Output: 10 files in s3://spinlock-datasets/qbm_1m_wide/part*.h5

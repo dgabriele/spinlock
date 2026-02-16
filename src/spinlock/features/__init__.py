@@ -27,10 +27,15 @@ Example:
 
 from spinlock.features.registry import FeatureRegistry
 from spinlock.features.preprocessing import FeaturePreprocessor
+from spinlock.features.ops import create_ops, FeatureOps, StandardOps, DifferentiableOps
 
 __all__ = [
     "FeatureRegistry",
     "FeaturePreprocessor",
+    "create_ops",
+    "FeatureOps",
+    "StandardOps",
+    "DifferentiableOps",
 ]
 
 __version__ = "1.0.0"

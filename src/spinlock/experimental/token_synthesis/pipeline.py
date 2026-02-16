@@ -219,7 +219,7 @@ class SynthesisVerificationPipeline:
         )
 
     def _load_replayer(self) -> None:
-        """Load QBMReplayer from substrate config."""
+        """Load QBMReplayer from ground truth config."""
         from spinlock.qbm.replayer import QBMReplayer
 
         logger.info(

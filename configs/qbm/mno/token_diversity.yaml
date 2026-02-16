@@ -90,11 +90,10 @@ loss:
   # Scale lambdas so weighted contributions are similar magnitude:
   #   0.0002 × 15000 ≈ 3.0 ≈ contrastive scale
   lambda_recon: 0.0002          # VQ reconstruction quality (monitoring only, no gradient)
-  # COMMIT — gradient-carrying VQ manifold adherence.
-  # Pulls MNO features toward VQ codebook entries for roundtrip consistency.
-  # Raw commit ~0.01; lambda=10 → ~0.1 weighted contribution.
-  # Gradient flows: commit → VQ encoder (frozen MLPs) → features → MNO.
-  lambda_commit: 10.0
+  # COMMIT — structurally near-zero with frozen VQ projector. The frozen
+  # projector maps ANY input near SOME codebook entry, so ||z_e - z_q|| ≈ 0.01
+  # always. Roundtrip CE directly optimizes for the CORRECT entry instead.
+  lambda_commit: 0.0
 
   # AUXILIARY — physics regularizers
   # Raw traj/IC losses start ~100, fall to ~5-10 in epoch 1.
@@ -109,6 +108,19 @@ loss:
   # → ~1.65 weighted contribution ≈ contrastive scale.
   lambda_roundtrip: 0.5
 
+  # TOKEN CONTRASTIVE — diversity in discrete token probability space
+  # InfoNCE over softmax(soft_logits): different (θ, IC) → different token
+  # distributions. Complements roundtrip (accuracy) with diversity.
+  # Raw InfoNCE ≈ log(B+Q) ≈ 4.2 (B=2, Q=64); lambda=0.3 → ~1.26
+  lambda_token_contrastive: 0.3
+
+  token_contrastive:
+    nce_temperature: 0.1          # InfoNCE sharpness
+    token_temperature: 0.5        # Softmax sharpness for per-quantizer probs
+    queue_size: 64                # MoCo queue for small-batch (B=2)
+    enable_batch: 200             # Enable after LR warmup finishes
+    warmup_batches: 200           # Cosine ramp to full lambda
+
   contrastive:
     temperature: 0.1
     queue_size: 64              # MoCo-style memory bank: 64 recent embeddings as extra negatives
@@ -122,12 +134,12 @@ loss:
     # Mode A (preferred): pretokenized GT tokens
     pretokenized_path: "datasets/qbm_50k_tokenized.h5"
     # Mode B (no pretokenized): needs inverse heads
-    # theta_inverse_path: "checkpoints/qbm_tokenizer_50k/theta_inverse.pt"
-    # initial_inverse_path: "checkpoints/qbm_tokenizer_50k/initial_inverse.pt"
+    # theta_inverse_path: "checkpoints/v2/vqvae/theta_inverse.pt"
+    # initial_inverse_path: "checkpoints/v2/vqvae/initial_inverse.pt"
 
 # VQ-VAE checkpoint (required when lambda_recon > 0 or lambda_commit > 0)
 vqvae:
-  checkpoint: "checkpoints/qbm_tokenizer_50k/vq_tokenizer_best.pt"
+  checkpoint: "checkpoints/v2/vqvae/vq_tokenizer_best.pt"
 
 data:
   dataset_path: "datasets/qbm_50k.h5"

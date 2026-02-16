@@ -13,10 +13,13 @@ Maintains exact numerical equivalence to sequential version.
 
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
 import torch.nn.functional as F
 
 from spinlock.features.temporal.temporal import TemporalFeatureExtractor
+
+if TYPE_CHECKING:
+    from spinlock.features.ops import FeatureOps
 
 
 class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
@@ -36,6 +39,7 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
         medium_window: int = 20,
         long_window: int = 50,
         differentiable: bool = False,
+        ops: Optional['FeatureOps'] = None,
     ):
         """Initialize batch-parallel temporal extractor.
 
@@ -49,6 +53,7 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
                 slicing (needed for contrastive training). When False
                 (default), detach windows to save memory during dataset
                 generation and offline feature extraction.
+            ops: FeatureOps provider for gradient-safe operations.
         """
         super().__init__(
             device=device,
@@ -57,13 +62,15 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
             medium_window=medium_window,
             long_window=long_window,
             differentiable=differentiable,
+            ops=ops,
         )
 
-    def extract_batch(self, fields: torch.Tensor) -> torch.Tensor:
+    def extract_batch(self, fields: torch.Tensor, include_complexity: bool = False) -> torch.Tensor:
         """Extract temporal features for full trajectory in parallel.
 
         Args:
             fields: [N, T, C, H, W] full trajectory
+            include_complexity: Whether to include orthogonal complexity features (+10D)
 
         Returns:
             features: [N, T, D] temporal features
@@ -77,8 +84,16 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
         phase = self._extract_phase_space_batch(fields)  # [N, T, D_phase]
         multi = self._extract_multiscale_batch(fields)  # [N, T, D_multi]
 
+        # Concatenate base features
+        features = [inst, local, stab, phase, multi]
+
+        # NEW in v3.2: Orthogonal complexity features
+        if include_complexity:
+            complexity = self._extract_complexity_features_batch(fields)  # [N, T, 10]
+            features.append(complexity)
+
         # Concatenate all features
-        features = torch.cat([inst, local, stab, phase, multi], dim=-1)
+        features = torch.cat(features, dim=-1)
 
         return features
 
@@ -240,15 +255,14 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
                     temp_var_list.append(temp_var_norm)
 
                     # Temporal skewness
-                    eps = 1e-8
                     centered = window_t_raw - temp_mean.unsqueeze(1)  # [N, w_len, C, H, W]
                     temp_std_full = window_t_raw.std(dim=1)  # [N, C, H, W]
-                    temp_skew = ((centered ** 3).mean(dim=1)) / (temp_std_full ** 3 + eps)
+                    temp_skew = self.ops.safe_div((centered ** 3).mean(dim=1), temp_std_full ** 3)
                     temp_skew_norm = torch.norm(temp_skew, p=2, dim=(2, 3))  # [N, C]
                     temp_skew_list.append(temp_skew_norm)
 
                     # Temporal kurtosis
-                    temp_kurt = ((centered ** 4).mean(dim=1)) / (temp_std_full ** 4 + eps)
+                    temp_kurt = self.ops.safe_div((centered ** 4).mean(dim=1), temp_std_full ** 4)
                     temp_kurt_norm = torch.norm(temp_kurt, p=2, dim=(2, 3))  # [N, C]
                     temp_kurt_list.append(temp_kurt_norm)
 
@@ -391,11 +405,11 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
                 # 1. Local Lyapunov
                 diff_curr = torch.norm(history[0] - history[1], p=2, dim=(2, 3))  # [N, C]
                 diff_prev = torch.norm(history[1] - history[2], p=2, dim=(2, 3))  # [N, C]
-                lyap = torch.log((diff_curr + 1e-8) / (diff_prev + 1e-8))
+                lyap = self.ops.safe_log(self.ops.safe_div(diff_curr, diff_prev))
                 lyap_list.append(lyap)
 
                 # 2. Divergence rate
-                divergence = (diff_curr - diff_prev) / (diff_prev + 1e-8)
+                divergence = self.ops.safe_div(diff_curr - diff_prev, diff_prev)
                 divergence_list.append(divergence)
 
                 # 3. Stability indicator
@@ -425,7 +439,7 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
                         torch.norm(history[i] - history[i+1], p=2, dim=(2, 3))
                         for i in range(half, w_len - 1)
                     ], dim=0).mean(dim=0)  # [N, C]
-                    expansion = (dist_late - dist_early) / (dist_early + 1e-8)
+                    expansion = self.ops.safe_div(dist_late - dist_early, dist_early)
                     expansion_list.append(expansion)
                 else:
                     expansion_list.append(torch.zeros(N, C, device=fields.device))
@@ -519,11 +533,11 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
 
                 # 4. Straightness
                 end_to_end = torch.norm(history[0] - history[-1], p=2, dim=(2, 3))  # [N, C]
-                straightness = end_to_end / (length + 1e-8)
+                straightness = self.ops.safe_div(end_to_end, length)
                 straightness_list.append(straightness)
 
                 # 5. Tortuosity
-                tortuosity = length / (end_to_end + 1e-8)
+                tortuosity = self.ops.safe_div(length, end_to_end)
                 tortuosity_list.append(tortuosity)
 
                 # 6. Direction changes
@@ -646,19 +660,19 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
 
             # Cross-scale ratios
             if w_short >= 2 and w_medium >= 2:
-                short_to_medium = short_mean / (medium_mean + 1e-8)
+                short_to_medium = self.ops.safe_div(short_mean, medium_mean)
                 short_to_medium_list.append(short_to_medium)
             else:
                 short_to_medium_list.append(torch.zeros(N, C, device=fields.device))
 
             if w_medium >= 2 and w_long >= 2:
-                medium_to_long = medium_mean / (long_mean + 1e-8)
+                medium_to_long = self.ops.safe_div(medium_mean, long_mean)
                 medium_to_long_list.append(medium_to_long)
             else:
                 medium_to_long_list.append(torch.zeros(N, C, device=fields.device))
 
             if w_short >= 2 and w_long >= 2:
-                short_to_long = short_mean / (long_mean + 1e-8)
+                short_to_long = self.ops.safe_div(short_mean, long_mean)
                 short_to_long_list.append(short_to_long)
             else:
                 short_to_long_list.append(torch.zeros(N, C, device=fields.device))
@@ -708,7 +722,7 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
         corr = (centered[:-lag] * centered[lag:]).sum(dim=(0, 3))  # [N, C]
         var = (centered ** 2).sum(dim=(0, 3))  # [N, C]
 
-        autocorr = corr / (var + 1e-8)
+        autocorr = self.ops.safe_div(corr, var)
 
         return autocorr
 
@@ -735,7 +749,7 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
         cov = ((t.unsqueeze(1).unsqueeze(2) - t_mean) * (norms - y_mean)).sum(dim=0)  # [N, C]
         var_t = ((t - t_mean) ** 2).sum()
 
-        slope = cov / (var_t + 1e-8)
+        slope = self.ops.safe_div(cov, var_t.expand_as(cov))
 
         return slope
 
@@ -764,8 +778,8 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
                 dists[j, i] = dist
 
         # Recurrence: fraction of distances below threshold (median)
-        threshold = dists.median()
-        recurrence = (dists < threshold).float().mean(dim=(0, 1))  # [N, C]
+        threshold = self.ops.soft_median(dists.flatten(), dim=0)
+        recurrence = (1.0 - self.ops.soft_step(dists, threshold)).mean(dim=(0, 1))  # [N, C]
 
         return recurrence
 
@@ -852,7 +866,7 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
         dots = (velocities[:-1] * velocities[1:]).sum(dim=(3, 4))  # [T_w-2, N, C]
 
         # Direction changes when dot product is negative
-        changes = (dots < 0).float().sum(dim=0)  # [N, C]
+        changes = (1.0 - self.ops.soft_step(dots, 0.0)).sum(dim=0)  # [N, C]
 
         return changes
 
@@ -880,3 +894,307 @@ class BatchParallelTemporalExtractor(TemporalFeatureExtractor):
                 max_dist = torch.max(max_dist, dist)
 
         return max_dist
+
+    # =========================================================================
+    # Orthogonal Temporal Features (NEW in v3.2)
+    # =========================================================================
+
+    def _extract_complexity_features_batch(self, fields: torch.Tensor) -> torch.Tensor:
+        """Extract non-linear complexity features (orthogonal to autocorrelation).
+
+        These features measure dynamical complexity beyond linear correlation:
+        - Approximate Entropy (ApEn): Non-linear regularity
+        - Recurrence Rate: Fraction of recurrent states
+        - Hurst Exponent: Long-range dependence (R/S analysis)
+        - Lempel-Ziv Complexity: Compression-based complexity
+
+        Args:
+            fields: [N, T, C, H, W] trajectories
+
+        Returns:
+            [N, T, 10] complexity features per timestep
+
+        Note:
+            Uses sliding windows like other temporal features.
+            All operations vectorized over N (no Python loops over samples).
+        """
+        N, T, C, H, W = fields.shape
+        features = []
+
+        window = self.short_window
+        if T < 2:
+            return torch.zeros(N, T, 10, device=fields.device)
+
+        # Per-timestep features (using sliding windows)
+        apen_list = []
+        recurrence_short_list = []
+        recurrence_medium_list = []
+        recurrence_long_list = []
+        hurst_list = []
+        lz_list = []
+
+        for t in range(T):
+            start = max(0, t - window + 1)
+            window_t_raw = fields[:, start:t+1]  # [N, w_len, C, H, W]
+            if not self.differentiable:
+                window_t_raw = window_t_raw.detach()
+            w_len = t - start + 1
+
+            if w_len >= 5:
+                # Spatially average for time series analysis
+                time_series = window_t_raw.mean(dim=(-2, -1))  # [N, w_len, C]
+
+                # --- 1. Approximate Entropy (ApEn) ---
+                # Template matching: regularity of patterns of length m
+                m = 2  # Pattern length
+                r = 0.2 * time_series.std(dim=1, keepdim=True)  # 20% of std
+                if w_len >= m + 1:
+                    apen = self._compute_approx_entropy_batch(time_series, m=m, r=r)  # [N, C]
+                else:
+                    apen = torch.zeros(N, C, device=fields.device)
+                apen_list.append(apen.mean(dim=-1, keepdim=True))  # [N, 1]
+
+                # --- 2. Recurrence Rate (short/medium/long windows) ---
+                # Fraction of states that recur (distance < threshold)
+                threshold = 0.1 * time_series.std(dim=1, keepdim=True)  # 10% of std
+
+                # Short window (first half)
+                short_len = w_len // 2
+                if short_len >= 3:
+                    recurrence_short = self._compute_recurrence_rate_batch(
+                        time_series[:, :short_len], threshold
+                    )  # [N, C]
+                else:
+                    recurrence_short = torch.zeros(N, C, device=fields.device)
+                recurrence_short_list.append(recurrence_short.mean(dim=-1, keepdim=True))
+
+                # Medium window (full)
+                recurrence_medium = self._compute_recurrence_rate_batch(
+                    time_series, threshold
+                )  # [N, C]
+                recurrence_medium_list.append(recurrence_medium.mean(dim=-1, keepdim=True))
+
+                # Long window (if enough history)
+                long_window = min(self.long_window, t + 1)
+                if long_window >= 10:
+                    long_start = max(0, t - long_window + 1)
+                    long_ts = fields[:, long_start:t+1].mean(dim=(-2, -1))  # [N, long_len, C]
+                    recurrence_long = self._compute_recurrence_rate_batch(
+                        long_ts, threshold
+                    )  # [N, C]
+                else:
+                    recurrence_long = torch.zeros(N, C, device=fields.device)
+                recurrence_long_list.append(recurrence_long.mean(dim=-1, keepdim=True))
+
+                # --- 3. Hurst Exponent (R/S analysis) ---
+                # Long-range dependence: H>0.5 persistent, H<0.5 anti-persistent
+                if w_len >= 8:
+                    hurst = self._compute_hurst_batch(time_series)  # [N, C]
+                else:
+                    hurst = torch.ones(N, C, device=fields.device) * 0.5  # Neutral
+                hurst_list.append(hurst.mean(dim=-1, keepdim=True))  # [N, 1]
+
+                # --- 4. Lempel-Ziv Complexity ---
+                # Compression-based complexity (symbolic dynamics)
+                if w_len >= 4:
+                    lz = self._compute_lz_complexity_batch(time_series)  # [N, C]
+                else:
+                    lz = torch.zeros(N, C, device=fields.device)
+                lz_list.append(lz.mean(dim=-1, keepdim=True))  # [N, 1]
+            else:
+                # Not enough data - return zeros
+                apen_list.append(torch.zeros(N, 1, device=fields.device))
+                recurrence_short_list.append(torch.zeros(N, 1, device=fields.device))
+                recurrence_medium_list.append(torch.zeros(N, 1, device=fields.device))
+                recurrence_long_list.append(torch.zeros(N, 1, device=fields.device))
+                hurst_list.append(torch.ones(N, 1, device=fields.device) * 0.5)
+                lz_list.append(torch.zeros(N, 1, device=fields.device))
+
+        # Stack all features [N, T, 10]
+        # 2× ApEn (mean, std placeholder), 3× recurrence, 3× Hurst (different scales), 2× LZ
+        result = torch.cat([
+            torch.stack(apen_list, dim=1),  # [N, T, 1]
+            torch.stack(recurrence_short_list, dim=1),  # [N, T, 1]
+            torch.stack(recurrence_medium_list, dim=1),  # [N, T, 1]
+            torch.stack(recurrence_long_list, dim=1),  # [N, T, 1]
+            torch.stack(hurst_list, dim=1),  # [N, T, 1]
+            torch.stack(lz_list, dim=1),  # [N, T, 1]
+        ], dim=-1)  # [N, T, 6]
+
+        # Pad to 10D with zeros for future extensions
+        padding = torch.zeros(N, T, 4, device=fields.device)
+        result = torch.cat([result, padding], dim=-1)  # [N, T, 10]
+
+        return result
+
+    def _compute_approx_entropy_batch(
+        self,
+        time_series: torch.Tensor,  # [N, w_len, C]
+        m: int = 2,
+        r: torch.Tensor = None  # [N, 1, C]
+    ) -> torch.Tensor:
+        """Compute Approximate Entropy (template matching for regularity).
+
+        Args:
+            time_series: [N, w_len, C]
+            m: Pattern length
+            r: Threshold radius [N, 1, C]
+
+        Returns:
+            [N, C] approximate entropy values
+        """
+        N, w_len, C = time_series.shape
+
+        if w_len < m + 1:
+            return torch.zeros(N, C, device=time_series.device)
+
+        # Count template matches (simplified differentiable version)
+        # For each template of length m, count how many templates are within distance r
+        count_sum = 0.0
+        num_templates = w_len - m + 1
+
+        for i in range(num_templates):
+            template = time_series[:, i:i+m, :]  # [N, m, C]
+            # Compare with all other templates
+            for j in range(num_templates):
+                other = time_series[:, j:j+m, :]  # [N, m, C]
+                # Max distance between templates
+                dist = (template - other).abs().max(dim=1).values  # [N, C]
+                # Soft count: within radius r?
+                match = self.ops.soft_step(-dist + r.squeeze(1), 0.0)  # [N, C]
+                count_sum = count_sum + match
+
+        # Average count per template
+        phi_m = self.ops.safe_log(count_sum / num_templates + 1e-10)  # [N, C]
+
+        # Repeat for m+1 (if enough data)
+        if w_len >= m + 2:
+            count_sum_m1 = 0.0
+            num_templates_m1 = w_len - m
+
+            for i in range(num_templates_m1):
+                template = time_series[:, i:i+m+1, :]  # [N, m+1, C]
+                for j in range(num_templates_m1):
+                    other = time_series[:, j:j+m+1, :]  # [N, m+1, C]
+                    dist = (template - other).abs().max(dim=1).values  # [N, C]
+                    match = self.ops.soft_step(-dist + r.squeeze(1), 0.0)  # [N, C]
+                    count_sum_m1 = count_sum_m1 + match
+
+            phi_m1 = self.ops.safe_log(count_sum_m1 / num_templates_m1 + 1e-10)  # [N, C]
+            apen = phi_m - phi_m1  # [N, C]
+        else:
+            apen = phi_m  # Fallback
+
+        return apen
+
+    def _compute_recurrence_rate_batch(
+        self,
+        time_series: torch.Tensor,  # [N, w_len, C]
+        threshold: torch.Tensor,  # [N, 1, C]
+    ) -> torch.Tensor:
+        """Compute recurrence rate (fraction of recurrent states).
+
+        Args:
+            time_series: [N, w_len, C]
+            threshold: Distance threshold [N, 1, C]
+
+        Returns:
+            [N, C] recurrence rates (fraction in [0, 1])
+        """
+        N, w_len, C = time_series.shape
+
+        if w_len < 2:
+            return torch.zeros(N, C, device=time_series.device)
+
+        # Subsample for efficiency (O(T²) is expensive)
+        subset_size = min(15, w_len)
+        indices = torch.linspace(0, w_len-1, subset_size, dtype=torch.long, device=time_series.device)
+        subset = time_series[:, indices, :]  # [N, subset_size, C]
+
+        # Count recurrences (pairwise distances < threshold)
+        recurrence_count = 0.0
+        total_pairs = 0
+
+        for i in range(subset_size):
+            for j in range(i+1, subset_size):
+                dist = (subset[:, i, :] - subset[:, j, :]).abs().sum(dim=-1, keepdim=True)  # [N, 1]
+                # Broadcast to [N, C]
+                dist = dist.expand(-1, C)
+                recurrent = self.ops.soft_step(-dist + threshold.squeeze(1), 0.0)  # [N, C]
+                recurrence_count = recurrence_count + recurrent
+                total_pairs += 1
+
+        recurrence_rate = recurrence_count / (total_pairs + 1e-8)  # [N, C]
+
+        return recurrence_rate
+
+    def _compute_hurst_batch(
+        self,
+        time_series: torch.Tensor,  # [N, w_len, C]
+    ) -> torch.Tensor:
+        """Compute Hurst exponent via R/S analysis (long-range dependence).
+
+        Args:
+            time_series: [N, w_len, C]
+
+        Returns:
+            [N, C] Hurst exponents (0.5 = random walk, >0.5 = persistent, <0.5 = anti-persistent)
+        """
+        N, w_len, C = time_series.shape
+
+        if w_len < 8:
+            return torch.ones(N, C, device=time_series.device) * 0.5  # Neutral
+
+        # Cumulative deviation from mean
+        mean = time_series.mean(dim=1, keepdim=True)  # [N, 1, C]
+        deviations = time_series - mean  # [N, w_len, C]
+        cumsum = torch.cumsum(deviations, dim=1)  # [N, w_len, C]
+
+        # Range R
+        R = cumsum.max(dim=1).values - cumsum.min(dim=1).values  # [N, C]
+
+        # Standard deviation S
+        S = time_series.std(dim=1)  # [N, C]
+
+        # R/S ratio
+        RS = self.ops.safe_div(R, S)  # [N, C]
+
+        # Hurst exponent: log(R/S) ≈ H * log(n)
+        # Simplified: H ≈ log(R/S) / log(n)
+        log_n = torch.log(torch.tensor(w_len, dtype=torch.float32, device=time_series.device))
+        hurst = self.ops.safe_log(RS + 1e-10) / log_n  # [N, C]
+
+        # Clip to valid range [0, 1]
+        hurst = torch.clamp(hurst, 0.0, 1.0)
+
+        return hurst
+
+    def _compute_lz_complexity_batch(
+        self,
+        time_series: torch.Tensor,  # [N, w_len, C]
+    ) -> torch.Tensor:
+        """Compute Lempel-Ziv complexity (compression-based).
+
+        Measures complexity via symbolic dynamics.
+
+        Args:
+            time_series: [N, w_len, C]
+
+        Returns:
+            [N, C] normalized LZ complexity
+        """
+        N, w_len, C = time_series.shape
+
+        if w_len < 4:
+            return torch.zeros(N, C, device=time_series.device)
+
+        # Binarize: above/below median
+        median = time_series.median(dim=1, keepdim=True).values  # [N, 1, C]
+        binary = (time_series > median).float()  # [N, w_len, C]
+
+        # Simplified LZ: count pattern changes (differentiable proxy)
+        # Count transitions (0→1 or 1→0)
+        transitions = (binary[:, 1:, :] != binary[:, :-1, :]).float()  # [N, w_len-1, C]
+        lz_proxy = transitions.sum(dim=1) / (w_len - 1)  # [N, C] - normalized
+
+        return lz_proxy

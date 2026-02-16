@@ -436,30 +436,18 @@ class VQCoherenceAdapter(nn.Module):
         batch_size = normalized.shape[0]
         device = normalized.device
 
-        # Build all_encoded (families sorted alphabetically)
-        all_encoded = torch.zeros(
-            batch_size, self._total_encoded_dim,
-            device=device, dtype=normalized.dtype,
+        # Build all_encoded (for decoder) AND per-family dict (for projectors)
+        all_encoded, family_encoded = self._build_all_encoded(
+            model, normalized, params, batch_size, device,
         )
-
-        if 'temporal' in model.families:
-            temp_encoded = model.temporal_encoder(normalized)
-            offset = self._family_offsets['temporal']
-            dim = self._family_dims['temporal']
-            all_encoded[:, offset:offset + dim] = temp_encoded
-
-        if 'theta' in model.families and params is not None:
-            theta_encoded = model.theta_encoder(params)
-            offset = self._family_offsets['theta']
-            dim = self._family_dims['theta']
-            all_encoded[:, offset:offset + dim] = theta_encoded
 
         # Per-quantizer: project → compute distances → soft logits + hard tokens
         soft_logits = {}
         hard_tokens = {}
 
         for family_cat, indices in model.group_indices.items():
-            cat_features = all_encoded[:, indices]
+            family, _ = family_cat.split('_', 1)
+            cat_features = family_encoded[family]  # Full family vector, NOT indexed subset
             projector = model.projectors[family_cat]
             latents = projector(cat_features)
 
@@ -600,33 +588,10 @@ class VQCoherenceAdapter(nn.Module):
         batch_size = temporal_features.shape[0]
         device = temporal_features.device
 
-        # Build all_encoded (families sorted alphabetically)
-        all_encoded = torch.zeros(
-            batch_size, self._total_encoded_dim,
-            device=device, dtype=temporal_features.dtype,
+        # Build all_encoded (for decoder) AND per-family dict (for projectors)
+        all_encoded, family_encoded = self._build_all_encoded(
+            model, temporal_features, params, batch_size, device,
         )
-
-        # Encode temporal
-        if 'temporal' in model.families:
-            from spinlock.tokens.encoders import PyramidTemporalEncoder
-            if isinstance(model.temporal_encoder, PyramidTemporalEncoder):
-                temp_encoded = model.temporal_encoder(temporal_features)
-            else:
-                temp_encoded = model.temporal_encoder(temporal_features)
-
-            offset = self._family_offsets['temporal']
-            dim = self._family_dims['temporal']
-            all_encoded[:, offset:offset + dim] = temp_encoded
-
-        # Encode theta
-        if 'theta' in model.families and params is not None:
-            theta_encoded = model.theta_encoder(params)
-
-            offset = self._family_offsets['theta']
-            dim = self._family_dims['theta']
-            all_encoded[:, offset:offset + dim] = theta_encoded
-
-        # initial family is left as zeros (not available at MNO training time)
 
         # ── Quantize per-category (standard VQ pipeline) ─────────────
         all_quantized = []
@@ -635,8 +600,8 @@ class VQCoherenceAdapter(nn.Module):
         latents_dict = {}
 
         for family_cat, indices in model.group_indices.items():
-            # Extract features for this category from all_encoded
-            cat_features = all_encoded[:, indices]  # [B, cat_dim]
+            family, _ = family_cat.split('_', 1)
+            cat_features = family_encoded[family]  # Full family vector, NOT indexed subset
 
             # Project to hierarchical latents
             projector = model.projectors[family_cat]
@@ -701,6 +666,57 @@ class VQCoherenceAdapter(nn.Module):
             'latents': latents_dict,
             'quantized': all_quantized_cat,
         }
+
+    def _build_all_encoded(
+        self,
+        model,
+        temporal_features: torch.Tensor,
+        params: Optional[torch.Tensor],
+        batch_size: int,
+        device: torch.device,
+    ) -> tuple:
+        """Build concatenated encoded vector AND per-family dict (gradient-safe).
+
+        Returns both the concatenated tensor (for the decoder/reconstruction target)
+        and a dict of per-family encoded vectors (for projector input — avoids the
+        broken raw-space indexing of the concatenated vector).
+
+        In-place slice assignment (CopySlices) breaks autograd when multiple
+        families write to the same tensor — the second write increments the
+        version counter, causing the first write's backward to silently return
+        zero gradient. Using torch.cat avoids this entirely.
+
+        Families are ordered alphabetically: initial, temporal, theta.
+        Missing families are filled with zeros.
+
+        Returns:
+            Tuple of (all_encoded [B, total_dim], family_encoded {family: [B, dim]})
+        """
+        parts = []
+        family_encoded = {}
+        for family in sorted(model.families):
+            dim = self._family_dims[family]
+            if dim == 0:
+                continue
+
+            if family == 'temporal' and 'temporal' in model.families:
+                enc = model.temporal_encoder(temporal_features)
+                parts.append(enc)
+                family_encoded[family] = enc
+            elif family == 'theta' and 'theta' in model.families and params is not None:
+                enc = model.theta_encoder(params)
+                parts.append(enc)
+                family_encoded[family] = enc
+            else:
+                # Zero-fill for unavailable families (e.g., 'initial' at MNO time)
+                zeros = torch.zeros(
+                    batch_size, dim,
+                    device=device, dtype=temporal_features.dtype,
+                )
+                parts.append(zeros)
+                family_encoded[family] = zeros
+
+        return torch.cat(parts, dim=1), family_encoded
 
     def _normalize_temporal(self, cleaned: torch.Tensor) -> torch.Tensor:
         """Apply checkpoint normalization to cleaned temporal features.

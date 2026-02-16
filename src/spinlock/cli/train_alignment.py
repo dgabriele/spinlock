@@ -43,7 +43,7 @@ alignment model on high-quality (token, description) pairs.
 Prerequisites:
   - Trained diffusion model checkpoint (D3PM + DenoisingNetwork)
   - Trained VQTokenizer checkpoint with inverse models
-  - QBM substrate configuration
+  - QBM ground truth configuration
   - LLM dependencies: poetry install --with llm
 
 Examples:

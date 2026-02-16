@@ -59,7 +59,7 @@ encoder:
   # Projection layers
   embedding_dim: 64  # Target embedding dimension per feature
   hidden_dim: 128  # Hidden dimension for projection
-  dropout: 0.1  # Dropout probability
+  dropout: 0.4  # Increased from 0.3 — still overfitting with 320D projector inputs
   use_layer_norm: true  # Use layer normalization
 
 # ═══════════════════════════════════════════════════════════════
@@ -159,8 +159,8 @@ training:
   val_every_n_epochs: 5  # Validate every 5 epochs
 
   # Optimizer
-  optimizer: "adam"
-  weight_decay: 0.0
+  optimizer: "adamw"  # AdamW decouples weight decay from gradient — better regularization
+  weight_decay: 0.02
   gradient_clip_norm: 1.0  # Clip gradients for stability
 
   # Learning rate scheduler
@@ -185,7 +185,7 @@ training:
 # ═══════════════════════════════════════════════════════════════
 
 loss:
-  reconstruction_weight: 0.0  # Pure roundtrip objective (no encoded-space reconstruction)
+  reconstruction_weight: 0.001  # Minimal recon pressure — roundtrip dominates at 0.002 vs recon×0.001≈0.00004
   orthogonality_weight: 0.1  # Encourage orthogonal code embeddings
   informativeness_weight: 0.1  # Encourage informative codes
   topographic_weight: 0.2  # Topographic organization (preserve topology in codebook)

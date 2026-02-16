@@ -1,7 +1,12 @@
-# Salad.com training image
+# Salad.com training and generation image
 # Built from project root: docker build -f docker/training/Dockerfile.salad -t spinlock:salad .
 
 FROM spinlock:base
+
+# Install AWS CLI for S3 uploads (needed for generation jobs)
+RUN apt-get update && apt-get install -y \
+    awscli \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy application code
 COPY src/ ./src/

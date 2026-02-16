@@ -1,0 +1,143 @@
+version: "1.0"
+
+metadata:
+  name: "qbm_1m_wide"
+  description: "QBM dataset with 3× wider parameter ranges for improved tokenizer diversity"
+  created_by: "Claude Code"
+  tags:
+    - quantum
+    - brownian_motion
+    - caldeira_leggett
+    - wide_range
+    - diversity
+
+# Parameter space (QBM with 3× wider ranges)
+parameter_space:
+  # Architecture params (minimal for QBM - just base_channels)
+  architecture:
+    base_channels:
+      type: choice
+      choices: [24, 48]
+      weights: [0.5, 0.5]
+      description: "Feature dimension for U-AFNO (not used by QBM but required for schema)"
+
+    activation:
+      type: choice
+      choices: ["gelu"]
+      description: "Activation function (not used by QBM)"
+
+  # Stochastic params (not used by QBM but required for schema)
+  stochastic:
+    noise_level:
+      type: continuous
+      bounds: [0.0, 0.1]
+      description: "Not used by QBM"
+
+  # QBM physics parameters (3× WIDER RANGES)
+  operator:
+    gamma:
+      type: continuous
+      bounds: [0.00003, 0.3]  # Was [0.0001, 0.1]
+      log_scale: true
+      description: "Bath coupling strength (decoherence rate) - 3× wider"
+
+    kT:
+      type: continuous
+      bounds: [0.003, 30.0]  # Was [0.01, 10.0]
+      log_scale: true
+      description: "Temperature in energy units - 3× wider"
+
+    mass:
+      type: continuous
+      bounds: [0.03, 30.0]  # Was [0.1, 10.0]
+      description: "Particle mass - 3× wider"
+
+    potential_type:
+      type: choice
+      choices: ["harmonic", "double_well", "quartic", "random"]
+      weights: [0.4, 0.3, 0.2, 0.1]
+      description: "Type of potential energy landscape"
+
+    potential_strength:
+      type: continuous
+      bounds: [0.03, 15.0]  # Was [0.1, 5.0]
+      description: "Overall potential strength/frequency - 3× wider"
+
+    potential_width:
+      type: continuous
+      bounds: [0.017, 0.9]  # Was [0.05, 0.3]
+      description: "Characteristic width or correlation length - 3× wider"
+
+  # Evolution parameters (for time-dependent dynamics)
+  evolution: {}
+
+# Sampling configuration (WILL BE OVERRIDDEN by CLI --total-samples and --sobol-offset)
+sampling:
+  strategy: "sobol_stratified"
+  sobol:
+    scramble: true
+    seed: 42
+    offset: 0  # Overridden by --sobol-offset
+  total_samples: 100000  # Overridden by --total-samples (100K per job)
+  batch_size: 200  # Increased for Salad Cloud GPUs (12-16GB VRAM vs 5GB local constraint)
+
+# Simulation configuration
+simulation:
+  device: "cuda"
+  operator_type: "qbm"
+
+  # Initial condition generation (quantum ICs generated automatically)
+  input_generation:
+    method: "sampled"
+
+  precision: "float32"
+  num_realizations: 3
+  num_timesteps: 256
+
+  extract_operator_features: false
+
+  # Performance settings
+  performance:
+    compile: false
+    partition_by_architecture: false
+    warmup_templates: false
+
+# Dataset storage (WILL BE OVERRIDDEN by CLI --output)
+dataset:
+  output_path: "./datasets/qbm_1m_wide_part00.h5"  # Overridden by CLI
+  storage:
+    compression: "gzip"
+    compression_level: 4
+    store_trajectories: false  # Features only (saves ~150GB vs ~1.2TB)
+
+# Features configuration
+features:
+  temporal:
+    enabled: true
+    extractors: ["summary"]
+
+    # Quantum features
+    quantum:
+      enabled: true
+      include_purity: true
+      include_entropy: true
+      include_coherence: true
+      include_variance: true
+      include_decoherence: false
+      hbar: 1.0
+      domain_size: 10.0
+
+  summary:
+    summary_mode: "manual"
+
+  initial:
+    enabled: true
+
+# Logging
+logging:
+  level: "INFO"
+  format: "plain"
+  metrics:
+    track_gpu_memory: true
+    track_sampling_time: true
+    track_simulation_time: true

@@ -683,7 +683,8 @@ class DatasetGenerationPipeline:
         # Stage 1: Sample parameter space
         print("Stage 1/4: Sampling parameter space...")
         sample_start = time.time()
-        parameters = self.sampler.sample(self.config.sampling.total_samples)
+        offset = self.config.sampling.sobol.offset
+        parameters = self.sampler.sample(self.config.sampling.total_samples, offset=offset)
         validation_metrics = self.sampler.validate(parameters)
         self.stats["sampling_time"] = time.time() - sample_start
 

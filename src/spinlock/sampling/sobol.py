@@ -107,11 +107,11 @@ class StratifiedSobolSampler(BaseSampler):
         super().__init__(dimensionality, seed)
 
         # Initialize Sobol engine
-        # Note: torch.quasirandom.Sobol uses global RNG state for scrambling
+        # Note: scipy.stats.qmc.Sobol uses numpy RNG for scrambling
         # Set seed before creating engine to ensure reproducibility
         if seed is not None:
-            torch.manual_seed(seed)
-        self.sobol_engine = Sobol(d=dimensionality, scramble=scramble)
+            np.random.seed(seed)
+        self.sobol_engine = Sobol(d=dimensionality, scramble=scramble, seed=seed)
 
         # Validation targets
         self.validation_targets = validation_targets or {
@@ -161,18 +161,19 @@ class StratifiedSobolSampler(BaseSampler):
             validation_targets=validation_targets,
         )
 
-    def sample(self, n_samples: int) -> NDArray[np.float64]:
+    def sample(self, n_samples: int, offset: int = 0) -> NDArray[np.float64]:
         """
-        Generate n_samples using Sobol sequence.
+        Generate n_samples using Sobol sequence with optional offset.
 
         Args:
             n_samples: Number of samples to generate
+            offset: Skip first `offset` samples in sequence (for distributed generation)
 
         Returns:
             Samples in [0,1]^d with shape (n_samples, dimensionality)
 
         Raises:
-            ValueError: If n_samples < 1
+            ValueError: If n_samples < 1 or offset < 0
 
         Performance:
             Target: 10,000 samples in <10s on CPU
@@ -182,15 +183,32 @@ class StratifiedSobolSampler(BaseSampler):
             This method automatically rounds up to the nearest power of 2 during
             generation, then returns the first n_samples requested.
 
+            The offset parameter enables deterministic distributed generation:
+            - Job 0: sample(100000, offset=0) → samples 0-99999
+            - Job 1: sample(100000, offset=100000) → samples 100000-199999
+            This preserves Sobol low-discrepancy properties across jobs.
+
         Example:
             ```python
+            # Single-machine generation
             samples = sampler.sample(10000)
-            print(f"Generated {len(samples)} samples")
-            print(f"Shape: {samples.shape}")
+
+            # Distributed generation (Job 0)
+            samples_job0 = sampler.sample(100000, offset=0)
+
+            # Distributed generation (Job 1)
+            samples_job1 = sampler.sample(100000, offset=100000)
             ```
         """
         if n_samples < 1:
             raise ValueError(f"n_samples must be ≥ 1, got {n_samples}")
+        if offset < 0:
+            raise ValueError(f"offset must be ≥ 0, got {offset}")
+
+        # Fast-forward to offset position if needed
+        if offset > 0:
+            self.sobol_engine.reset()
+            self.sobol_engine.fast_forward(offset)
 
         # Round up to nearest power of 2 for optimal Sobol balance properties
         # This avoids scipy warnings and maintains statistical quality

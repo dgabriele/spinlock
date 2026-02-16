@@ -19,6 +19,7 @@ import math
 
 if TYPE_CHECKING:
     from spinlock.features.temporal.config import SummarySpectralConfig
+    from spinlock.features.ops import FeatureOps
 
 
 class SpectralFeatureExtractor:
@@ -34,42 +35,20 @@ class SpectralFeatureExtractor:
         >>> features = extractor.extract(fields, num_scales=5)
     """
 
-    def __init__(self, device: torch.device = torch.device('cuda')):
+    def __init__(self, device: torch.device = torch.device('cuda'), ops: Optional['FeatureOps'] = None):
         """
         Initialize spectral feature extractor.
 
         Args:
             device: Computation device (cuda or cpu)
+            ops: FeatureOps provider for gradient-safe operations.
+                 If None, creates StandardOps (backward-compatible).
         """
         self.device = device
-
-    def _adaptive_outlier_clip(
-        self,
-        values: torch.Tensor,
-        iqr_multiplier: float = 10.0
-    ) -> torch.Tensor:
-        """Adaptive outlier clipping based on IQR."""
-        # Convert to float if needed (quantile requires float/double)
-        if not values.is_floating_point():
-            values = values.float()
-
-        values_flat = values.flatten()
-        valid_mask = ~torch.isnan(values_flat)
-        valid_values = values_flat[valid_mask]
-
-        if valid_values.numel() < 4:
-            return values
-
-        q1 = torch.quantile(valid_values, 0.25)
-        q3 = torch.quantile(valid_values, 0.75)
-        iqr = q3 - q1
-
-        lower_bound = q1 - iqr_multiplier * iqr
-        upper_bound = q3 + iqr_multiplier * iqr
-
-        values_clipped = torch.clamp(values, min=lower_bound, max=upper_bound)
-
-        return values_clipped
+        if ops is None:
+            from spinlock.features.ops import StandardOps
+            ops = StandardOps()
+        self.ops = ops
 
     def extract(
         self,
@@ -176,6 +155,11 @@ class SpectralFeatureExtractor:
             features['total_harmonic_distortion'] = harmonics['total_harmonic_distortion']
             features['fundamental_purity'] = harmonics['fundamental_purity']
 
+        # Orthogonal spectral features (NEW in v3.2)
+        if include_all or (config is not None and getattr(config, 'include_wavelet_features', False)):
+            wavelet = self._extract_wavelet_features(fields_flat)
+            features.update(wavelet)
+
         # Reshape all features back
         for name, feat in features.items():
             if feat.ndim == 2:  # [NT, C]
@@ -186,7 +170,7 @@ class SpectralFeatureExtractor:
 
         # Apply adaptive outlier clipping to prevent extreme values
         for name in features:
-            features[name] = self._adaptive_outlier_clip(features[name], iqr_multiplier=10.0)
+            features[name] = self.ops.outlier_clip(features[name], iqr_multiplier=10.0)
 
         return features
 
@@ -284,18 +268,19 @@ class SpectralFeatureExtractor:
 
         # Find peak in power spectrum (per channel)
         power_flat = power.flatten(start_dim=2)  # [NT, C, H*(W//2+1)]
-        peak_idx = torch.argmax(power_flat, dim=2)  # [NT, C]
+        peak_idx = self.ops.soft_argmax(power_flat, dim=2)  # [NT, C] (float)
 
-        # Convert flat index to (y, x) coordinates
-        peak_y = peak_idx // fft_W
-        peak_x = peak_idx % fft_W
+        # Convert float flat index to (y, x) coordinates
+        peak_y = peak_idx / fft_W  # float division for continuous coords
+        peak_x = peak_idx - torch.floor(peak_y) * fft_W
 
         # Convert to frequency values (normalized by grid size)
-        freq_y = peak_y.float() / H
-        freq_x = peak_x.float() / W
+        freq_y = peak_y / H
+        freq_x = peak_x / W
 
-        # Get magnitude at peak
-        magnitude = power_flat.gather(2, peak_idx.unsqueeze(2)).squeeze(2)
+        # Get magnitude at peak using weighted sum (differentiable)
+        weights = torch.softmax(power_flat * 10.0, dim=2)  # sharpen around peak
+        magnitude = (power_flat * weights).sum(dim=2)
 
         return {
             'freq_x': freq_x,
@@ -325,11 +310,12 @@ class SpectralFeatureExtractor:
         freq_x = torch.fft.rfftfreq(W, d=1.0, device=power.device)[None, None, None, :]  # [1, 1, 1, W//2+1]
 
         # Total power (for normalization)
-        total_power = power.sum(dim=(-2, -1), keepdim=True) + 1e-8  # [NT, C, 1, 1]
+        total_power = power.sum(dim=(-2, -1), keepdim=True)  # [NT, C, 1, 1]
+        total_power_2d = total_power.squeeze(-1).squeeze(-1)  # [NT, C]
 
         # Power-weighted frequency
-        centroid_y = (power * freq_y).sum(dim=(-2, -1)) / total_power.squeeze(-1).squeeze(-1)
-        centroid_x = (power * freq_x).sum(dim=(-2, -1)) / total_power.squeeze(-1).squeeze(-1)
+        centroid_y = self.ops.safe_div((power * freq_y).sum(dim=(-2, -1)), total_power_2d)
+        centroid_x = self.ops.safe_div((power * freq_x).sum(dim=(-2, -1)), total_power_2d)
 
         # Spectral bandwidth (spread around centroid)
         # freq_y and freq_x are already shaped for broadcasting: [1, 1, H, 1] and [1, 1, 1, W//2+1]
@@ -340,7 +326,7 @@ class SpectralFeatureExtractor:
         deviation_y = (freq_y - centroid_y_expanded) ** 2  # [NT, C, H, 1]
         deviation_x = (freq_x - centroid_x_expanded) ** 2  # [NT, C, 1, W//2+1]
 
-        variance = (power * (deviation_y + deviation_x)).sum(dim=(-2, -1)) / total_power.squeeze(-1).squeeze(-1)
+        variance = self.ops.safe_div((power * (deviation_y + deviation_x)).sum(dim=(-2, -1)), total_power_2d)
         bandwidth = torch.sqrt(variance + 1e-8)
 
         return {
@@ -411,13 +397,13 @@ class SpectralFeatureExtractor:
         power_flat = power.flatten(start_dim=2)  # [NT, C, H*W]
 
         # Geometric mean (using log for numerical stability)
-        log_power = torch.log(power_flat + 1e-10)
+        log_power = self.ops.safe_log(power_flat, eps=1e-10)
         geometric_mean = torch.exp(log_power.mean(dim=2))
 
         # Arithmetic mean
-        arithmetic_mean = power_flat.mean(dim=2) + 1e-10
+        arithmetic_mean = power_flat.mean(dim=2)
 
-        flatness = geometric_mean / arithmetic_mean
+        flatness = self.ops.safe_div(geometric_mean, arithmetic_mean)
 
         return flatness
 
@@ -443,7 +429,7 @@ class SpectralFeatureExtractor:
         psd_norm = power_flat / power_sum  # [NT, C, H*W]
 
         # Shannon entropy: H = -sum(p * log(p))
-        spectral_entropy = -(psd_norm * torch.log(psd_norm + eps)).sum(dim=2)  # [NT, C]
+        spectral_entropy = -(psd_norm * self.ops.safe_log(psd_norm, eps=eps)).sum(dim=2)  # [NT, C]
 
         return spectral_entropy
 
@@ -467,10 +453,12 @@ class SpectralFeatureExtractor:
 
         # Find index where cumsum exceeds percentile * total
         threshold = percentile * total
-        rolloff_idx = (cumsum >= threshold).int().argmax(dim=2)
+        # Use soft_argmax on a signal that peaks at the rolloff point
+        rolloff_signal = self.ops.soft_step(cumsum, threshold)
+        rolloff_idx = self.ops.soft_argmax(rolloff_signal, dim=2)
 
         # Normalize by total number of frequency bins
-        rolloff_freq = rolloff_idx.float() / power_flat.shape[2]
+        rolloff_freq = rolloff_idx / power_flat.shape[2]
 
         return rolloff_freq
 
@@ -498,13 +486,88 @@ class SpectralFeatureExtractor:
         total_power_y = power_y.sum(dim=2)
 
         # Anisotropy ratio
-        anisotropy = total_power_x / (total_power_y + 1e-8)
+        anisotropy = self.ops.safe_div(total_power_x, total_power_y)
 
         return anisotropy
 
     # =========================================================================
     # Harmonic Content
     # =========================================================================
+
+    # =========================================================================
+    # Orthogonal Spectral Features (NEW in v3.2)
+    # =========================================================================
+
+    def _extract_wavelet_features(self, fields_flat: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Extract wavelet decomposition features (orthogonal to FFT).
+
+        Uses Discrete Wavelet Transform (DWT) for multi-resolution analysis.
+        Wavelets are localized in both space and frequency (FFT is global).
+
+        Args:
+            fields_flat: [NT, C, H, W] input fields
+
+        Returns:
+            Dictionary with 15 features per channel:
+                - Approximation coefficients (low-freq): 3D [mean, std, energy]
+                - Detail coefficients (high-freq directional): 9D [H/V/D × mean/std/energy]
+                - Wavelet entropy: 3D [H/V/D]
+
+        Note:
+            Uses a simple Haar wavelet implemented via average pooling for
+            differentiability and GPU efficiency (no external dependencies).
+        """
+        NT, C, H, W = fields_flat.shape
+        features = {}
+
+        # Simple Haar wavelet via average pooling (differentiable, GPU-native)
+        # Approximation: 2x2 average (low-pass)
+        # Details: differences from average (high-pass)
+
+        # Ensure even dimensions for clean 2x2 pooling
+        if H % 2 == 1:
+            fields_flat = F.pad(fields_flat, (0, 0, 0, 1), mode='replicate')
+            H = H + 1
+        if W % 2 == 1:
+            fields_flat = F.pad(fields_flat, (0, 1, 0, 0), mode='replicate')
+            W = W + 1
+
+        # Reshape to extract 2x2 blocks: [NT, C, H/2, 2, W/2, 2]
+        blocks = fields_flat.reshape(NT, C, H // 2, 2, W // 2, 2)
+
+        # Extract 4 components from each 2x2 block
+        # LL (low-low): approximation
+        # LH (low-high): horizontal details
+        # HL (high-low): vertical details
+        # HH (high-high): diagonal details
+        LL = blocks.mean(dim=(3, 5))  # [NT, C, H/2, W/2]
+        LH = (blocks[:, :, :, 0, :, :] - blocks[:, :, :, 1, :, :]).mean(dim=-1)  # Horizontal detail
+        HL = (blocks[:, :, :, :, :, 0] - blocks[:, :, :, :, :, 1]).mean(dim=-2)  # Vertical detail
+        HH = (blocks[:, :, :, 0, :, 0] - blocks[:, :, :, 1, :, 1])  # Diagonal detail
+
+        # --- Approximation coefficients (low-freq) ---
+        features['wavelet_approx_mean'] = LL.mean(dim=(-2, -1))  # [NT, C]
+        features['wavelet_approx_std'] = LL.std(dim=(-2, -1))  # [NT, C]
+        features['wavelet_approx_energy'] = (LL ** 2).sum(dim=(-2, -1)) / (H * W / 4)  # Normalized
+
+        # --- Detail coefficients (high-freq directional) ---
+        for name, detail in [('horizontal', LH), ('vertical', HL), ('diagonal', HH)]:
+            features[f'wavelet_{name}_mean'] = detail.mean(dim=(-2, -1))  # [NT, C]
+            features[f'wavelet_{name}_std'] = detail.std(dim=(-2, -1))  # [NT, C]
+            features[f'wavelet_{name}_energy'] = (detail ** 2).sum(dim=(-2, -1)) / (H * W / 4)  # [NT, C]
+
+        # --- Wavelet entropy (regularity measure) ---
+        # Shannon entropy of wavelet coefficient magnitudes
+        for name, detail in [('horizontal', LH), ('vertical', HL), ('diagonal', HH)]:
+            detail_abs = detail.abs()
+            # Normalize to probability distribution
+            detail_sum = detail_abs.sum(dim=(-2, -1), keepdim=True) + 1e-10
+            detail_prob = detail_abs / detail_sum  # [NT, C, H/2, W/2]
+            # Entropy: -sum(p * log(p))
+            entropy = -(detail_prob * self.ops.safe_log(detail_prob, eps=1e-10)).sum(dim=(-2, -1))  # [NT, C]
+            features[f'wavelet_entropy_{name}'] = entropy
+
+        return features
 
     def _compute_harmonic_content(
         self,
@@ -538,46 +601,71 @@ class SpectralFeatureExtractor:
         freq_x = torch.fft.rfftfreq(W, d=1.0, device=power.device)[None, :]
         freq_radial = torch.sqrt(freq_y ** 2 + freq_x ** 2)
 
-        # Find dominant (fundamental) frequency per sample/channel
+        # Find dominant (fundamental) frequency using soft argmax for differentiability
         power_flat = power.reshape(NT * C, fft_H, fft_W)
-        max_idx = power_flat.reshape(NT * C, -1).argmax(dim=1)
-        max_idx_y = max_idx // fft_W
-        max_idx_x = max_idx % fft_W
+        power_flat_2d = power_flat.reshape(NT * C, -1)  # [NT*C, fft_H*fft_W]
 
-        # Fundamental frequency
-        fund_freq_y = freq_y.flatten()[max_idx_y]
-        fund_freq_x = freq_x.flatten()[max_idx_x]
-        fund_freq_radial = torch.sqrt(fund_freq_y ** 2 + fund_freq_x ** 2)  # [NT*C]
+        # Soft argmax gives continuous index
+        soft_idx = self.ops.soft_argmax(power_flat_2d, dim=1)  # [NT*C] (float)
+        # Convert float flat index to (y, x) coordinates
+        soft_idx_y = soft_idx / fft_W
+        soft_idx_x = soft_idx - torch.floor(soft_idx_y) * fft_W
 
-        # Extract power at fundamental (peak power by definition)
-        fund_power = power_flat[torch.arange(NT * C), max_idx_y, max_idx_x]  # [NT*C]
+        # Fundamental frequency from soft coordinates
+        freq_y_flat = freq_y.flatten()  # [fft_H]
+        freq_x_flat = freq_x.flatten()  # [fft_W]
+        # Use linear interpolation for differentiable frequency lookup
+        fund_freq_y_idx = soft_idx_y.clamp(0, fft_H - 1)
+        fund_freq_x_idx = soft_idx_x.clamp(0, fft_W - 1)
+        # Floor/ceil for interpolation
+        fy_lo = torch.floor(fund_freq_y_idx).long().clamp(0, fft_H - 1)
+        fy_hi = (fy_lo + 1).clamp(0, fft_H - 1)
+        fx_lo = torch.floor(fund_freq_x_idx).long().clamp(0, fft_W - 1)
+        fx_hi = (fx_lo + 1).clamp(0, fft_W - 1)
+        fy_frac = fund_freq_y_idx - fy_lo.float()
+        fx_frac = fund_freq_x_idx - fx_lo.float()
+        fund_freq_y_val = freq_y_flat[fy_lo] * (1 - fy_frac) + freq_y_flat[fy_hi] * fy_frac
+        fund_freq_x_val = freq_x_flat[fx_lo] * (1 - fx_frac) + freq_x_flat[fx_hi] * fx_frac
+        fund_freq_radial = torch.sqrt(fund_freq_y_val ** 2 + fund_freq_x_val ** 2 + 1e-10)  # [NT*C]
+
+        # Extract power at fundamental using softmax-weighted sum (differentiable)
+        weights = torch.softmax(power_flat_2d * 10.0, dim=1)
+        fund_power = (power_flat_2d * weights).sum(dim=1)  # [NT*C]
 
         # For each sample, find power near 2f and 3f harmonics
-        # Use annulus around harmonic frequency (±10% tolerance)
-        tolerance = 0.1
+        # Use soft Gaussian annulus around harmonic frequency
+        tolerance_sigma = 0.1  # Controls width of annulus
 
         # 2nd harmonic (2f)
         freq_2f = 2.0 * fund_freq_radial.unsqueeze(1).unsqueeze(2)  # [NT*C, 1, 1]
-        mask_2f = (freq_radial >= freq_2f * (1 - tolerance)) & (freq_radial <= freq_2f * (1 + tolerance))
-        power_2f = (power_flat * mask_2f).sum(dim=(-2, -1)) / (mask_2f.sum(dim=(-2, -1)) + 1e-8)  # [NT*C]
+        dist_2f = (freq_radial - freq_2f).abs() / (freq_2f.abs() + 1e-8)
+        soft_mask_2f = torch.exp(-0.5 * (dist_2f / tolerance_sigma) ** 2)
+        power_2f = self.ops.safe_div(
+            (power_flat * soft_mask_2f).sum(dim=(-2, -1)),
+            soft_mask_2f.sum(dim=(-2, -1)),
+        )  # [NT*C]
 
         # 3rd harmonic (3f)
         freq_3f = 3.0 * fund_freq_radial.unsqueeze(1).unsqueeze(2)  # [NT*C, 1, 1]
-        mask_3f = (freq_radial >= freq_3f * (1 - tolerance)) & (freq_radial <= freq_3f * (1 + tolerance))
-        power_3f = (power_flat * mask_3f).sum(dim=(-2, -1)) / (mask_3f.sum(dim=(-2, -1)) + 1e-8)  # [NT*C]
+        dist_3f = (freq_radial - freq_3f).abs() / (freq_3f.abs() + 1e-8)
+        soft_mask_3f = torch.exp(-0.5 * (dist_3f / tolerance_sigma) ** 2)
+        power_3f = self.ops.safe_div(
+            (power_flat * soft_mask_3f).sum(dim=(-2, -1)),
+            soft_mask_3f.sum(dim=(-2, -1)),
+        )  # [NT*C]
 
         # Total power
         total_power = power_flat.sum(dim=(-2, -1))  # [NT*C]
 
         # Compute harmonic ratios
-        harmonic_ratio_2f = power_2f / (fund_power + 1e-8)  # [NT*C]
-        harmonic_ratio_3f = power_3f / (fund_power + 1e-8)  # [NT*C]
+        harmonic_ratio_2f = self.ops.safe_div(power_2f, fund_power)
+        harmonic_ratio_3f = self.ops.safe_div(power_3f, fund_power)
 
         # Total Harmonic Distortion (THD)
-        thd = torch.sqrt(power_2f ** 2 + power_3f ** 2) / (fund_power + 1e-8)  # [NT*C]
+        thd = self.ops.safe_div(torch.sqrt(power_2f ** 2 + power_3f ** 2 + 1e-10), fund_power)
 
         # Fundamental purity
-        fundamental_purity = fund_power / (total_power + 1e-8)  # [NT*C]
+        fundamental_purity = self.ops.safe_div(fund_power, total_power)
 
         # Reshape back to [NT, C]
         harmonic_ratio_2f = harmonic_ratio_2f.reshape(NT, C)

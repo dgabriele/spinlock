@@ -1,0 +1,190 @@
+# VQ Tokenizer - Diversity-Enhanced Configuration (v1 - Practical)
+#
+# Improvements using ONLY currently implemented features:
+# 1. Lower commitment cost (0.45 → 0.25) → more exploration
+# 2. Higher max latent dim (64 → 96) → more capacity per quantizer
+# 3. Lower reconstruction weight (0.001 → 0.0003) → less pressure for exact match
+# 4. Higher roundtrip weight (5.0 → 8.0) → prioritize token consistency
+#
+# Target: Increase unique combinations from 2841/50K (5.7%) to 10K+ (20%)
+
+dataset_path: "datasets/qbm_50k.h5"
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration (UNCHANGED - proven architecture)
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  initial:
+    variant: "hybrid"
+    cnn_embedding_dim: 384
+    pretrained_cnn_path: null
+    use_final_batchnorm: true
+    encode_manual: true
+
+  temporal:
+    variant: "pyramid"
+    level_dims: [32, 64, 96, 128]
+    downsample_factors: [1, 2, 4, 8]
+    variable_length: true
+    min_timesteps: 16
+    max_timesteps: 256
+    adaptive_pyramid: true
+
+  theta:
+    variant: "mlp"
+    hidden_dim: 64
+    output_dim: 32
+    dropout: 0.15
+    use_layer_norm: true
+
+  embedding_dim: 64
+  hidden_dim: 128
+  dropout: 0.4
+  use_layer_norm: true
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer - Lower commitment cost for more exploration
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  embedding_dim: 64
+  commitment_cost: 0.25  # CHANGE: 0.45 → 0.25 (allow more exploration)
+  use_ema: true
+  ema_decay: 0.99
+  epsilon: 1.0e-5
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchy - Higher capacity
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3
+  compression_ratios: "0.5:1.0:1.5"
+  min_latent_dim: 4
+  max_latent_dim: 96  # CHANGE: 64 → 96 (more capacity per quantizer)
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Cleaning (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+feature_cleaning:
+  enabled: true
+  pre_categorization: true
+  variance_threshold: 1.0e-8
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
+  outlier_method: "percentile"
+  percentile_range: [0.5, 99.5]
+
+# ═══════════════════════════════════════════════════════════════
+# Grouping (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+grouping:
+  preprocessing:
+    method: "mad"
+    clip_outliers: false
+
+  clustering:
+    linkage_method: "ward"
+    distance_metric: "correlation"
+    k_selection_method: "silhouette"
+    min_groups: 8
+    max_groups: 20
+    use_gpu: true
+
+  gradient:
+    num_epochs: 500
+    learning_rate: 0.01
+    temperature_start: 1.0
+    temperature_end: 0.5
+    orthogonality_weight: 1.0
+    informativeness_weight: 1.0
+    orthogonality_target: 0.15
+    device: "auto"
+
+  splitting:
+    enabled: false
+
+  skip_gradient_refinement: false
+  random_seed: 42
+
+# ═══════════════════════════════════════════════════════════════
+# Inverse Heads (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+inverse_heads:
+  theta_hidden_dim: 128
+  theta_dropout: 0.15
+  initial_base_channels: 256
+
+# ═══════════════════════════════════════════════════════════════
+# Training (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 1000
+  batch_size: 768
+  learning_rate: 0.001
+  val_split: 0.1
+  val_every_n_epochs: 5
+
+  optimizer: "adamw"
+  weight_decay: 0.02
+  gradient_clip_norm: 1.0
+
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 10
+
+  early_stopping_patience: 50
+  early_stopping_min_delta: 0.0001
+
+  dead_code_reset_interval: 999999
+  dead_code_threshold: 0.0
+
+  device: "auto"
+  compile_model: false
+
+# ═══════════════════════════════════════════════════════════════
+# Loss - Reduce reconstruction, boost roundtrip
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  reconstruction_weight: 0.0003  # CHANGE: 0.001 → 0.0003 (reduce exact-match pressure)
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topographic_weight: 0.2
+  normalize_reconstruction: true
+
+  roundtrip:
+    enabled: true
+    weight: 8.0  # CHANGE: 5.0 → 8.0 (stronger token consistency)
+    theta_weight: 1.0
+    initial_weight: 1.0
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization (UNCHANGED)
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "none"
+  clip_std_multiplier: null
+
+# ═══════════════════════════════════════════════════════════════
+# System
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 42
+verbose: true
+log_level: "INFO"
+
+# ═══════════════════════════════════════════════════════════════
+# Training Command
+# ═══════════════════════════════════════════════════════════════
+#
+# poetry run spinlock train-vq-tokenizer --config configs/qbm/vqvae_diverse_v1.yaml
+#
+# Output: checkpoints/v3/vqvae_diverse_v1/
+#

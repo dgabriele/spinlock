@@ -594,15 +594,19 @@ def hierarchical_clustering_assignment(
         logger.info(f"Using all {N_samples:,} samples for clustering")
 
     # === HIERARCHICAL CLUSTERING ===
-    # Compute correlation matrix if needed (for correlation distance or for CUDA optimization)
+    # Compute correlation matrix if needed (for correlation distance or for CUDA optimization).
+    # Force CPU when a seed is set: GPU floating-point non-associativity makes
+    # the correlation matrix non-deterministic, which cascades into different
+    # cluster assignments between runs with the same seed.
+    use_cuda_corr = USE_CUDA and (random_seed is None)
     corr_matrix = None
-    if USE_CUDA and distance_metric == 'correlation':
+    if use_cuda_corr and distance_metric == 'correlation':
         logger.info("Computing correlation matrix (CUDA)")
         corr_matrix = compute_correlation_matrix_cuda(
             clustering_features, subsample_size=subsample_size
         )
     elif distance_metric == 'correlation':
-        logger.info("Computing correlation matrix (CPU)")
+        logger.info("Computing correlation matrix (CPU, deterministic)")
         corr_matrix, _ = compute_correlation_matrix_cpu(
             clustering_features, subsample_size=subsample_size
         )

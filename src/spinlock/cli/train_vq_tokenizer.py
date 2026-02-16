@@ -248,6 +248,18 @@ Output:
         logger.info(f"Device: {config.training.device}")
         logger.info("=" * 80)
 
+        # Set global seeds for reproducible grouping, training, and initialization.
+        # The clustering pipeline uses np.random internally; GPU correlation
+        # matrices are non-deterministic, so we also force deterministic mode.
+        seed = config.random_seed or 42
+        import numpy as np_seed
+        import torch as torch_seed
+        np_seed.random.seed(seed)
+        torch_seed.manual_seed(seed)
+        if torch_seed.cuda.is_available():
+            torch_seed.cuda.manual_seed_all(seed)
+        logger.info(f"Global RNG seed: {seed}")
+
         try:
             history = tokenizer.train(
                 dataset=dataset,

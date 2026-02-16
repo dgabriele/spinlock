@@ -97,6 +97,13 @@ Examples:
             "--seed", type=int, metavar="SEED", help="Override random seed from config"
         )
 
+        override_group.add_argument(
+            "--sobol-offset",
+            type=int,
+            metavar="N",
+            help="Sobol sequence offset for distributed generation (default: 0)",
+        )
+
         # Execution options
         exec_group = parser.add_argument_group("execution options")
 
@@ -125,6 +132,7 @@ Examples:
             "sampling.batch_size": args.batch_size,
             "simulation.num_realizations": args.num_realizations,
             "sampling.sobol.seed": args.seed,
+            "sampling.sobol.offset": args.sobol_offset,
         }
 
         # Apply overrides

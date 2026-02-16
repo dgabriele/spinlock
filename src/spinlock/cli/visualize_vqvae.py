@@ -113,8 +113,8 @@ Examples:
         parser.add_argument(
             "--max-rollouts",
             type=int,
-            default=None,
-            help="Maximum number of rollouts to analyze (for performance, default: all)",
+            default=5000,
+            help="Maximum number of rollouts to analyze (default: 5000)",
         )
         parser.add_argument(
             "--similarity-metric",

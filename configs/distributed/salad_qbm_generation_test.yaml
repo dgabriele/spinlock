@@ -1,0 +1,57 @@
+metadata:
+  job_type: "dataset_generation"
+  description: "QBM dataset generation test on Salad Cloud (100 samples, 1 job)"
+
+distributed:
+  enabled: true
+  backend: "salad"
+
+  salad:
+    enabled: true
+    api_key: "${SALAD_API_KEY}"
+    organization: "spinlock"
+    project: "spinlock"
+
+    container:
+      image: "psilogon/spinlock:latest"
+      registry_auth:
+        username: "${DOCKER_USERNAME}"
+        password: "${DOCKER_PASSWORD}"
+
+    resources:
+      # GPU-accelerated test (small scale)
+      gpu_class: "rtx_4060_ti"  # Or rtx_4070_ti if available
+      num_replicas: 1  # Not used for generation, but kept for compatibility
+      cpu: 4
+      memory: 16384  # 16GB RAM
+      storage: 21474836480  # 20GB storage
+
+    storage:
+      backend: "minio"
+      endpoint_url: "https://calculator-cargo-intend-mixer.trycloudflare.com"
+      bucket: "spinlock-datasets"
+      dataset_path: "qbm_test"  # Test output directory
+      use_ssl: true
+      credentials:
+        aws_access_key_id: "${MINIO_ACCESS_KEY}"
+        aws_secret_access_key: "${MINIO_SECRET_KEY}"
+
+    networking:
+      coordination_backend: "env"
+
+    monitoring:
+      log_streaming: false
+      poll_interval: 30
+
+# Generation-specific configuration (SMALL TEST)
+generation:
+  total_samples: 100  # Just 100 samples for testing
+  samples_per_job: 100  # Single job
+  dataset_config: "configs/experiments/qbm_1m_wide.yaml"
+  output_prefix: "qbm_test_part"
+
+# Expected resources:
+# - Duration: ~2-3 minutes (1 job × 100 samples with GPU)
+# - Cost: ~$0.01 (1× RTX 4060 Ti × 2-3 mins)
+# - Storage: ~150MB compressed HDF5
+# - Output: 1 file in s3://spinlock-datasets/qbm_test/part00.h5

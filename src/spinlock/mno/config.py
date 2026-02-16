@@ -255,7 +255,7 @@ class DataConfig(BaseModel):
     """
 
     dataset_path: str
-    config: str  # Path to replayer config (e.g., configs/qbm/substrate.yaml)
+    config: str  # Path to ground truth replayer config (e.g., configs/qbm/substrate.yaml)
     val_split: float = Field(default=0.2, ge=0.0, le=1.0)
     num_workers: int = Field(default=8, ge=0)
 

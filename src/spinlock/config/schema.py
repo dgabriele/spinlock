@@ -293,6 +293,7 @@ class SobolConfig(BaseModel):
     scramble: bool = True
     scramble_method: Literal["owen", "lms_shift"] = "owen"
     seed: int = Field(default=42, ge=0)
+    offset: int = Field(default=0, ge=0, description="Sequence offset for distributed generation")
 
 
 class StratificationConfig(BaseModel):

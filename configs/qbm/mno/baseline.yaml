@@ -86,7 +86,7 @@ loss:
 
 data:
   dataset_path: "datasets/qbm_50k.h5"
-  config: "configs/qbm/substrate.yaml"  # QBM replayer config
+  config: "configs/qbm/substrate.yaml"  # QBM ground truth replayer config
   val_split: 0.2
   num_workers: 8
 

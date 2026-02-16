@@ -98,7 +98,7 @@ Examples:
             type=Path,
             required=True,
             metavar="PATH",
-            help="Path to substrate replayer configuration YAML",
+            help="Path to ground truth replayer configuration YAML",
         )
 
         parser.add_argument(
@@ -184,11 +184,11 @@ Examples:
         n_samples = min(n_samples, n_samples_total)
         print(f"  {n_samples} samples to process (out of {n_samples_total} total)")
 
-        # Load substrate replayer
-        print(f"Loading substrate replayer: {args.config}")
+        # Load ground truth replayer
+        print(f"Loading ground truth replayer: {args.config}")
         if not args.config.exists():
             dataset.close()
-            return self.error(f"Substrate config not found: {args.config}")
+            return self.error(f"Ground truth config not found: {args.config}")
 
         replayer = CNOReplayer.from_config(
             config_path=str(args.config),
