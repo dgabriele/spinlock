@@ -91,6 +91,37 @@ class DiffusionConfig(BaseModel):
         return v
 
 
+class TemporalResolutionConfig(BaseModel):
+    """Temporal resolution diffusion configuration.
+
+    Enables multi-truncation diffusion where tokens are generated at
+    multiple trajectory truncation points [32, 64, 128, 256], learning
+    how representation "resolves" over time with causal dependencies.
+    """
+    enabled: bool = Field(
+        default=False,
+        description="Enable temporal resolution mode (requires pyramid encoder)"
+    )
+    use_temporal_bias: bool = Field(
+        default=True,
+        description="Enable learnable temporal attention bias matrix"
+    )
+    temporal_bias_init: str = Field(
+        default="causal",
+        pattern="^(causal|uniform|zero)$",
+        description="Initialization strategy for temporal bias"
+    )
+    temporal_bias_strength: float = Field(
+        default=0.1,
+        ge=0.0,
+        description="Initial bias strength for causal initialization"
+    )
+    enforce_causality: bool = Field(
+        default=True,
+        description="Hard-mask non-causal attention (late → early) to -inf"
+    )
+
+
 class ModelConfig(BaseModel):
     """Denoising network model configuration."""
     hidden_dim: int = Field(default=256, ge=64)
@@ -101,6 +132,10 @@ class ModelConfig(BaseModel):
     hierarchical_guidance_weight: float = Field(default=0.1, ge=0.0)
     hierarchical_guidance_mode: str = Field(
         default="global", pattern="^(global|per_category)$"
+    )
+    temporal_resolution: TemporalResolutionConfig = Field(
+        default_factory=TemporalResolutionConfig,
+        description="Temporal resolution configuration (multi-truncation diffusion)"
     )
 
 

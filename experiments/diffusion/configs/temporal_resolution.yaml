@@ -1,0 +1,102 @@
+# Temporal Resolution D3PM Configuration
+#
+# Multi-truncation diffusion that learns how token representation "resolves"
+# over time by diffusing tokenizations at multiple truncation lengths:
+# [32, 64, 128, 256] timesteps.
+#
+# Requirements:
+# - VQTokenizer with pyramid temporal encoder
+# - Pre-tokenized dataset with --temporal-resolution flag
+# - ~4x training time vs baseline (larger token count)
+#
+# Key innovation:
+# - Causal temporal attention bias: early truncations guide later ones
+# - Meta-diffusion: diffusion process mirrors representational evolution
+
+# Dataset
+dataset:
+  tokenized_path: "datasets/qbm_50k_temporal_resolution.h5"  # Generated with --temporal-resolution
+  tokenizer_checkpoint: "checkpoints/v2/vqvae/vq_tokenizer_best.pt"  # For vocab sizes
+  use_pretokenized: true
+
+# Masking strategy
+masking:
+  strategy: "random"  # Standard random masking (50% all truncations)
+  mask_probability: 0.5
+  seed: 42
+
+# Diffusion schedule
+diffusion:
+  num_timesteps: 50
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule_type: "cosine"
+  transition_type: "uniform"
+  beta_scaling: "uniform"
+
+# Temporal Resolution Denoising Network
+model:
+  hidden_dim: 256
+  num_layers: 6
+  num_heads: 8
+  dropout: 0.1
+  use_hierarchical_guidance: true
+  hierarchical_guidance_weight: 0.1
+  hierarchical_guidance_mode: "global"
+
+  # *** Temporal Resolution Config ***
+  temporal_resolution:
+    enabled: true  # Enable temporal resolution mode
+    use_temporal_bias: true  # Learnable [N_trunc, N_trunc] bias matrix
+    temporal_bias_init: "causal"  # Initialize with early → late prior
+    temporal_bias_strength: 0.1  # Initial bias magnitude
+    enforce_causality: true  # Hard-mask non-causal attention
+
+# Training
+training:
+  batch_size: 32  # Reduced due to ~5x larger token count (50 → 234)
+  num_epochs: 100
+  num_workers: 0
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  gradient_clip_norm: 1.0
+
+  # SNR weighting + vocab size normalization
+  use_snr_weighting: true
+  use_vocab_size_weighting: true
+
+  # Physics-aware auxiliary loss (optional)
+  physics_loss:
+    enabled: false  # Can enable for physics consistency
+    weight: 0.1
+    temperature: 1.0
+    warmup_epochs: 3
+
+  # Learning rate schedule
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 2
+    min_lr: 1.0e-6
+
+  # Validation
+  val_batch_size: 64  # Reduced from 128
+  val_split: 0.1
+  val_frequency: 1
+  val_samples: 5
+
+  # Checkpointing
+  checkpoint_frequency: 5
+  save_best: true
+
+  # Logging
+  log_frequency: 50
+  use_wandb: false
+
+# Output
+output:
+  dir: "experiments/diffusion/results/temporal_resolution"
+  checkpoint_prefix: "temporal_resolution_d3pm"
+
+# Device
+device: "cuda"
+seed: 42
