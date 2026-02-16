@@ -37,9 +37,8 @@ from spinlock.experimental.diffusion.data import (
 from spinlock.experimental.diffusion.training import DiffusionTrainer
 
 # Import temporal resolution denoising network
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / "models"))
-from temporal_resolution_denoising_network import TemporalResolutionDenoisingNetwork
+# We'll import it properly after fixing the models __init__.py
+from spinlock.experimental.diffusion.models import TemporalResolutionDenoisingNetwork
 
 # Configure logging
 logging.basicConfig(
@@ -183,9 +182,37 @@ def main(args):
     # Extract vocab sizes from tokenizer (authoritative)
     if config.dataset.tokenizer_checkpoint is not None:
         logger.info("Extracting vocab sizes from tokenizer (authoritative)")
-        vocab_sizes, category_level_info = extract_vocab_sizes_and_info(
+        base_vocab_sizes, base_category_level_info = extract_vocab_sizes_and_info(
             config.dataset.tokenizer_checkpoint
         )
+
+        # Map truncated keys to base vocab sizes
+        # temporal_group_10_trunc_T032_L0 → temporal_group_10_L0 (same vocab!)
+        logger.info("Mapping truncated keys to base vocab sizes")
+        vocab_sizes = {}
+        category_level_info = {}
+
+        # Read actual keys from dataset
+        import h5py
+        with h5py.File(config.dataset.tokenized_path, 'r') as f:
+            dataset_keys = list(f['tokens'].keys())
+
+        for dataset_key in dataset_keys:
+            if '_trunc_' in dataset_key:
+                # Extract base key: temporal_group_10_trunc_T032_L0 → temporal_group_10_L0
+                parts = dataset_key.split('_trunc_')
+                base_key = parts[0] + '_' + parts[1].split('_', 1)[1]  # Skip T032 part
+            else:
+                base_key = dataset_key
+
+            # Map to base vocab size
+            if base_key in base_vocab_sizes:
+                vocab_sizes[dataset_key] = base_vocab_sizes[base_key]
+                if base_key in base_category_level_info:
+                    category_level_info[dataset_key] = base_category_level_info[base_key].copy()
+                    category_level_info[dataset_key]['original_key'] = base_key
+
+        logger.info(f"✓ Mapped {len(vocab_sizes)} keys ({len(dataset_keys)} dataset → {len(base_vocab_sizes)} base)")
     else:
         logger.warning(
             "No tokenizer_checkpoint provided — inferring vocab sizes from pretokenized data"
