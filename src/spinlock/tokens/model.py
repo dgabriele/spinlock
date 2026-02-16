@@ -197,11 +197,24 @@ class JointHierarchicalVQVAE(nn.Module):
             if config.encoder.temporal.variant == "pyramid":
                 vl_config = None
                 if config.encoder.temporal.variable_length:
-                    vl_config = {
-                        "enabled": True,
-                        "adaptive_pyramid": config.encoder.temporal.adaptive_pyramid,
-                        "min_pyramid_length": config.encoder.temporal.min_timesteps,
-                    }
+                    # Handle both bool and VariableLengthConfig
+                    if isinstance(config.encoder.temporal.variable_length, bool):
+                        # Legacy: just a boolean
+                        vl_config = {
+                            "enabled": True,
+                            "adaptive_pyramid": config.encoder.temporal.adaptive_pyramid,
+                            "min_pyramid_length": config.encoder.temporal.min_timesteps,
+                        }
+                    else:
+                        # New: VariableLengthConfig object
+                        vl_cfg = config.encoder.temporal.variable_length
+                        vl_config = {
+                            "enabled": vl_cfg.enabled,
+                            "adaptive_pyramid": vl_cfg.adaptive_pyramid,
+                            "min_pyramid_length": vl_cfg.min_pyramid_length,
+                            "mask_downsample_method": vl_cfg.mask_downsample_method,
+                        }
+                        # Note: length_bins and sampling_strategy are used by trainer, not encoder
 
                 # Determine input dimension
                 if self.temporal_input_dim is None:

@@ -1,7 +1,7 @@
 """Configuration models for VQ tokenizer."""
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Dict, List, Optional, Literal
+from typing import Dict, List, Optional, Literal, Union
 from pathlib import Path
 
 from spinlock.features.grouping.models import GroupingConfig
@@ -48,12 +48,24 @@ class InitialEncoderConfig(BaseModel):
     encode_manual: bool = False
 
 
+class VariableLengthConfig(BaseModel):
+    """Variable-length sequence configuration for pyramid encoder."""
+    enabled: bool = True
+    min_timesteps: int = Field(default=16, ge=1)
+    max_timesteps: int = Field(default=256, ge=1)
+    length_bins: Optional[List[int]] = None
+    sampling_strategy: Literal["fixed_bins", "uniform"] = "fixed_bins"
+    adaptive_pyramid: bool = True
+    min_pyramid_length: int = Field(default=1, ge=1)
+    mask_downsample_method: Literal["ceil", "floor"] = "ceil"
+
+
 class TemporalEncoderConfig(BaseModel):
     """Temporal sequence encoder configuration."""
     variant: Literal["mean", "cnn", "pyramid"] = "pyramid"
     level_dims: List[int] = Field(default=[32, 64, 96, 128])
     downsample_factors: List[int] = Field(default=[1, 2, 4, 8])
-    variable_length: bool = True
+    variable_length: Union[bool, VariableLengthConfig] = True
     min_timesteps: int = Field(default=16, ge=1)
     max_timesteps: int = Field(default=256, ge=1)
     adaptive_pyramid: bool = True

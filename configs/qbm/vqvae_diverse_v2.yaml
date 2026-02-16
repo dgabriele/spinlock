@@ -37,10 +37,15 @@ encoder:
     variant: "pyramid"
     level_dims: [32, 64, 96, 128]
     downsample_factors: [1, 2, 4, 8]
-    variable_length: true
-    min_timesteps: 16
-    max_timesteps: 256
-    adaptive_pyramid: true
+    variable_length:
+      enabled: true
+      min_timesteps: 32  # Minimum bin (256/8)
+      max_timesteps: 256  # Maximum bin (256/1)
+      length_bins: [32, 64, 128, 256]  # Derived from max_timesteps/downsample_factors
+      sampling_strategy: "fixed_bins"
+      adaptive_pyramid: true
+      min_pyramid_length: 1
+      mask_downsample_method: "ceil"
 
   theta:
     variant: "mlp"
