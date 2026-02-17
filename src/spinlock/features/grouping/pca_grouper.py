@@ -77,6 +77,103 @@ class PCAGrouper(FeatureGrouper):
             )
 
     def group_features(self, features: np.ndarray, feature_names: List[str]) -> GroupingResult:
+        """Dispatch to pca_striped or pca_raw based on config.method.
+
+        Args:
+            features: Feature matrix [N, D] (time-averaged temporal features).
+            feature_names: Names for each of the D features.
+
+        Returns:
+            GroupingResult. For pca_striped: linear_transform is set (PCA rotation
+            must be applied at inference). For pca_raw: linear_transform is None
+            (no rotation at inference — indices are raw feature positions).
+        """
+        if self.config.method == "pca_raw":
+            return self._group_features_raw(features, feature_names)
+        return self._group_features_striped(features, feature_names)
+
+    def _group_features_raw(
+        self, features: np.ndarray, feature_names: List[str]
+    ) -> GroupingResult:
+        """Use PCA loadings to assign each RAW feature to a group by dominant PC.
+
+        PCA is fit on cat([standardised_mean, std_proxy]) of the input features
+        to capture both level and dynamical amplitude in the loading structure.
+        Each raw feature j is then assigned to group ``dominant_pc[j] % M`` where
+        dominant_pc[j] = argmax_k ( |C[k,j]| + |C[k,j+D]| ).
+
+        Outcome: GroupingResult with raw feature indices (0..D-1), linear_transform=None.
+        The model slices temporal[:, :, raw_indices] directly — no rotation at inference.
+
+        Args:
+            features: Feature matrix [N, D] (time-averaged temporal features).
+            feature_names: Semantic names for each of the D raw features.
+
+        Returns:
+            GroupingResult with linear_transform=None and raw feature indices.
+        """
+        self.validate_features(features, feature_names)
+
+        N, D = features.shape
+        M = self.config.clustering.num_groups
+        seed = self.config.random_seed
+
+        logger.info(
+            f"PCAGrouper (pca_raw): fitting PCA on [{N}, {2 * D}] agg features, "
+            f"assigning {D} raw features to {M} groups via dominant-PC assignment."
+        )
+
+        # Standardise then form a mean+std-proxy concatenation for PCA fitting.
+        # std_proxy captures per-feature variance across samples (amplitude signal).
+        scaler = StandardScaler()
+        features_std = scaler.fit_transform(features)               # [N, D]
+        std_proxy = np.abs(features - features.mean(axis=0))        # [N, D]
+        agg = np.concatenate([features_std, std_proxy], axis=1)     # [N, 2D]
+
+        agg_scaler = StandardScaler()
+        agg = agg_scaler.fit_transform(agg)                         # [N, 2D]
+
+        n_components = min(2 * D, N - 1)
+        pca = PCA(n_components=n_components, random_state=seed, svd_solver="full")
+        pca.fit(agg)
+        components = pca.components_                                 # [n_pcs, 2D]
+
+        explained = pca.explained_variance_ratio_
+        logger.info(
+            f"PCA (pca_raw): top-5 explained variance = {explained[:5].round(4).tolist()}, "
+            f"cumulative = {explained.sum():.4f}"
+        )
+
+        # For each raw feature j: dominant_pc = argmax_k ( |C[k,j]| + |C[k,j+D]| )
+        # This sums the absolute loadings of the mean and std contributions for feature j.
+        loadings = np.abs(components[:, :D]) + np.abs(components[:, D:])  # [n_pcs, D]
+        dominant_pc = np.argmax(loadings, axis=0)                          # [D]
+
+        # Assign feature j → group (dominant_pc[j] % M)
+        # Striped modulo distributes high-variance PCs (low k) across different groups.
+        group_dict: dict[str, list[int]] = {f"group_{g}": [] for g in range(M)}
+        for j, pc_k in enumerate(dominant_pc):
+            group_dict[f"group_{int(pc_k) % M}"].append(j)
+
+        sizes = [len(v) for v in group_dict.values()]
+        logger.info(
+            f"pca_raw group sizes (min={min(sizes)}, max={max(sizes)}, "
+            f"mean={np.mean(sizes):.1f}): {sizes[:10]}{'...' if M > 10 else ''}"
+        )
+
+        # Build result with RAW feature names; no rotation transform stored.
+        result = self._to_result(group_dict, feature_names)
+        result.linear_transform = None  # explicit: no rotation at inference
+
+        logger.info(
+            f"PCAGrouper (pca_raw) done: {result.num_groups} groups, "
+            f"linear_transform=None (raw feature slicing at inference)."
+        )
+        return result
+
+    def _group_features_striped(
+        self, features: np.ndarray, feature_names: List[str]
+    ) -> GroupingResult:
         """Fit PCA and assign PCs to groups via striped (round-robin) assignment.
 
         Args:

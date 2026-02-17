@@ -87,6 +87,9 @@ class JointHierarchicalVQVAE(nn.Module):
         # Per-group encoder mode (active when grouping.method = pca_striped | opq)
         # Each entry encodes one group's raw features [B, G_k] → [B, embedding_dim]
         self.per_group_temporal_encoders: Optional[nn.ModuleDict] = None
+        # Per-group pyramid encoder mode (active when method = pca_raw + variant = pyramid)
+        # Each entry encodes [B, T, G_k] directly, preserving temporal dynamics.
+        self.per_group_pyramid_encoders: Optional[nn.ModuleDict] = None
         # Rotation buffers (registered so they move with .to(device))
         # Set via set_temporal_rotation() after model creation
         self.register_buffer("temporal_rotation_mean", None)
@@ -134,10 +137,14 @@ class JointHierarchicalVQVAE(nn.Module):
             family, _ = family_cat.split('_', 1)
 
             # Determine source dimension for this category.
-            # In per-group encoder mode, each temporal group's projector receives
-            # embedding_dim input (output of the per-group MLP) rather than the
-            # raw feature count.  All other families still use raw feature count.
-            if family == "temporal" and self.per_group_temporal_encoders is not None:
+            # In per-group encoder mode (pca_striped MLP or pca_raw pyramid), each
+            # temporal group's projector receives embedding_dim input (output of the
+            # per-group encoder) rather than the raw feature count.
+            # All other families still use raw feature count.
+            if family == "temporal" and (
+                self.per_group_temporal_encoders is not None
+                or self.per_group_pyramid_encoders is not None
+            ):
                 cat_dim = config.encoder.embedding_dim
             else:
                 cat_dim = len(indices)
@@ -203,6 +210,70 @@ class JointHierarchicalVQVAE(nn.Module):
             and getattr(cfg.grouping, "method", "correlation") in ("pca_striped", "opq")
         )
 
+    def _use_per_group_pyramid(self) -> bool:
+        """True when pca_raw grouping + pyramid variant: per-group pyramid encoders active.
+
+        pca_raw assigns raw temporal features to groups by dominant PCA loading.
+        Each group's slice [B, T, G_k] is passed directly to its own PyramidTemporalEncoder,
+        preserving full temporal dynamics without any rotation at inference.
+        """
+        return (
+            self.config.grouping is not None
+            and getattr(self.config.grouping, "method", "correlation") == "pca_raw"
+            and getattr(self.config.encoder.temporal, "variant", "mean") == "pyramid"
+        )
+
+    def _setup_per_group_pyramid_encoders(
+        self,
+        temporal_groups: dict,
+    ) -> None:
+        """Create one PyramidTemporalEncoder per temporal group (pca_raw path).
+
+        Each encoder operates on the group's raw feature slice [B, T, G_k] and
+        produces [B, sum(level_dims)] = [B, embedding_dim].  Group sizes vary;
+        input_dim is set per-group from len(indices).
+
+        Args:
+            temporal_groups: Dict mapping group_name → list of raw feature indices.
+        """
+        pyramid_cfg = self.config.encoder.temporal
+
+        # Build variable_length_config dict if configured (same logic as shared pyramid)
+        vl_config = None
+        if pyramid_cfg.variable_length:
+            if isinstance(pyramid_cfg.variable_length, bool):
+                vl_config = {
+                    "enabled": True,
+                    "adaptive_pyramid": pyramid_cfg.adaptive_pyramid,
+                    "min_pyramid_length": pyramid_cfg.min_timesteps,
+                }
+            else:
+                vl_cfg = pyramid_cfg.variable_length
+                vl_config = {
+                    "enabled": vl_cfg.enabled,
+                    "adaptive_pyramid": vl_cfg.adaptive_pyramid,
+                    "min_pyramid_length": vl_cfg.min_pyramid_length,
+                    "mask_downsample_method": vl_cfg.mask_downsample_method,
+                }
+
+        self.per_group_pyramid_encoders = nn.ModuleDict({
+            group_name: PyramidTemporalEncoder(
+                input_dim=len(indices),
+                level_dims=pyramid_cfg.level_dims,
+                variable_length_config=vl_config,
+            )
+            for group_name, indices in temporal_groups.items()
+            if group_name.startswith("temporal_")
+        })
+
+        embedding_dim = sum(pyramid_cfg.level_dims)
+        logger.info(
+            "Per-group pyramid encoders: %d groups × %dD = %dD total temporal dim",
+            len(self.per_group_pyramid_encoders),
+            embedding_dim,
+            len(self.per_group_pyramid_encoders) * embedding_dim,
+        )
+
     def set_temporal_rotation(self, transform: Any) -> None:
         """Register a PCA/OPQ rotation transform as model buffers.
 
@@ -229,7 +300,19 @@ class JointHierarchicalVQVAE(nn.Module):
 
         # Temporal encoder
         if "temporal" in self.families:
-            if config.encoder.temporal.variant == "pyramid":
+            if config.encoder.temporal.variant == "pyramid" and self._use_per_group_pyramid():
+                # ── pca_raw + pyramid: per-group pyramid encoders ────────────
+                # No shared temporal_encoder; each group slice goes to its own
+                # PyramidTemporalEncoder([B, T, G_k]) → [B, embedding_dim].
+                temporal_groups = {
+                    k: v for k, v in self.group_indices.items()
+                    if k.startswith("temporal_")
+                }
+                self._setup_per_group_pyramid_encoders(temporal_groups)
+                embedding_dim = sum(config.encoder.temporal.level_dims)
+                self.temporal_dim = len(temporal_groups) * embedding_dim
+
+            elif config.encoder.temporal.variant == "pyramid":
                 vl_config = None
                 if config.encoder.temporal.variable_length:
                     # Handle both bool and VariableLengthConfig
@@ -532,7 +615,32 @@ class JointHierarchicalVQVAE(nn.Module):
             if temporal_features is None:
                 raise ValueError("temporal_features required for temporal family")
 
-            if self.per_group_temporal_encoders is not None:
+            if self.per_group_pyramid_encoders is not None:
+                # ── pca_raw path: per-group pyramid encoders on raw feature slices ──
+                # No rotation. Each group's raw features are sliced from the temporal
+                # tensor [B, T, D_t] → [B, T, G_k] and encoded by its own
+                # PyramidTemporalEncoder → [B, embedding_dim].
+                group_encoded_parts = []
+                for family_cat, indices in self.group_indices.items():
+                    if not family_cat.startswith("temporal_"):
+                        continue
+                    idx_t = torch.tensor(
+                        indices, device=temporal_features.device, dtype=torch.long
+                    )
+                    group_temporal = temporal_features[:, :, idx_t]  # [B, T, G_k]
+                    encoder = self.per_group_pyramid_encoders[family_cat]
+                    if temporal_mask is not None:
+                        enc, _ = encoder(
+                            group_temporal, mask=temporal_mask, lengths=temporal_lengths
+                        )
+                    else:
+                        enc = encoder(group_temporal)
+                    encoded[family_cat] = enc
+                    group_encoded_parts.append(enc)
+
+                encoded["temporal"] = torch.cat(group_encoded_parts, dim=1)
+
+            elif self.per_group_temporal_encoders is not None:
                 # ── Per-group encoder path (PCA/OPQ grouping) ────────────────
                 # Temporal summary: cat([mean, std]) over the time dimension.
                 # mean(dim=1): trajectory-averaged level (correlated with steady state)
@@ -614,9 +722,13 @@ class JointHierarchicalVQVAE(nn.Module):
             family, cat_name = family_cat.split('_', 1)
 
             # Extract features for this category.
-            # Per-group path: temporal groups are already encoded in encoded[family_cat].
+            # Per-group paths (pca_raw pyramid or pca_striped MLP): temporal groups
+            # are already encoded individually in encoded[family_cat].
             # Legacy path: slice from the concatenated all_encoded.
-            if family == "temporal" and self.per_group_temporal_encoders is not None:
+            if family == "temporal" and (
+                self.per_group_temporal_encoders is not None
+                or self.per_group_pyramid_encoders is not None
+            ):
                 cat_features = encoded[family_cat]  # [B, embedding_dim]
             else:
                 cat_features = all_encoded[:, indices]  # [B, cat_dim]

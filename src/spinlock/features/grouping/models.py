@@ -84,12 +84,15 @@ class SplittingParams(BaseModel):
 
 class GroupingConfig(BaseModel):
     """Complete configuration for feature grouping."""
-    method: Literal["correlation", "pca_striped", "opq"] = Field(
+    method: Literal["correlation", "pca_striped", "pca_raw", "opq"] = Field(
         "correlation",
         description=(
             "Grouping method. 'correlation' uses Ward hierarchical clustering (legacy); "
             "'pca_striped' rotates to PCA basis then assigns PC i → group i%M, giving each "
             "group an equal share of high/medium/low variance (recommended); "
+            "'pca_raw' uses PCA loadings as a grouping oracle to assign raw features to groups "
+            "by dominant PC — no rotation at inference, per-group pyramid encoders act on raw "
+            "feature slices [B, T, G_k] directly; "
             "'opq' uses FAISS OPQ for optimal product quantization (requires faiss-cpu)."
         ),
     )

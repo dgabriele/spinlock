@@ -53,7 +53,7 @@ def create_grouper(
     # For temporal, dispatch by method
     if family == "temporal":
         method = getattr(config, "method", "correlation")
-        if method == "pca_striped":
+        if method in ("pca_striped", "pca_raw"):
             return PCAGrouper(config)
         elif method == "opq":
             # Stage 2: OPQ via FAISS (same interface as PCAGrouper)
