@@ -1,23 +1,10 @@
-# VQ Tokenizer — v4 OPQ / PCA-Striped Configuration
+# VQ Tokenizer - v4: PCA-Striped Grouping + Per-Group Encoders
 #
-# Core change from v3:
-#   - Grouping method: correlation (Ward) → pca_striped
-#   - Temporal encoder: pyramid → mean (per-group MLPs replace the shared encoder)
-#
-# Why this fixes code collapse:
-#   Ward clustering groups *similar* features together → each codebook sees near-1D
-#   input (correlation ≈ 1) → EMA has almost no inter-centroid variation → 2-4 codes
-#   used per codebook (util_epoch ≈ 8%).
-#
-#   PCA + striped assignment puts PC_i → group (i % 30).  Each group receives one
-#   high-variance PC, one medium PC, and several low-variance PCs.  Per-group MLPs
-#   (2-layer, GeLU-activated) learn to encode each group's multi-dimensional subspace
-#   independently — no information leaks between groups through a shared encoder.
-#
-# Target:
-#   - util_epoch  > 50%    (vs 8% in v3)
-#   - unique tuples >> 886 (vs 886 from 50K samples)
-#   - giant-class fraction < 20% (vs 43.7%)
+# Based on v3 (vqvae_v3_dead_reset.yaml). Two changes only:
+#   encoder.temporal.variant:    "pyramid" → "mean"
+#   grouping.method:             (absent)  → "pca_striped"
+#   grouping.clustering:         silhouette search → num_groups: 30 (fixed)
+#   grouping.skip_gradient_refinement: false → true  (not applicable to PCA)
 
 dataset_path: "datasets/qbm_50k.h5"
 
@@ -34,9 +21,16 @@ encoder:
     encode_manual: true
 
   temporal:
-    # Per-group encoders take over from the shared pyramid encoder.
-    # 'mean' variant: time-average → [B, D_t], then split by group → per-group MLPs.
     variant: "mean"
+    variable_length:
+      enabled: true
+      min_timesteps: 32
+      max_timesteps: 256
+      length_bins: [32, 64, 128, 256]
+      sampling_strategy: "fixed_bins"
+      adaptive_pyramid: true
+      min_pyramid_length: 1
+      mask_downsample_method: "ceil"
 
   theta:
     variant: "mlp"
@@ -45,8 +39,6 @@ encoder:
     dropout: 0.25
     use_layer_norm: true
 
-  # This is used as the per-group MLP output dimension.
-  # Each of the 30 temporal groups is encoded to embedding_dim-D latent before VQ.
   embedding_dim: 64
   hidden_dim: 128
   dropout: 0.5
@@ -87,26 +79,33 @@ feature_cleaning:
   percentile_range: [0.5, 99.5]
 
 # ═══════════════════════════════════════════════════════════════
-# Grouping — PCA + Striped Assignment
+# Grouping
 # ═══════════════════════════════════════════════════════════════
 
 grouping:
-  # method = pca_striped → PCAGrouper (no Ward clustering, no gradient refinement)
   method: "pca_striped"
 
   preprocessing:
-    method: "mad"          # Robust pre-normalization before PCA fitting
+    method: "mad"
     clip_outliers: false
 
   clustering:
-    # num_groups is REQUIRED for PCA/OPQ (no silhouette search)
     num_groups: 30
 
-  # gradient refinement and splitting are not applicable to rotation-based methods
-  skip_gradient_refinement: true
+  gradient:
+    num_epochs: 500
+    learning_rate: 0.01
+    temperature_start: 1.0
+    temperature_end: 0.5
+    orthogonality_weight: 1.0
+    informativeness_weight: 1.0
+    orthogonality_target: 0.15
+    device: "auto"
+
   splitting:
     enabled: false
 
+  skip_gradient_refinement: true
   random_seed: 42
 
 # ═══════════════════════════════════════════════════════════════
@@ -119,7 +118,7 @@ inverse_heads:
   initial_base_channels: 256
 
 # ═══════════════════════════════════════════════════════════════
-# Training — Dead Code Reset Enabled
+# Training - DEAD CODE RESET ENABLED
 # ═══════════════════════════════════════════════════════════════
 
 training:
@@ -140,7 +139,7 @@ training:
   early_stopping_patience: 30
   early_stopping_min_delta: 0.001
 
-  # Dead code reset keeps codebooks alive throughout training
+  # ── Dead code reset: ENABLED ──────────────────────────────────
   dead_code_reset_interval: 5    # every 5 epochs (~295 batches; EMA 95% settled)
   dead_code_threshold: 0.01      # codes used < 1% of time are reset
 
