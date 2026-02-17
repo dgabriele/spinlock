@@ -534,13 +534,18 @@ class JointHierarchicalVQVAE(nn.Module):
 
             if self.per_group_temporal_encoders is not None:
                 # ── Per-group encoder path (PCA/OPQ grouping) ────────────────
-                # Time-average over the sequence dimension: [B, T, D_t] → [B, D_t]
-                temporal_mean = temporal_features.mean(dim=1)
+                # Temporal summary: cat([mean, std]) over the time dimension.
+                # mean(dim=1): trajectory-averaged level (correlated with steady state)
+                # std(dim=1):  dynamical amplitude (correlated with parameter-driven dynamics)
+                # Together: [B, 2*D_t] — avoids the rank-1 collapse that mean alone produces.
+                temporal_mean = temporal_features.mean(dim=1)  # [B, D_t]
+                temporal_std  = temporal_features.std(dim=1)   # [B, D_t]
+                temporal_summary = torch.cat([temporal_mean, temporal_std], dim=1)  # [B, 2*D_t]
 
-                # Apply PCA/OPQ rotation if set: [B, D_t] → [B, D_t]
+                # Apply PCA/OPQ rotation if set: [B, 2*D_t] → [B, 2*D_t]
                 if self.temporal_rotation_matrix is not None:
-                    temporal_mean = (
-                        (temporal_mean - self.temporal_rotation_mean)
+                    temporal_summary = (
+                        (temporal_summary - self.temporal_rotation_mean)
                         @ self.temporal_rotation_matrix.T
                     )
 
@@ -548,7 +553,7 @@ class JointHierarchicalVQVAE(nn.Module):
                 group_encoded_parts = []
                 for family_cat, indices in self.group_indices.items():
                     if family_cat.startswith("temporal_"):
-                        group_feats = temporal_mean[:, indices]  # [B, G_k]
+                        group_feats = temporal_summary[:, indices]  # [B, G_k]
                         enc = self.per_group_temporal_encoders[family_cat](group_feats)
                         encoded[family_cat] = enc        # used in quantization loop
                         group_encoded_parts.append(enc)

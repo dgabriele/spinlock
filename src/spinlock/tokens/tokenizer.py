@@ -140,7 +140,7 @@ class VQTokenizer:
             self.config.feature_cleaning.enabled and
             self.config.feature_cleaning.pre_categorization):
             logger.info("Cleaning features (pre-categorization)")
-            features = self._clean_features(features)
+            features = self.clean_features(features)
 
         # Perform feature grouping if config specifies it
         if self.config.grouping is not None and self.group_indices is None:
@@ -164,8 +164,18 @@ class VQTokenizer:
         initial_input_dim = None
 
         if features.get('temporal') is not None:
-            temporal_input_dim = features['temporal'].shape[2]  # [N, T, D]
-            logger.info(f"Detected temporal input dim: {temporal_input_dim}")
+            D_t = features['temporal'].shape[2]  # [N, T, D]
+            _pca_method = (
+                self.config.grouping is not None
+                and getattr(self.config.grouping, "method", "correlation")
+                in ("pca_striped", "opq")
+            )
+            # Per-group encoders receive cat([mean, std]) → 2*D_t features
+            temporal_input_dim = 2 * D_t if _pca_method else D_t
+            logger.info(
+                f"Detected temporal input dim: {temporal_input_dim}"
+                + (" (mean+std concat)" if _pca_method else "")
+            )
 
         if features.get('initial_manual') is not None:
             initial_input_dim = features['initial_manual'].shape[1]  # [N, D]
@@ -620,7 +630,7 @@ class VQTokenizer:
 
         return features
 
-    def _clean_features(
+    def clean_features(
         self, features: Dict[str, Optional[torch.Tensor]]
     ) -> Dict[str, Optional[torch.Tensor]]:
         """Clean features using FeatureProcessor.
@@ -1131,15 +1141,39 @@ class VQTokenizer:
         if features.get('temporal') is not None:
             temporal = features['temporal']
 
-            # Aggregate over time for grouping (mean)
-            temporal_agg = temporal.mean(dim=1).numpy()  # [N, D_t]
+            # Aggregate over time for grouping.
+            # For pca_striped/opq: cat([mean, std]) so PCA sees both the
+            # trajectory's mean level AND its dynamical amplitude.  Mean alone
+            # is near rank-1 for physics datasets (all trajectories share similar
+            # time-averaged behavior); std captures per-feature oscillation depth,
+            # which varies meaningfully with the 9 system parameters.
+            # For correlation-based grouping: mean only (legacy behaviour).
+            _use_mean_std = (
+                self.config.grouping is not None
+                and getattr(self.config.grouping, "method", "correlation")
+                in ("pca_striped", "opq")
+            )
+            if _use_mean_std:
+                t_mean = temporal.mean(dim=1)          # [N, D_t]
+                t_std  = temporal.std(dim=1)           # [N, D_t]
+                temporal_agg = torch.cat([t_mean, t_std], dim=1).numpy()  # [N, 2*D_t]
+                logger.info(
+                    f"Temporal grouping input: cat([mean, std]) → {temporal_agg.shape} "
+                    f"(mean alone was near rank-1)"
+                )
+            else:
+                temporal_agg = temporal.mean(dim=1).numpy()  # [N, D_t]
 
-            # Get feature names from metadata (semantic) or fall back to generic
-            if (self.feature_metadata is not None
+            # Get feature names matching the grouping input dimension.
+            # For pca_striped/opq the input is cat([mean, std]) → 2*D_t, so
+            # semantic names (length D_t) don't match; use generic indexed names.
+            D_agg = temporal_agg.shape[1]
+            if (not _use_mean_std
+                    and self.feature_metadata is not None
                     and 'temporal' in self.feature_metadata.families):
                 temporal_names = self.feature_metadata.families['temporal'].kept_feature_names
             else:
-                temporal_names = [f"temporal_{i}" for i in range(temporal_agg.shape[1])]
+                temporal_names = [f"temporal_{i}" for i in range(D_agg)]
 
             # Create grouper
             grouper = create_grouper("temporal", config=self.config.grouping)
@@ -1223,7 +1257,7 @@ class VQTokenizer:
             # Build mapping from cleaned index to original index
             cleaned_to_original = {i: orig_idx for i, orig_idx in enumerate(kept_indices)}
         else:
-            # Fallback if no temporal family (shouldn't happen after _clean_features)
+            # Fallback if no temporal family (shouldn't happen after clean_features)
             temporal = features.get('temporal')
             if temporal is not None:
                 D_t = temporal.shape[2]

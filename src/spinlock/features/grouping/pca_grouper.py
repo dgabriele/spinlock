@@ -15,6 +15,7 @@ from typing import List
 
 import numpy as np
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 
 from spinlock.encoding.normalization import LinearTransform
 
@@ -97,20 +98,40 @@ class PCAGrouper(FeatureGrouper):
             f"assigning to {M} groups via striped assignment."
         )
 
-        # ── 1. Full PCA (no truncation: pure rotation + variance sorting) ──────
+        # ── 1. Standardize then PCA (no truncation: pure rotation + variance sort) ──
+        # Standardize first (zero mean, unit variance per feature) so that features
+        # with large absolute variance don't dominate PC0. Without this, a single
+        # high-scale feature can claim 99.98% of explained variance, reducing
+        # effective rank to 1 for all 30 groups.
+        #
+        # The scale is folded into LinearTransform.components so that
+        #   apply(x) = (x - mean) @ components.T
+        # transparently implements the full standardize-then-rotate pipeline:
+        #   x_rot = ((x - mu_std) / sigma_std) @ R.T
+        #         = (x - mu_std) @ (R * (1/sigma_std)[None, :]).T
+        scaler = StandardScaler()
+        features_std = scaler.fit_transform(features)  # [N, D], zero-mean, unit-var
+
         seed = self.config.random_seed
         pca = PCA(n_components=D, random_state=seed, svd_solver="full")
-        pca.fit(features)
+        pca.fit(features_std)
+
+        # Fold scaler into components: apply() = (x - mean) @ components.T
+        # PCA.mean_ ≈ 0 (features_std is already centered), so we use scaler.mean_.
+        inv_scale = (1.0 / scaler.scale_).astype(np.float32)   # [D]
+        # pca.components_ shape: [D, D], rows = principal components
+        components_folded = pca.components_.astype(np.float32) * inv_scale[None, :]
 
         transform = LinearTransform(
-            mean=pca.mean_.astype(np.float32),
-            components=pca.components_.astype(np.float32),  # [D, D], rows = PCs
+            mean=scaler.mean_.astype(np.float32),
+            components=components_folded,  # [D, D], rows = PCs (with scale folded in)
         )
 
         explained = pca.explained_variance_ratio_
+        pcs_90 = int(np.searchsorted(np.cumsum(explained), 0.90)) + 1
         logger.info(
-            f"PCA: top-5 explained variance = {explained[:5].round(4).tolist()}, "
-            f"cumulative={explained.sum():.4f}"
+            f"PCA (standardized): top-5 explained variance = {explained[:5].round(4).tolist()}, "
+            f"PCs for 90%={pcs_90}, cumulative={explained.sum():.4f}"
         )
 
         # ── 2. Striped assignment: PC i → group (i % M) ──────────────────────
