@@ -1,0 +1,203 @@
+# VQ Tokenizer - Diversity-Enhanced Configuration (v2.1 - Higher Regularization)
+#
+# v2.1 changes from v2:
+# - Increased dropout: 0.4 → 0.5 (encoder), 0.15 → 0.25 (theta)
+# - Increased weight_decay: 0.02 → 0.05
+# - Reduced roundtrip_weight: 10.0 → 8.0 (prevent overfitting)
+# - Tighter early stopping: patience 50 → 30, val_every 5 → 3
+#
+# Addresses train/val divergence observed in v2:
+# - Epoch 65: Train=0.010, Val=0.140 (14x gap)
+# - Overfitting to training set despite variable-length augmentation
+
+dataset_path: "datasets/qbm_50k.h5"
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration - INCREASED DROPOUT
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  initial:
+    variant: "hybrid"
+    cnn_embedding_dim: 384
+    pretrained_cnn_path: null
+    use_final_batchnorm: true
+    encode_manual: true
+
+  temporal:
+    variant: "pyramid"
+    level_dims: [32, 64, 96, 128]
+    downsample_factors: [1, 2, 4, 8]
+    variable_length:
+      enabled: true
+      min_timesteps: 32
+      max_timesteps: 256
+      length_bins: [32, 64, 128, 256]
+      sampling_strategy: "fixed_bins"
+      adaptive_pyramid: true
+      min_pyramid_length: 1
+      mask_downsample_method: "ceil"
+
+  theta:
+    variant: "mlp"
+    hidden_dim: 64
+    output_dim: 32
+    dropout: 0.25  # CHANGE: 0.15 → 0.25 (stronger theta regularization)
+    use_layer_norm: true
+
+  embedding_dim: 64
+  hidden_dim: 128
+  dropout: 0.5  # CHANGE: 0.4 → 0.5 (prevent encoder overfitting)
+  use_layer_norm: true
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer - Low commitment cost for exploration
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  embedding_dim: 64
+  commitment_cost: 0.25
+  use_ema: true
+  ema_decay: 0.99
+  epsilon: 1.0e-5
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchy - DOUBLED CAPACITY
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3
+  compression_ratios: "0.5:1.0:1.5"
+  min_latent_dim: 4
+  max_latent_dim: 192
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Cleaning
+# ═══════════════════════════════════════════════════════════════
+
+feature_cleaning:
+  enabled: true
+  pre_categorization: true
+  variance_threshold: 1.0e-8
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
+  outlier_method: "percentile"
+  percentile_range: [0.5, 99.5]
+
+# ═══════════════════════════════════════════════════════════════
+# Grouping
+# ═══════════════════════════════════════════════════════════════
+
+grouping:
+  preprocessing:
+    method: "mad"
+    clip_outliers: false
+
+  clustering:
+    linkage_method: "ward"
+    distance_metric: "correlation"
+    k_selection_method: "silhouette"
+    min_groups: 8
+    max_groups: 20
+    use_gpu: true
+
+  gradient:
+    num_epochs: 500
+    learning_rate: 0.01
+    temperature_start: 1.0
+    temperature_end: 0.5
+    orthogonality_weight: 1.0
+    informativeness_weight: 1.0
+    orthogonality_target: 0.15
+    device: "auto"
+
+  splitting:
+    enabled: false
+
+  skip_gradient_refinement: false
+  random_seed: 42
+
+# ═══════════════════════════════════════════════════════════════
+# Inverse Heads
+# ═══════════════════════════════════════════════════════════════
+
+inverse_heads:
+  theta_hidden_dim: 128
+  theta_dropout: 0.15
+  initial_base_channels: 256
+
+# ═══════════════════════════════════════════════════════════════
+# Training - STRONGER REGULARIZATION
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 1000
+  batch_size: 768
+  learning_rate: 0.001
+  val_split: 0.1
+  val_every_n_epochs: 3  # CHANGE: 5 → 3 (catch overfitting faster)
+
+  optimizer: "adamw"
+  weight_decay: 0.05  # CHANGE: 0.02 → 0.05 (stronger L2 regularization)
+  gradient_clip_norm: 1.0
+
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 10
+
+  early_stopping_patience: 30  # CHANGE: 50 → 30 (stop sooner)
+  early_stopping_min_delta: 0.001  # CHANGE: 0.0001 → 0.001 (require bigger improvement)
+
+  dead_code_reset_interval: 999999
+  dead_code_threshold: 0.0
+
+  device: "auto"
+  compile_model: false
+
+# ═══════════════════════════════════════════════════════════════
+# Loss - REDUCED ROUNDTRIP WEIGHT
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  reconstruction_weight: 0.0003
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topographic_weight: 0.2
+  normalize_reconstruction: true
+
+  roundtrip:
+    enabled: true
+    weight: 8.0  # CHANGE: 10.0 → 8.0 (reduce exact-match pressure)
+    theta_weight: 1.0
+    initial_weight: 1.0
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "none"
+  clip_std_multiplier: null
+
+# ═══════════════════════════════════════════════════════════════
+# System
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 42
+verbose: true
+log_level: "INFO"
+
+# ═══════════════════════════════════════════════════════════════
+# Expected Behavior
+# ═══════════════════════════════════════════════════════════════
+#
+# With stronger regularization:
+# - Train loss will plateau HIGHER (~0.02-0.03 vs 0.01)
+# - Val loss should stay closer to train loss (~2-3x gap vs 14x)
+# - Early stopping should trigger around epoch 100-150 (vs 1000)
+# - Better generalization → more meaningful token diversity
+#
+# If train/val STILL diverge significantly:
+# → Model capacity too high for 50K samples
+# → Consider max_latent_dim: 192 → 128 (reduce codebook sizes)
+#

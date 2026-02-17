@@ -15,8 +15,8 @@
 
 # Dataset
 dataset:
-  tokenized_path: "datasets/qbm_50k_temporal_resolution.h5"  # Generated with --temporal-resolution
-  tokenizer_checkpoint: "checkpoints/qbm/vqvae_fixed_metric/vq_tokenizer_best.pt"  # For vocab sizes
+  tokenized_path: "datasets/qbm_50k_tokenized_multiresolution.h5"  # Generated with --temporal-resolution
+  tokenizer_checkpoint: "checkpoints/v2/vqvae/vq_tokenizer_best.pt"  # For vocab sizes (variable-length trained)
   use_pretokenized: true
 
 # Masking strategy

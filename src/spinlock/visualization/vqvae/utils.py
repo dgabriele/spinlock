@@ -1444,3 +1444,396 @@ def hierarchical_cluster_rollouts(
     linkage_matrix = linkage(condensed_dist, method=method)
 
     return linkage_matrix
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Physics-alignment diagnostics (Data Layer)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def load_token_matrix(tokens_h5_path: str) -> tuple:
+    """Load all token categories as [N, n_cats] int32 array + sorted key list.
+
+    Args:
+        tokens_h5_path: Path to pretokenized HDF5 (tokens group with one dataset per category)
+
+    Returns:
+        (tokens [N, n_cats] int32, sorted list of category keys)
+    """
+    import h5py
+
+    with h5py.File(tokens_h5_path, "r") as f:
+        tokens_group = f["tokens"]
+        token_keys = sorted(tokens_group.keys())
+        n_samples = tokens_group[token_keys[0]].shape[0]
+
+        print(f"  Loading token matrix: {n_samples:,} samples × {len(token_keys)} categories")
+        tokens = np.stack(
+            [tokens_group[k][:] for k in token_keys], axis=1
+        ).astype(np.int32)
+
+    print(f"  ✓ Token matrix shape: {tokens.shape}  ({tokens.nbytes / 1e6:.1f} MB)")
+    return tokens, list(token_keys)
+
+
+def load_physics_params(
+    params_h5_path: str, param_names: Optional[List[str]] = None
+) -> tuple:
+    """Load physical parameters [N, P] float32 + infer/return param names.
+
+    Expects dataset at /parameters/params or /params (falls back in order).
+
+    Args:
+        params_h5_path: Path to HDF5 with physical parameters
+        param_names: Optional list of parameter names; auto-inferred if None
+
+    Returns:
+        (params [N, P] float32, list of param names)
+    """
+    import h5py
+
+    with h5py.File(params_h5_path, "r") as f:
+        # Try common locations for parameter data
+        if "parameters" in f and "params" in f["parameters"]:
+            raw = f["parameters/params"][:]
+            if param_names is None:
+                # Try to load names from metadata
+                if "parameters" in f and "param_names" in f["parameters"]:
+                    param_names = [
+                        n.decode() if isinstance(n, bytes) else n
+                        for n in f["parameters/param_names"][:]
+                    ]
+        elif "params" in f:
+            raw = f["params"][:]
+        else:
+            raise ValueError(f"No parameter dataset found in {params_h5_path}")
+
+    params = raw.astype(np.float32)
+    if param_names is None:
+        param_names = [f"param_{i}" for i in range(params.shape[1])]
+
+    print(f"  ✓ Physics params: {params.shape}  names={param_names[:5]}{'...' if len(param_names) > 5 else ''}")
+    return params, param_names
+
+
+def compute_discrimination_ratios(
+    tokens: np.ndarray,
+    params: np.ndarray,
+    param_names: List[str],
+    subsample: int = 5000,
+    n_quintiles: int = 5,
+) -> Dict[str, float]:
+    """Compute discrimination ratio per physical parameter.
+
+    For each parameter, split samples into quintile groups, then compute:
+      ratio = mean_between_group_distance / mean_within_group_distance
+
+    ratio < 1.0: token space discriminates samples that differ on this parameter
+    ratio ≈ 1.0: token space is indifferent to this parameter
+
+    Uses Hamming distance between token vectors.
+
+    Args:
+        tokens: [N, n_cats] int32 token array
+        params: [N, P] float32 physical parameters
+        param_names: Names for each parameter column
+        subsample: Max samples to use (random subsample for speed)
+        n_quintiles: Number of quantile groups to split into
+
+    Returns:
+        Dict mapping param_name → discrimination ratio
+    """
+    from sklearn.metrics import pairwise_distances
+
+    N = tokens.shape[0]
+    if N > subsample:
+        rng = np.random.default_rng(42)
+        idx = rng.choice(N, subsample, replace=False)
+        tokens_sub = tokens[idx]
+        params_sub = params[idx]
+    else:
+        tokens_sub = tokens
+        params_sub = params
+
+    print(f"  Computing Hamming distance matrix ({len(tokens_sub):,} × {len(tokens_sub):,})...")
+    # Normalize tokens to [0,1] range for hamming distance (hamming = fraction of positions that differ)
+    dist_matrix = pairwise_distances(tokens_sub, metric="hamming").astype(np.float32)
+    print(f"  ✓ Distance matrix computed")
+
+    ratios = {}
+    for p_idx, p_name in enumerate(param_names):
+        p_vals = params_sub[:, p_idx]
+        # Skip degenerate params
+        if np.std(p_vals) < 1e-10:
+            ratios[p_name] = 1.0
+            continue
+
+        # Assign quintile groups
+        quantiles = np.percentile(p_vals, np.linspace(0, 100, n_quintiles + 1))
+        groups = np.digitize(p_vals, quantiles[1:-1])  # 0..n_quintiles-1
+
+        within_dists = []
+        between_dists = []
+        for g in range(n_quintiles):
+            mask_g = groups == g
+            if mask_g.sum() < 2:
+                continue
+            # Within-group distances (upper triangle)
+            d_block = dist_matrix[np.ix_(mask_g, mask_g)]
+            n_g = mask_g.sum()
+            triu_idx = np.triu_indices(n_g, k=1)
+            within_dists.extend(d_block[triu_idx].tolist())
+            # Between-group: this group vs all others
+            mask_other = ~mask_g
+            if mask_other.sum() > 0:
+                d_cross = dist_matrix[np.ix_(mask_g, mask_other)]
+                between_dists.extend(d_cross.ravel().tolist())
+
+        mean_within = np.mean(within_dists) if within_dists else 1.0
+        mean_between = np.mean(between_dists) if between_dists else 1.0
+        ratios[p_name] = float(mean_between / (mean_within + 1e-12))
+
+    return ratios
+
+
+def compute_category_param_mi(
+    tokens: np.ndarray,
+    params: np.ndarray,
+    param_names: List[str],
+    n_bins: int = 5,
+) -> tuple:
+    """Compute mutual information matrix between token categories and parameters.
+
+    Each token category is discrete (code index); each parameter is binned
+    into n_bins equal-width bins before computing MI.
+
+    Args:
+        tokens: [N, n_cats] int32
+        params: [N, P] float32
+        param_names: Names for each parameter column
+        n_bins: Number of bins for continuous parameter discretization
+
+    Returns:
+        (mi_raw [n_cats, P], mi_norm [n_cats, P]) — raw and normalized MI matrices.
+        mi_norm is normalized per-parameter by H(param) so values are in [0, 1].
+    """
+    from sklearn.metrics import mutual_info_score
+
+    n_cats = tokens.shape[1]
+    n_params = params.shape[1]
+    mi_raw = np.zeros((n_cats, n_params), dtype=np.float32)
+
+    print(f"  Computing MI matrix: {n_cats} categories × {n_params} parameters...")
+
+    # Bin each parameter
+    params_binned = np.zeros_like(params, dtype=np.int32)
+    for p in range(n_params):
+        p_vals = params[:, p]
+        if np.std(p_vals) < 1e-10:
+            params_binned[:, p] = 0
+        else:
+            bins = np.percentile(p_vals, np.linspace(0, 100, n_bins + 1))
+            params_binned[:, p] = np.clip(np.digitize(p_vals, bins[1:-1]), 0, n_bins - 1)
+
+    for c in range(n_cats):
+        for p in range(n_params):
+            mi_raw[c, p] = mutual_info_score(tokens[:, c], params_binned[:, p])
+
+    # Normalize per-parameter by H(param)
+    mi_norm = np.zeros_like(mi_raw)
+    for p in range(n_params):
+        counts = np.bincount(params_binned[:, p], minlength=n_bins)
+        probs = counts / counts.sum()
+        h_param = -np.sum(probs[probs > 0] * np.log(probs[probs > 0]))
+        if h_param > 1e-10:
+            mi_norm[:, p] = mi_raw[:, p] / h_param
+        # else: param is constant, MI stays 0
+
+    print(f"  ✓ MI matrix computed. Max normalized MI: {mi_norm.max():.4f}")
+    return mi_raw, mi_norm
+
+
+def compute_knn_param_recovery(
+    tokens: np.ndarray,
+    params: np.ndarray,
+    k: int = 10,
+    test_frac: float = 0.2,
+) -> np.ndarray:
+    """Predict physical parameters from tokens using KNN regression (Hamming distance).
+
+    Tests whether token combinations carry enough information to reconstruct
+    the physical parameters that generated the QBM.
+
+    Args:
+        tokens: [N, n_cats] int32
+        params: [N, P] float32
+        k: Number of nearest neighbors
+        test_frac: Fraction of data held out for testing
+
+    Returns:
+        R² per parameter [P], R²=1 perfect, R²=0 no better than mean
+    """
+    from sklearn.neighbors import KNeighborsRegressor
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import r2_score
+
+    N = tokens.shape[0]
+    n_params = params.shape[1]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        tokens.astype(np.float32), params, test_size=test_frac, random_state=42
+    )
+
+    print(f"  KNN parameter recovery: train={len(X_train):,}, test={len(X_test):,}, k={k}")
+
+    # Use hamming metric for integer token vectors
+    knn = KNeighborsRegressor(n_neighbors=k, metric="hamming", n_jobs=-1)
+    knn.fit(X_train, y_train)
+    y_pred = knn.predict(X_test)
+
+    r2_per_param = np.array([r2_score(y_test[:, p], y_pred[:, p]) for p in range(n_params)])
+    print(f"  ✓ R² range: [{r2_per_param.min():.3f}, {r2_per_param.max():.3f}]")
+    return r2_per_param
+
+
+def classify_token_categories(
+    tokens: np.ndarray,
+    mi_norm: np.ndarray,
+    mi_threshold: float = 0.05,
+) -> List[str]:
+    """Classify each token category by its role.
+
+    Categories:
+      'collapsed'           — only 1 unique code used (cannot carry any signal)
+      'physics-informative' — ≥2 codes AND max normalized MI > mi_threshold
+      'conserved'           — ≥2 codes but low MI (physics invariant, not a failure)
+
+    Args:
+        tokens: [N, n_cats] int32
+        mi_norm: [n_cats, P] normalized MI matrix
+        mi_threshold: Min MI to call a category physics-informative
+
+    Returns:
+        List of classification strings, one per category
+    """
+    n_cats = tokens.shape[1]
+    classifications = []
+
+    for c in range(n_cats):
+        n_unique = len(np.unique(tokens[:, c]))
+        max_mi = float(mi_norm[c].max()) if mi_norm.shape[1] > 0 else 0.0
+
+        if n_unique <= 1:
+            classifications.append("collapsed")
+        elif max_mi > mi_threshold:
+            classifications.append("physics-informative")
+        else:
+            classifications.append("conserved")
+
+    return classifications
+
+
+def compute_binned_similarity(
+    tokenized_h5_path: str,
+    n_bins: int = 5000,
+    metric: str = "jaccard",
+) -> tuple:
+    """Load tokens, bin by consecutive groups, compute pairwise similarity matrix.
+
+    Full pipeline replacing the scattered logic in scripts/visualize_binned_jaccard.py.
+
+    For metric='jaccard': builds set union per bin, pairwise Jaccard loop.
+    For metric='js': builds frequency distributions per bin, scipy cdist jensenshannon.
+
+    Args:
+        tokenized_h5_path: Path to pretokenized HDF5 dataset
+        n_bins: Target number of bins (consecutive groups of samples)
+        metric: 'jaccard' or 'js'
+
+    Returns:
+        (similarity_matrix [n_bins, n_bins] float32, bin_indices list of (start, end) tuples)
+    """
+    import h5py
+    from scipy.spatial.distance import cdist
+
+    if metric not in ("jaccard", "js"):
+        raise ValueError(f"metric must be 'jaccard' or 'js', got {metric!r}")
+
+    print(f"Loading tokens from {tokenized_h5_path}...")
+    with h5py.File(tokenized_h5_path, "r") as f:
+        tokens_group = f["tokens"]
+        token_keys = sorted(tokens_group.keys())
+        n_samples = tokens_group[token_keys[0]].shape[0]
+        print(f"  Found {len(token_keys)} token categories, {n_samples:,} samples")
+
+        if metric == "jaccard":
+            # Load as sets of "key_code" strings
+            token_sets = []
+            for i in range(n_samples):
+                sample_tokens = set()
+                for key in token_keys:
+                    sample_tokens.add(f"{key}_{tokens_group[key][i]}")
+                token_sets.append(sample_tokens)
+        else:
+            # Load as integer array for JS
+            arrays = np.stack(
+                [tokens_group[k][:] for k in token_keys], axis=1
+            ).astype(np.int32)
+
+    # Bin
+    bin_size = max(1, n_samples // n_bins)
+    print(f"  Bin size: ~{bin_size} samples/bin")
+
+    if metric == "jaccard":
+        binned_sets, bin_indices = [], []
+        for i in range(0, n_samples, bin_size):
+            end_idx = min(i + bin_size, n_samples)
+            bin_tokens: set = set()
+            for j in range(i, end_idx):
+                bin_tokens.update(token_sets[j])
+            binned_sets.append(bin_tokens)
+            bin_indices.append((i, end_idx))
+
+        actual_n_bins = len(binned_sets)
+        print(f"  Computing {actual_n_bins:,}×{actual_n_bins:,} Jaccard similarity matrix...")
+        sim = np.zeros((actual_n_bins, actual_n_bins), dtype=np.float32)
+        for i in range(actual_n_bins):
+            if i % 100 == 0:
+                print(f"    Progress: {i}/{actual_n_bins} ({100*i/actual_n_bins:.1f}%)")
+            sim[i, i] = 1.0
+            for j in range(i + 1, actual_n_bins):
+                a, b = binned_sets[i], binned_sets[j]
+                inter = len(a & b)
+                union = len(a | b)
+                v = inter / union if union > 0 else 0.0
+                sim[i, j] = sim[j, i] = v
+
+    else:  # js
+        n_cats = arrays.shape[1]
+        n_codes = int(arrays.max()) + 1
+        actual_n_bins = (n_samples + bin_size - 1) // bin_size
+        bin_freqs = np.zeros((actual_n_bins, n_cats * n_codes), dtype=np.float32)
+        bin_indices = []
+
+        for b, start in enumerate(range(0, n_samples, bin_size)):
+            end = min(start + bin_size, n_samples)
+            chunk = arrays[start:end]
+            count = end - start
+            for c in range(n_codes):
+                bin_freqs[b, c * n_cats:(c + 1) * n_cats] = (chunk == c).sum(axis=0) / count
+            bin_indices.append((start, end))
+
+        row_sums = bin_freqs.sum(axis=1, keepdims=True)
+        bin_freqs /= np.maximum(row_sums, 1e-12)
+
+        print(f"  Computing {actual_n_bins:,}×{actual_n_bins:,} JS similarity matrix via cdist...")
+        freqs = np.clip(bin_freqs, 1e-10, None)
+        freqs /= freqs.sum(axis=1, keepdims=True)
+        js_dist = cdist(freqs, freqs, metric="jensenshannon").astype(np.float32)
+        sim = 1.0 - js_dist
+        np.fill_diagonal(sim, 1.0)
+
+    avg = float(np.mean(sim[np.triu_indices(len(sim), k=1)]))
+    metric_label = "Jaccard" if metric == "jaccard" else "JS"
+    print(f"  ✓ Average pairwise {metric_label} similarity: {avg:.3f}")
+    return sim, bin_indices

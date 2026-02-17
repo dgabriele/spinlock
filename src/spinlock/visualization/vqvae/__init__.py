@@ -26,6 +26,8 @@ from .engineering_dashboard import create_engineering_dashboard
 from .semantic_dashboard import create_semantic_dashboard
 from .topological_dashboard import create_topological_dashboard
 from .roundtrip_dashboard import create_roundtrip_dashboard
+from .binned_similarity_dashboard import create_binned_similarity_dashboard
+from .physics_alignment_dashboard import create_physics_alignment_dashboard
 from .utils import load_vqvae_checkpoint, VQVAECheckpointData
 
 __all__ = [
@@ -33,6 +35,8 @@ __all__ = [
     "create_semantic_dashboard",
     "create_topological_dashboard",
     "create_roundtrip_dashboard",
+    "create_binned_similarity_dashboard",
+    "create_physics_alignment_dashboard",
     "load_vqvae_checkpoint",
     "VQVAECheckpointData",
 ]

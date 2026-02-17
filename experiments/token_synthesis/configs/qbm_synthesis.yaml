@@ -4,8 +4,8 @@
 # that are physically grounded via QBM simulation.
 
 checkpoints:
-  diffusion_checkpoint: "experiments/diffusion/results/qbm/diffusion_qbm_best.pt"
-  vqvae_checkpoint: "checkpoints/qbm_tokenizer_50k/vq_tokenizer_best.pt"
+  diffusion_checkpoint: "experiments/diffusion/results/temporal_resolution/temporal_resolution_d3pm_best.pt"
+  vqvae_checkpoint: "checkpoints/v2/vqvae/vq_tokenizer_best.pt"
   # theta_inverse_path and initial_inverse_path omitted:
   # Uses V2 tokenizer's built-in inverse heads (trained via roundtrip loss)
   # which produce QBM-native dimensions (9 Sobol params, 2-channel ICs)

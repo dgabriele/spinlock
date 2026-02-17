@@ -116,10 +116,15 @@ class SynthesisVerificationPipeline:
             f"families={self._schema.families}"
         )
 
+        # Will be set during diffusion model load
+        self._is_temporal_resolution = False
+        self._truncation_levels = []
+
     def _load_diffusion_model(self) -> None:
         """Load DiscreteD3PM and DenoisingNetwork from checkpoint."""
         from spinlock.experimental.diffusion.models import (
             DenoisingNetwork,
+            TemporalResolutionDenoisingNetwork,
             DiscreteD3PM,
             DiffusionSchedule,
         )
@@ -179,19 +184,65 @@ class SynthesisVerificationPipeline:
         self._diffusion.load_state_dict(checkpoint['diffusion_state_dict'])
 
         model_config = config.model if hasattr(config, 'model') else config
-        self._denoiser = DenoisingNetwork(
-            vocab_sizes=vocab_sizes,
-            category_level_info=category_level_info,
-            hidden_dim=getattr(model_config, 'hidden_dim', 256),
-            num_layers=getattr(model_config, 'num_layers', 6),
-            num_heads=getattr(model_config, 'num_heads', 8),
-            dropout=getattr(model_config, 'dropout', 0.1),
-            use_hierarchical_guidance=getattr(model_config, 'use_hierarchical_guidance', True),
-            hierarchical_guidance_weight=getattr(model_config, 'hierarchical_guidance_weight', 0.1),
-            guidance_mode=getattr(model_config, 'hierarchical_guidance_mode', 'global'),
-            transition_type=transition_type,
-        )
+        temporal_res = getattr(model_config, 'temporal_resolution', None)
+
+        if temporal_res and getattr(temporal_res, 'enabled', False):
+            # Extract truncation levels from token keys (e.g., "T032", "T064")
+            truncations = set()
+            for key in vocab_sizes.keys():
+                if '_trunc_T' in key:
+                    # Extract "T032" from "temporal_group_1_trunc_T032_L0"
+                    trunc = key.split('_trunc_')[1].split('_')[0]
+                    truncations.add(int(trunc[1:]))  # "T032" → 32
+
+            self._truncation_levels = sorted(truncations)
+
+            # Temporal resolution checkpoint
+            self._denoiser = TemporalResolutionDenoisingNetwork(
+                vocab_sizes=vocab_sizes,
+                category_level_info=category_level_info,
+                truncation_lengths=self._truncation_levels,  # [32, 64, 128, 256]
+                hidden_dim=getattr(model_config, 'hidden_dim', 256),
+                num_layers=getattr(model_config, 'num_layers', 6),
+                num_heads=getattr(model_config, 'num_heads', 8),
+                dropout=getattr(model_config, 'dropout', 0.1),
+                use_hierarchical_guidance=getattr(model_config, 'use_hierarchical_guidance', True),
+                hierarchical_guidance_weight=getattr(model_config, 'hierarchical_guidance_weight', 0.1),
+                guidance_mode=getattr(model_config, 'hierarchical_guidance_mode', 'global'),
+                transition_type=transition_type,
+                use_temporal_bias=getattr(temporal_res, 'use_temporal_bias', True),
+                temporal_bias_init=getattr(temporal_res, 'temporal_bias_init', 'causal'),
+                temporal_bias_strength=getattr(temporal_res, 'temporal_bias_strength', 0.1),
+                enforce_causality=getattr(temporal_res, 'enforce_causality', True),
+            )
+        else:
+            # Baseline checkpoint
+            self._denoiser = DenoisingNetwork(
+                vocab_sizes=vocab_sizes,
+                category_level_info=category_level_info,
+                hidden_dim=getattr(model_config, 'hidden_dim', 256),
+                num_layers=getattr(model_config, 'num_layers', 6),
+                num_heads=getattr(model_config, 'num_heads', 8),
+                dropout=getattr(model_config, 'dropout', 0.1),
+                use_hierarchical_guidance=getattr(model_config, 'use_hierarchical_guidance', True),
+                hierarchical_guidance_weight=getattr(model_config, 'hierarchical_guidance_weight', 0.1),
+                guidance_mode=getattr(model_config, 'hierarchical_guidance_mode', 'global'),
+                transition_type=transition_type,
+            )
         self._denoiser.load_state_dict(checkpoint['denoiser_state_dict'])
+
+        # Detect temporal resolution from loaded config
+        model_config = config.model if hasattr(config, 'model') else config
+        temporal_res = getattr(model_config, 'temporal_resolution', None)
+        self._is_temporal_resolution = (
+            temporal_res and getattr(temporal_res, 'enabled', False)
+        )
+
+        if self._is_temporal_resolution:
+            logger.info(
+                f"✓ Temporal resolution mode: {len(self._truncation_levels)} truncation "
+                f"levels {self._truncation_levels}"
+            )
 
         logger.info(
             f"Diffusion model loaded: {len(vocab_sizes)} categories, "
@@ -288,8 +339,8 @@ class SynthesisVerificationPipeline:
         """Load temporal feature extractor matching the tokenizer's training config.
 
         The orchestrator must produce the same raw feature count that the tokenizer
-        was trained on. For QBM data (2-channel wavefunctions), this means quantum
-        features must be enabled, matching the dataset generation config.
+        was trained on. The quantum features setting is automatically matched to
+        the tokenizer's feature_metadata to ensure dimension compatibility.
 
         The orchestrator's config is validated against the tokenizer's feature_metadata
         to ensure dimension compatibility.
@@ -297,8 +348,10 @@ class SynthesisVerificationPipeline:
         from spinlock.features.temporal.config import TemporalFeatureConfig
         from spinlock.features.temporal.extractors import TemporalFeatureOrchestrator
 
-        # Default config enables quantum features (QuantumConfig.enabled=True)
+        # Configure to match the tokenizer's expected feature count
+        # Quantum features were disabled during dataset generation (247 features)
         config = TemporalFeatureConfig()
+        config.quantum.enabled = False  # Disable to match 247-feature dataset
         extractor = TemporalFeatureOrchestrator(device=self.device, config=config)
 
         # Validate: raw output dimension must match tokenizer's expected input
@@ -1171,7 +1224,34 @@ class SynthesisVerificationPipeline:
         batch_size = next(iter(generated_tokens.values())).shape[0]
 
         # 1. Decode tokens to (theta, u0)
-        theta, u0 = self._tokenizer.decode(generated_tokens)
+        # Extract T256 (full trajectory) tokens for decode
+        if self._is_temporal_resolution:
+            # Filter keys: keep T256 temporal tokens + all initial/theta (no truncation)
+            t256_tokens = {
+                k: v for k, v in generated_tokens.items()
+                if '_trunc_T256_' in k or 'initial_' in k or 'theta_' in k
+            }
+
+            # Strip truncation suffix for VQTokenizer compatibility
+            # "temporal_group_1_trunc_T256_L0" → "temporal_group_1_L0"
+            decode_tokens = {}
+            for k, v in t256_tokens.items():
+                if '_trunc_T256_' in k:
+                    # Remove "_trunc_T256" suffix
+                    clean_key = k.replace('_trunc_T256', '')
+                    decode_tokens[clean_key] = v
+                else:
+                    decode_tokens[k] = v
+
+            logger.debug(
+                f"Temporal resolution decode: {len(generated_tokens)} → {len(decode_tokens)} "
+                f"tokens (T256 only)"
+            )
+        else:
+            # Baseline: pass through
+            decode_tokens = generated_tokens
+
+        theta, u0 = self._tokenizer.decode(decode_tokens)
 
         # 2. Run QBM simulation (1 rollout for physical grounding)
         # Seed rollout for deterministic ICs: same theta → same dynamics → stable retokenization.

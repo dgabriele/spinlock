@@ -109,6 +109,34 @@ class VQTokenizerTrainer:
             logger.info("Compiling model with torch.compile")
             self.model = torch.compile(self.model)
 
+        # Variable-length training support
+        self.length_sampler = None
+        vl_config = self.config.encoder.temporal.variable_length
+        if vl_config:  # Handle both bool and VariableLengthConfig
+            from spinlock.encoding.variable_length_utils import create_length_sampler
+
+            # Handle Union[bool, VariableLengthConfig]
+            if isinstance(vl_config, bool):
+                if vl_config:
+                    logger.warning(
+                        "variable_length=True without VariableLengthConfig. "
+                        "No random length sampling will occur (no length_bins provided)."
+                    )
+            else:
+                # VariableLengthConfig object or dict
+                if hasattr(vl_config, 'model_dump'):
+                    vl_dict = vl_config.model_dump()
+                else:
+                    vl_dict = vl_config
+
+                if vl_dict.get("enabled", False):
+                    self.length_sampler = create_length_sampler(vl_dict)
+                    logger.info(
+                        f"Variable-length training enabled: "
+                        f"strategy={vl_dict.get('sampling_strategy', 'uniform')}, "
+                        f"bins={vl_dict.get('length_bins', 'N/A')}"
+                    )
+
         # Tracking
         self.best_val_loss = float('inf')
         self.epochs_without_improvement = 0
@@ -459,6 +487,20 @@ class VQTokenizerTrainer:
                 if 'temporal_lengths' in self.tensor_map else None
             )
 
+            # Random length sampling for variable-length training
+            if self.length_sampler is not None and temporal_feats is not None:
+                B, T, D = temporal_feats.shape
+
+                # Sample random lengths for this batch
+                sampled_lengths = self.length_sampler.sample_lengths(B)  # [B]
+
+                # Create mask from sampled lengths
+                sampled_mask = self.length_sampler.create_mask(sampled_lengths, T)  # [B, T]
+
+                # Override the all-True mask from dataset
+                temp_mask = sampled_mask.to(self.device)
+                temp_lens = sampled_lengths.to(self.device)
+
             # Forward pass
             outputs = self.model(
                 temporal_features=temporal_feats,
@@ -612,6 +654,20 @@ class VQTokenizerTrainer:
                     batch[self.tensor_map['temporal_lengths']].to(self.device)
                     if 'temporal_lengths' in self.tensor_map else None
                 )
+
+                # Random length sampling for variable-length training
+                if self.length_sampler is not None and temporal_feats is not None:
+                    B, T, D = temporal_feats.shape
+
+                    # Sample random lengths for this batch (same distribution as training)
+                    sampled_lengths = self.length_sampler.sample_lengths(B)  # [B]
+
+                    # Create mask from sampled lengths
+                    sampled_mask = self.length_sampler.create_mask(sampled_lengths, T)  # [B, T]
+
+                    # Override the all-True mask from dataset
+                    temp_mask = sampled_mask.to(self.device)
+                    temp_lens = sampled_lengths.to(self.device)
 
                 # Forward pass
                 outputs = self.model(
@@ -939,8 +995,11 @@ class VQTokenizerTrainer:
                                 quantizer.ema_cluster_size.data[dead_idx] = (
                                     quantizer.ema_cluster_size.data[random_live] * 0.5
                                 )
-
-                        logger.info(f"Reset {num_dead} dead codes in {name}")
+                            logger.info(f"Reset {num_dead} dead codes in {name}")
+                        else:
+                            logger.warning(
+                                f"{name}: {num_dead} dead codes found but no live codes to copy from — skipping reset"
+                            )
 
     def _save_checkpoint(
         self, path: Path, epoch: int, val_loss: Optional[float]

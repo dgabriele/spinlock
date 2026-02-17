@@ -375,3 +375,185 @@ def plot_metric_card(
         linestyle="--",
     )
     ax.add_patch(rect)
+
+
+def plot_discrimination_bars(
+    ax: Axes,
+    param_names: List[str],
+    ratios: Dict[str, float],
+    title: str = "Token Discrimination Ratio per Parameter",
+) -> None:
+    """Bar chart of discrimination ratios with a dashed reference line at 1.0.
+
+    Interpretation: ratio = between-group distance / within-group distance (Hamming).
+    Bars below 1.0 mean the tokenizer discriminates samples along that parameter.
+
+    Args:
+        ax: Matplotlib axes to plot on
+        param_names: Ordered parameter names
+        ratios: Dict mapping param_name → discrimination ratio
+        title: Plot title
+    """
+    values = [ratios.get(n, 1.0) for n in param_names]
+    colors = ["#2196F3" if v < 1.0 else "#FF5722" for v in values]
+
+    positions = np.arange(len(param_names))
+    bars = ax.bar(positions, values, color=colors, edgecolor="black", linewidth=0.5)
+
+    # Reference line at 1.0 (random / no discrimination)
+    ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=1.5, alpha=0.8, label="No discrimination (1.0)")
+
+    ax.set_xticks(positions)
+    ax.set_xticklabels(param_names, fontsize=8, rotation=45, ha="right")
+    ax.set_ylabel("Discrimination Ratio (between / within)", fontsize=10)
+    ax.set_title(title, fontsize=11, fontweight="bold", pad=10)
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3, linestyle=":", linewidth=0.5, axis="y")
+
+    # Annotate bars
+    for bar, value in zip(bars, values):
+        height = bar.get_height()
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            height,
+            f"{value:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            fontweight="bold",
+        )
+
+
+def plot_category_scatter(
+    ax: Axes,
+    n_unique: np.ndarray,
+    max_mi: np.ndarray,
+    classifications: List[str],
+    title: str = "Category Profile: Utilization vs Physical Signal",
+) -> None:
+    """Scatter: x = unique codes used, y = max normalized MI, color = classification.
+
+    Classes:
+      'collapsed'           → red  (single-code, no signal possible)
+      'conserved'           → gray (multi-code but low MI — physics invariant)
+      'physics-informative' → blue (multi-code AND high MI)
+
+    Args:
+        ax: Matplotlib axes to plot on
+        n_unique: [n_cats] number of unique codes per category
+        max_mi: [n_cats] max normalized MI value per category
+        classifications: [n_cats] string classification per category
+        title: Plot title
+    """
+    color_map = {
+        "collapsed": "#F44336",          # red
+        "conserved": "#9E9E9E",          # gray
+        "physics-informative": "#2196F3", # blue
+    }
+    marker_map = {
+        "collapsed": "x",
+        "conserved": "o",
+        "physics-informative": "^",
+    }
+
+    for cls in ["collapsed", "conserved", "physics-informative"]:
+        mask = np.array([c == cls for c in classifications])
+        if not mask.any():
+            continue
+        ax.scatter(
+            n_unique[mask],
+            max_mi[mask],
+            c=color_map[cls],
+            marker=marker_map[cls],
+            label=f"{cls} ({mask.sum()})",
+            alpha=0.7,
+            s=40,
+            edgecolors="none" if cls == "collapsed" else "black",
+            linewidths=0.3,
+        )
+
+    ax.set_xlabel("Unique Codes Used", fontsize=10)
+    ax.set_ylabel("Max Normalized MI (with any parameter)", fontsize=10)
+    ax.set_title(title, fontsize=11, fontweight="bold", pad=10)
+    ax.legend(fontsize=8, loc="upper left")
+    ax.grid(True, alpha=0.3, linestyle=":", linewidth=0.5)
+
+
+def plot_similarity_dendrogram_heatmap(
+    ax_dendro: Axes,
+    ax_heatmap: Axes,
+    similarity_matrix: np.ndarray,
+    metric_name: str,
+    bin_indices: Optional[List[Tuple[int, int]]] = None,
+) -> None:
+    """Hierarchical clustering dendrogram (left) + reordered similarity heatmap (right).
+
+    Canonical DRY implementation migrated from scripts/visualize_binned_jaccard.py.
+    Uses hierarchical_cluster_rollouts() from utils for the linkage computation.
+
+    Args:
+        ax_dendro: Axes for the dendrogram (narrow, left panel)
+        ax_heatmap: Axes for the reordered heatmap (wide, right panel)
+        similarity_matrix: [N, N] pairwise similarity matrix
+        metric_name: Human-readable metric name (e.g. "Jaccard", "JS")
+        bin_indices: Optional list of (start, end) sample indices for annotation
+    """
+    from scipy.cluster.hierarchy import dendrogram
+    from .utils import hierarchical_cluster_rollouts
+
+    n = len(similarity_matrix)
+    # Clip negative values from float rounding before converting to distance
+    distance_matrix = np.clip(1.0 - similarity_matrix, 0.0, None)
+    linkage_matrix = hierarchical_cluster_rollouts(1.0 - distance_matrix)  # pass similarity
+
+    dendro = dendrogram(
+        linkage_matrix,
+        ax=ax_dendro,
+        orientation="left",
+        no_labels=True,
+        color_threshold=0,
+        link_color_func=lambda k: "black",
+    )
+    total_samples = bin_indices[-1][1] if bin_indices else n
+    ax_dendro.set_xlabel(f"{metric_name} Distance", fontsize=10)
+    ax_dendro.set_title(
+        f"Hierarchical Clustering\n({n:,} bins, {total_samples:,} samples)",
+        fontsize=10,
+        fontweight="bold",
+        pad=10,
+    )
+    for line in ax_dendro.collections:
+        line.set_linewidth(0.5)
+        line.set_alpha(0.66)
+
+    # Reorder heatmap by dendrogram leaf order
+    idx = dendro["leaves"]
+    sim_reordered = similarity_matrix[idx, :][:, idx]
+    vmin = float(np.percentile(sim_reordered, 1))
+    vmax = float(np.percentile(sim_reordered, 99))
+
+    im = ax_heatmap.imshow(
+        sim_reordered,
+        cmap="viridis",
+        aspect="auto",
+        interpolation="nearest",
+        vmin=vmin,
+        vmax=vmax,
+    )
+    ax_heatmap.set_xlabel("Bin Index (reordered by clustering)", fontsize=10)
+    ax_heatmap.set_ylabel("Bin Index (reordered by clustering)", fontsize=10)
+
+    cbar = plt.colorbar(im, ax=ax_heatmap, fraction=0.046, pad=0.04)
+    label_map = {
+        "Jaccard": "Jaccard Similarity",
+        "JS": "JS Similarity (1 − JS distance)",
+    }
+    cbar.set_label(label_map.get(metric_name, f"{metric_name} Similarity"), fontsize=10)
+
+    avg = float(np.mean(similarity_matrix[np.triu_indices(n, k=1)]))
+    ax_heatmap.set_title(
+        f"{metric_name} Similarity Heatmap  |  avg={avg:.3f}  |  range=[{vmin:.3f}, {vmax:.3f}]",
+        fontsize=10,
+        fontweight="bold",
+        pad=10,
+    )

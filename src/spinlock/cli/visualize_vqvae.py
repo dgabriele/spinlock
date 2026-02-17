@@ -59,7 +59,10 @@ Examples:
         parser.add_argument(
             "--type",
             type=str,
-            choices=["engineering", "topological", "semantic", "roundtrip", "hierarchical", "all"],
+            choices=[
+                "engineering", "topological", "semantic", "roundtrip", "hierarchical",
+                "binned-similarity", "physics-alignment", "all",
+            ],
             default="topological",
             help="Type of visualization to create (default: topological)",
         )
@@ -123,6 +126,31 @@ Examples:
             choices=["jaccard", "cosine"],
             help="Similarity metric for hierarchical analysis (default: jaccard)",
         )
+        parser.add_argument(
+            "--metric",
+            type=str,
+            default="jaccard",
+            choices=["jaccard", "js"],
+            help="Similarity metric for binned-similarity dashboard (default: jaccard)",
+        )
+        parser.add_argument(
+            "--n-bins",
+            type=int,
+            default=5000,
+            help="Number of bins for binned-similarity dashboard (default: 5000)",
+        )
+        parser.add_argument(
+            "--params",
+            type=str,
+            default=None,
+            help="Path to HDF5 with physical parameters for physics-alignment dashboard",
+        )
+        parser.add_argument(
+            "--subsample",
+            type=int,
+            default=5000,
+            help="Max samples for discrimination ratio computation (default: 5000)",
+        )
 
     def execute(self, args: argparse.Namespace) -> int:
         """Execute the visualization command."""
@@ -174,6 +202,45 @@ Examples:
 
         # Create requested visualizations
         try:
+            if args.type in ["binned-similarity", "all"]:
+                if not args.tokenized_dataset:
+                    print("Error: --tokenized-dataset is required for binned-similarity")
+                    return 1
+                from spinlock.visualization.vqvae import create_binned_similarity_dashboard
+                output_path = output_dir / f"binned_similarity_{args.metric}.png"
+                print(f"Creating binned-similarity dashboard ({args.metric}, {args.n_bins} bins)...")
+                fig = create_binned_similarity_dashboard(
+                    tokenized_h5_path=args.tokenized_dataset,
+                    output_path=output_path,
+                    n_bins=args.n_bins,
+                    metric=args.metric,
+                    dpi=args.dpi,
+                )
+                if not args.no_display:
+                    plt.show(block=False)
+                plt.close(fig)
+
+            if args.type in ["physics-alignment", "all"]:
+                if not args.tokenized_dataset:
+                    print("Error: --tokenized-dataset is required for physics-alignment")
+                    return 1
+                if not args.params:
+                    print("Error: --params is required for physics-alignment")
+                    return 1
+                from spinlock.visualization.vqvae import create_physics_alignment_dashboard
+                output_path = output_dir / "physics_alignment.png"
+                print(f"Creating physics-alignment dashboard...")
+                fig = create_physics_alignment_dashboard(
+                    tokens_h5_path=args.tokenized_dataset,
+                    params_h5_path=args.params,
+                    output_path=output_path,
+                    subsample=args.subsample,
+                    dpi=args.dpi,
+                )
+                if not args.no_display:
+                    plt.show(block=False)
+                plt.close(fig)
+
             if args.type in ["engineering", "all"]:
                 output_path = output_dir / f"{checkpoint_name}_engineering.png"
                 print(f"Creating engineering dashboard...")

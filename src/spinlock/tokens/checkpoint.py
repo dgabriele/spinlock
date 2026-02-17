@@ -242,6 +242,44 @@ def save_checkpoint(
         checkpoint['dimension_validation'] = dimension_validation
         logger.info(f"Saving dimension validation: {dimension_validation}")
 
+    # Add variable-length metadata (for downstream tasks like Temporal Resolution D3PM)
+    checkpoint["variable_length_metadata"] = {
+        "enabled": False,
+        "length_bins": None,
+        "sampling_strategy": None,
+        "min_timesteps": None,
+        "max_timesteps": None,
+        "adaptive_pyramid": None,
+        "min_pyramid_length": None,
+    }
+
+    # Populate if variable_length is enabled in temporal config
+    vl_config = config.encoder.temporal.variable_length
+    if vl_config:
+        # Handle Union[bool, VariableLengthConfig]
+        if isinstance(vl_config, bool):
+            checkpoint["variable_length_metadata"]["enabled"] = True
+        else:
+            # VariableLengthConfig object (has .model_dump() or dict access)
+            if hasattr(vl_config, 'model_dump'):
+                vl_dict = vl_config.model_dump()
+            else:
+                vl_dict = vl_config
+
+            checkpoint["variable_length_metadata"].update({
+                "enabled": vl_dict.get("enabled", True),
+                "length_bins": vl_dict.get("length_bins"),
+                "sampling_strategy": vl_dict.get("sampling_strategy"),
+                "min_timesteps": vl_dict.get("min_timesteps"),
+                "max_timesteps": vl_dict.get("max_timesteps"),
+                "adaptive_pyramid": vl_dict.get("adaptive_pyramid"),
+                "min_pyramid_length": vl_dict.get("min_pyramid_length"),
+            })
+            logger.info(
+                f"Saving variable-length metadata: strategy={vl_dict.get('sampling_strategy')}, "
+                f"bins={vl_dict.get('length_bins')}"
+            )
+
     # Add feature metadata if provided (v2.1+)
     if feature_metadata is not None:
         checkpoint['feature_metadata'] = feature_metadata.model_dump()
