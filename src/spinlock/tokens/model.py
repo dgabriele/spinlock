@@ -321,7 +321,7 @@ class JointHierarchicalVQVAE(nn.Module):
         if "initial" in self.families:
             if config.encoder.initial.variant == "hybrid":
                 self.initial_encoder = InitialHybridEncoder(
-                    manual_dim=config.encoder.initial.manual_dim,
+                    manual_dim=self.initial_input_dim,   # auto-detected from dataset
                     cnn_embedding_dim=config.encoder.initial.cnn_embedding_dim,
                     encode_manual=config.encoder.initial.encode_manual,
                     in_channels=config.encoder.initial.in_channels,

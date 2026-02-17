@@ -1136,6 +1136,7 @@ class VQTokenizer:
             Dict mapping family_category → feature indices
         """
         group_indices = {}
+        _use_mean_std = False  # set True in temporal branch for pca_striped/opq
 
         # Temporal grouping
         if features.get('temporal') is not None:
@@ -1231,7 +1232,11 @@ class VQTokenizer:
 
         # Populate category metadata if feature_metadata exists
         if self.feature_metadata is not None:
-            self._populate_category_metadata(group_indices, features)
+            self._populate_category_metadata(
+                group_indices,
+                features,
+                temporal_groups_are_pc_indices=_use_mean_std,
+            )
 
         return group_indices
 
@@ -1239,12 +1244,17 @@ class VQTokenizer:
         self,
         group_indices: Dict[str, list],
         features: Dict[str, Optional[torch.Tensor]],
+        temporal_groups_are_pc_indices: bool = False,
     ):
         """Populate category metadata in feature_metadata.
 
         Args:
             group_indices: Dict mapping category_name → feature indices
             features: Dict of features after cleaning
+            temporal_groups_are_pc_indices: True when grouping method is pca_striped
+                or opq. In that case, temporal group feature_indices are indices into
+                the rotated PC space (0..2*D_t-1), not into the cleaned feature list
+                (0..D_t-1), so we use generic PC names rather than semantic names.
         """
         from .checkpoint import CategoryMetadata
 
@@ -1272,15 +1282,19 @@ class VQTokenizer:
         # Build CategoryMetadata for each group
         categories = {}
         for category_name, feature_indices in group_indices.items():
-            # Get feature names for this category
-            category_feature_names = [
-                cleaned_feature_names[idx] for idx in feature_indices
-            ]
-
-            # Map back to original indices
-            original_indices = [
-                cleaned_to_original.get(idx, idx) for idx in feature_indices
-            ]
+            is_temporal = category_name.startswith("temporal_")
+            if is_temporal and temporal_groups_are_pc_indices:
+                # Temporal group indices are positions in the rotated PC space
+                # (0..2*D_t-1), not in the cleaned feature list (0..D_t-1).
+                category_feature_names = [f"pc_{idx}" for idx in feature_indices]
+                original_indices = list(feature_indices)
+            else:
+                category_feature_names = [
+                    cleaned_feature_names[idx] for idx in feature_indices
+                ]
+                original_indices = [
+                    cleaned_to_original.get(idx, idx) for idx in feature_indices
+                ]
 
             categories[category_name] = CategoryMetadata(
                 category_name=category_name,
