@@ -18,6 +18,36 @@ import torch
 
 
 @dataclass
+class LinearTransform:
+    """Serializable linear pre-processing transform (PCA rotation or OPQ rotation).
+
+    Applies: x_rotated = (x - mean) @ components.T
+
+    where components rows are principal/OPQ components (orthonormal basis vectors),
+    so each rotated dimension is a linear combination of input features.
+
+    Used by PCAGrouper and OPQGrouper to rotate the feature space before
+    per-group VQ encoding, ensuring each group receives a diverse mix of
+    variance rather than a single correlated cluster.
+    """
+    mean: np.ndarray        # [D]   — per-feature mean (subtracted before rotation)
+    components: np.ndarray  # [D, D] — rows are principal/OPQ components
+
+    def apply(self, x: np.ndarray) -> np.ndarray:
+        """Transform [N, D] → [N, D] (centered + rotated)."""
+        return (x - self.mean) @ self.components.T
+
+    def to_dict(self) -> dict:
+        """Serialize to plain dict for torch.save()."""
+        return {"mean": self.mean, "components": self.components}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LinearTransform":
+        """Deserialize from dict loaded via torch.load()."""
+        return cls(mean=np.asarray(d["mean"]), components=np.asarray(d["components"]))
+
+
+@dataclass
 class NormalizationStats:
     """Statistics for standard normalization."""
 

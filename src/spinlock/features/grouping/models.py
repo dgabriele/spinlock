@@ -1,8 +1,8 @@
 """Pydantic models for feature grouping configuration and results."""
 
 from enum import Enum
-from typing import Dict, List, Optional, Literal
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional, Literal
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LinkageMethod(str, Enum):
@@ -84,6 +84,15 @@ class SplittingParams(BaseModel):
 
 class GroupingConfig(BaseModel):
     """Complete configuration for feature grouping."""
+    method: Literal["correlation", "pca_striped", "opq"] = Field(
+        "correlation",
+        description=(
+            "Grouping method. 'correlation' uses Ward hierarchical clustering (legacy); "
+            "'pca_striped' rotates to PCA basis then assigns PC i → group i%M, giving each "
+            "group an equal share of high/medium/low variance (recommended); "
+            "'opq' uses FAISS OPQ for optimal product quantization (requires faiss-cpu)."
+        ),
+    )
     preprocessing: PreprocessingParams = Field(default_factory=PreprocessingParams)
     clustering: ClusteringParams = Field(default_factory=ClusteringParams)
     gradient: GradientParams = Field(default_factory=GradientParams)
@@ -150,10 +159,20 @@ class FeatureGroup(BaseModel):
 
 class GroupingResult(BaseModel):
     """Result of feature grouping operation."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     groups: Dict[str, FeatureGroup]
     num_groups: int
     total_features: int
     config: GroupingConfig
+    linear_transform: Optional[Any] = Field(
+        None,
+        description=(
+            "LinearTransform applied before grouping (PCA or OPQ rotation). "
+            "None for correlation-based grouping. Must be applied to raw temporal "
+            "features at inference time before passing to per-group encoders."
+        ),
+    )
 
     def to_dict(self) -> Dict[str, List[int]]:
         """Convert to v1-compatible dict format."""

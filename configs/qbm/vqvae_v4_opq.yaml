@@ -1,0 +1,181 @@
+# VQ Tokenizer — v4 OPQ / PCA-Striped Configuration
+#
+# Core change from v3:
+#   - Grouping method: correlation (Ward) → pca_striped
+#   - Temporal encoder: pyramid → mean (per-group MLPs replace the shared encoder)
+#
+# Why this fixes code collapse:
+#   Ward clustering groups *similar* features together → each codebook sees near-1D
+#   input (correlation ≈ 1) → EMA has almost no inter-centroid variation → 2-4 codes
+#   used per codebook (util_epoch ≈ 8%).
+#
+#   PCA + striped assignment puts PC_i → group (i % 30).  Each group receives one
+#   high-variance PC, one medium PC, and several low-variance PCs.  Per-group MLPs
+#   (2-layer, GeLU-activated) learn to encode each group's multi-dimensional subspace
+#   independently — no information leaks between groups through a shared encoder.
+#
+# Target:
+#   - util_epoch  > 50%    (vs 8% in v3)
+#   - unique tuples >> 886 (vs 886 from 50K samples)
+#   - giant-class fraction < 20% (vs 43.7%)
+
+dataset_path: "datasets/qbm_50k.h5"
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  initial:
+    variant: "hybrid"
+    cnn_embedding_dim: 384
+    pretrained_cnn_path: null
+    use_final_batchnorm: true
+    encode_manual: true
+
+  temporal:
+    # Per-group encoders take over from the shared pyramid encoder.
+    # 'mean' variant: time-average → [B, D_t], then split by group → per-group MLPs.
+    variant: "mean"
+
+  theta:
+    variant: "mlp"
+    hidden_dim: 64
+    output_dim: 32
+    dropout: 0.25
+    use_layer_norm: true
+
+  # This is used as the per-group MLP output dimension.
+  # Each of the 30 temporal groups is encoded to embedding_dim-D latent before VQ.
+  embedding_dim: 64
+  hidden_dim: 128
+  dropout: 0.5
+  use_layer_norm: true
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  embedding_dim: 64
+  commitment_cost: 0.25
+  use_ema: true
+  ema_decay: 0.99
+  epsilon: 1.0e-5
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchy
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3
+  compression_ratios: "0.5:1.0:1.5"
+  min_latent_dim: 4
+  max_latent_dim: 192
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Cleaning
+# ═══════════════════════════════════════════════════════════════
+
+feature_cleaning:
+  enabled: true
+  pre_categorization: true
+  variance_threshold: 1.0e-8
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
+  outlier_method: "percentile"
+  percentile_range: [0.5, 99.5]
+
+# ═══════════════════════════════════════════════════════════════
+# Grouping — PCA + Striped Assignment
+# ═══════════════════════════════════════════════════════════════
+
+grouping:
+  # method = pca_striped → PCAGrouper (no Ward clustering, no gradient refinement)
+  method: "pca_striped"
+
+  preprocessing:
+    method: "mad"          # Robust pre-normalization before PCA fitting
+    clip_outliers: false
+
+  clustering:
+    # num_groups is REQUIRED for PCA/OPQ (no silhouette search)
+    num_groups: 30
+
+  # gradient refinement and splitting are not applicable to rotation-based methods
+  skip_gradient_refinement: true
+  splitting:
+    enabled: false
+
+  random_seed: 42
+
+# ═══════════════════════════════════════════════════════════════
+# Inverse Heads
+# ═══════════════════════════════════════════════════════════════
+
+inverse_heads:
+  theta_hidden_dim: 128
+  theta_dropout: 0.15
+  initial_base_channels: 256
+
+# ═══════════════════════════════════════════════════════════════
+# Training — Dead Code Reset Enabled
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 1000
+  batch_size: 768
+  learning_rate: 0.001
+  val_split: 0.1
+  val_every_n_epochs: 3
+
+  optimizer: "adamw"
+  weight_decay: 0.05
+  gradient_clip_norm: 1.0
+
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 10
+
+  early_stopping_patience: 30
+  early_stopping_min_delta: 0.001
+
+  # Dead code reset keeps codebooks alive throughout training
+  dead_code_reset_interval: 5    # every 5 epochs (~295 batches; EMA 95% settled)
+  dead_code_threshold: 0.01      # codes used < 1% of time are reset
+
+  device: "auto"
+  compile_model: false
+
+# ═══════════════════════════════════════════════════════════════
+# Loss
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  reconstruction_weight: 0.0003
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topographic_weight: 0.2
+  normalize_reconstruction: true
+
+  roundtrip:
+    enabled: true
+    weight: 8.0
+    theta_weight: 1.0
+    initial_weight: 1.0
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "none"
+  clip_std_multiplier: null
+
+# ═══════════════════════════════════════════════════════════════
+# System
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 42
+verbose: true
+log_level: "INFO"

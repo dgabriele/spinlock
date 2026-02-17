@@ -6,6 +6,7 @@ from .base import FeatureGrouper
 from .temporal import TemporalFeatureGrouper
 from .initial import InitialFeatureGrouper
 from .theta import ThetaFeatureGrouper
+from .pca_grouper import PCAGrouper
 from .models import GroupingConfig
 
 FeatureFamily = Literal["temporal", "initial", "theta"]
@@ -18,9 +19,16 @@ def create_grouper(
     """
     Factory function to create family-specific grouper.
 
+    For temporal features, the grouping method in config determines which
+    grouper is used:
+    - "correlation" (default): Ward hierarchical clustering (legacy path)
+    - "pca_striped": PCA rotation + round-robin assignment (recommended)
+    - "opq": FAISS OPQ — optimal product quantization (requires faiss-cpu)
+
     Args:
         family: Feature family name
-        config: Optional config (uses family default if None)
+        config: Optional config (uses family default if None).
+                config.method controls the grouping algorithm for temporal.
 
     Returns:
         FeatureGrouper instance for the family
@@ -31,25 +39,33 @@ def create_grouper(
     """
     from .models import TemporalGroupingConfig, InitialGroupingConfig, ThetaGroupingConfig
 
+    if family not in ("temporal", "initial", "theta"):
+        raise ValueError(f"Unknown family: {family}. Must be one of ['temporal', 'initial', 'theta']")
+
+    if config is None:
+        config_map = {
+            "temporal": TemporalGroupingConfig,
+            "initial": InitialGroupingConfig,
+            "theta": ThetaGroupingConfig,
+        }
+        config = config_map[family]()
+
+    # For temporal, dispatch by method
+    if family == "temporal":
+        method = getattr(config, "method", "correlation")
+        if method == "pca_striped":
+            return PCAGrouper(config)
+        elif method == "opq":
+            # Stage 2: OPQ via FAISS (same interface as PCAGrouper)
+            from .pca_grouper import PCAGrouper as _PCA  # noqa: F401
+            raise NotImplementedError(
+                "OPQ grouper is not yet implemented. Use method='pca_striped' for now."
+            )
+        # else: fall through to correlation grouper
+
     grouper_map = {
         "temporal": TemporalFeatureGrouper,
         "initial": InitialFeatureGrouper,
         "theta": ThetaFeatureGrouper,
     }
-
-    config_map = {
-        "temporal": TemporalGroupingConfig,
-        "initial": InitialGroupingConfig,
-        "theta": ThetaGroupingConfig,
-    }
-
-    if family not in grouper_map:
-        raise ValueError(f"Unknown family: {family}. Must be one of {list(grouper_map.keys())}")
-
-    grouper_class = grouper_map[family]
-
-    if config is None:
-        # Use family-specific default config
-        config = config_map[family]()
-
-    return grouper_class(config)
+    return grouper_map[family](config)

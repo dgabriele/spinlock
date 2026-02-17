@@ -159,6 +159,14 @@ class TokenizerCheckpoint(BaseModel):
         default=None,
         description="Complete feature processing metadata (v2.1+)"
     )
+    temporal_transform: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Serialized LinearTransform for PCA/OPQ rotation (v2.2+). "
+            "Contains 'mean' [D] and 'components' [D, D] arrays. "
+            "None for checkpoints trained with correlation-based grouping."
+        ),
+    )
     optimizer_state_dict: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Optimizer state dict (training only)"
@@ -225,6 +233,20 @@ def save_checkpoint(
         'initial_input_dim': initial_input_dim,
         'version': 'v2',
     }
+
+    # Save PCA/OPQ rotation if present (per-group encoder path)
+    if (hasattr(model, 'temporal_rotation_matrix')
+            and model.temporal_rotation_matrix is not None):
+        from spinlock.encoding.normalization import LinearTransform
+        transform = LinearTransform(
+            mean=model.temporal_rotation_mean.cpu().numpy(),
+            components=model.temporal_rotation_matrix.cpu().numpy(),
+        )
+        checkpoint['temporal_transform'] = transform.to_dict()
+        logger.info(
+            f"Saving temporal rotation transform "
+            f"(components shape: {transform.components.shape})"
+        )
 
     # Add explicit dimension validation
     dimension_validation = {}
@@ -340,6 +362,14 @@ def load_checkpoint(path: Path) -> TokenizerCheckpoint:
     else:
         logger.warning(f"Checkpoint does not contain feature_metadata (v2.0 format). Pretokenization will use fallback cleaning.")
 
+    # Parse temporal_transform if present (v2.2+, PCA/OPQ grouping)
+    temporal_transform = raw_checkpoint.get('temporal_transform')
+    if temporal_transform is not None:
+        logger.info(
+            f"Checkpoint contains temporal rotation transform "
+            f"(components shape: {temporal_transform['components'].shape})"
+        )
+
     # Build TokenizerCheckpoint with validation
     return TokenizerCheckpoint(
         model_state_dict=raw_checkpoint['model_state_dict'],
@@ -349,6 +379,7 @@ def load_checkpoint(path: Path) -> TokenizerCheckpoint:
         temporal_input_dim=raw_checkpoint.get('temporal_input_dim'),
         initial_input_dim=raw_checkpoint.get('initial_input_dim'),
         feature_metadata=feature_metadata,
+        temporal_transform=temporal_transform,
         optimizer_state_dict=raw_checkpoint.get('optimizer_state_dict'),
         epoch=raw_checkpoint.get('epoch'),
         val_loss=raw_checkpoint.get('val_loss'),

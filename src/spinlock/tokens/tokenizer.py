@@ -180,6 +180,11 @@ class VQTokenizer:
             initial_input_dim=initial_input_dim,
         )
 
+        # Wire PCA/OPQ rotation into model buffers (per-group encoder path)
+        if hasattr(self, "_temporal_linear_transform") and self._temporal_linear_transform is not None:
+            self.model.set_temporal_rotation(self._temporal_linear_transform)
+            logger.info("Temporal rotation wired into model buffers.")
+
         # Create trainer
         logger.info("Creating trainer")
         trainer = VQTokenizerTrainer(
@@ -1141,6 +1146,14 @@ class VQTokenizer:
 
             # Group features
             result = grouper.group_features(temporal_agg, temporal_names)
+
+            # Store PCA/OPQ rotation transform for wiring into model later
+            if result.linear_transform is not None:
+                self._temporal_linear_transform = result.linear_transform
+                logger.info(
+                    f"Temporal linear transform stored "
+                    f"(shape: {result.linear_transform.components.shape})"
+                )
 
             # Convert to expected format
             for group_name, group in result.groups.items():

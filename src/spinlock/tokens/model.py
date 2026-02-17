@@ -84,6 +84,14 @@ class JointHierarchicalVQVAE(nn.Module):
         self.initial_dim = 0
         self.theta_dim = 0
 
+        # Per-group encoder mode (active when grouping.method = pca_striped | opq)
+        # Each entry encodes one group's raw features [B, G_k] → [B, embedding_dim]
+        self.per_group_temporal_encoders: Optional[nn.ModuleDict] = None
+        # Rotation buffers (registered so they move with .to(device))
+        # Set via set_temporal_rotation() after model creation
+        self.register_buffer("temporal_rotation_mean", None)
+        self.register_buffer("temporal_rotation_matrix", None)
+
         # Create family encoders first (sets dims)
         self._create_encoders()
 
@@ -125,15 +133,14 @@ class JointHierarchicalVQVAE(nn.Module):
         for family_cat, indices in group_indices.items():
             family, _ = family_cat.split('_', 1)
 
-            # Determine source dimension for this category
-            if family == "temporal":
-                cat_dim = len(indices)  # Feature count in this category
-            elif family == "initial":
-                cat_dim = len(indices)
-            elif family == "theta":
-                cat_dim = len(indices)
+            # Determine source dimension for this category.
+            # In per-group encoder mode, each temporal group's projector receives
+            # embedding_dim input (output of the per-group MLP) rather than the
+            # raw feature count.  All other families still use raw feature count.
+            if family == "temporal" and self.per_group_temporal_encoders is not None:
+                cat_dim = config.encoder.embedding_dim
             else:
-                raise ValueError(f"Unknown family: {family}")
+                cat_dim = len(indices)
 
             # Create hierarchical projector
             self.projectors[family_cat] = self._create_projector(
@@ -188,6 +195,34 @@ class JointHierarchicalVQVAE(nn.Module):
             families.add(family)
         return sorted(families)
 
+    def _use_per_group_encoders(self) -> bool:
+        """Return True when PCA/OPQ grouping is configured (per-group encoder path)."""
+        cfg = self.config
+        return (
+            cfg.grouping is not None
+            and getattr(cfg.grouping, "method", "correlation") in ("pca_striped", "opq")
+        )
+
+    def set_temporal_rotation(self, transform: Any) -> None:
+        """Register a PCA/OPQ rotation transform as model buffers.
+
+        Must be called after model creation when grouping.method is pca_striped
+        or opq.  The transform is applied to time-averaged temporal features before
+        they are split into per-group sub-spaces.
+
+        Args:
+            transform: LinearTransform with .mean [D] and .components [D, D].
+        """
+        import torch
+        mean_t = torch.from_numpy(transform.mean).float()
+        comps_t = torch.from_numpy(transform.components).float()
+        # Re-register as persistent buffers (replaces the None registered in __init__)
+        self.register_buffer("temporal_rotation_mean", mean_t)
+        self.register_buffer("temporal_rotation_matrix", comps_t)
+        logger.info(
+            f"Temporal rotation set: mean {mean_t.shape}, components {comps_t.shape}"
+        )
+
     def _create_encoders(self):
         """Create family-specific encoders based on config."""
         config = self.config
@@ -235,8 +270,39 @@ class JointHierarchicalVQVAE(nn.Module):
                     raise ValueError(
                         "temporal_input_dim must be provided for mean encoder"
                     )
-                self.temporal_encoder = TemporalMeanEncoder(input_dim=self.temporal_input_dim)
-                self.temporal_dim = self.temporal_input_dim
+
+                if self._use_per_group_encoders():
+                    # Per-group encoder path (PCA/OPQ grouping)
+                    # Each temporal group gets its own 2-layer MLP that takes the
+                    # raw (rotated) group features [B, G_k] → [B, embedding_dim].
+                    # No shared temporal encoder is needed.
+                    embedding_dim = config.encoder.embedding_dim
+                    temporal_groups = {
+                        k: v for k, v in self.group_indices.items()
+                        if k.startswith("temporal_")
+                    }
+                    n_temporal_groups = len(temporal_groups)
+
+                    self.per_group_temporal_encoders = nn.ModuleDict({
+                        family_cat: nn.Sequential(
+                            nn.Linear(len(indices), embedding_dim),
+                            nn.LayerNorm(embedding_dim),
+                            nn.GELU(),
+                            nn.Linear(embedding_dim, embedding_dim),
+                        )
+                        for family_cat, indices in temporal_groups.items()
+                    })
+
+                    # temporal_dim = total encoded temporal space for the decoder
+                    self.temporal_dim = n_temporal_groups * embedding_dim
+                    logger.info(
+                        f"Per-group temporal encoders: {n_temporal_groups} groups × "
+                        f"{embedding_dim}D = {self.temporal_dim}D total temporal dim"
+                    )
+                else:
+                    # Shared mean encoder (legacy path)
+                    self.temporal_encoder = TemporalMeanEncoder(input_dim=self.temporal_input_dim)
+                    self.temporal_dim = self.temporal_input_dim
 
             elif config.encoder.temporal.variant == "cnn":
                 if self.temporal_input_dim is None:
@@ -466,18 +532,43 @@ class JointHierarchicalVQVAE(nn.Module):
             if temporal_features is None:
                 raise ValueError("temporal_features required for temporal family")
 
-            # Encode temporal
-            if isinstance(self.temporal_encoder, PyramidTemporalEncoder):
-                if temporal_mask is not None:
-                    temp_encoded, mask_info = self.temporal_encoder(
-                        temporal_features, mask=temporal_mask, lengths=temporal_lengths
+            if self.per_group_temporal_encoders is not None:
+                # ── Per-group encoder path (PCA/OPQ grouping) ────────────────
+                # Time-average over the sequence dimension: [B, T, D_t] → [B, D_t]
+                temporal_mean = temporal_features.mean(dim=1)
+
+                # Apply PCA/OPQ rotation if set: [B, D_t] → [B, D_t]
+                if self.temporal_rotation_matrix is not None:
+                    temporal_mean = (
+                        (temporal_mean - self.temporal_rotation_mean)
+                        @ self.temporal_rotation_matrix.T
                     )
+
+                # Encode each group independently; accumulate for the decoder
+                group_encoded_parts = []
+                for family_cat, indices in self.group_indices.items():
+                    if family_cat.startswith("temporal_"):
+                        group_feats = temporal_mean[:, indices]  # [B, G_k]
+                        enc = self.per_group_temporal_encoders[family_cat](group_feats)
+                        encoded[family_cat] = enc        # used in quantization loop
+                        group_encoded_parts.append(enc)
+
+                # Concatenate all group encodings: [B, n_groups * embedding_dim]
+                encoded["temporal"] = torch.cat(group_encoded_parts, dim=1)
+
+            else:
+                # ── Shared encoder path (legacy: correlation grouping) ────────
+                if isinstance(self.temporal_encoder, PyramidTemporalEncoder):
+                    if temporal_mask is not None:
+                        temp_encoded, mask_info = self.temporal_encoder(
+                            temporal_features, mask=temporal_mask, lengths=temporal_lengths
+                        )
+                    else:
+                        temp_encoded = self.temporal_encoder(temporal_features)
                 else:
                     temp_encoded = self.temporal_encoder(temporal_features)
-            else:
-                temp_encoded = self.temporal_encoder(temporal_features)
 
-            encoded["temporal"] = temp_encoded
+                encoded["temporal"] = temp_encoded
 
         if "initial" in self.families:
             if isinstance(self.initial_encoder, InitialHybridEncoder):
@@ -517,8 +608,13 @@ class JointHierarchicalVQVAE(nn.Module):
         for family_cat, indices in self.group_indices.items():
             family, cat_name = family_cat.split('_', 1)
 
-            # Extract features for this category
-            cat_features = all_encoded[:, indices]  # [B, cat_dim]
+            # Extract features for this category.
+            # Per-group path: temporal groups are already encoded in encoded[family_cat].
+            # Legacy path: slice from the concatenated all_encoded.
+            if family == "temporal" and self.per_group_temporal_encoders is not None:
+                cat_features = encoded[family_cat]  # [B, embedding_dim]
+            else:
+                cat_features = all_encoded[:, indices]  # [B, cat_dim]
 
             # Project to hierarchical latents
             projector = self.projectors[family_cat]
