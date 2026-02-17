@@ -29,6 +29,7 @@ def create_binned_similarity_dashboard(
     output_path: Optional[str | Path] = None,
     n_bins: int = 5000,
     metric: str = "jaccard",
+    families: Optional[list] = None,
     figsize: Tuple[int, int] = (20, 16),
     dpi: int = 150,
 ) -> Figure:
@@ -39,6 +40,9 @@ def create_binned_similarity_dashboard(
         output_path: If given, save PNG (and PDF) to this path
         n_bins: Target number of bins (consecutive sample groups)
         metric: 'jaccard' (set-based) or 'js' (Jensen-Shannon frequency-based)
+        families: Optional list of token families to include (e.g. ['temporal']).
+            Excludes theta/IC tokens when set, isolating the temporal encoder's diversity.
+            None (default) includes all families.
         figsize: Figure size in inches
         dpi: Figure resolution
 
@@ -49,15 +53,20 @@ def create_binned_similarity_dashboard(
     from .components import plot_similarity_dendrogram_heatmap
 
     metric_label = {"jaccard": "Jaccard", "js": "JS"}[metric]
+    families_label = "+".join(sorted(families)) if families else "all"
 
     print("=" * 70)
-    print(f"BINNED {metric_label.upper()} SIMILARITY DASHBOARD  (→ {n_bins:,} bins)")
+    print(
+        f"BINNED {metric_label.upper()} SIMILARITY DASHBOARD  "
+        f"(→ {n_bins:,} bins, families={families_label})"
+    )
     print("=" * 70)
 
     similarity_matrix, bin_indices = compute_binned_similarity(
         tokenized_h5_path=tokenized_h5_path,
         n_bins=n_bins,
         metric=metric,
+        families=families,
     )
 
     # Layout: narrow dendrogram (1/6) + wide heatmap (5/6)
@@ -79,6 +88,7 @@ def create_binned_similarity_dashboard(
     total_samples = bin_indices[-1][1] if bin_indices else n
     stats_parts = [
         f"Metric: {metric_label}",
+        f"Families: {families_label}",
         f"Avg Similarity: {avg:.3f}",
         f"Total Samples: {total_samples:,}",
         f"Bins: {n:,}",

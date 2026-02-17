@@ -45,11 +45,26 @@ Metrics:
         default="jaccard",
         help="Similarity metric (default: jaccard)",
     )
+    parser.add_argument(
+        "--families",
+        nargs="+",
+        default=None,
+        metavar="FAMILY",
+        help=(
+            "Token families to include (e.g. --families temporal). "
+            "Omit to include all families (temporal + initial + theta). "
+            "Use 'temporal' to isolate the temporal encoder's diversity, "
+            "excluding parameter/IC tokens that inflate baseline similarity."
+        ),
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stem = "rollout_similarity_jaccard" if args.metric == "jaccard" else "rollout_similarity_js"
+
+    families_tag = "_" + "+".join(sorted(args.families)) if args.families else ""
+    metric_tag = "jaccard" if args.metric == "jaccard" else "js"
+    stem = f"rollout_similarity_{metric_tag}{families_tag}"
     output_path = output_dir / f"{stem}.png"
 
     create_binned_similarity_dashboard(
@@ -57,6 +72,7 @@ Metrics:
         output_path=output_path,
         n_bins=args.n_bins,
         metric=args.metric,
+        families=args.families,
     )
 
 

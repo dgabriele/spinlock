@@ -1737,6 +1737,7 @@ def compute_binned_similarity(
     tokenized_h5_path: str,
     n_bins: int = 5000,
     metric: str = "jaccard",
+    families: Optional[list] = None,
 ) -> tuple:
     """Load tokens, bin by consecutive groups, compute pairwise similarity matrix.
 
@@ -1749,6 +1750,9 @@ def compute_binned_similarity(
         tokenized_h5_path: Path to pretokenized HDF5 dataset
         n_bins: Target number of bins (consecutive groups of samples)
         metric: 'jaccard' or 'js'
+        families: Optional list of token families to include (e.g. ['temporal']).
+            Keys whose first '_'-delimited segment is not in this list are excluded.
+            None (default) includes all families.
 
     Returns:
         (similarity_matrix [n_bins, n_bins] float32, bin_indices list of (start, end) tuples)
@@ -1762,7 +1766,21 @@ def compute_binned_similarity(
     print(f"Loading tokens from {tokenized_h5_path}...")
     with h5py.File(tokenized_h5_path, "r") as f:
         tokens_group = f["tokens"]
-        token_keys = sorted(tokens_group.keys())
+        all_token_keys = sorted(tokens_group.keys())
+
+        # Family filter: keep only keys whose first segment is in `families`
+        if families is not None:
+            family_set = set(families)
+            token_keys = [k for k in all_token_keys if k.split("_")[0] in family_set]
+            if not token_keys:
+                raise ValueError(
+                    f"No token keys matched families={families}. "
+                    f"Available families: {sorted({k.split('_')[0] for k in all_token_keys})}"
+                )
+            print(f"  Family filter {families}: {len(token_keys)}/{len(all_token_keys)} keys kept")
+        else:
+            token_keys = all_token_keys
+
         n_samples = tokens_group[token_keys[0]].shape[0]
         print(f"  Found {len(token_keys)} token categories, {n_samples:,} samples")
 
