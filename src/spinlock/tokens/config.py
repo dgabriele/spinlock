@@ -166,6 +166,15 @@ class LossConfig(BaseModel):
     orthogonality_weight: float = Field(default=0.1, ge=0.0)
     informativeness_weight: float = Field(default=0.1, ge=0.0)
     topographic_weight: float = Field(default=0.0, ge=0.0)
+    topographic_n_samples: int = Field(
+        default=64,
+        ge=4,
+        description=(
+            "Number of samples drawn from the batch for pairwise distance computation "
+            "in the topographic loss. Scale proportionally with batch_size to keep "
+            "the same fraction of the batch covered."
+        ),
+    )
     normalize_reconstruction: bool = True
 
     # NEW: Roundtrip loss configuration

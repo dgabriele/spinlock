@@ -540,7 +540,7 @@ class VQVAELoss:
                         original=original,
                         latent_vectors=full_latent,
                         quantized_vectors=full_quantized,
-                        n_samples=64,
+                        n_samples=self.config.topographic_n_samples,
                     )
 
                     topo_pre_corr = topo_metrics['topo_pre']

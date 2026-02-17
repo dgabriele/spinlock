@@ -131,7 +131,7 @@ inverse_heads:
 
 training:
   num_epochs: 1000
-  batch_size: 768
+  batch_size: 256
   learning_rate: 0.001
   val_split: 0.1
   val_every_n_epochs: 3
@@ -163,6 +163,7 @@ loss:
   orthogonality_weight: 0.1
   informativeness_weight: 0.1
   topographic_weight: 0.2
+  topographic_n_samples: 64   # ~25% of batch_size=256; scale proportionally if batch changes
   normalize_reconstruction: true
 
   roundtrip:
