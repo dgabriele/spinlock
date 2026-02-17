@@ -263,10 +263,6 @@ class VQTokenizerTrainer:
             if self.scheduler is not None and epoch >= self.config.training.warmup_epochs:
                 self.scheduler.step()
 
-            # Dead code reset (periodically)
-            if (epoch + 1) % self.config.training.dead_code_reset_interval == 0:
-                self._reset_dead_codes()
-
             # Log progress
             if self.config.verbose:
                 lr = self.optimizer.param_groups[0]['lr']
@@ -460,7 +456,10 @@ class VQTokenizerTrainer:
         total_info = 0.0
         num_batches = 0
 
-        for batch in loader:
+        do_reset = (epoch + 1) % self.config.training.dead_code_reset_interval == 0
+        num_batches_total = len(loader)
+
+        for batch_idx, batch in enumerate(loader):
             # Unpack batch using tensor_map to handle variable tensor order
             temporal_feats = (
                 batch[self.tensor_map['temporal_features']].to(self.device)
@@ -571,6 +570,25 @@ class VQTokenizerTrainer:
                 )
 
             self.optimizer.step()
+
+            # Dead code reset: fires on the last batch of reset epochs so we
+            # have fresh latents (actual pre-quantization vectors) for reseeding.
+            if do_reset and batch_idx == num_batches_total - 1:
+                latents_dict = outputs.get("latents", {})
+                total_reset = 0
+                for qkey, quantizer in self.model.quantizers.items():
+                    if qkey in latents_dict:
+                        n = quantizer.reset_dead_codes(
+                            latents_dict[qkey].detach(),
+                            percentile_threshold=10.0,
+                            max_reset_fraction=0.25,
+                        )
+                        total_reset += n
+                if total_reset > 0:
+                    logger.info(
+                        f"Dead code reset (epoch {epoch+1}): "
+                        f"{total_reset} codes reset across {len(self.model.quantizers)} quantizers"
+                    )
 
             # Accumulate metrics
             total_loss += loss.item()
@@ -962,44 +980,6 @@ class VQTokenizerTrainer:
             logger.info(f"  Total Metrics Captured: {len(final_metrics)}")
 
         return final_metrics
-
-    def _reset_dead_codes(self):
-        """Reset dead codebook entries that are rarely used."""
-        threshold = self.config.training.dead_code_threshold
-
-        for name, quantizer in self.model.quantizers.items():
-            if hasattr(quantizer, 'ema_cluster_size') and quantizer.use_ema:
-                # EMA quantizers track cluster sizes
-                cluster_sizes = quantizer.ema_cluster_size.data
-                total_usage = cluster_sizes.sum()
-
-                if total_usage > 0:
-                    usage_freq = cluster_sizes / total_usage
-                    dead_mask = usage_freq < threshold
-
-                    num_dead = dead_mask.sum().item()
-                    if num_dead > 0:
-                        # Reset dead codes to random live codes
-                        live_indices = (~dead_mask).nonzero(as_tuple=True)[0]
-                        if len(live_indices) > 0:
-                            for dead_idx in dead_mask.nonzero(as_tuple=True)[0]:
-                                random_live = live_indices[
-                                    torch.randint(0, len(live_indices), (1,))
-                                ]
-                                quantizer.embedding.weight.data[dead_idx] = (
-                                    quantizer.embedding.weight.data[random_live]
-                                    + torch.randn_like(
-                                        quantizer.embedding.weight.data[random_live]
-                                    ) * 0.01
-                                )
-                                quantizer.ema_cluster_size.data[dead_idx] = (
-                                    quantizer.ema_cluster_size.data[random_live] * 0.5
-                                )
-                            logger.info(f"Reset {num_dead} dead codes in {name}")
-                        else:
-                            logger.warning(
-                                f"{name}: {num_dead} dead codes found but no live codes to copy from — skipping reset"
-                            )
 
     def _save_checkpoint(
         self, path: Path, epoch: int, val_loss: Optional[float]
