@@ -203,7 +203,7 @@ class TrainingConfig(BaseModel):
     early_stopping_patience: int = Field(default=20, ge=1)
     early_stopping_min_delta: float = Field(default=1e-4, ge=0.0)
 
-    dead_code_reset_interval: int = Field(default=10, ge=1)
+    dead_code_reset_interval: int = Field(default=10, ge=0, description="0 = disabled")
     dead_code_threshold: float = Field(default=0.01, ge=0.0, le=1.0)
 
     device: Literal["cuda", "cpu", "auto"] = "auto"

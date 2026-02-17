@@ -456,7 +456,8 @@ class VQTokenizerTrainer:
         total_info = 0.0
         num_batches = 0
 
-        do_reset = (epoch + 1) % self.config.training.dead_code_reset_interval == 0
+        interval = self.config.training.dead_code_reset_interval
+        do_reset = interval > 0 and (epoch + 1) % interval == 0
         num_batches_total = len(loader)
 
         for batch_idx, batch in enumerate(loader):

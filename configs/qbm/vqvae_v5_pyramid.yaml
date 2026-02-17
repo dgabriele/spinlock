@@ -147,9 +147,13 @@ training:
   early_stopping_patience: 30
   early_stopping_min_delta: 0.001
 
-  # ── Dead code reset: ENABLED ──────────────────────────────────
-  dead_code_reset_interval: 5    # every 5 epochs (~295 batches; EMA 95% settled)
-  dead_code_threshold: 0.01      # codes used < 1% of time are reset
+  # ── Dead code reset: DISABLED ─────────────────────────────────
+  # Let EMA naturally rebalance codes without periodic disruption.
+  # Periodic resets were whack-a-mole: util flatlined at 13.5% across
+  # epochs 3/6/9 despite train loss dropping 100x. All 183 quantizers
+  # were being reset every 5 epochs, preventing EMA accumulation.
+  dead_code_reset_interval: 0
+  dead_code_threshold: 0.01
 
   device: "auto"
   compile_model: false
