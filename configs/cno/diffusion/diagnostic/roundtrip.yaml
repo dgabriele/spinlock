@@ -22,7 +22,7 @@ diffusion_checkpoint: "experiments/cno/diffusion/diffusion_50k_cno_best.pt"
 tokenizer_checkpoint:  "checkpoints/cno/v3/vq_tokenizer_best.pt"
 
 num_samples: 500
-batch_size: 32
+batch_size: 4    # keep low: CNO rollout (B×T×C×H×W) is GPU-memory intensive
 device: "cuda"
 seed: 42
 output_dir: "experiments/cno/diagnostics/roundtrip/"
@@ -32,7 +32,7 @@ output_dir: "experiments/cno/diagnostics/roundtrip/"
 # (looks for 'quantum' in temporal feature names → qbm, else cno).
 # Uncomment operator_type_override if auto-detection fails.
 replayer:
-  config_path: "configs/cno/substrate.yaml"
+  config_path: "configs/experiments/cno_50k_3channel.yaml"
   num_realizations: 1
   num_timesteps: 256
   # operator_type_override: "cno"

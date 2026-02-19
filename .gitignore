@@ -27,9 +27,10 @@ data/
 *.pt
 *.ckpt
 *.pth
-# Ignore runtime diagnostic output dirs (not source code in experiments/diffusion/diagnostics/)
-experiments/*/diagnostics/
-checkpoints/*/diagnostics/
+# Ignore runtime diagnostic output dirs by operator type (not source code)
+experiments/cno/diagnostics/
+experiments/qbm/diagnostics/
+experiments/mno/diagnostics/
 results/
 runs/
 *.npz

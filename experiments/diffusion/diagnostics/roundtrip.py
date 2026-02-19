@@ -189,6 +189,7 @@ class RoundtripFidelityDiagnostic:
         self._replayer = None
         self._temporal_extractor = None
         self._temporal_feature_mask: Optional[np.ndarray] = None
+        self._initial_extractor = None  # for initial_hybrid: computes initial_manual from u0
         self._vocab_sizes: Dict[str, int] = {}
 
         # Discovered at init
@@ -206,6 +207,7 @@ class RoundtripFidelityDiagnostic:
         logger.info("Initializing RoundtripFidelityDiagnostic...")
         self._load_tokenizer()
         self._load_diffusion_model()
+        self._load_initial_extractor()  # always — detects hybrid mode from tokenizer config
         if self.config.replayer is not None:
             self._load_replayer()
             self._load_temporal_extractor()
@@ -223,6 +225,9 @@ class RoundtripFidelityDiagnostic:
         self._tokenizer = VQTokenizer.from_checkpoint(
             self.config.tokenizer_checkpoint
         )
+        # Move tokenizer model to compute device.
+        # decode() auto-moves inputs to the model's device, but tokenize() does not.
+        self._tokenizer.model.to(self.device)
         logger.info("VQTokenizer loaded")
 
     def _load_diffusion_model(self) -> None:
@@ -350,6 +355,25 @@ class RoundtripFidelityDiagnostic:
         )
         self._replayer_type = get_replayer_type_name(self._replayer)
 
+    def _load_initial_extractor(self) -> None:
+        """Load IC feature extractor for initial_hybrid tokenizers.
+
+        InitialHybridEncoder requires both initial_raw [B, C, H, W] AND
+        initial_manual [B, D_manual] computed from the same IC. This extractor
+        computes the manual statistical features from decoded u0, mirroring
+        SynthesisVerificationPipeline._load_initial_extractor().
+        """
+        # Only needed when the tokenizer uses initial_hybrid mode
+        enc_cfg = self._tokenizer.config.encoder.initial
+        if getattr(enc_cfg, 'variant', None) == 'hybrid':
+            from spinlock.features.initial.ic_feature_extractors import (
+                InitialConditionsFeatureExtractor,
+            )
+            self._initial_extractor = InitialConditionsFeatureExtractor(
+                device=str(self.device)
+            )
+            logger.info("Initial condition feature extractor loaded (for initial_manual)")
+
     def _load_temporal_extractor(self) -> None:
         """Load temporal feature extractor and feature cleaning mask.
 
@@ -361,8 +385,11 @@ class RoundtripFidelityDiagnostic:
 
         config = TemporalFeatureConfig()
         config.quantum.enabled = False  # match 247-feature dataset generation
+        # Use CPU for feature extraction: the per-timestep statistics (histograms,
+        # spectra, etc.) are memory-hungry and don't benefit from GPU acceleration
+        # in diagnostic mode. This avoids OOM when processing long trajectories.
         self._temporal_extractor = TemporalFeatureOrchestrator(
-            device=self.device, config=config
+            device=torch.device("cpu"), config=config
         )
 
         # Load temporal feature cleaning mask
@@ -427,15 +454,18 @@ class RoundtripFidelityDiagnostic:
             # Roundtrip and compare
             try:
                 reencoded = self._roundtrip_batch(generated, seed_offset=batch_start)
+                # Build a lookup: base_key → generated_token
+                # For trunc-T format, use the T256 (highest T) variant as canonical.
+                gen_base = self._normalize_tokens_for_decode(generated)
                 for key in reencoded:
-                    if key not in generated:
+                    if key not in gen_base:
                         continue
-                    gen_tok = generated[key].to(self.device)
+                    gen_tok = gen_base[key].to(self.device)
                     re_tok = reencoded[key].to(self.device)
                     rate = (gen_tok == re_tok).float().mean().item()
                     match_accum[key].append(rate)
             except Exception as e:
-                logger.warning(f"Roundtrip failed for batch {num_batches}: {e}")
+                logger.warning(f"Roundtrip failed for batch {num_batches}: {e}", exc_info=True)
 
             all_generated.append(generated)
             num_batches += 1
@@ -460,6 +490,55 @@ class RoundtripFidelityDiagnostic:
     # Internal: roundtrip
     # ------------------------------------------------------------------
 
+    def _normalize_tokens_for_decode(
+        self, tokens: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Remap temporal resolution tokens to base key format for VQTokenizer.decode().
+
+        Temporal resolution D3PM generates keys like:
+            temporal_group_0_trunc_T256_L0
+        VQTokenizer.decode() expects base keys like:
+            temporal_group_0_L0
+
+        Strategy: for each base temporal key expected by the tokenizer,
+        prefer the T256 (full-resolution) truncation variant if present.
+        Non-temporal and non-truncated keys pass through unchanged.
+
+        This remapping is necessary whenever the diffusion model uses a
+        TemporalResolutionDenoisingNetwork (multi-truncation token schema).
+        """
+        import re
+        trunc_re = re.compile(r'^(.+)_trunc_T(\d+)_(L\d+)$')
+
+        # Collect all truncation variants: base_key → {T: token_tensor}
+        trunc_by_base: Dict[str, Dict[int, torch.Tensor]] = defaultdict(dict)
+        non_trunc: Dict[str, torch.Tensor] = {}
+
+        for key, val in tokens.items():
+            m = trunc_re.match(key)
+            if m:
+                base_key = f"{m.group(1)}_{m.group(3)}"  # e.g. temporal_group_0_L0
+                T_val = int(m.group(2))
+                trunc_by_base[base_key][T_val] = val
+            else:
+                non_trunc[key] = val
+
+        if not trunc_by_base:
+            # No truncation variants — already base format
+            return tokens
+
+        remapped: Dict[str, torch.Tensor] = dict(non_trunc)
+        for base_key, t_dict in trunc_by_base.items():
+            # Prefer highest T (full resolution); fall back to largest available
+            best_T = max(t_dict.keys())
+            remapped[base_key] = t_dict[best_T]
+
+        logger.debug(
+            f"Remapped {len(trunc_by_base)} temporal-resolution keys → base format "
+            f"(selected T={max(max(d.keys()) for d in trunc_by_base.values())} truncation)"
+        )
+        return remapped
+
     def _roundtrip_batch(
         self,
         tokens: Dict[str, torch.Tensor],
@@ -476,7 +555,10 @@ class RoundtripFidelityDiagnostic:
             k: v.to(self.device) for k, v in tokens.items()
         }
 
-        theta, u0 = self._tokenizer.decode(tokens_dev)
+        # For temporal-resolution D3PM: remap trunc_T256 → base key format
+        tokens_for_decode = self._normalize_tokens_for_decode(tokens_dev)
+
+        theta, u0 = self._tokenizer.decode(tokens_for_decode)
         # theta: [B, param_dim], u0: [B, C, H, W]
 
         if self._replayer is not None:
@@ -484,13 +566,22 @@ class RoundtripFidelityDiagnostic:
         else:
             return self._partial_roundtrip(theta, u0)
 
+    def _compute_initial_manual(self, u0: torch.Tensor) -> Optional[torch.Tensor]:
+        """Compute initial_manual features from decoded u0 if extractor is available."""
+        if self._initial_extractor is None:
+            return None
+        # InitialConditionsFeatureExtractor.extract_all expects [B, C, H, W]
+        return self._initial_extractor.extract_all(u0)
+
     def _partial_roundtrip(
         self,
         theta: torch.Tensor,
         u0: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
         """Roundtrip without simulation: theta + initial only."""
+        initial_manual = self._compute_initial_manual(u0)
         return self._tokenizer.tokenize(
+            initial_manual=initial_manual,
             initial_raw=u0,
             theta_features=theta,
         )
@@ -505,11 +596,11 @@ class RoundtripFidelityDiagnostic:
         trajectory = self._call_replayer(theta, u0, seed_offset)
         # trajectory: [B, M, T, C, H, W]
 
-        # Move to device for extraction
-        if trajectory.device != self.device:
-            trajectory = trajectory.to(self.device)
-
-        temporal_raw = self._temporal_extractor.extract_per_timestep(trajectory)
+        # Move to CPU for feature extraction — temporal stats (histograms, spectra)
+        # are memory-intensive and don't need GPU. The extractor runs on CPU.
+        temporal_raw = self._temporal_extractor.extract_per_timestep(
+            trajectory.cpu()
+        )
         # temporal_raw: [B, T, D_raw]
 
         # Apply feature cleaning mask (same indices as tokenizer training)
@@ -521,8 +612,12 @@ class RoundtripFidelityDiagnostic:
         else:
             temporal_features = temporal_raw
 
+        # Move temporal_features to model device for tokenization
+        temporal_features = temporal_features.to(self.device)
+        initial_manual = self._compute_initial_manual(u0)
         return self._tokenizer.tokenize(
             temporal_features=temporal_features,
+            initial_manual=initial_manual,
             initial_raw=u0,
             theta_features=theta,
         )
