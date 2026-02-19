@@ -194,9 +194,10 @@ class DiffusionTrainer:
         Returns:
             Training history dict
         """
-        logger.info(f"Starting training for {num_epochs} epochs")
+        start_epoch = self.current_epoch  # >0 when resuming from checkpoint
+        logger.info(f"Starting training for {num_epochs} epochs (from epoch {start_epoch + 1})")
 
-        for epoch in range(num_epochs):
+        for epoch in range(start_epoch, num_epochs):
             self.current_epoch = epoch + 1
 
             # Train epoch

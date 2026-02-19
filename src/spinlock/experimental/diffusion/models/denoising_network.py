@@ -194,11 +194,10 @@ class DenoisingNetwork(nn.Module):
                     (idx, info['level'])
                 )
             else:
-                # Fallback: parse from key name
-                parts = key.rsplit('_L', 1)
-                level = int(parts[1])
-                family_cat = parts[0]
-                cat_groups[family_cat].append((idx, level))
+                # Fallback: parse from key name (handles trunc keys too)
+                from spinlock.tokens.schema import parse_key as _parse_key
+                info = _parse_key(key)
+                cat_groups[(info.family, info.category)].append((idx, info.level))
 
         # For each group, connect all positions to their L0 parent(s)
         for positions in cat_groups.values():

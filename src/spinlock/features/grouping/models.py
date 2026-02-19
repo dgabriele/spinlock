@@ -33,9 +33,23 @@ class ClusteringParams(BaseModel):
     linkage_method: LinkageMethod = LinkageMethod.WARD
     distance_metric: DistanceMetric = DistanceMetric.CORRELATION
     k_selection_method: KSelectionMethod = KSelectionMethod.SILHOUETTE
-    num_groups: Optional[int] = None  # Manual K
-    min_groups: int = Field(2, ge=2)
-    max_groups: int = Field(20, ge=2)
+    num_groups: Optional[int] = None  # Manual K (or upper cap when variance_threshold also set)
+    variance_threshold: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "If set, K is the minimum number of PCs such that their cumulative explained "
+            "variance >= variance_threshold. Features whose unconstrained dominant PC is in "
+            "the noise tail (index >= K) are re-allocated to whichever of the top-K PCs has "
+            "the highest absolute loading for that feature. "
+            "When both variance_threshold and num_groups are specified, "
+            "K = min(K_auto, num_groups) — num_groups acts as an upper cap. "
+            "When only num_groups is set, K = num_groups (legacy fixed-K behaviour)."
+        ),
+    )
+    min_groups: Optional[int] = Field(None, ge=2, description="Minimum K for silhouette search; None → 2")
+    max_groups: Optional[int] = Field(None, ge=2, description="Maximum K for silhouette search; None → D-1")
     subsample_size: Optional[int] = Field(None, description="Max samples for correlation")
     use_gpu: bool = Field(True, description="Use CuPy GPU acceleration if available")
 
@@ -109,42 +123,44 @@ class GroupingConfig(BaseModel):
     min_samples_required: int = Field(50, ge=1, description="Minimum samples for grouping")
     min_features_required: int = Field(2, ge=2, description="Minimum features for grouping")
 
+    # Per-family config overrides.  When set, these replace the top-level config
+    # for the corresponding feature family.  When None (default), the factory
+    # falls back to the family-specific default (InitialGroupingConfig /
+    # ThetaGroupingConfig) so non-temporal families are never forced to use the
+    # temporal num_groups / variance_threshold settings.
+    initial: Optional['GroupingConfig'] = Field(
+        None,
+        description="Config override for initial-feature grouping.",
+    )
+    theta: Optional['GroupingConfig'] = Field(
+        None,
+        description="Config override for theta-feature grouping.",
+    )
+
 
 class TemporalGroupingConfig(GroupingConfig):
-    """Temporal features typically need more groups (8-20)."""
+    """Temporal features — Ward clustering; K from data unless num_groups is set."""
     clustering: ClusteringParams = Field(
-        default_factory=lambda: ClusteringParams(
-            min_groups=8,
-            max_groups=20,
-            linkage_method=LinkageMethod.WARD,
-        )
+        default_factory=lambda: ClusteringParams(linkage_method=LinkageMethod.WARD)
     )
-    min_samples_required: int = 100  # More samples needed for temporal
+    min_samples_required: int = 100
 
 
 class InitialGroupingConfig(GroupingConfig):
-    """Initial features typically need fewer groups (2-5)."""
+    """Initial features — Ward clustering; K from data via silhouette scoring."""
     clustering: ClusteringParams = Field(
-        default_factory=lambda: ClusteringParams(
-            min_groups=2,
-            max_groups=5,
-            linkage_method=LinkageMethod.WARD,
-        )
+        default_factory=lambda: ClusteringParams(linkage_method=LinkageMethod.WARD)
     )
-    min_samples_required: int = 50  # Fewer samples OK for initial
+    min_samples_required: int = 50
 
 
 class ThetaGroupingConfig(GroupingConfig):
-    """Theta (parameter) features use a single group for all parameters."""
+    """Theta (parameter) features — Ward clustering; K from data via silhouette scoring."""
     clustering: ClusteringParams = Field(
-        default_factory=lambda: ClusteringParams(
-            min_groups=1,
-            max_groups=1,
-            linkage_method=LinkageMethod.WARD,
-        )
+        default_factory=lambda: ClusteringParams(linkage_method=LinkageMethod.WARD)
     )
-    min_samples_required: int = 50  # Same as initial
-    skip_gradient_refinement: bool = True  # No need to refine single group
+    min_samples_required: int = 50
+    skip_gradient_refinement: bool = True
 
 
 class FeatureGroup(BaseModel):

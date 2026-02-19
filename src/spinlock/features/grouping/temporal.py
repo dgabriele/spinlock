@@ -43,7 +43,7 @@ class TemporalFeatureGrouper(FeatureGrouper):
                 f"for robust clustering, got {N}"
             )
 
-        if D < self.config.clustering.min_groups:
+        if self.config.clustering.min_groups is not None and D < self.config.clustering.min_groups:
             raise ValueError(
                 f"Temporal features has {D} dimensions but config requires "
                 f"min_groups={self.config.clustering.min_groups}"

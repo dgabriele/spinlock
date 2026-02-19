@@ -1,0 +1,118 @@
+# CNO (convolutional neural operator) D3PM Discrete Diffusion Configuration
+# ═══════════════════════════════════════════════════════════════
+#
+# Canonical D3PM training config for CNO 50K pretokenized data.
+# Includes architecture improvements:
+#   - SNR weighting (weight loss by 1/beta_t)
+#   - Vocab-size weighting (normalize by log(V)/log(V_max))
+#   - Per-category hierarchical guidance (L0 guides only its own family)
+#   - Batched timesteps (automatic, no config needed)
+#   - Eval-mode attention unmasking (automatic at inference)
+#
+# Training command:
+#   poetry run python experiments/diffusion/scripts/train.py \
+#     --config configs/...
+
+# Dataset paths
+dataset:
+  tokenized_path: "datasets/50k_cno_v3_tokenized_temporal_res.h5"
+  tokenizer_checkpoint: "checkpoints/cno/v3/vq_tokenizer_best.pt"
+  use_pretokenized: true
+
+# Masking strategy — mixed over all 7 strategies
+# random: general coverage; truncation_row/group_column/submatrix exploit the
+# temporal-resolution matrix structure; coarse_only/hierarchical/family_selective
+# test level- and family-based inference.
+masking:
+  strategy: "mixed"
+  mask_probability: 0.5   # passed to the random sub-strategy
+  seed: 42
+  strategies:
+    - name: "random"
+      weight: 0.35
+    - name: "truncation_row"
+      weight: 0.20
+    - name: "group_column"
+      weight: 0.20
+    - name: "submatrix"
+      weight: 0.10
+    - name: "coarse_only"
+      weight: 0.05
+    - name: "hierarchical"
+      weight: 0.05
+    - name: "family_selective"
+      weight: 0.05
+
+# Diffusion schedule
+diffusion:
+  num_timesteps: 50
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule_type: "cosine"
+  transition_type: "absorbing"  # mask-token noise model (BERT-style unmask > denoise)
+  beta_scaling: "vocab_aware"   # scale beta by log(V)/log(V_max) per category
+
+# Denoising network
+model:
+  hidden_dim: 256
+  num_layers: 6
+  num_heads: 8
+  dropout: 0.1
+  use_hierarchical_guidance: true
+  hierarchical_guidance_weight: 0.1
+  hierarchical_guidance_mode: "per_category"  # L0 guides only its own family
+
+# Training
+training:
+  batch_size: 32
+  num_epochs: 20
+  num_workers: 0
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  gradient_clip_norm: 1.0
+  use_snr_weighting: true           # Weight loss by 1/beta_t (more signal at low noise)
+  use_vocab_size_weighting: true    # Normalize by log(V)/log(V_max) across categories
+
+  # Physics-aware auxiliary loss — soft-decodes denoiser logits through frozen
+  # VQTokenizer components (codebooks → shared decoder → inverse heads) and computes
+  # MSE against ground-truth decoded theta parameters.  Unmasked positions are filled
+  # with their ground-truth hard embeddings so the decoder always receives the full
+  # concatenated latent, regardless of masking pattern.
+  physics_loss:
+    enabled: true
+    weight: 1.0
+    temperature: 10.0
+    warmup_epochs: 3                # Start after 3 epochs of pure token loss
+    families: ["theta"]
+    theta_weight: 1.0
+    initial_weight: 0.0
+    timestep_gate: "cosine"
+
+  # Learning rate schedule
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 2
+    min_lr: 1.0e-6
+
+  # Validation
+  val_batch_size: 128
+  val_split: 0.1
+  val_frequency: 1
+  val_samples: 5
+
+  # Checkpointing
+  checkpoint_frequency: 5
+  save_best: true
+
+  # Logging
+  log_frequency: 50
+  use_wandb: false
+
+# Output
+output:
+  dir: "experiments/cno/diffusion/"
+  checkpoint_prefix: "diffusion_50k_cno"
+
+# Device
+device: "cuda"
+seed: 42

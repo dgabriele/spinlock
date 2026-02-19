@@ -1,0 +1,211 @@
+# VQ Tokenizer - CNO v1: pca_raw Grouping + Per-Group Pyramid Temporal Encoders
+#
+# Adapted from configs/qbm/vqvae_v5_pyramid.yaml.
+# Only change: dataset_path points to the existing 50k CNO dataset.
+# All algorithmic settings (grouping, encoder, quantizer, loss) are identical.
+#
+# CNO dataset structure (auto-detected at runtime):
+#   temporal:     (50000, 256, 345)
+#   initial:      (50000, 42)
+#   architecture: (50000, 23)   ← used as theta features
+#   params:       (50000, 14)
+#   fields:       (50000, 3, 3, 64, 64)
+#
+# Dataset-dependent dimensions (channels, feature counts, param count, etc.)
+# are ALL auto-detected by DatasetIntrospector — do not hardcode them here.
+
+dataset_path: "datasets/50k_baseline.h5"
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  initial:
+    variant: "hybrid"
+    cnn_embedding_dim: 384
+    pretrained_cnn_path: null
+    use_final_batchnorm: true
+    encode_manual: true
+
+  temporal:
+    variant: "pyramid"
+    level_dims: [6, 12, 20, 26]    # 4 levels, sum=64D = embedding_dim (per-group: no projection layer)
+                                   # Progressive: coarser scales get more capacity (ratio ~1:2:3:4)
+    downsample_factors: [1, 2, 4, 8]  # Temporal pooling: ×1, ×2, ×4, ×8
+    variable_length:
+      enabled: true
+      min_timesteps: 32
+      max_timesteps: 256
+      length_bins: [32, 64, 128, 256]
+      sampling_strategy: "fixed_bins"
+      adaptive_pyramid: true
+      min_pyramid_length: 1
+      mask_downsample_method: "ceil"
+
+  theta:
+    variant: "mlp"
+    hidden_dim: 64
+    output_dim: 32
+    dropout: 0.25
+    use_layer_norm: true
+
+  embedding_dim: 64
+  hidden_dim: 128
+  dropout: 0.5
+  use_layer_norm: true
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  embedding_dim: 64
+  commitment_cost: 0.25
+  use_ema: true
+  ema_decay: 0.99
+  epsilon: 1.0e-5
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchy
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3
+  compression_ratios: "0.5:1.0:1.5"
+  min_latent_dim: 4
+  max_latent_dim: 192
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Cleaning
+# ═══════════════════════════════════════════════════════════════
+
+feature_cleaning:
+  enabled: true
+  pre_categorization: true
+  variance_threshold: 1.0e-8
+  deduplicate_threshold: 0.99
+  use_intelligent_dedup: true
+  outlier_method: "percentile"
+  percentile_range: [0.5, 99.5]
+
+# ═══════════════════════════════════════════════════════════════
+# Grouping — pca_raw: dominant-PC assignment, no rotation stored
+#
+# K (number of groups) is determined from the data's PCA spectrum:
+#   K = minimum number of PCs s.t. cumulative variance >= variance_threshold.
+# Features whose dominant PC falls in the noise tail (PC index >= K) are
+# re-allocated to the highest-loading significant PC for that feature.
+# All features are preserved; only the group count adapts to the data.
+# ═══════════════════════════════════════════════════════════════
+
+grouping:
+  method: "pca_raw"
+
+  preprocessing:
+    method: "mad"
+    clip_outliers: false
+
+  clustering:
+    variance_threshold: 0.9999   # data-driven K: min PCs explaining 99.99% variance
+    max_groups: 32               # upper cap on K (prevents OOM from extreme feature spaces)
+
+  gradient:
+    num_epochs: 500
+    learning_rate: 0.01
+    temperature_start: 1.0
+    temperature_end: 0.5
+    orthogonality_weight: 1.0
+    informativeness_weight: 1.0
+    orthogonality_target: 0.15
+    device: "auto"
+
+  splitting:
+    enabled: false
+
+  skip_gradient_refinement: true
+  random_seed: 42
+
+  # ─── Per-family overrides ───────────────────────────────────────────────
+  # When set, these replace the top-level grouping config for that family.
+  # The temporal section above applies only to temporal features.
+  # ─────────────────────────────────────────────────────────────────────────
+
+  initial:
+    method: "correlation"           # Ward + silhouette; K in [2, D-1] chosen from data
+    skip_gradient_refinement: true
+
+  theta:
+    method: "correlation"           # Ward + silhouette; K in [2, D-1] chosen from data
+    skip_gradient_refinement: true
+
+# ═══════════════════════════════════════════════════════════════
+# Inverse Heads
+# ═══════════════════════════════════════════════════════════════
+
+inverse_heads:
+  theta_hidden_dim: 128
+  theta_dropout: 0.15
+  initial_base_channels: 256
+
+# ═══════════════════════════════════════════════════════════════
+# Training
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 1000
+  batch_size: 256
+  learning_rate: 0.001
+  val_split: 0.1
+  val_every_n_epochs: 3
+
+  optimizer: "adamw"
+  weight_decay: 0.05
+  gradient_clip_norm: 1.0
+
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 10
+
+  early_stopping_patience: 30
+  early_stopping_min_delta: 0.001
+
+  dead_code_reset_interval: 0
+  dead_code_threshold: 0.01
+
+  device: "auto"
+  compile_model: false
+
+# ═══════════════════════════════════════════════════════════════
+# Loss
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  reconstruction_weight: 0.0003
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topographic_weight: 0.2
+  topographic_n_samples: 64   # ~25% of batch_size=256
+  normalize_reconstruction: true
+
+  roundtrip:
+    enabled: true
+    weight: 8.0
+    theta_weight: 1.0
+    initial_weight: 1.0
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "none"
+  clip_std_multiplier: null
+
+# ═══════════════════════════════════════════════════════════════
+# System
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 42
+verbose: true
+log_level: "INFO"

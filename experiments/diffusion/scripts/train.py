@@ -15,6 +15,7 @@ from spinlock.experimental.diffusion.config import DiffusionExperimentConfig
 from spinlock.experimental.diffusion.models import DiscreteD3PM, DiffusionSchedule, DenoisingNetwork
 from spinlock.experimental.diffusion.data import (
     HierarchicalMaskGenerator,
+    MixedMaskGenerator,
     MaskingStrategy,
     DiffusionCompletionDataset,
     PretokenizedDiffusionDataset,
@@ -134,8 +135,16 @@ def main(args):
     torch.manual_seed(config.seed)
 
     # Extract vocab sizes — prefer tokenizer codebook sizes (authoritative)
-    # over pretokenized max+1 (which underestimates for underutilized codes)
-    if config.dataset.tokenizer_checkpoint is not None:
+    # over pretokenized max+1 (which underestimates for underutilized codes).
+    # Exception: temporal-resolution pretokenized datasets have _trunc_T* keys
+    # not present in the tokenizer schema; must use pretokenized schema in that case.
+    temporal_res_mode = False
+    if config.dataset.use_pretokenized and config.dataset.tokenized_path:
+        import h5py as _h5py
+        with _h5py.File(config.dataset.tokenized_path, "r") as _f:
+            temporal_res_mode = bool(_f.attrs.get("temporal_resolution_mode", False))
+
+    if config.dataset.tokenizer_checkpoint is not None and not temporal_res_mode:
         logger.info(
             "Extracting vocab sizes from tokenizer (authoritative codebook sizes)"
         )
@@ -143,11 +152,17 @@ def main(args):
             config.dataset.tokenizer_checkpoint
         )
     elif config.dataset.use_pretokenized:
-        logger.warning(
-            "No tokenizer_checkpoint provided — inferring vocab sizes from "
-            "pretokenized data (max+1). This may underestimate vocab sizes "
-            "for codebooks with unused entries."
-        )
+        if temporal_res_mode:
+            logger.info(
+                "Temporal-resolution pretokenized dataset detected — "
+                "using pretokenized schema for vocab sizes (includes _trunc_T* keys)"
+            )
+        else:
+            logger.warning(
+                "No tokenizer_checkpoint provided — inferring vocab sizes from "
+                "pretokenized data (max+1). This may underestimate vocab sizes "
+                "for codebooks with unused entries."
+            )
         vocab_sizes, category_level_info = extract_vocab_sizes_from_pretokenized(
             config.dataset.tokenized_path
         )
@@ -158,13 +173,30 @@ def main(args):
 
     # Create mask generator
     logger.info(f"Creating mask generator: strategy={config.masking.strategy}")
-    mask_generator = HierarchicalMaskGenerator(
-        strategy=MaskingStrategy(config.masking.strategy),
-        vocab_sizes=vocab_sizes,
-        category_level_info=category_level_info,
-        mask_probability=config.masking.mask_probability,
-        seed=config.masking.seed,
-    )
+    if config.masking.strategy == MaskingStrategy.MIXED:
+        if not config.masking.strategies:
+            raise ValueError("masking.strategies list required when strategy='mixed'")
+        total_weight = sum(e.weight for e in config.masking.strategies)
+        if abs(total_weight - 1.0) > 1e-4:
+            raise ValueError(f"masking.strategies weights must sum to 1.0, got {total_weight:.4f}")
+        mask_generator = MixedMaskGenerator(
+            strategies=[
+                (MaskingStrategy(e.name), e.weight)
+                for e in config.masking.strategies
+            ],
+            vocab_sizes=vocab_sizes,
+            category_level_info=category_level_info,
+            mask_probability=config.masking.mask_probability,
+            seed=config.masking.seed,
+        )
+    else:
+        mask_generator = HierarchicalMaskGenerator(
+            strategy=MaskingStrategy(config.masking.strategy),
+            vocab_sizes=vocab_sizes,
+            category_level_info=category_level_info,
+            mask_probability=config.masking.mask_probability,
+            seed=config.masking.seed,
+        )
 
     # Create datasets
     logger.info("Creating datasets")

@@ -9,19 +9,40 @@ This extracts logic that was previously duplicated in:
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Matches keys with a temporal-resolution truncation suffix.
+# e.g. "temporal_group_1_trunc_T032_L0" → groups: ("temporal_group_1", "032", "L0")
+_TRUNC_RE = re.compile(r'^(.+)_trunc_T(\d+)_(L\d+)$')
+
+
+def strip_trunc_suffix(key: str) -> str:
+    """Strip _trunc_T{TTT} from a temporal-resolution key.
+
+    "temporal_group_1_trunc_T032_L0" → "temporal_group_1_L0"
+    "temporal_group_1_L0"            → "temporal_group_1_L0"  (no-op)
+    """
+    m = _TRUNC_RE.match(key)
+    return f"{m.group(1)}_{m.group(3)}" if m else key
+
 
 @dataclass
 class CategoryLevelInfo:
     """Parsed metadata for a single quantizer key."""
-    family: str       # "temporal", "initial", "theta", etc.
-    category: str     # "group_1", "group_2", etc.
-    level: int        # 0, 1, 2
+    family: str                    # "temporal", "initial", "theta", etc.
+    category: str                  # "group_1", "group_2", etc. — always WITHOUT trunc suffix
+    level: int                     # 0, 1, 2
+    trunc_len: Optional[int] = None  # None for base keys; int (e.g. 32) for trunc keys
+
+    @property
+    def base_key(self) -> str:
+        """Canonical base key, stripping any truncation suffix."""
+        return f"{self.family}_{self.category}_L{self.level}"
 
 
 class TokenSchema:
@@ -162,6 +183,7 @@ class TokenSchema:
                         family=info['family'],
                         category=info['category'],
                         level=info['level'],
+                        trunc_len=info.get('trunc_len'),
                     )
             return cls(vocab_sizes, category_level_info)
 
@@ -229,23 +251,29 @@ class TokenSchema:
 
     @staticmethod
     def parse_key(key: str) -> CategoryLevelInfo:
-        """Parse 'family_category_Ll' → CategoryLevelInfo.
+        """Parse token key → CategoryLevelInfo.
 
-        Key format: "family_category_parts_Ll"
-        - family: first part (e.g., "temporal", "initial", "theta")
-        - level: last part, "Ll" where l is the level number
-        - category: everything between family and level
-
-        Examples:
-            "temporal_group_1_L0" → family="temporal", category="group_1", level=0
-            "initial_manual_features_L2" → family="initial", category="manual_features", level=2
-            "theta_group_1_L0" → family="theta", category="group_1", level=0
+        Handles both formats:
+            "temporal_group_1_L0"             → category="group_1", trunc_len=None
+            "temporal_group_1_trunc_T032_L0"  → category="group_1", trunc_len=32
+            "initial_manual_features_L2"      → category="manual_features", trunc_len=None
+            "theta_group_1_L0"                → family="theta", category="group_1"
         """
-        parts = key.split('_')
-        family = parts[0]
-        level = int(parts[-1][1:])  # "L0" → 0
-        category = '_'.join(parts[1:-1])
-        return CategoryLevelInfo(family=family, category=category, level=level)
+        m = _TRUNC_RE.match(key)
+        if m:
+            family_cat = m.group(1)          # "temporal_group_1"
+            trunc_len = int(m.group(2))
+            level = int(m.group(3)[1:])      # "L0" → 0
+        else:
+            # Base format: split on rightmost "_L"
+            head, level_str = key.rsplit('_L', 1)
+            family_cat = head
+            level = int(level_str)
+            trunc_len = None
+
+        family, category = family_cat.split('_', 1)
+        return CategoryLevelInfo(family=family, category=category,
+                                 level=level, trunc_len=trunc_len)
 
     def __repr__(self) -> str:
         return (
@@ -253,3 +281,7 @@ class TokenSchema:
             f"num_keys={len(self.keys)}, "
             f"vocab_sizes={sorted(set(self.vocab_sizes.values()))})"
         )
+
+
+# Module-level alias so callers can do `from spinlock.tokens.schema import parse_key`
+parse_key = TokenSchema.parse_key

@@ -1785,13 +1785,10 @@ def compute_binned_similarity(
         print(f"  Found {len(token_keys)} token categories, {n_samples:,} samples")
 
         if metric == "jaccard":
-            # Load as sets of "key_code" strings
-            token_sets = []
-            for i in range(n_samples):
-                sample_tokens = set()
-                for key in token_keys:
-                    sample_tokens.add(f"{key}_{tokens_group[key][i]}")
-                token_sets.append(sample_tokens)
+            # Bulk-load all arrays then build sets (avoids N*K individual HDF5 reads)
+            arrays_jac = np.stack(
+                [tokens_group[k][:] for k in token_keys], axis=1
+            ).astype(np.int32)  # [N, K]
         else:
             # Load as integer array for JS
             arrays = np.stack(
@@ -1803,28 +1800,31 @@ def compute_binned_similarity(
     print(f"  Bin size: ~{bin_size} samples/bin")
 
     if metric == "jaccard":
-        binned_sets, bin_indices = [], []
-        for i in range(0, n_samples, bin_size):
-            end_idx = min(i + bin_size, n_samples)
-            bin_tokens: set = set()
-            for j in range(i, end_idx):
-                bin_tokens.update(token_sets[j])
-            binned_sets.append(bin_tokens)
-            bin_indices.append((i, end_idx))
+        # Build one binary indicator matrix per bin: [n_bins, K*max_code]
+        # Then Jaccard = dot(A,B) / (|A|+|B|-dot(A,B)) via matrix ops
+        n_codes_jac = int(arrays_jac.max()) + 1
+        K = arrays_jac.shape[1]
+        actual_n_bins = (n_samples + bin_size - 1) // bin_size
+        bin_indices = []
 
-        actual_n_bins = len(binned_sets)
+        # Build binary bag-of-tokens matrix [n_bins, K*n_codes]
+        indicators = np.zeros((actual_n_bins, K * n_codes_jac), dtype=np.uint8)
+        for b_idx, start in enumerate(range(0, n_samples, bin_size)):
+            end = min(start + bin_size, n_samples)
+            chunk = arrays_jac[start:end]  # [bin_sz, K]
+            for k in range(K):
+                for code in np.unique(chunk[:, k]):
+                    indicators[b_idx, k * n_codes_jac + code] = 1
+            bin_indices.append((start, end))
+
         print(f"  Computing {actual_n_bins:,}×{actual_n_bins:,} Jaccard similarity matrix...")
-        sim = np.zeros((actual_n_bins, actual_n_bins), dtype=np.float32)
-        for i in range(actual_n_bins):
-            if i % 100 == 0:
-                print(f"    Progress: {i}/{actual_n_bins} ({100*i/actual_n_bins:.1f}%)")
-            sim[i, i] = 1.0
-            for j in range(i + 1, actual_n_bins):
-                a, b = binned_sets[i], binned_sets[j]
-                inter = len(a & b)
-                union = len(a | b)
-                v = inter / union if union > 0 else 0.0
-                sim[i, j] = sim[j, i] = v
+        # Jaccard via dot product: J(A,B) = |A∩B| / |A∪B| = dot / (|A|+|B|-dot)
+        ind_f = indicators.astype(np.float32)
+        dot = ind_f @ ind_f.T                        # [n_bins, n_bins]
+        sizes = indicators.sum(axis=1, dtype=np.float32)  # [n_bins]
+        union_mat = sizes[:, None] + sizes[None, :] - dot
+        sim = np.where(union_mat > 0, dot / union_mat, 0.0).astype(np.float32)
+        np.fill_diagonal(sim, 1.0)
 
     else:  # js
         n_cats = arrays.shape[1]
@@ -1833,23 +1833,61 @@ def compute_binned_similarity(
         bin_freqs = np.zeros((actual_n_bins, n_cats * n_codes), dtype=np.float32)
         bin_indices = []
 
+        # Vectorised scatter: flat index = code * n_cats + cat_index
+        # Avoids the slow inner loop over n_codes.
+        k_offsets = np.arange(n_cats, dtype=np.int32)[None, :]  # [1, K]
         for b, start in enumerate(range(0, n_samples, bin_size)):
             end = min(start + bin_size, n_samples)
-            chunk = arrays[start:end]
-            count = end - start
-            for c in range(n_codes):
-                bin_freqs[b, c * n_cats:(c + 1) * n_cats] = (chunk == c).sum(axis=0) / count
+            chunk = arrays[start:end]                        # [sz, K]
+            flat = (chunk * n_cats + k_offsets).ravel()      # [sz*K]
+            np.add.at(bin_freqs[b], flat, 1.0 / (end - start))
             bin_indices.append((start, end))
 
         row_sums = bin_freqs.sum(axis=1, keepdims=True)
         bin_freqs /= np.maximum(row_sums, 1e-12)
-
-        print(f"  Computing {actual_n_bins:,}×{actual_n_bins:,} JS similarity matrix via cdist...")
         freqs = np.clip(bin_freqs, 1e-10, None)
         freqs /= freqs.sum(axis=1, keepdims=True)
-        js_dist = cdist(freqs, freqs, metric="jensenshannon").astype(np.float32)
-        sim = 1.0 - js_dist
-        np.fill_diagonal(sim, 1.0)
+
+        print(f"  Computing {actual_n_bins:,}×{actual_n_bins:,} JS similarity matrix...")
+
+        # GPU-accelerated chunked JS distance.
+        # JS(P,Q) = sqrt( H((P+Q)/2) - 0.5*(H(P)+H(Q)) )
+        # where H(X) = -sum(X log X).
+        # Computed in [chunk_size, chunk_size, D] blocks to bound VRAM usage.
+        # Falls back to CPU numpy if CUDA unavailable or OOM.
+        import torch
+
+        def _js_sim_chunked(P_np: np.ndarray, chunk_size: int = 64) -> np.ndarray:
+            use_gpu = torch.cuda.is_available()
+            dev = torch.device("cuda" if use_gpu else "cpu")
+            try:
+                P = torch.tensor(P_np, dtype=torch.float32, device=dev)  # [B, D]
+                B = P.shape[0]
+                log_P = torch.log(P)                   # already clipped ≥ 1e-10
+                H = -(P * log_P).sum(dim=1)            # [B]  per-row entropy
+                out = torch.zeros(B, B, dtype=torch.float32, device=dev)
+                for i in range(0, B, chunk_size):
+                    pi = P[i:i + chunk_size].unsqueeze(1)   # [ci, 1, D]
+                    Hi = H[i:i + chunk_size]
+                    for j in range(i, B, chunk_size):
+                        pj = P[j:j + chunk_size].unsqueeze(0)  # [1, cj, D]
+                        Hj = H[j:j + chunk_size]
+                        M = 0.5 * (pi + pj)                    # [ci, cj, D]
+                        H_M = -(M * torch.log(M)).sum(dim=2)   # [ci, cj]
+                        js_div = (H_M - 0.5 * (Hi.unsqueeze(1) + Hj.unsqueeze(0))).clamp(min=0.0)
+                        block = 1.0 - js_div.sqrt()
+                        out[i:i + chunk_size, j:j + chunk_size] = block
+                        if i != j:
+                            out[j:j + chunk_size, i:i + chunk_size] = block.T
+                out.fill_diagonal_(1.0)
+                return out.cpu().numpy()
+            except RuntimeError:  # CUDA OOM — halve chunk and retry on CPU
+                if use_gpu:
+                    print("  GPU OOM, retrying on CPU...")
+                    return _js_sim_chunked(P_np, chunk_size=chunk_size)
+                raise
+
+        sim = _js_sim_chunked(freqs).astype(np.float32)
 
     avg = float(np.mean(sim[np.triu_indices(len(sim), k=1)]))
     metric_label = "Jaccard" if metric == "jaccard" else "JS"

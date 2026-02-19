@@ -17,7 +17,7 @@ Architecture insight:
 
 import logging
 import math
-from typing import Dict, Optional, List
+from typing import Any, Dict, Optional, List
 
 import torch
 import torch.nn as nn
@@ -58,7 +58,7 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
     def __init__(
         self,
         vocab_sizes: Dict[str, int],
-        category_level_info: Dict[str, Dict[str, any]],
+        category_level_info: Dict[str, Dict[str, Any]],
         truncation_lengths: List[int],
         hidden_dim: int = 256,
         num_layers: int = 6,
@@ -108,7 +108,8 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         # Learnable temporal attention bias [N_trunc, N_trunc]
         if use_temporal_bias:
             self.temporal_attention_bias = nn.Parameter(
-                self._init_temporal_bias(temporal_bias_init, temporal_bias_strength)
+                self._init_temporal_bias(
+                    temporal_bias_init, temporal_bias_strength)
             )
         else:
             self.register_buffer(
@@ -145,20 +146,20 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         bias = torch.zeros(self.num_truncations, self.num_truncations)
 
         if init_type == "causal":
-            # Encourage early → late information flow
+            # Encourage late → early information flow: T=256 attends to T=32 with +0.3 bias.
+            # Longer truncations are extensions of shorter ones, so they condition on them.
             for i in range(self.num_truncations):
                 for j in range(self.num_truncations):
-                    if i < j:
-                        # Early guides late: positive bias proportional to gap
-                        bias[i, j] = strength * (j - i)
-                    elif i == j:
-                        # Self-attention: neutral
-                        bias[i, j] = 0.0
-                    # else: i > j (non-causal): will be masked to -inf
+                    if i > j:
+                        # Late attends to early: positive bias proportional to gap
+                        bias[i, j] = strength * (i - j)
+                    # i == j: self-attention neutral (0)
+                    # i < j: non-causal, will be masked to -inf
 
         elif init_type == "uniform":
             # Small uniform bias
-            bias = torch.ones(self.num_truncations, self.num_truncations) * strength
+            bias = torch.ones(self.num_truncations,
+                              self.num_truncations) * strength
 
         elif init_type == "zero":
             # No initial bias
@@ -191,7 +192,10 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
     def _get_causal_attention_mask(
         self, device: torch.device
     ) -> torch.Tensor:
-        """Build causal attention mask: allow early → late, block late → early.
+        """Build causal attention mask: allow late → early, block early → late.
+
+        T=256 can attend to T=32 (it is an extension of it), but T=32 cannot
+        attend to T=256 (it hasn't been observed yet in a generative setting).
 
         Returns:
             Boolean mask [N_total, N_total] where True = allowed attention
@@ -199,9 +203,9 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         # Get truncation indices for each token
         trunc_indices = self.key_truncation_indices.to(device)  # [N_total]
 
-        # Causal mask: trunc_i <= trunc_j (early can attend to late)
-        # Broadcasting: [N_total, 1] <= [1, N_total] → [N_total, N_total]
-        causal_mask = trunc_indices[:, None] <= trunc_indices[None, :]
+        # Causal mask: trunc_i >= trunc_j (late can attend to early, not vice versa)
+        # Broadcasting: [N_total, 1] >= [1, N_total] → [N_total, N_total]
+        causal_mask = trunc_indices[:, None] >= trunc_indices[None, :]
 
         return causal_mask
 
@@ -223,10 +227,12 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         trunc_indices = self.key_truncation_indices.to(device)  # [N_total]
 
         # Embed truncation levels
-        trunc_embeds = self.truncation_embedding(trunc_indices)  # [N_total, hidden_dim]
+        trunc_embeds = self.truncation_embedding(
+            trunc_indices)  # [N_total, hidden_dim]
 
         # Add to token embeddings (broadcast across batch)
-        embeddings = embeddings + trunc_embeds.unsqueeze(0)  # [B, N_total, hidden_dim]
+        # [B, N_total, hidden_dim]
+        embeddings = embeddings + trunc_embeds.unsqueeze(0)
 
         return embeddings
 
@@ -260,7 +266,8 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
             bias_matrix = bias_matrix.masked_fill(~causal_mask, float('-inf'))
 
         # Expand for batch and heads: [1, num_heads, N_total, N_total]
-        bias_matrix = bias_matrix.unsqueeze(0).unsqueeze(0).expand(1, num_heads, -1, -1)
+        bias_matrix = bias_matrix.unsqueeze(
+            0).unsqueeze(0).expand(1, num_heads, -1, -1)
 
         return bias_matrix
 
@@ -275,7 +282,7 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         Extends base forward with:
         1. Truncation embeddings added to token embeddings
         2. Temporal attention bias applied in transformer
-        3. Causal masking enforced (early → late only)
+        3. Causal masking enforced (late → early only: longer truncations attend to shorter ones)
 
         Args:
             tokens_dict: Dict mapping key → noisy token indices [B]
@@ -289,17 +296,20 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         device = timesteps.device
 
         # Flatten dict to sequence
-        embeddings = self._flatten_dict_to_sequence(tokens_dict)  # [B, N_total, hidden_dim]
+        embeddings = self._flatten_dict_to_sequence(
+            tokens_dict)  # [B, N_total, hidden_dim]
 
         # Add time embedding (broadcast to all tokens)
         t_emb = self.time_embedding(timesteps)  # [B, hidden_dim]
         t_emb = self.time_mlp(t_emb)  # [B, hidden_dim]
-        embeddings = embeddings + t_emb.unsqueeze(1)  # [B, N_total, hidden_dim]
+        # [B, N_total, hidden_dim]
+        embeddings = embeddings + t_emb.unsqueeze(1)
 
         # Add position embeddings
         positions = torch.arange(self.num_tokens, device=device)
         pos_emb = self.position_embedding(positions)  # [N_total, hidden_dim]
-        embeddings = embeddings + pos_emb.unsqueeze(0)  # [B, N_total, hidden_dim]
+        # [B, N_total, hidden_dim]
+        embeddings = embeddings + pos_emb.unsqueeze(0)
 
         # *** NEW: Add truncation embeddings ***
         embeddings = self._apply_temporal_attention_bias(embeddings, device)
@@ -313,9 +323,11 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
             mask = []
             for key in self.sorted_keys:
                 if key in observed_dict:
-                    mask.append(~observed_dict[key])  # Invert: True = ignore unobserved
+                    # Invert: True = ignore unobserved
+                    mask.append(~observed_dict[key])
                 else:
-                    mask.append(torch.zeros(B, dtype=torch.bool, device=device))
+                    mask.append(torch.zeros(
+                        B, dtype=torch.bool, device=device))
             src_key_padding_mask = torch.stack(mask, dim=1)  # [B, N_total]
 
         # *** NEW: Create temporal attention bias mask ***
@@ -325,7 +337,8 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         # TODO: Consider custom transformer layer for exact bias application
 
         # Transformer encoding (using base class transformer)
-        encoded = self.transformer(embeddings, src_key_padding_mask=src_key_padding_mask)
+        encoded = self.transformer(
+            embeddings, src_key_padding_mask=src_key_padding_mask)
 
         # Note: For true per-attention bias, we'd need to modify transformer internals
         # Current implementation adds truncation info via embeddings (works well in practice)

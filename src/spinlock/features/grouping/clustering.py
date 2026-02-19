@@ -194,11 +194,15 @@ class ClusteringEngine:
         Returns:
             Optimal number of clusters
         """
-        min_k = min_k or self.config.min_groups
-        max_k = max_k or self.config.max_groups
+        D = features.shape[1]
+        if min_k is None:
+            min_k = self.config.min_groups if self.config.min_groups is not None else 2
+        if max_k is None:
+            max_k = self.config.max_groups if self.config.max_groups is not None else D - 1
 
-        # Ensure valid range
-        max_k = min(max_k, features.shape[1] - 1)
+        # Clamp to valid range for the data
+        max_k = min(max_k, D - 1)
+        min_k = max(min_k, 2)
         if min_k > max_k:
             min_k = max_k
 

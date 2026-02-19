@@ -197,13 +197,9 @@ def main(args):
         with h5py.File(config.dataset.tokenized_path, 'r') as f:
             dataset_keys = list(f['tokens'].keys())
 
+        from spinlock.tokens.schema import strip_trunc_suffix
         for dataset_key in dataset_keys:
-            if '_trunc_' in dataset_key:
-                # Extract base key: temporal_group_10_trunc_T032_L0 → temporal_group_10_L0
-                parts = dataset_key.split('_trunc_')
-                base_key = parts[0] + '_' + parts[1].split('_', 1)[1]  # Skip T032 part
-            else:
-                base_key = dataset_key
+            base_key = strip_trunc_suffix(dataset_key)
 
             # Map to base vocab size
             if base_key in base_vocab_sizes:

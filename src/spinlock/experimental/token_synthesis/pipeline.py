@@ -187,13 +187,13 @@ class SynthesisVerificationPipeline:
         temporal_res = getattr(model_config, 'temporal_resolution', None)
 
         if temporal_res and getattr(temporal_res, 'enabled', False):
-            # Extract truncation levels from token keys (e.g., "T032", "T064")
+            from spinlock.tokens.schema import _TRUNC_RE as _TR
+            # Extract truncation levels from token keys (e.g., 32, 64)
             truncations = set()
             for key in vocab_sizes.keys():
-                if '_trunc_T' in key:
-                    # Extract "T032" from "temporal_group_1_trunc_T032_L0"
-                    trunc = key.split('_trunc_')[1].split('_')[0]
-                    truncations.add(int(trunc[1:]))  # "T032" → 32
+                m = _TR.match(key)
+                if m:
+                    truncations.add(int(m.group(2)))
 
             self._truncation_levels = sorted(truncations)
 
@@ -1226,20 +1226,21 @@ class SynthesisVerificationPipeline:
         # 1. Decode tokens to (theta, u0)
         # Extract T256 (full trajectory) tokens for decode
         if self._is_temporal_resolution:
-            # Filter keys: keep T256 temporal tokens + all initial/theta (no truncation)
-            t256_tokens = {
-                k: v for k, v in generated_tokens.items()
-                if '_trunc_T256_' in k or 'initial_' in k or 'theta_' in k
-            }
+            from spinlock.tokens.schema import strip_trunc_suffix, _TRUNC_RE
 
-            # Strip truncation suffix for VQTokenizer compatibility
-            # "temporal_group_1_trunc_T256_L0" → "temporal_group_1_L0"
+            # Find the max truncation length in this token set (data-driven, no hardcoding)
+            trunc_matches = [_TRUNC_RE.match(k) for k in generated_tokens]
+            max_T = max(
+                int(m.group(2)) for m in trunc_matches if m
+            ) if any(trunc_matches) else None
+
+            # Keep max-T temporal tokens + all initial/theta (no truncation)
             decode_tokens = {}
-            for k, v in t256_tokens.items():
-                if '_trunc_T256_' in k:
-                    # Remove "_trunc_T256" suffix
-                    clean_key = k.replace('_trunc_T256', '')
-                    decode_tokens[clean_key] = v
+            for k, v in generated_tokens.items():
+                m = _TRUNC_RE.match(k)
+                if m:
+                    if int(m.group(2)) == max_T:
+                        decode_tokens[strip_trunc_suffix(k)] = v
                 else:
                     decode_tokens[k] = v
 

@@ -12,6 +12,10 @@ class MaskingStrategy(str, Enum):
     COARSE_ONLY = "coarse_only"
     HIERARCHICAL = "hierarchical"
     FAMILY_SELECTIVE = "family_selective"
+    MIXED = "mixed"
+    TRUNCATION_ROW = "truncation_row"
+    GROUP_COLUMN = "group_column"
+    SUBMATRIX = "submatrix"
 
 
 class DatasetConfig(BaseModel):
@@ -66,11 +70,34 @@ class DatasetConfig(BaseModel):
             raise ValueError("path and tokenizer_checkpoint required when use_pretokenized=False")
 
 
+class MixedStrategyEntry(BaseModel):
+    """Single strategy entry for mixed masking."""
+    name: str
+    weight: float = Field(gt=0.0)
+
+
 class MaskingConfig(BaseModel):
-    """Masking configuration for diffusion training."""
+    """Masking configuration for diffusion training.
+
+    Single strategy:
+        strategy: "random"
+        mask_probability: 0.5
+
+    Mixed (strategy: "mixed"):
+        strategy: "mixed"
+        strategies:
+          - name: "random"
+            weight: 0.5
+          - name: "coarse_only"
+            weight: 0.3
+          - name: "hierarchical"
+            weight: 0.2
+        mask_probability: 0.5   # passed to the random sub-strategy
+    """
     strategy: MaskingStrategy = MaskingStrategy.RANDOM
     mask_probability: float = Field(default=0.5, ge=0.0, le=1.0)
     seed: int = 42
+    strategies: Optional[List[MixedStrategyEntry]] = None  # only used when strategy="mixed"
 
 
 class DiffusionConfig(BaseModel):

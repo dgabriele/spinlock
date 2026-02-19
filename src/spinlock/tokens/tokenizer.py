@@ -1201,8 +1201,9 @@ class VQTokenizer:
             # Get feature names
             initial_names = [f"initial_{i}" for i in range(initial.shape[1])]
 
-            # Create grouper
-            grouper = create_grouper("initial", config=self.config.grouping)
+            # Create grouper — use family-specific override if present, else
+            # factory falls back to InitialGroupingConfig defaults.
+            grouper = create_grouper("initial", config=self.config.grouping.initial)
 
             # Group features
             result = grouper.group_features(initial, initial_names)
@@ -1218,8 +1219,9 @@ class VQTokenizer:
             # Get feature names
             theta_names = [f"theta_{i}" for i in range(theta.shape[1])]
 
-            # Create grouper
-            grouper = create_grouper("theta", config=self.config.grouping)
+            # Create grouper — use family-specific override if present, else
+            # factory falls back to ThetaGroupingConfig defaults (single group).
+            grouper = create_grouper("theta", config=self.config.grouping.theta)
 
             # Group features
             result = grouper.group_features(theta, theta_names)

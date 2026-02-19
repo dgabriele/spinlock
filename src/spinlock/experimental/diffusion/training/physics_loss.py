@@ -151,12 +151,24 @@ class PhysicsDecodeHead(nn.Module):
         self,
         logits_dict: Dict[str, torch.Tensor],
         temperature: float = 1.0,
+        target_tokens: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
         """Differentiable soft-decode: softmax(logits/τ) @ codebook → decoder → inverse heads.
 
+        For masked positions (keys in logits_dict), computes a soft weighted embedding
+        that carries gradients into the denoiser.  For unmasked positions (keys absent
+        from logits_dict but present in target_tokens), uses the ground-truth hard
+        embedding as a constant filler so the decoder always receives the full
+        concatenated latent, regardless of masking pattern.
+
         Args:
             logits_dict: Dict mapping quantizer key → logits [B, V_k].
+                         Contains only masked-position keys.
             temperature: Softmax temperature (lower = sharper).
+            target_tokens: Dict mapping quantizer key → token indices [B].
+                           Used to fill in unmasked positions. If None, unmasked
+                           positions are skipped (original behaviour, unsafe for
+                           partial masking).
 
         Returns:
             Dict with decoded physics parameters:
@@ -165,12 +177,32 @@ class PhysicsDecodeHead(nn.Module):
         """
         soft_embeddings = []
         for key in self.sorted_keys:
-            if key not in logits_dict:
+            if key in logits_dict:
+                # Masked position: differentiable soft embedding — gradients flow here.
+                logits = logits_dict[key]  # [B, V_k]
+                # Schema vocab may be smaller than codebook capacity (unused codes).
+                # Pad with -inf so unseen codes get zero probability after softmax.
+                V_cb = self.codebooks[key].weight.shape[0]
+                if logits.shape[1] < V_cb:
+                    logits = F.pad(logits, (0, V_cb - logits.shape[1]), value=float('-inf'))
+                probs = F.softmax(logits / temperature, dim=-1)  # [B, V_cb]
+                soft_emb = probs @ self.codebooks[key].weight  # [B, D_k]
+            elif target_tokens is not None and key in target_tokens:
+                # Unmasked position: ground-truth hard embedding as a constant filler.
+                # Codebooks are frozen (requires_grad=False) and token indices are
+                # integers, so no gradient escapes through this path — correct.
+                with torch.no_grad():
+                    soft_emb = self.codebooks[key](target_tokens[key])  # [B, D_k]
+            else:
+                # Key absent from both logits and targets — skip (degenerate case).
                 continue
-            logits = logits_dict[key]  # [B, V_k]
-            probs = F.softmax(logits / temperature, dim=-1)  # [B, V_k]
-            soft_emb = probs @ self.codebooks[key].weight  # [B, D_k]
             soft_embeddings.append(soft_emb)
+
+        if not soft_embeddings:
+            raise ValueError(
+                "soft_decode: no embeddings collected — logits_dict and target_tokens "
+                "are both empty or share no keys with sorted_keys."
+            )
 
         latent = torch.cat(soft_embeddings, dim=-1)  # [B, total_latent_dim]
         reconstructed = self.decoder(latent)  # [B, total_encoded_dim]
@@ -250,6 +282,46 @@ class PhysicsAwareLoss(nn.Module):
         self.decode_head = decode_head
         self.config = config
 
+    @staticmethod
+    def _remap_temporal_trunc(
+        predicted_logits: Dict[str, torch.Tensor],
+        target_tokens: Dict[str, torch.Tensor],
+    ):
+        """Handle temporal-resolution pretokenized datasets.
+
+        In temporal-resolution mode, temporal quantizer keys are stored with a
+        truncation suffix: ``temporal_group_N_trunc_T{TTT}_LM``.  The frozen
+        PhysicsDecodeHead expects the base key ``temporal_group_N_LM``.
+
+        This method adds base-key aliases pointing to the max-T (longest rollout)
+        truncated version, so soft_decode can collect all embeddings the decoder needs.
+        Non-temporal keys and already-present base keys are left unchanged.
+        """
+        from spinlock.tokens.schema import strip_trunc_suffix, _TRUNC_RE
+
+        # Collect max-T trunc key for each base key
+        trunc_map: Dict[str, tuple] = {}  # base_key → (T_int, trunc_key)
+        for k in target_tokens:
+            m = _TRUNC_RE.match(k)
+            if not m:
+                continue
+            base = strip_trunc_suffix(k)
+            T_val = int(m.group(2))
+            if base not in trunc_map or T_val > trunc_map[base][0]:
+                trunc_map[base] = (T_val, k)
+
+        if not trunc_map:
+            return predicted_logits, target_tokens  # not temporal-resolution mode
+
+        new_logits = dict(predicted_logits)
+        new_targets = dict(target_tokens)
+        for base, (_, trunc_k) in trunc_map.items():
+            if base not in new_logits and trunc_k in predicted_logits:
+                new_logits[base] = predicted_logits[trunc_k]
+            if base not in new_targets and trunc_k in target_tokens:
+                new_targets[base] = target_tokens[trunc_k]
+        return new_logits, new_targets
+
     def forward(
         self,
         predicted_logits: Dict[str, torch.Tensor],
@@ -278,13 +350,26 @@ class PhysicsAwareLoss(nn.Module):
         # 1. Timestep gate: downweight at high noise
         gate = self._compute_gate(timesteps, T, device)  # [B]
 
-        # 2. Soft-decode predicted logits (differentiable path)
-        pred = self.decode_head.soft_decode(predicted_logits, self.config.temperature)
+        # 2. Remap temporal-resolution keys before soft-decoding.
+        # In temporal-resolution mode, temporal quantizers are stored as
+        # temporal_group_N_trunc_T{TTT}_LM rather than temporal_group_N_LM.
+        # Alias the max-T version back to the base key expected by the decoder.
+        predicted_logits, target_tokens = self._remap_temporal_trunc(
+            predicted_logits, target_tokens
+        )
 
-        # 3. Hard-decode ground-truth tokens (no gradient needed)
+        # 3. Soft-decode predicted logits (differentiable path).
+        # Pass target_tokens so unmasked positions are filled with hard embeddings,
+        # giving the decoder its expected full-rank concatenated latent regardless
+        # of how many tokens were actually masked this batch.
+        pred = self.decode_head.soft_decode(
+            predicted_logits, self.config.temperature, target_tokens=target_tokens
+        )
+
+        # 4. Hard-decode ground-truth tokens (no gradient needed)
         gt = self.decode_head.hard_decode(target_tokens)
 
-        # 4. Per-family MSE, reduced per sample
+        # 5. Per-family MSE, reduced per sample
         per_sample_loss = torch.zeros(B, device=device)
 
         if "theta" in pred and "theta" in gt:

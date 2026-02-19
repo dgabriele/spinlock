@@ -34,6 +34,7 @@ from .run_token_synthesis import RunTokenSynthesisCommand
 from .train_alignment import TrainAlignmentCommand
 from .launch_salad_generation import LaunchSaladGenerationCommand
 from .merge_datasets import MergeDatasetsCommand
+from .train_diffusion import TrainDiffusionCommand
 
 __all__ = [
     "CLICommand",
@@ -63,6 +64,7 @@ __all__ = [
     "TrainAlignmentCommand",
     "LaunchSaladGenerationCommand",
     "MergeDatasetsCommand",
+    "TrainDiffusionCommand",
     "main",
 ]
 
@@ -128,6 +130,7 @@ For more help on a specific command:
         TrainAlignmentCommand(),
         LaunchSaladGenerationCommand(),
         MergeDatasetsCommand(),
+        TrainDiffusionCommand(),
     ]
 
     for command in commands:

@@ -140,6 +140,14 @@ Examples:
             help="Number of bins for binned-similarity dashboard (default: 5000)",
         )
         parser.add_argument(
+            "--families",
+            type=str,
+            nargs="+",
+            default=None,
+            metavar="FAMILY",
+            help="Token families to include in binned-similarity (e.g. temporal initial theta). Default: all",
+        )
+        parser.add_argument(
             "--params",
             type=str,
             default=None,
@@ -214,6 +222,7 @@ Examples:
                     output_path=output_path,
                     n_bins=args.n_bins,
                     metric=args.metric,
+                    families=args.families,
                     dpi=args.dpi,
                 )
                 if not args.no_display:
