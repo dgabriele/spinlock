@@ -1,0 +1,38 @@
+# Roundtrip fidelity diagnostic for the trained CNO D3PM.
+#
+# This config evaluates whether unconditional D3PM generation produces
+# physically coherent tokens by:
+#   1. Generating tokens from D3PM (unconditional)
+#   2. Decoding tokens → (theta, u0) via VQTokenizer.decode()
+#   3. Running CNO operator with decoded params + ICs
+#   4. Extracting temporal features from the trajectory
+#   5. Retokenizing → comparing per-key match rate
+#
+# Usage:
+#   # Smoke test
+#   python experiments/diffusion/diagnostics/scripts/run_roundtrip.py \
+#       --config configs/cno/diffusion/diagnostic/roundtrip.yaml \
+#       --num-samples 32 --output-dir /tmp/diag_smoke/
+#
+#   # Full run
+#   python experiments/diffusion/diagnostics/scripts/run_roundtrip.py \
+#       --config configs/cno/diffusion/diagnostic/roundtrip.yaml
+
+diffusion_checkpoint: "experiments/cno/diffusion/diffusion_50k_cno_best.pt"
+tokenizer_checkpoint:  "checkpoints/cno/v3/vq_tokenizer_best.pt"
+
+num_samples: 500
+batch_size: 32
+device: "cuda"
+seed: 42
+output_dir: "experiments/cno/diagnostics/roundtrip/"
+
+# Operator simulator config.
+# operator_type is auto-detected from the tokenizer's feature metadata
+# (looks for 'quantum' in temporal feature names → qbm, else cno).
+# Uncomment operator_type_override if auto-detection fails.
+replayer:
+  config_path: "configs/cno/substrate.yaml"
+  num_realizations: 1
+  num_timesteps: 256
+  # operator_type_override: "cno"

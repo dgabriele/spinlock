@@ -27,7 +27,9 @@ data/
 *.pt
 *.ckpt
 *.pth
-diagnostics/
+# Ignore runtime diagnostic output dirs (not source code in experiments/diffusion/diagnostics/)
+experiments/*/diagnostics/
+checkpoints/*/diagnostics/
 results/
 runs/
 *.npz
