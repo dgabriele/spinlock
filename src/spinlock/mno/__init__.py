@@ -12,12 +12,8 @@ VQ-led (Creative Observer):
     - Trajectory matching as auxiliary regularizer
     - Enables "creative" exploration where meaningful deviation is allowed
 
-Core Components:
-    - BaseMNOBackbone: Abstract interface for autoregressive neural operators
-    - BaseNOALoss: Abstract interface for training losses with LossOutput format
-    - MNOBackbone: U-AFNO implementation with gradient checkpointing
-    - MSELedLoss: Physics-first training objective
-    - VQLedLoss: Symbolic coherence training objective
+For loading real HDF5 datasets, use spinlock.data.SpinlockDataset — it is the
+single authoritative interface to GT field data in this codebase.
 
 All dimensions are resolved dynamically at runtime.
 """
@@ -29,8 +25,8 @@ from .base_loss import BaseNOALoss, LossOutput
 # Concrete backbone
 from .backbone import MNOBackbone
 
-# Training losses (two paradigms)
-from .losses import MSELedLoss, VQLedLoss
+# Training losses
+from .losses import MSELedLoss, VQLedLoss, MultiScaleRoundtripLoss
 
 # Perceptual losses (VQ-VAE feature-based)
 from .perceptual_losses import VQVAEPerceptualLoss, FeatureProjector, NOALoss
@@ -38,13 +34,11 @@ from .perceptual_losses import VQVAEPerceptualLoss, FeatureProjector, NOALoss
 # Feature extraction
 from .feature_extraction import MNOFeatureExtractor
 
-# Datasets
-from .dataset import NOARealDataset, NOARealDatasetStreaming
+# In-memory datasets (for synthetic / unit-test use only)
 from .training import (
-    NOAPhase1Trainer,
-    NOADataset,
-    NOADatasetWithFeatures,
-    NOARealDataTrainer,
+    MNOTrajectoryTrainer,
+    MNOInMemoryDataset,
+    MNOInMemoryDatasetWithFeatures,
     extract_trajectory_features,
     generate_synthetic_data,
 )
@@ -64,24 +58,22 @@ __all__ = [
     "LossOutput",
     # Backbone
     "MNOBackbone",
-    # Training losses (two paradigms)
+    # Training losses
     "MSELedLoss",
     "VQLedLoss",
-    # Feature extraction (real data)
+    "MultiScaleRoundtripLoss",
+    # Feature extraction
     "MNOFeatureExtractor",
-    # Datasets
-    "NOARealDataset",
-    "NOARealDatasetStreaming",
-    "NOADataset",
-    "NOADatasetWithFeatures",
+    # In-memory datasets (synthetic / unit-test only; use SpinlockDataset for real data)
+    "MNOInMemoryDataset",
+    "MNOInMemoryDatasetWithFeatures",
     # Training
-    "NOARealDataTrainer",
-    "NOAPhase1Trainer",
+    "MNOTrajectoryTrainer",
     # Perceptual losses (VQ-VAE feature-based)
     "VQVAEPerceptualLoss",
     "FeatureProjector",
     "NOALoss",
-    # Utilities (legacy/synthetic)
+    # Utilities
     "extract_trajectory_features",
     "generate_synthetic_data",
     # CNO replay for state supervision

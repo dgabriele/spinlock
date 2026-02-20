@@ -31,7 +31,7 @@ The VQ model is frozen (requires_grad=False) but passes input gradients via STE.
 
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, Optional, Union, List, Tuple
 
 import torch
 import torch.nn as nn
@@ -90,6 +90,7 @@ class VQCoherenceAdapter(nn.Module):
         normalization_stats: Optional[Dict[str, Any]],
         group_indices: Dict[str, list],
         config: Any,
+        feature_prefix_len: Optional[int] = None,
     ):
         """Initialize adapter with pre-loaded components.
 
@@ -102,6 +103,10 @@ class VQCoherenceAdapter(nn.Module):
             normalization_stats: Per-category normalization statistics (or None)
             group_indices: VQ category → feature index mapping
             config: TokenizerConfig from checkpoint
+            feature_prefix_len: If not None, slice raw temporal features to
+                [:, :, :feature_prefix_len] before applying kept_feature_indices.
+                Used when the extractor was extended after tokenizer training
+                (new sub-extractors appended, original features unchanged).
         """
         super().__init__()
 
@@ -111,6 +116,7 @@ class VQCoherenceAdapter(nn.Module):
         self._normalization_stats = normalization_stats
         self._group_indices = group_indices
         self._config = config
+        self._feature_prefix_len = feature_prefix_len  # None = use full raw dim
 
         # Register kept_feature_indices as buffer for device tracking
         self.register_buffer(
@@ -242,24 +248,56 @@ class VQCoherenceAdapter(nn.Module):
         from spinlock.mno.feature_extraction import MNOFeatureExtractor
         extractor = MNOFeatureExtractor(device=device, differentiable=True)
 
-        # Validate feature dimensions
-        probe_result = extractor.probe_dimensions(
-            timesteps=32, channels=2, height=64, width=64
-        )
-        actual_raw_dim = probe_result['temporal_dim']
+        # Auto-detect channel count by probing until we match the tokenizer's
+        # expected feature dimension — no hardcoded channel counts.
+        #
+        # Pass 1: exact match (extractor unchanged since training)
         expected_raw_dim = temporal_meta.original_feature_count
+        detected_channels = None
+        feature_prefix_len = None
 
-        if actual_raw_dim != expected_raw_dim:
+        for test_channels in range(1, 9):
+            probe = extractor.probe_dimensions(
+                timesteps=32, channels=test_channels, height=64, width=64
+            )
+            if probe['temporal_dim'] == expected_raw_dim:
+                detected_channels = test_channels
+                break
+
+        # Pass 2: extended-extractor fallback (new sub-extractors appended after training)
+        if detected_channels is None:
+            best = None
+            for test_channels in range(1, 9):
+                actual = extractor.probe_dimensions(
+                    timesteps=32, channels=test_channels, height=64, width=64
+                )['temporal_dim']
+                if actual >= expected_raw_dim:
+                    excess = actual - expected_raw_dim
+                    if best is None or excess < best[0]:
+                        best = (excess, test_channels, actual)
+
+            if best is not None:
+                _, detected_channels, actual_raw_dim = best
+                feature_prefix_len = expected_raw_dim
+                logger.warning(
+                    f"Feature extractor extended since tokenizer training: "
+                    f"{actual_raw_dim} features produced for {detected_channels} channels, "
+                    f"tokenizer expects {expected_raw_dim}. Using first {expected_raw_dim} "
+                    f"features (assumes new features appended, not inserted). "
+                    f"Retrain VQTokenizer to remove this assumption."
+                )
+
+        if detected_channels is None:
             raise ValueError(
-                f"Feature dimension mismatch: MNOFeatureExtractor produces "
-                f"{actual_raw_dim} features but VQTokenizer checkpoint expects "
-                f"{expected_raw_dim}. Retrain VQTokenizer with current feature "
-                f"extractors."
+                f"VQTokenizer checkpoint expects {expected_raw_dim} temporal features "
+                f"but no channel count in [1..8] produces >= {expected_raw_dim} features "
+                f"with the current extractor. Cannot use this checkpoint."
             )
 
         logger.info(
-            f"Feature dimension validated: {actual_raw_dim} raw → "
-            f"{len(kept_feature_indices)} cleaned"
+            f"Feature dimension auto-detected: channels={detected_channels}, "
+            f"{expected_raw_dim} raw → {len(kept_feature_indices)} cleaned"
+            + (f" (prefix_len={feature_prefix_len})" if feature_prefix_len else "")
         )
 
         adapter = cls(
@@ -269,6 +307,7 @@ class VQCoherenceAdapter(nn.Module):
             normalization_stats=tokenizer.normalization_stats,
             group_indices=tokenizer.group_indices,
             config=tokenizer.config,
+            feature_prefix_len=feature_prefix_len,
         )
 
         return adapter
@@ -353,7 +392,12 @@ class VQCoherenceAdapter(nn.Module):
 
         # 3. Extract temporal features
         feat_output = self.extractor.extract(trajectory)
-        raw_temporal = feat_output['temporal']  # [B, T, D_raw]
+        raw_temporal = feat_output['temporal']  # [B, T, D_raw_current]
+
+        # Prefix-slice if extractor was extended after tokenizer was trained
+        # (new sub-extractors appended — original features unchanged at [0:N])
+        if self._feature_prefix_len is not None:
+            raw_temporal = raw_temporal[:, :, :self._feature_prefix_len]
 
         # Sanitize extracted features (FFT, skewness/kurtosis can produce NaN)
         raw_temporal = torch.nan_to_num(raw_temporal, nan=0.0, posinf=1e6, neginf=-1e6)
@@ -365,6 +409,61 @@ class VQCoherenceAdapter(nn.Module):
         cleaned = torch.clamp(cleaned, min=-100, max=100)
 
         return cleaned
+
+    def clean_raw_features(
+        self,
+        raw_features: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply cleaning pipeline to pre-extracted raw temporal features from HDF5.
+
+        Equivalent to the cleaning steps in extract_features() but skips the
+        actual feature extraction (extractor.extract() call). Use this when GT
+        raw features are loaded from dataset HDF5 ('features/temporal/features').
+
+        Args:
+            raw_features: [B, T, D_raw] raw temporal features (pre-extracted,
+                e.g. loaded from 'features/temporal/features' in HDF5)
+
+        Returns:
+            cleaned: [B, T, D_clean] cleaned features in the same space as
+                extract_features() output — ready for MSE comparison.
+        """
+        # Prefix-slice if extractor was extended after tokenizer was trained
+        if self._feature_prefix_len is not None:
+            raw_features = raw_features[:, :, :self._feature_prefix_len]
+
+        # Sanitize
+        raw_features = torch.nan_to_num(raw_features, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        # Apply feature cleaning mask
+        cleaned = raw_features[:, :, self.kept_indices]  # [B, T, D_clean]
+
+        # Clamp extreme values (match extract_features bound)
+        cleaned = torch.clamp(cleaned, min=-100, max=100)
+
+        return cleaned
+
+    def encode_trajectory(
+        self,
+        trajectory: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """Extract cleaned features and compute soft VQ logits for a trajectory slice.
+
+        Factored entry point for multi-scale callers: given a trajectory of any
+        temporal length T (the pyramid encoder handles variable T), returns both
+        the cleaned features (with gradient to the MNO) and the per-quantizer
+        soft logits (differentiable through the frozen encoder via STE).
+
+        Args:
+            trajectory: [B, T_any, C, H, W] — any temporal length accepted
+
+        Returns:
+            cleaned_features: [B, T_any, D_clean] — gradients flow through
+            soft_logits:       Dict[base_key → [B, V]] — keys without trunc suffix
+        """
+        cleaned_features = self.extract_features(trajectory)
+        vq_out = self.extract_soft_logits_and_hard_tokens(cleaned_features)
+        return cleaned_features, vq_out['soft_logits']
 
     def encode_and_quantize(
         self,
@@ -447,7 +546,12 @@ class VQCoherenceAdapter(nn.Module):
 
         for family_cat, indices in model.group_indices.items():
             family, _ = family_cat.split('_', 1)
-            cat_features = family_encoded[family]  # Full family vector, NOT indexed subset
+            # Per-group paths store encodings keyed by family_cat (preferred).
+            # Legacy path stores only a family-level key; slice by indices instead.
+            if family_cat in family_encoded:
+                cat_features = family_encoded[family_cat]
+            else:
+                cat_features = all_encoded[:, indices]
             projector = model.projectors[family_cat]
             latents = projector(cat_features)
 
@@ -601,7 +705,12 @@ class VQCoherenceAdapter(nn.Module):
 
         for family_cat, indices in model.group_indices.items():
             family, _ = family_cat.split('_', 1)
-            cat_features = family_encoded[family]  # Full family vector, NOT indexed subset
+            # Per-group paths store encodings keyed by family_cat (preferred).
+            # Legacy path stores only a family-level key; slice by indices instead.
+            if family_cat in family_encoded:
+                cat_features = family_encoded[family_cat]
+            else:
+                cat_features = all_encoded[:, indices]
 
             # Project to hierarchical latents
             projector = model.projectors[family_cat]
@@ -675,34 +784,81 @@ class VQCoherenceAdapter(nn.Module):
         batch_size: int,
         device: torch.device,
     ) -> tuple:
-        """Build concatenated encoded vector AND per-family dict (gradient-safe).
+        """Build concatenated encoded vector AND per-family/per-group dict.
+
+        Supports three encoder paths matching JointHierarchicalVQVAE.forward():
+        - Per-group pyramid (pca_raw + pyramid variant): per-group PyramidTemporalEncoder
+        - Per-group MLP (pca_striped / opq, mean variant): mean+std summary + per-group MLP
+        - Legacy (correlation grouping, shared encoder): shared temporal encoder
 
         Returns both the concatenated tensor (for the decoder/reconstruction target)
-        and a dict of per-family encoded vectors (for projector input — avoids the
-        broken raw-space indexing of the concatenated vector).
+        and a dict that includes both family-level ('temporal') and group-level
+        ('temporal_groupX') entries. Downstream quantization loops should prefer
+        the group-level entries so per-group projectors receive the correct input.
 
-        In-place slice assignment (CopySlices) breaks autograd when multiple
-        families write to the same tensor — the second write increments the
-        version counter, causing the first write's backward to silently return
-        zero gradient. Using torch.cat avoids this entirely.
+        Uses torch.cat (not in-place assignment) to avoid CopySlices autograd issues.
 
         Families are ordered alphabetically: initial, temporal, theta.
-        Missing families are filled with zeros.
+        Missing families are zero-padded.
 
         Returns:
-            Tuple of (all_encoded [B, total_dim], family_encoded {family: [B, dim]})
+            Tuple of (all_encoded [B, total_dim], family_encoded {key: [B, dim]})
         """
         parts = []
         family_encoded = {}
+
         for family in sorted(model.families):
             dim = self._family_dims[family]
             if dim == 0:
                 continue
 
             if family == 'temporal' and 'temporal' in model.families:
-                enc = model.temporal_encoder(temporal_features)
-                parts.append(enc)
-                family_encoded[family] = enc
+                if model.per_group_pyramid_encoders is not None:
+                    # pca_raw + pyramid: slice per-group features, run pyramid encoder
+                    group_parts = []
+                    for family_cat, indices in model.group_indices.items():
+                        if not family_cat.startswith('temporal_'):
+                            continue
+                        idx_t = torch.tensor(indices, device=device, dtype=torch.long)
+                        group_temporal = temporal_features[:, :, idx_t]  # [B, T, G_k]
+                        enc = model.per_group_pyramid_encoders[family_cat](group_temporal)
+                        family_encoded[family_cat] = enc
+                        group_parts.append(enc)
+                    enc = torch.cat(group_parts, dim=1)
+                    family_encoded[family] = enc
+                    parts.append(enc)
+
+                elif model.per_group_temporal_encoders is not None:
+                    # pca_striped / opq: mean+std summary → rotation → per-group MLP
+                    t_mean = temporal_features.mean(dim=1)                  # [B, D_t]
+                    t_std  = temporal_features.std(dim=1)                   # [B, D_t]
+                    t_summary = torch.cat([t_mean, t_std], dim=1)           # [B, 2*D_t]
+
+                    if model.temporal_rotation_matrix is not None:
+                        t_summary = (
+                            (t_summary - model.temporal_rotation_mean)
+                            @ model.temporal_rotation_matrix.T
+                        )
+
+                    group_parts = []
+                    for family_cat, indices in model.group_indices.items():
+                        if not family_cat.startswith('temporal_'):
+                            continue
+                        group_feats = t_summary[:, indices]                 # [B, G_k]
+                        enc = model.per_group_temporal_encoders[family_cat](group_feats)
+                        family_encoded[family_cat] = enc                    # [B, embedding_dim]
+                        group_parts.append(enc)
+                    enc = torch.cat(group_parts, dim=1)
+                    family_encoded[family] = enc
+                    parts.append(enc)
+
+                else:
+                    # Legacy: shared temporal encoder
+                    # all_encoded[:, indices] logic is handled in the quantization loop
+                    enc = model.temporal_encoder(temporal_features)
+                    family_encoded[family] = enc
+                    parts.append(enc)
+
             elif family == 'theta' and 'theta' in model.families and params is not None:
                 enc = model.theta_encoder(params)
                 parts.append(enc)

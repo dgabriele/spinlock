@@ -46,6 +46,7 @@ from spinlock.mno.losses.vq_led import VQLedLoss
 from spinlock.mno.losses.parameter_sensitive import ParameterSensitiveLoss
 from spinlock.mno.losses.token_diversity import TokenDiversityLoss
 from spinlock.mno.losses.roundtrip_consistency import RoundtripConsistencyLoss
+from spinlock.mno.losses.multi_scale_roundtrip import MultiScaleRoundtripLoss
 from spinlock.mno.losses.components.token_contrastive import TokenContrastiveLoss
 
 __all__ = [
@@ -54,5 +55,6 @@ __all__ = [
     "ParameterSensitiveLoss",
     "TokenDiversityLoss",
     "RoundtripConsistencyLoss",
+    "MultiScaleRoundtripLoss",
     "TokenContrastiveLoss",
 ]

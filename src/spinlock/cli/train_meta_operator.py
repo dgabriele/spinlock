@@ -45,6 +45,27 @@ warnings.filterwarnings("ignore", message=".*Not enough SMs to use max_autotune_
 from .base import CLICommand
 
 
+def _group_tokens_by_truncation(
+    flat: Dict[str, "torch.Tensor"],
+    schema,
+) -> Dict[int, Dict[str, "torch.Tensor"]]:
+    """Convert PretokenizedTokenStore flat dict to MultiScaleRoundtripLoss format.
+
+    flat: {full_key → [B] tensor}   e.g. temporal_group_1_trunc_T032_L0 → [B]
+    returns: {T → {base_key → [B] tensor}}  e.g. {32: {"temporal_group_1_L0": [B]}}
+    """
+    result: Dict[int, Dict[str, "torch.Tensor"]] = {}
+    for key, tokens in flat.items():
+        info = schema.category_level_info.get(key)
+        if info is None or info.trunc_len is None:
+            continue  # skip non-trunc keys (initial, theta)
+        T = info.trunc_len
+        if T not in result:
+            result[T] = {}
+        result[T][info.base_key] = tokens
+    return result
+
+
 class TrainMetaOperatorCommand(CLICommand):
     """
     Command to train MNO as a precision physics meta-operator.
@@ -566,7 +587,7 @@ Output:
         """Execute training pipeline."""
         from spinlock.mno import MNOBackbone, CNOReplayer
         from spinlock.mno.losses import MSELedLoss
-        from spinlock.operators.state_dataset import NOAStateDataset
+        from spinlock.data import SpinlockDataset
 
         # Sync data from cloud if on Salad
         self._sync_data_from_cloud(config)
@@ -1027,6 +1048,74 @@ Output:
             else:
                 print(f"  ✓ Pure physics loss (L_traj = {config['loss'].get('lambda_traj', 1.0)})")
 
+        # ── Multi-scale roundtrip VQ loss (additive, any loss_mode) ──────────────
+        multi_scale_loss = None
+        ms_token_store = None
+        ms_cfg_dict = config.get("loss", {}).get("multi_scale_roundtrip", {})
+        if ms_cfg_dict.get("enabled", False):
+            tokenizer_ckpt = config.get("tokenizer", {}).get("checkpoint")
+            if not tokenizer_ckpt:
+                return self.error(
+                    "loss.multi_scale_roundtrip.enabled=true requires "
+                    "tokenizer.checkpoint in config"
+                )
+            from spinlock.mno.vq_coherence import VQCoherenceAdapter
+            from spinlock.mno.losses.multi_scale_roundtrip import MultiScaleRoundtripLoss
+            from spinlock.mno.config import MultiScaleRoundtripConfig
+            ms_vq_adapter = VQCoherenceAdapter.from_checkpoint(tokenizer_ckpt, device=device)
+            # Filter to valid MultiScaleRoundtripConfig keys only
+            _loss_cfg_keys = {"enabled", "truncation_lengths", "scale_weights", "lambda_roundtrip", "lambda_feat_mse", "families"}
+            ms_config = MultiScaleRoundtripConfig(**{k: v for k, v in ms_cfg_dict.items() if k in _loss_cfg_keys})
+            multi_scale_loss = MultiScaleRoundtripLoss(ms_vq_adapter, ms_config)
+
+            pretokenized_path = ms_cfg_dict.get("pretokenized_path")
+            if pretokenized_path:
+                from spinlock.tokens.pretokenized_store import PretokenizedTokenStore
+                ms_token_store = PretokenizedTokenStore(Path(pretokenized_path))
+                if rank == 0:
+                    print(
+                        f"  MultiScaleRoundtripLoss: fast path enabled "
+                        f"({ms_token_store.num_samples} pretokenized samples), "
+                        f"scales={multi_scale_loss._truncation_lengths}"
+                    )
+            else:
+                if rank == 0:
+                    print(
+                        f"  MultiScaleRoundtripLoss: slow path (on-the-fly tokenisation), "
+                        f"scales={multi_scale_loss._truncation_lengths}"
+                    )
+
+        # Token contrastive loss (additive with multi-scale roundtrip, same VQ adapter)
+        ms_tc_loss = None
+        ms_tc_lambda = ms_cfg_dict.get("lambda_token_contrastive", 0.0)
+        if multi_scale_loss is not None and ms_tc_lambda > 0:
+            tc_cfg = ms_cfg_dict.get("token_contrastive", {})
+            from spinlock.mno.losses.components.token_contrastive import TokenContrastiveLoss
+            _param_dim = config["model"].get("param_dim", 14)
+            ms_tc_loss = TokenContrastiveLoss(
+                param_dim=_param_dim,
+                embed_dim=tc_cfg.get("embed_dim", 128),
+                hidden_dim=tc_cfg.get("hidden_dim", 256),
+                nce_temperature=tc_cfg.get("nce_temperature", 0.1),
+                token_temperature=tc_cfg.get("token_temperature", 0.5),
+                queue_size=tc_cfg.get("queue_size", 64),
+            ).to(device)
+            # Eagerly initialise token_projector (temporal quantizer vocab sizes are known)
+            # so its parameters are available for the optimizer before first forward pass.
+            _total_prob_dim = sum(
+                ms_tc_loss_q.embedding.num_embeddings
+                for k, ms_tc_loss_q in ms_vq_adapter.model.quantizers.items()
+                if k.startswith('temporal_')
+            )
+            ms_tc_loss._ensure_projector(_total_prob_dim, device)
+            if rank == 0:
+                print(
+                    f"  TokenContrastiveLoss: lambda={ms_tc_lambda}, "
+                    f"tau_nce={tc_cfg.get('nce_temperature', 0.1)}, "
+                    f"queue={tc_cfg.get('queue_size', 64)}, "
+                    f"prob_dim={_total_prob_dim}"
+                )
+
         # Create ground truth replayer (CNO or QBM based on config structure)
         print("Loading ground truth replayer...")
         substrate_config_path = config["data"].get("config")
@@ -1037,22 +1126,24 @@ Output:
                 "Required field: config (path to replayer config YAML)"
             )
 
-        # Detect replayer type from ground truth config structure
-        # CNO: has 'operators' section
-        # QBM: has 'parameter_space' section
+        # Detect replayer type from ground truth config structure.
+        # Both QBM and CNO use 'parameter_space', so we discriminate by
+        # sub-structure:
+        #   QBM:  parameter_space.operator has physics params (gamma, kT, mass…)
+        #   CNO:  parameter_space has 'architecture' subsection (CNO-specific)
+        # Fallback: 'operators' section (older CNO configs)
         import yaml
         with open(substrate_config_path, 'r') as f:
             substrate_config = yaml.safe_load(f)
 
-        if 'parameter_space' in substrate_config:
-            # QBM ground truth - use QBMReplayer
-            from spinlock.qbm import QBMReplayer
-            replayer = QBMReplayer.from_config(
-                config_path=substrate_config_path,
-                device=device
-            )
-            print("  ✓ QBM ground truth replayer loaded")
-        elif 'operators' in substrate_config:
+        param_space = substrate_config.get('parameter_space', {})
+        is_cno = (
+            'architecture' in param_space          # CNO hierarchical layout
+            or 'num_channels' in substrate_config  # explicit CNO channel spec
+            or 'operators' in substrate_config     # older CNO format
+        )
+
+        if is_cno:
             # CNO ground truth - use CNOReplayer
             cache_size = config.get("training", {}).get("replayer_cache_size", 512)
             replayer = CNOReplayer.from_config(
@@ -1061,18 +1152,33 @@ Output:
                 cache_size=cache_size,
             )
             print(f"  ✓ CNO replayer loaded (cache_size={cache_size})")
+        elif param_space:
+            # QBM ground truth - use QBMReplayer
+            from spinlock.qbm import QBMReplayer
+            replayer = QBMReplayer.from_config(
+                config_path=substrate_config_path,
+                device=device
+            )
+            print("  ✓ QBM ground truth replayer loaded")
         else:
             return self.error(
                 f"Unknown ground truth config format: {substrate_config_path}\n"
-                f"Expected either 'operators' (CNO) or 'parameter_space' (QBM) section"
+                f"Expected CNO config (parameter_space.architecture) or "
+                f"QBM config (parameter_space.operator with gamma/kT/mass)"
             )
 
         # Create dataset and dataloaders
         print("Loading dataset...")
-        dataset = NOAStateDataset(
-            dataset_path=config["data"]["dataset_path"],
+        _ms_cfg = config.get("loss", {}).get("multi_scale_roundtrip", {})
+        _load_gt_features = (
+            _ms_cfg.get("enabled", False)
+            and _ms_cfg.get("lambda_feat_mse", 0.0) > 0
+        )
+        dataset = SpinlockDataset(
+            file_path=config["data"]["dataset_path"],
             max_samples=config["training"]["n_samples"],
             sampling_strategy=config["training"].get("sampling_strategy", "stratified"),
+            load_gt_temporal_features=_load_gt_features,
         )
 
         val_split = config["data"].get("val_split", 0.1)
@@ -1208,6 +1314,12 @@ Output:
                 weight_decay=weight_decay,
             )
 
+        # Add TC projector parameters to optimizer (eagerly initialised above)
+        if ms_tc_loss is not None:
+            optimizer.add_param_group(
+                {'params': list(ms_tc_loss.parameters()), 'lr': base_lr}
+            )
+
         # Create LR scheduler with optional warmup
         from torch.optim.lr_scheduler import LinearLR, SequentialLR
 
@@ -1335,6 +1447,10 @@ Output:
                 accumulation_steps=config["training"].get("gradient_accumulation_steps", 1),
                 ground_truth_tokens=ground_truth_tokens,
                 roundtrip_token_store=roundtrip_token_store,
+                multi_scale_loss=multi_scale_loss,
+                ms_token_store=ms_token_store,
+                ms_tc_loss=ms_tc_loss,
+                ms_tc_lambda=ms_tc_lambda,
                 # Mid-epoch validation/checkpointing
                 val_loader=val_loader if save_every_batches else None,
                 save_every_batches=save_every_batches,
@@ -1481,6 +1597,12 @@ Output:
         token_indices=None,
         # Roundtrip token consistency (Mode A)
         roundtrip_token_store=None,
+        # Multi-scale roundtrip VQ loss
+        multi_scale_loss=None,
+        ms_token_store=None,
+        # Token contrastive (additive, same VQ adapter as multi-scale)
+        ms_tc_loss=None,
+        ms_tc_lambda=0.0,
         # Mid-epoch validation/checkpointing
         val_loader=None,
         save_every_batches=None,
@@ -1543,7 +1665,11 @@ Output:
                 pred_trajectory = noa_rollout.rollout(ic, params=params, tokens=batch_tokens)
 
             # Check if loss needs target trajectories (replayer-skip optimization)
-            needs_target = not hasattr(loss_fn, 'needs_target_trajectory') or loss_fn.needs_target_trajectory
+            needs_target = (
+                not hasattr(loss_fn, 'needs_target_trajectory')
+                or loss_fn.needs_target_trajectory
+                or (multi_scale_loss is not None and ms_token_store is None)  # slow-path fallback
+            )
 
             if needs_target:
                 # Generate CNO/QBM targets (outside autocast — replayer is not a neural net)
@@ -1614,26 +1740,94 @@ Output:
                     for k, v in roundtrip_token_store.get_batch(indices).items()
                 }
 
+            # Multi-scale GT tokens (fast path via PretokenizedTokenStore)
+            ms_gt_tokens = None
+            if ms_token_store is not None and indices is not None:
+                flat = ms_token_store.get_batch(indices)
+                flat = {k: v.to(device) for k, v in flat.items()}
+                ms_gt_tokens = _group_tokens_by_truncation(flat, ms_token_store.schema)
+
+            # GT raw temporal features (from HDF5 via dataset, for feature-space MSE)
+            ms_gt_raw_features = batch.get("gt_raw_temporal")
+            if ms_gt_raw_features is not None:
+                ms_gt_raw_features = ms_gt_raw_features.to(device)
+
             # Update batch counter for curriculum scheduling
             if hasattr(loss_fn, 'set_batch'):
                 loss_fn.set_batch(global_batch_counter)
 
             # Compute loss in FP32 — feature extraction includes ops that don't
-            # support reduced precision (linalg_eigh, FFT, bincount)
+            # support reduced precision (linalg_eigh, FFT, bincount).
+            # Use inspect to pass only kwargs the specific loss accepts —
+            # avoids coupling the training loop to each loss's exact signature.
             try:
-                loss_kwargs = dict(
+                import inspect
+                all_loss_kwargs = dict(
                     pred_trajectory=pred_states.float() if pred_states is not None else None,
                     target_trajectory=target_states,
                     ic=ic,
                     mno=mno,
+                    noa=mno,           # legacy alias — some losses still use noa=
                     params=params,
                 )
                 if batch_gt_tokens is not None:
-                    loss_kwargs['gt_tokens'] = batch_gt_tokens
+                    all_loss_kwargs['gt_tokens'] = batch_gt_tokens
+                _sig = inspect.signature(loss_fn.compute)
+                loss_kwargs = {k: v for k, v in all_loss_kwargs.items() if k in _sig.parameters}
                 loss_output = loss_fn.compute(**loss_kwargs)
             except Exception as e:
                 print(f"  Warning: Loss computation failed: {e}")
                 continue
+
+            # Multi-scale roundtrip loss
+            if multi_scale_loss is not None:
+                try:
+                    ms_out = multi_scale_loss.compute(
+                        pred_trajectory=pred_states.float(),
+                        target_trajectory=target_states.float() if target_states is not None else None,
+                        gt_tokens=ms_gt_tokens,
+                        gt_raw_features=ms_gt_raw_features,
+                    )
+                    if not (torch.isnan(ms_out.total) or torch.isinf(ms_out.total)):
+                        from spinlock.mno.base_loss import LossOutput
+                        loss_output = LossOutput(
+                            total=loss_output.total + ms_out.total,
+                            components={**loss_output.components, **ms_out.components},
+                            metrics={**loss_output.metrics, **ms_out.metrics},
+                        )
+                except Exception as e:
+                    print(f"  Warning: MultiScaleRoundtripLoss failed: {e}")
+
+            # Token contrastive loss (additive, same VQ adapter as multi-scale)
+            if ms_tc_loss is not None and multi_scale_loss is not None and params is not None:
+                try:
+                    T_full = multi_scale_loss._truncation_lengths[-1]
+                    _, soft_logits_full = multi_scale_loss._adapter.encode_trajectory(
+                        pred_states[:, :T_full].float()
+                    )
+                    # Filter to temporal family only (mirrors multi_scale families config)
+                    soft_logits_temporal = {
+                        k: v for k, v in soft_logits_full.items()
+                        if k.startswith('temporal_')
+                    }
+                    tc_out = ms_tc_loss(soft_logits_temporal, params.float())
+                    tc_loss = ms_tc_lambda * tc_out['loss']
+                    if not (torch.isnan(tc_loss) or torch.isinf(tc_loss)):
+                        from spinlock.mno.base_loss import LossOutput
+                        loss_output = LossOutput(
+                            total=loss_output.total + tc_loss,
+                            components={
+                                **loss_output.components,
+                                'token_contrastive': tc_out['loss'].detach(),
+                            },
+                            metrics={
+                                **loss_output.metrics,
+                                'token_contrastive': tc_out['loss'].item(),
+                                'tc_accuracy': tc_out['accuracy'].item(),
+                            },
+                        )
+                except Exception as e:
+                    print(f"  Warning: TokenContrastiveLoss failed: {e}")
 
             if torch.isnan(loss_output.total) or torch.isinf(loss_output.total):
                 print(f"  Warning: NaN/Inf loss at batch {batch_idx}")
@@ -1647,8 +1841,10 @@ Output:
 
             # ── Gradient diagnostic (every 50 batches) ────────────────
             if batch_idx % 50 == 0 and batch_idx > 0:
-                diag_components = ['roundtrip', 'traj', 'ic', 'token_contrastive']
+                diag_components = ['feat_mse', 'roundtrip', 'traj', 'ic', 'token_contrastive']
+                _ms_cfg = config['loss'].get('multi_scale_roundtrip', {})
                 diag_lambdas = {
+                    'feat_mse': _ms_cfg.get('lambda_feat_mse', 0.0),
                     'roundtrip': config['loss'].get('lambda_roundtrip', 1.0),
                     'traj': config['loss'].get('lambda_traj', 0.03),
                     'ic': config['loss'].get('lambda_ic', 0.03),

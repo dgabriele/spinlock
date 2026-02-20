@@ -1,11 +1,21 @@
 """Dataset utilities for Spinlock.
 
 Provides a unified interface for loading and accessing Spinlock HDF5 datasets.
+SpinlockDataset serves two complementary purposes:
+
+1. **Introspection** (metadata-only): Use `infer_and_update_config()` or
+   `open()`/`close()` to introspect HDF5 structure without loading data.
+
+2. **PyTorch Dataset**: Pass `max_samples` / `sampling_strategy` to enable
+   `__getitem__` / `__len__`. Eagerly loads ICs and params (small enough for RAM);
+   optionally lazy-loads GT temporal features per sample from HDF5.
 """
 
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 import logging
+
+import numpy as np
 import h5py
 
 logger = logging.getLogger(__name__)
@@ -49,9 +59,11 @@ class _DatasetDimensionInferrer:
                 temporal_shape = f['features/temporal/features'].shape  # [N, T, D]
                 result['temporal_feature_dim'] = temporal_shape[2]
                 result['temporal_timesteps'] = temporal_shape[1]
+                result['has_temporal_features'] = True
             else:
                 result['temporal_feature_dim'] = None
                 result['temporal_timesteps'] = None
+                result['has_temporal_features'] = False
 
             # Parameters/theta
             if 'parameters/params' in f:
@@ -120,50 +132,216 @@ class SpinlockDataset:
     """Unified interface for Spinlock HDF5 datasets.
 
     Provides access to dataset features, inputs, parameters, and metadata.
-    Automatically introspects dataset structure on open.
+    Automatically introspects dataset structure on construction.
+
+    **Introspection-only usage** (no data loading):
+        dataset = SpinlockDataset("datasets/50k_baseline.h5")
+        dims = dataset.infer_mno_dimensions()
+
+    **Training Dataset usage** (implements Dataset-like __len__/__getitem__):
+        dataset = SpinlockDataset(
+            "datasets/50k_baseline.h5",
+            max_samples=10000,
+            sampling_strategy="sequential",
+            load_gt_temporal_features=True,
+        )
+        sample = dataset[0]
+        # {'ic': Tensor[C,H,W], 'params': Tensor[P], 'sample_idx': int,
+        #  'gt_raw_temporal': Tensor[T,D_raw]}  ← only if load_gt_temporal_features=True
+
+    **Context manager usage** (for accessing HDF5 objects directly):
+        with SpinlockDataset("datasets/50k_baseline.h5") as ds:
+            data = ds.features.temporal.load_all()
     """
 
-    def __init__(self, file_path: str):
-        """Initialize dataset from HDF5 file.
+    def __init__(
+        self,
+        file_path: str,
+        max_samples: Optional[int] = None,
+        realization_idx: int = 0,
+        sampling_strategy: str = "sequential",
+        random_seed: int = 42,
+        load_gt_temporal_features: bool = False,
+    ):
+        """Initialize dataset with optional eager data loading.
+
+        Dimension introspection always runs immediately. Data loading only
+        happens when max_samples is provided (or if the dataset is used as
+        a PyTorch Dataset).
 
         Args:
-            file_path: Path to HDF5 dataset file
+            file_path: Path to HDF5 dataset file.
+            max_samples: If set, enables Dataset mode: loads ICs and params
+                eagerly, enables __len__/__getitem__. None = introspection only.
+            realization_idx: Which realization to use for IC (0 to M-1).
+            sampling_strategy: How to subsample when max_samples < total.
+                - "sequential": First n samples — preserves Sobol prefix-optimality.
+                - "stratified": Uniformly spaced — breaks Sobol prefix-optimality.
+                - "random": Reproducible random subset.
+            random_seed: Seed for random sampling strategy.
+            load_gt_temporal_features: If True and HDF5 contains
+                'features/temporal/features', each __getitem__ sample will
+                include 'gt_raw_temporal': [T, D_raw]. Loaded lazily per sample.
+                Used for feature-space MSE supervision without CNO replayer.
         """
+        import torch
+        self._torch = torch
+
         self.file_path = Path(file_path)
         self._file: Optional[h5py.File] = None
         self._features = None
         self._inputs = None
         self._parameters = None
-        self._introspector = None
-        self._dimension_cache = None
+
+        # Always run dimension introspection immediately (brief file open)
+        self._introspector = _DatasetDimensionInferrer(str(self.file_path))
+        self._dimension_cache = self._introspector.infer_dimensions()
+
+        # ── Dataset mode (optional) ───────────────────────────────────────
+        # Only enabled when max_samples is provided.
+        self._dataset_mode = max_samples is not None
+        self.ics = None
+        self.params = None
+        self.indices = None
+        self.n_samples = 0
+        self._has_gt_features = False
+        self._load_gt_temporal_features = load_gt_temporal_features
+
+        if self._dataset_mode:
+            self._load_dataset(
+                max_samples=max_samples,
+                realization_idx=realization_idx,
+                sampling_strategy=sampling_strategy,
+                random_seed=random_seed,
+                load_gt_temporal_features=load_gt_temporal_features,
+            )
+
+    def _load_dataset(
+        self,
+        max_samples: int,
+        realization_idx: int,
+        sampling_strategy: str,
+        random_seed: int,
+        load_gt_temporal_features: bool,
+    ) -> None:
+        """Eagerly load ICs and params; detect GT feature availability."""
+        import torch
+
+        with h5py.File(self.file_path, "r") as f:
+            total = f["inputs/fields"].shape[0]
+            n = min(max_samples, total)
+
+            if n == total:
+                indices = np.arange(n)
+            elif sampling_strategy == "sequential":
+                indices = np.arange(n)
+                print(f"  Using sequential sampling: first {n} samples from {total} total")
+                print(f"  ✓ Sequential sampling preserves Sobol prefix-optimality (recommended)")
+            elif sampling_strategy == "stratified":
+                stride = total // n
+                indices = np.arange(0, total, stride)[:n]
+                print(f"  Using stratified sampling: {n} samples with stride {stride} from {total} total")
+                print(f"  ⚠️  WARNING: Stride sampling breaks Sobol prefix-optimality!")
+                print(f"  ⚠️  Consider using sampling_strategy='sequential' for better coverage.")
+            elif sampling_strategy == "random":
+                np.random.seed(random_seed)
+                indices = np.random.choice(total, size=n, replace=False)
+                indices = np.sort(indices)
+                print(f"  Using random sampling: {n} samples from {total} total (seed={random_seed})")
+            else:
+                raise ValueError(
+                    f"Unknown sampling_strategy: '{sampling_strategy}'. "
+                    f"Must be one of: 'sequential', 'stratified', 'random'"
+                )
+
+            inputs = f["inputs/fields"][indices, realization_idx, :, :, :]
+            params = f["parameters/params"][indices]
+
+            # Trim to populated (non-zero) samples — handles pre-allocated HDF5
+            sample_norms = np.linalg.norm(inputs.reshape(inputs.shape[0], -1), axis=1)
+            populated_mask = sample_norms > 1e-10
+            num_populated = populated_mask.sum()
+            if num_populated < inputs.shape[0]:
+                inputs = inputs[populated_mask]
+                params = params[populated_mask]
+                indices = indices[populated_mask]
+                print(f"  Dataset pre-allocated to {inputs.shape[0]} but only {num_populated} populated")
+                print(f"  Trimmed to {num_populated} non-zero samples")
+
+            self.ics = torch.from_numpy(inputs).float()   # [N', C, H, W]
+            self.params = torch.from_numpy(params).float()
+            self.indices = indices
+            self.n_samples = self.ics.shape[0]
+
+            self._has_gt_features = (
+                load_gt_temporal_features
+                and "features/temporal/features" in f
+            )
+            if load_gt_temporal_features and not self._has_gt_features:
+                print(
+                    "  ⚠️  load_gt_temporal_features=True but 'features/temporal/features' "
+                    "not found in HDF5 — gt_raw_temporal will be absent from batches"
+                )
+            elif self._has_gt_features:
+                print(
+                    f"  ✓ GT temporal features available "
+                    f"(shape: {f['features/temporal/features'].shape})"
+                )
+
+    # ── PyTorch Dataset interface ─────────────────────────────────────────
+
+    def __len__(self) -> int:
+        if not self._dataset_mode:
+            raise RuntimeError(
+                "SpinlockDataset: __len__ requires Dataset mode. "
+                "Pass max_samples= to __init__."
+            )
+        return self.n_samples
+
+    def __getitem__(self, idx: int) -> dict:
+        """Get a single training sample.
+
+        Returns:
+            dict with:
+                'ic':               [C, H, W]   initial condition
+                'params':           [P]          Sobol parameter vector
+                'sample_idx':       int          original HDF5 index
+                'gt_raw_temporal':  [T, D_raw]   (only when load_gt_temporal_features=True)
+        """
+        if not self._dataset_mode:
+            raise RuntimeError(
+                "SpinlockDataset: __getitem__ requires Dataset mode. "
+                "Pass max_samples= to __init__."
+            )
+        result = {
+            "ic": self.ics[idx],
+            "params": self.params[idx],
+            "sample_idx": int(self.indices[idx]),
+        }
+        if self._has_gt_features:
+            orig_idx = int(self.indices[idx])
+            with h5py.File(self.file_path, "r") as f:
+                feat = f["features/temporal/features"][orig_idx]
+            result["gt_raw_temporal"] = self._torch.from_numpy(feat.astype(np.float32))
+        return result
+
+    # ── Introspection / context manager interface ─────────────────────────
 
     @classmethod
     def from_file(cls, file_path: str) -> "SpinlockDataset":
-        """Load dataset from HDF5 file.
-
-        Args:
-            file_path: Path to HDF5 dataset file
-
-        Returns:
-            SpinlockDataset instance
-        """
+        """Load dataset for introspection (no data loading)."""
         return cls(file_path)
 
     def open(self):
-        """Open the HDF5 file and provide access to datasets."""
+        """Open the HDF5 file for direct access to feature/input/parameter groups."""
         if self._file is None:
             self._file = h5py.File(self.file_path, 'r')
-            # Lazy load features, inputs, and parameters
             if 'features' in self._file:
                 self._features = _FeatureGroup(self._file['features'])
             if 'inputs' in self._file:
                 self._inputs = _InputGroup(self._file['inputs'])
             if 'parameters' in self._file:
                 self._parameters = _ParameterGroup(self._file['parameters'])
-
-            # Lazy create introspector and run dimension inference
-            self._introspector = _DatasetDimensionInferrer(str(self.file_path))
-            self._dimension_cache = self._introspector.infer_dimensions()
         return self
 
     def close(self):
@@ -176,89 +354,72 @@ class SpinlockDataset:
             self._parameters = None
 
     def __enter__(self):
-        """Context manager entry."""
         return self.open()
 
     def __exit__(self, *args):
-        """Context manager exit."""
         self.close()
 
     @property
     def features(self):
-        """Access feature datasets."""
         if self._features is None:
             raise RuntimeError("Dataset not opened. Use dataset.open() or 'with dataset:'")
         return self._features
 
     @property
     def inputs(self):
-        """Access input datasets."""
         if self._inputs is None:
             raise RuntimeError("Dataset not opened. Use dataset.open() or 'with dataset:'")
         return self._inputs
 
     @property
     def parameters(self):
-        """Access parameter datasets."""
         if self._file is None:
             raise RuntimeError("Dataset not opened. Use dataset.open() or 'with dataset:'")
         return self._parameters
 
-    # Inferion properties (delegated to DatasetInferor)
+    # ── Dimension properties ──────────────────────────────────────────────
+
     @property
     def num_channels(self) -> Optional[int]:
-        """Number of input channels (C dimension)."""
-        return self._dimension_cache.get('initial_raw_channels') if self._dimension_cache else None
+        return self._dimension_cache.get('initial_raw_channels')
 
     @property
     def num_realizations(self) -> Optional[int]:
-        """Number of realizations (M dimension)."""
-        return self._dimension_cache.get('num_realizations') if self._dimension_cache else None
+        return self._dimension_cache.get('num_realizations')
 
     @property
     def temporal_feature_dim(self) -> Optional[int]:
-        """Dimensionality of temporal features."""
-        return self._dimension_cache.get('temporal_feature_dim') if self._dimension_cache else None
+        return self._dimension_cache.get('temporal_feature_dim')
 
     @property
     def initial_feature_dim(self) -> Optional[int]:
-        """Dimensionality of initial/summary features."""
-        return self._dimension_cache.get('initial_manual_dim') if self._dimension_cache else None
+        return self._dimension_cache.get('initial_manual_dim')
 
     @property
     def theta_param_dim(self) -> Optional[int]:
-        """Dimensionality of theta parameters."""
-        return self._dimension_cache.get('theta_param_dim') if self._dimension_cache else None
+        return self._dimension_cache.get('theta_param_dim')
 
     @property
     def raw_input_shape(self) -> Optional[Tuple]:
-        """Raw shape of inputs/fields dataset."""
-        return self._dimension_cache.get('initial_raw_shape') if self._dimension_cache else None
+        return self._dimension_cache.get('initial_raw_shape')
 
     def get_dimension_inference_dict(self) -> Dict[str, Any]:
-        """Get complete dimension inference results as dictionary."""
-        return self._dimension_cache.copy() if self._dimension_cache else {}
+        return self._dimension_cache.copy()
 
     def get_encoder_config_overrides(self) -> Dict[str, Any]:
         """Get config overrides for encoder based on introspected dimensions."""
-        if not self._dimension_cache:
-            return {}
-
         info = self._dimension_cache
         overrides = {}
 
-        # Initial encoder overrides
         if info.get('initial_manual_dim') is not None:
             overrides.setdefault('encoder', {}).setdefault('initial', {})['manual_dim'] = info['initial_manual_dim']
 
         if info.get('initial_raw_channels') is not None:
             overrides.setdefault('encoder', {}).setdefault('initial', {})['in_channels'] = info['initial_raw_channels']
 
-        # Theta encoder overrides
         if info.get('theta_param_dim') is not None:
             overrides.setdefault('encoder', {}).setdefault('theta', {})['param_dim'] = info['theta_param_dim']
 
-        # Temporal encoder overrides
         if info.get('temporal_timesteps') is not None:
             overrides.setdefault('encoder', {}).setdefault('temporal', {})['max_timesteps'] = max(
                 info['temporal_timesteps'],
@@ -276,62 +437,25 @@ class SpinlockDataset:
         - model.param_dim: Parameter dimension (from parameters/params)
         - model.spatial_dim: Spatial resolution (from field shape, if square)
         - training.max_timesteps: Maximum available timesteps (for validation)
-
-        Returns:
-            Dict with model dimension overrides:
-            {
-                'model': {
-                    'in_channels': int,
-                    'out_channels': int,
-                    'param_dim': int,
-                    'spatial_dim': int  # Optional, only if square spatial domain
-                },
-                'training': {
-                    'max_timesteps': int
-                }
-            }
-
-        Example:
-            >>> dataset = SpinlockDataset("datasets/qbm_50k.h5").open()
-            >>> mno_dims = dataset.infer_mno_dimensions()
-            >>> print(mno_dims)
-            {
-                'model': {
-                    'in_channels': 2,
-                    'out_channels': 2,
-                    'param_dim': 9,
-                    'spatial_dim': 64
-                },
-                'training': {
-                    'max_timesteps': 256
-                }
-            }
         """
-        if not self._dimension_cache:
-            return {}
-
         info = self._dimension_cache
         overrides = {}
 
-        # Channel dimensions (input and output are the same for MNO)
         if info.get('initial_raw_channels') is not None:
             overrides.setdefault('model', {})
             overrides['model']['in_channels'] = info['initial_raw_channels']
             overrides['model']['out_channels'] = info['initial_raw_channels']
 
-        # Parameter dimension
         if info.get('theta_param_dim') is not None:
             overrides.setdefault('model', {})['param_dim'] = info['theta_param_dim']
 
-        # Spatial dimension (from inputs/fields shape [N, M, C, H, W])
         if info.get('initial_raw_shape') is not None:
             shape = info['initial_raw_shape']
             if len(shape) >= 2:
                 H, W = shape[-2:]
-                if H == W:  # Square spatial domain
+                if H == W:
                     overrides.setdefault('model', {})['spatial_dim'] = H
 
-        # Max timesteps (for validation)
         if info.get('temporal_timesteps') is not None:
             overrides.setdefault('training', {})['max_timesteps'] = info['temporal_timesteps']
 
@@ -346,9 +470,6 @@ class SpinlockDataset:
     ) -> Tuple['SpinlockDataset', Dict]:
         """Load dataset, introspect, and update config in one operation.
 
-        Opens the dataset once, runs dimension inference, validates and updates config.
-        Returns both the opened dataset and updated config.
-
         Args:
             config_dict: Configuration dictionary (will be deep-merged)
             dataset_path: Path to HDF5 dataset file
@@ -356,26 +477,14 @@ class SpinlockDataset:
 
         Returns:
             (dataset, updated_config_dict) tuple
-
-        Example:
-            >>> config_dict = yaml.safe_load(open('config.yaml'))
-            >>> dataset, config_dict = SpinlockDataset.infer_and_update_config(
-            ...     config_dict, 'datasets/qbm_50k.h5'
-            ... )
-            >>> config = TokenizerConfig(**config_dict)
-            >>> # dataset is already open and ready to use
         """
-
-        # Open dataset (runs dimension inference automatically)
         dataset = cls.from_file(dataset_path).open()
 
         if verbose:
             logger.info(f"Infered dataset: {dataset_path}")
 
-        # Get encoder config overrides
         overrides = dataset.get_encoder_config_overrides()
 
-        # Deep merge helper
         def deep_update(d, u):
             for k, v in u.items():
                 if isinstance(v, dict):
@@ -384,7 +493,6 @@ class SpinlockDataset:
                     d[k] = v
             return d
 
-        # Apply overrides
         config_dict = deep_update(config_dict, overrides)
 
         if verbose:
@@ -405,10 +513,8 @@ class _FeatureGroup:
     @property
     def temporal(self):
         """Access temporal features dataset."""
-        # Handle nested structure first (new format): features/temporal/features
         if 'temporal/features' in self._group:
             return _Dataset(self._group['temporal/features'])
-        # Handle flat structure (legacy format): features/temporal
         elif 'temporal' in self._group:
             return _Dataset(self._group['temporal'])
         return None
@@ -416,10 +522,8 @@ class _FeatureGroup:
     @property
     def initial(self):
         """Access initial features dataset."""
-        # Handle nested structure first (new format): features/initial/aggregated/features
         if 'initial/aggregated/features' in self._group:
             return _Dataset(self._group['initial/aggregated/features'])
-        # Handle flat structure (legacy formats)
         elif 'initial/aggregated' in self._group:
             return _Dataset(self._group['initial/aggregated'])
         elif 'initial' in self._group:
@@ -434,7 +538,6 @@ class _InputGroup:
         self._group = h5group if h5group is not None else {}
 
     def load_all(self):
-        """Load all input data."""
         if 'fields' in self._group:
             return self._group['fields'][:]
         return None
@@ -448,7 +551,6 @@ class _ParameterGroup:
 
     @property
     def params(self):
-        """Access parameter dataset (theta values)."""
         if 'params' in self._group:
             return _Dataset(self._group['params'])
         return None
@@ -461,10 +563,8 @@ class _Dataset:
         self._dataset = h5dataset
 
     def load_all(self):
-        """Load entire dataset into memory."""
         return self._dataset[:]
 
     @property
     def shape(self):
-        """Get dataset shape."""
         return self._dataset.shape

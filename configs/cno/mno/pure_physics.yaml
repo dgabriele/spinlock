@@ -1,0 +1,84 @@
+# MNO Training — Stage 1: Pure Physics
+#
+# Train on traj + IC MSE only until rel_l2 < ~2.0.
+# No tokenization losses — they add noise before the MNO learns basic dynamics.
+#
+# Once rel_l2 is stable below 2.0, switch to multi_scale_roundtrip.yaml
+# (copy checkpoint path there, reduce LR, add roundtrip at lambda ~0.05).
+
+model:
+  base_channels: 24
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  dropout: 0.1
+
+  param_conditioning: true
+  param_embed_dim: 128
+  conditioning_mode: "film"
+
+  film:
+    enabled: true
+    embed_dim: 128
+    hidden_dim: 256
+    init_gamma: 1.0
+    init_beta: 0.0
+    post_norm: true
+    modulate_encoder: true
+    modulate_decoder: true
+
+  update_mode: "residual"
+  use_checkpointing: true
+  checkpoint_every: 16
+
+training:
+  n_samples: 10000
+  sampling_strategy: "sequential"
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  epochs: 30
+  learning_rate: 1.2e-4
+  warmup_steps: 500
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  timesteps: 256
+  bptt_window: 32
+
+  use_torch_compile: false
+  replayer_cache_size: 4
+  early_stopping_patience: 10
+  film_lr_multiplier: 5.0
+  use_amp: false
+
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+loss:
+  mode: "mse_led"
+  lambda_traj: 1.0    # Full weight — primary physics signal
+  lambda_ic: 1.0      # Full weight — boundary condition anchor
+
+  multi_scale_roundtrip:
+    enabled: false
+
+  lambda_token_contrastive: 0.0
+
+data:
+  dataset_path: "datasets/50k_baseline.h5"
+  config: "configs/experiments/cno_50k_3channel.yaml"
+  val_split: 0.1
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+checkpointing:
+  save_dir: "checkpoints/mno/cno_pure_physics"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42

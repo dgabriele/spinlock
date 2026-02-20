@@ -45,7 +45,7 @@ Design Principles:
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, Dict, Any, Literal
+from typing import Optional, Dict, Any, Literal, List
 
 
 class FiLMConfig(BaseModel):
@@ -221,6 +221,39 @@ class TrainingConfig(BaseModel):
             )
 
 
+class MultiScaleRoundtripConfig(BaseModel):
+    """Configuration for multi-scale roundtrip VQ tokenisation loss.
+
+    Trains MNO to produce trajectories that tokenise consistently at every
+    temporal resolution defined by the tokeniser's pyramid encoder.
+
+    Truncation lengths are auto-detected from the tokeniser checkpoint at runtime
+    (mirrors pretokenize_dataset.py: T_i = max_timesteps // factor).
+    Set `truncation_lengths` explicitly only to restrict to a subset.
+    """
+
+    enabled: bool = False
+
+    # None → auto-detected from tokeniser pyramid config at runtime.
+    # Explicit list to restrict, e.g. [64, 256].
+    truncation_lengths: Optional[List[int]] = None
+
+    # Per-scale loss weights. None → uniform across all detected scales.
+    # Progressive example: {32: 0.25, 64: 0.5, 128: 0.75, 256: 1.0}
+    scale_weights: Optional[Dict[int, float]] = None
+
+    # Overall contribution relative to trajectory MSE loss
+    lambda_roundtrip: float = Field(default=1.0, ge=0.0)
+
+    # Feature-space MSE: MSE(extract_features(pred), clean_raw_features(gt_raw))
+    # Primary token-alignment signal when GT raw temporal features are loaded from HDF5.
+    # Shorter gradient path than roundtrip CE; sufficient condition for token alignment.
+    lambda_feat_mse: float = Field(default=0.0, ge=0.0)
+
+    # Families to include (temporal only; theta/initial have no truncated variants)
+    families: List[str] = Field(default_factory=lambda: ["temporal"])
+
+
 class LossConfig(BaseModel):
     """Loss function configuration.
 
@@ -237,6 +270,9 @@ class LossConfig(BaseModel):
     # Token diversity mode lambdas (VQ coherence)
     lambda_recon: float = Field(default=1.0, ge=0.0)
     lambda_commit: float = Field(default=0.5, ge=0.0)
+
+    # Multi-scale roundtrip VQ tokenisation loss (disabled by default)
+    multi_scale_roundtrip: Optional[MultiScaleRoundtripConfig] = None
 
     # Contrastive loss config
     contrastive: Optional[Dict[str, Any]] = None

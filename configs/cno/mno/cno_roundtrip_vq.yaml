@@ -1,0 +1,151 @@
+# MNO Training — CNO Operator with Multi-Scale Roundtrip VQ Loss
+#
+# Architecture: MSE-led physics training (primary) +
+#               multi-scale roundtrip VQ tokenisation loss (additive)
+#
+# Rationale for downstream symbolic reasoning:
+#   - MSE-led keeps physics gradients tractable throughout training
+#   - Multi-scale roundtrip ensures the MNO's rollouts tokenise consistently
+#     at every temporal resolution: T=32 (local dynamics) through T=256 (full
+#     trajectory). A symbolic composer that builds T=256 explanations from T=32
+#     sub-episodes requires this hierarchical token stability.
+#   - Uniform scale weights: no horizon is privileged during bootstrap training.
+#     Can be made progressive ({32:0.25, ..., 256:1.0}) for curriculum refinement.
+#
+# Fast path: pretokenized GT tokens are loaded directly from HDF5 — no on-the-fly
+# tokenisation needed during the training loop (~100x faster per batch).
+#
+# Dataset:
+#   Raw trajectories:    datasets/50k_baseline.h5
+#   Pretokenized tokens: datasets/50k_cno_v3_tokenized_temporal_res.h5
+#   Tokenizer:           checkpoints/cno/v3/vq_tokenizer_best.pt
+#   Replayer config:     configs/experiments/cno_50k_3channel.yaml
+
+model:
+  # ============================================================================
+  # DATA-DEPENDENT DIMENSIONS (AUTO-DETECTED — DO NOT SET)
+  # ============================================================================
+  # in_channels:   auto-detected from 50k_baseline.h5 (CNO: 3 channels)
+  # out_channels:  same as in_channels
+  # param_dim:     auto-detected from params shape (CNO: 14 parameters)
+  # spatial_dim:   auto-detected from fields shape (64×64)
+
+  # ============================================================================
+  # ALGORITHMIC CHOICES
+  # ============================================================================
+  base_channels: 24              # ~80M params — fits 8 GB GPU (40→226M overflows)
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  dropout: 0.1
+
+  param_conditioning: true
+  param_embed_dim: 128
+  conditioning_mode: "film"
+
+  # FiLM: per-layer γ/β modulation conditioned on operator parameters.
+  # Modulates both encoder and decoder so θ-dependent features are woven
+  # in throughout the forward pass — important for CNO's 14-dim parameter space.
+  film:
+    enabled: true
+    embed_dim: 128
+    hidden_dim: 256
+    init_gamma: 1.0
+    init_beta: 0.0
+    post_norm: true
+    modulate_encoder: true
+    modulate_decoder: true
+
+  update_mode: "residual"
+  use_checkpointing: true
+  checkpoint_every: 16
+
+training:
+  n_samples: 10000
+  sampling_strategy: "sequential"
+  batch_size: 1
+  gradient_accumulation_steps: 8   # effective batch = 8 (same as before)
+  epochs: 30
+  learning_rate: 1.2e-4
+  warmup_steps: 500                 # ~10 % of first epoch at 10k samples
+  weight_decay: 1.0e-4
+  clip_grad: 1.0
+
+  timesteps: 256
+  bptt_window: 32                   # Must cover smallest roundtrip scale (T=32)
+
+  use_torch_compile: false
+  replayer_cache_size: 4            # Small cache: CNO operators are ~50MB each
+  early_stopping_patience: 10
+  film_lr_multiplier: 5.0           # FiLM layers need higher LR (secondary signal)
+  use_amp: false                    # Disabled: gradient checkpointing + AMP causes tensor mismatch
+
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+loss:
+  mode: "mse_led"
+  lambda_traj: 0.1                  # Tertiary — trajectory MSE kept for physics grounding
+  lambda_ic: 0.1                    # IC preservation: prevents NaN divergence at t=0
+
+  # ── Multi-scale VQ feature supervision (INVERTED hierarchy) ──────────────
+  #
+  # Supervision hierarchy (primary → secondary → tertiary):
+  #   1. Feature-space MSE (lambda_feat_mse=1.0):  PRIMARY
+  #      MSE(extract_features(pred_traj), clean_raw_features(gt_raw_from_hdf5))
+  #      GT features loaded directly from 50k_baseline.h5 → no CNO replayer needed
+  #      in the hot path. Shorter gradient path than roundtrip CE.
+  #
+  #   2. Roundtrip cross-entropy (lambda_roundtrip=0.2):  SECONDARY
+  #      CE(soft_logits(pred), hard_tokens(gt)) at 4 temporal scales.
+  #      Discrete alignment signal: penalises token-space divergence.
+  #
+  #   3. Trajectory MSE (lambda_traj=0.1):  TERTIARY
+  #      Maintains physical state accuracy; keeps CNO replayer active.
+  #      Eliminable by setting lambda_traj=0 once feature MSE is stable.
+  #
+  # Prefix-slice compatibility: v3 tokenizer trained with 345 features;
+  # current extractor produces 439. VQCoherenceAdapter auto-detects and slices.
+  multi_scale_roundtrip:
+    enabled: true
+    pretokenized_path: "datasets/50k_cno_v3_tokenized_temporal_res.h5"
+    # truncation_lengths: null      # null = auto-detected from tokeniser config
+    scale_weights: null             # null = uniform across all scales
+    lambda_feat_mse: 1.0            # PRIMARY — feature-space MSE against HDF5 GT features
+    lambda_roundtrip: 0.2           # SECONDARY — token CE (discrete alignment)
+    families: ["temporal"]          # temporal groups only (theta/initial unchanged)
+
+  # ── Token contrastive loss (additive, same VQ adapter as multi-scale) ────
+  # Diversity signal: different (θ, IC) → different token distributions.
+  # Complements roundtrip (accuracy) with InfoNCE in soft-probability space.
+  # MoCo queue essential for batch_size=1 — accumulates negatives across batches.
+  lambda_token_contrastive: 0.5
+  token_contrastive:
+    nce_temperature: 0.1          # Standard InfoNCE temperature
+    token_temperature: 0.5        # Per-quantizer softmax sharpness
+    queue_size: 64                # MoCo-style FIFO negatives
+    embed_dim: 128
+    hidden_dim: 256
+
+data:
+  dataset_path: "datasets/50k_baseline.h5"
+  config: "configs/experiments/cno_50k_3channel.yaml"
+  val_split: 0.1
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+# Tokenizer checkpoint used by MultiScaleRoundtripLoss
+tokenizer:
+  checkpoint: "checkpoints/cno/v3/vq_tokenizer_best.pt"
+
+checkpointing:
+  save_dir: "checkpoints/mno/cno_multi_scale_roundtrip"
+  save_every: 5
+  keep_best: true
+
+device: "cuda"
+seed: 42
