@@ -1,0 +1,58 @@
+metadata:
+  name: "lenia_1k_test"
+  description: "3-channel Lenia CA smoke test — 1K samples, 64x64, 256 timesteps"
+
+parameter_space:
+  architecture: {}
+  stochastic: {}
+  operator:
+    kernel_radius_0: {type: continuous, bounds: [1.5, 35.0]}
+    kernel_radius_1: {type: continuous, bounds: [1.5, 35.0]}
+    kernel_radius_2: {type: continuous, bounds: [1.5, 35.0]}
+    growth_mu_0: {type: continuous, bounds: [0.01, 0.6]}
+    growth_mu_1: {type: continuous, bounds: [0.01, 0.6]}
+    growth_mu_2: {type: continuous, bounds: [0.01, 0.6]}
+    growth_sigma_0: {type: continuous, bounds: [0.003, 0.25]}
+    growth_sigma_1: {type: continuous, bounds: [0.003, 0.25]}
+    growth_sigma_2: {type: continuous, bounds: [0.003, 0.25]}
+    coupling_01: {type: continuous, bounds: [-1.0, 1.5]}
+    coupling_02: {type: continuous, bounds: [-1.0, 1.5]}
+    coupling_10: {type: continuous, bounds: [-1.0, 1.5]}
+    coupling_12: {type: continuous, bounds: [-1.0, 1.5]}
+    coupling_20: {type: continuous, bounds: [-1.0, 1.5]}
+    coupling_21: {type: continuous, bounds: [-1.0, 1.5]}
+  evolution:
+    dt: {type: continuous, bounds: [0.01, 0.4]}
+
+sampling:
+  strategy: "sobol_stratified"
+  sobol:
+    scramble: true
+    seed: 42
+  total_samples: 1008
+  batch_size: 16
+
+simulation:
+  operator_type: "lenia"
+  device: "cuda"
+  n_channels: 3
+  grid_size: 64
+  num_realizations: 3
+  num_timesteps: 256
+  lenia:
+    kernel_type: "gaussian"
+    alive_threshold: 0.01
+    saturation_threshold: 0.95
+    max_retries: 5
+
+dataset:
+  output_path: "datasets/lenia_1k_test.h5"
+  storage:
+    compression: "lzf"
+    store_trajectories: false  # Feature-only mode — no raw trajectory storage
+
+features:
+  temporal:
+    enabled: true
+  summary:
+    enabled: true

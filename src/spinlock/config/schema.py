@@ -462,6 +462,28 @@ class PerformanceConfig(BaseModel):
     max_batch_size: int = 32  # Max operators per vmap batch
 
 
+class LeniaSimulationConfig(BaseModel):
+    """Lenia-specific simulation settings."""
+
+    kernel_type: str = Field(
+        default="gaussian",
+        description="Kernel type: 'gaussian' (implemented) | 'polynomial' | 'exponential' (stubs)"
+    )
+    alive_threshold: float = Field(
+        default=0.01,
+        description="Mean activation below this → simulation is dead; retry IC"
+    )
+    saturation_threshold: float = Field(
+        default=0.95,
+        description="Mean activation above this → simulation is fully saturated; retry IC"
+    )
+    max_retries: int = Field(
+        default=5,
+        ge=0,
+        description="Maximum IC retry attempts per realization when alive check fails"
+    )
+
+
 class SimulationConfig(BaseModel):
     """Complete simulation configuration."""
 
@@ -475,9 +497,28 @@ class SimulationConfig(BaseModel):
     extract_operator_features: bool = Field(default=False)
 
     # Operator architecture type
-    operator_type: Literal["cnn", "u_afno", "qbm"] = Field(
+    operator_type: Literal["cnn", "u_afno", "qbm", "lenia"] = Field(
         default="cnn",
-        description="Operator type: 'cnn' for convolutional, 'u_afno' for U-Net+AFNO, 'qbm' for Quantum Brownian Motion"
+        description=(
+            "Operator type: 'cnn' for convolutional, 'u_afno' for U-Net+AFNO, "
+            "'qbm' for Quantum Brownian Motion, 'lenia' for Lenia CA"
+        )
+    )
+
+    # Lenia-specific fields (required when operator_type == "lenia")
+    n_channels: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Number of Lenia channels (species). Required for operator_type='lenia'."
+    )
+    grid_size: int = Field(
+        default=64,
+        ge=16,
+        description="Spatial grid size (H=W). Used by Lenia; ignored by CNN/AFNO/QBM."
+    )
+    lenia: Optional[LeniaSimulationConfig] = Field(
+        default=None,
+        description="Lenia-specific settings (kernel type, alive/saturation thresholds, retries)"
     )
 
 

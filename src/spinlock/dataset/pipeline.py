@@ -385,6 +385,15 @@ class DatasetGenerationPipeline:
         if operator_type == "qbm":
             return (2, 2)
 
+        # Lenia: n_channels is required in config
+        if operator_type == "lenia":
+            n_ch = self.config.simulation.n_channels
+            if n_ch is None:
+                raise ValueError(
+                    "simulation.n_channels is required when operator_type='lenia'"
+                )
+            return (n_ch, n_ch)
+
         # Neural operators: Check config first, then parameter space
         # Try explicit config
         if hasattr(self.config.simulation, 'num_channels'):
@@ -1223,10 +1232,12 @@ class DatasetGenerationPipeline:
             - inputs: [B, C_in, H, W] or [B, M, 2, H, W] for QBM
             - outputs: [B, M, C_out, H, W] or [B, M, T, 2, H, W] for QBM
         """
-        # Special handling for QBM (physics simulation, not neural operators)
+        # Special handling for physics simulators (QBM, Lenia) — no neural operators
         operator_type = self.config.simulation.operator_type
         if operator_type == "qbm":
             return self._process_batch_qbm(param_batch, batch_size)
+        if operator_type == "lenia":
+            return self._process_batch_lenia(param_batch, batch_size)
 
         # Build operators from parameters with fixed dimensions for MVP
         operators = []
@@ -1359,6 +1370,47 @@ class DatasetGenerationPipeline:
         self._qbm_potential_generator = PotentialGenerator(
             grid_size=grid_size, domain_size=domain_size, device=self.device
         )
+
+    def _ensure_lenia_initialized(self) -> None:
+        """Lazy initialization of Lenia replayer."""
+        if hasattr(self, '_lenia_replayer'):
+            return
+
+        from spinlock.lenia import LeniaReplayer
+        from spinlock.config.schema import LeniaSimulationConfig
+
+        cfg = self.config.simulation
+        lenia_cfg = cfg.lenia if cfg.lenia is not None else LeniaSimulationConfig()
+
+        if cfg.n_channels is None:
+            raise ValueError("simulation.n_channels required for operator_type='lenia'")
+
+        self._lenia_replayer = LeniaReplayer(
+            n_channels=cfg.n_channels,
+            grid_size=cfg.grid_size,
+            kernel_type=lenia_cfg.kernel_type,
+            device=str(self.device),
+            alive_threshold=lenia_cfg.alive_threshold,
+            saturation_threshold=lenia_cfg.saturation_threshold,
+            max_retries=lenia_cfg.max_retries,
+        )
+
+    def _process_batch_lenia(
+        self, param_batch, batch_size: int
+    ):
+        """Process batch using Lenia CA simulation.
+
+        Returns:
+            inputs:  [B, M, C, H, W]    — initial conditions per realization
+            outputs: [B, M, T, C, H, W] — full trajectories
+        """
+        self._ensure_lenia_initialized()
+        inputs, outputs = self._lenia_replayer.rollout_batch(
+            params_batch=param_batch,
+            num_realizations=self.config.simulation.num_realizations,
+            num_timesteps=self.config.simulation.num_timesteps,
+        )
+        return inputs, outputs
 
     def _generate_quantum_ics(self, batch_size: int, num_realizations: int) -> torch.Tensor:
         """Generate quantum ICs with 40% wavepacket, 30% coherent, 30% superposition."""
@@ -1822,12 +1874,16 @@ class DatasetGenerationPipeline:
             - ic_types_used: List of IC types used for each sample
             - operators: List of operators if keep_operators=True, else None
         """
-        # Special handling for QBM (physics simulation, not neural operators)
+        # Special handling for physics simulators (QBM, Lenia)
         operator_type = self.config.simulation.operator_type
         if operator_type == "qbm":
             inputs, outputs = self._process_batch_qbm(param_batch, batch_size)
             # QBM doesn't have IC types tracking (uses quantum ICs)
             ic_types_used = ["quantum_ic"] * batch_size
+            return inputs, outputs, ic_types_used, None
+        if operator_type == "lenia":
+            inputs, outputs = self._process_batch_lenia(param_batch, batch_size)
+            ic_types_used = ["lenia_gaussian_blobs"] * batch_size
             return inputs, outputs, ic_types_used, None
 
         # Build operators with this grid size (or use pre-built from async builder)

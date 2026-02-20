@@ -1,0 +1,63 @@
+metadata:
+  name: "lenia_10k"
+  description: "3-channel Lenia CA, 64x64, 256 timesteps, wide parameter ranges"
+
+parameter_space:
+  architecture: {}
+  stochastic: {}
+  operator:
+    # Per-channel kernel radii (C=3 → dims 0,1,2)
+    kernel_radius_0: {type: continuous, bounds: [1.5, 35.0]}
+    kernel_radius_1: {type: continuous, bounds: [1.5, 35.0]}
+    kernel_radius_2: {type: continuous, bounds: [1.5, 35.0]}
+    # Per-channel growth mu (dims 3,4,5)
+    growth_mu_0: {type: continuous, bounds: [0.01, 0.6]}
+    growth_mu_1: {type: continuous, bounds: [0.01, 0.6]}
+    growth_mu_2: {type: continuous, bounds: [0.01, 0.6]}
+    # Per-channel growth sigma (dims 6,7,8)
+    growth_sigma_0: {type: continuous, bounds: [0.003, 0.25]}
+    growth_sigma_1: {type: continuous, bounds: [0.003, 0.25]}
+    growth_sigma_2: {type: continuous, bounds: [0.003, 0.25]}
+    # Off-diagonal coupling entries 3x3-diagonal=6 (dims 10..15)
+    coupling_01: {type: continuous, bounds: [-1.0, 1.5]}
+    coupling_02: {type: continuous, bounds: [-1.0, 1.5]}
+    coupling_10: {type: continuous, bounds: [-1.0, 1.5]}
+    coupling_12: {type: continuous, bounds: [-1.0, 1.5]}
+    coupling_20: {type: continuous, bounds: [-1.0, 1.5]}
+    coupling_21: {type: continuous, bounds: [-1.0, 1.5]}
+  evolution:
+    # Shared time step (dim 9)
+    dt: {type: continuous, bounds: [0.01, 0.4]}
+
+sampling:
+  strategy: "sobol_stratified"
+  sobol:
+    scramble: true
+    seed: 42
+  total_samples: 10000
+  batch_size: 16
+
+simulation:
+  operator_type: "lenia"
+  device: "cuda"
+  n_channels: 3
+  grid_size: 64
+  num_realizations: 3
+  num_timesteps: 256
+  lenia:
+    kernel_type: "gaussian"
+    alive_threshold: 0.01
+    saturation_threshold: 0.95
+    max_retries: 5
+
+dataset:
+  output_path: "datasets/lenia_10k.h5"
+  storage:
+    compression: "lzf"
+    store_trajectories: false  # Feature-only mode — no raw trajectory storage
+
+features:
+  temporal:
+    enabled: true
+  summary:
+    enabled: true
