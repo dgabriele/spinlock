@@ -872,6 +872,18 @@ class JointHierarchicalVQVAE(nn.Module):
         # Extract token indices for topographic loss
         token_indices = self._get_token_indices(encodings_dict)
 
+        # Per-group encoded dict (for informativeness loss — uses correct dimensions)
+        # Temporal groups have per-group keys in `encoded`; initial/theta use
+        # the family-level key directly (each is a single group).
+        per_group_encoded = {}
+        for group_key in self.group_indices:
+            if group_key in encoded:
+                per_group_encoded[group_key] = encoded[group_key]
+            else:
+                family = group_key.split("_", 1)[0]
+                if family in encoded:
+                    per_group_encoded[group_key] = encoded[family]
+
         return {
             "reconstructed": reconstructed,
             "reconstructed_split": reconstructed_split,  # NEW: split by family
@@ -883,6 +895,7 @@ class JointHierarchicalVQVAE(nn.Module):
             "latents": latents_dict,  # Pre-quantization latent vectors
             "token_indices": token_indices,
             "original_encoded": all_encoded,
+            "per_group_encoded": per_group_encoded,
         }
 
     def encode(

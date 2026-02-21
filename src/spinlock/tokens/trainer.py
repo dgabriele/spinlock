@@ -899,20 +899,26 @@ class VQTokenizerTrainer:
     ) -> Dict[str, torch.Tensor]:
         """Extract per-category embeddings from model outputs.
 
+        Uses ``per_group_encoded`` (direct per-group encoded tensors) when
+        available, avoiding stale index-based slicing into the concatenated
+        ``original_encoded`` tensor which has a different layout.
+
         Args:
             outputs: Model forward outputs
 
         Returns:
             Dict mapping category → embeddings [B, D_cat]
         """
-        # For now, extract from original_encoded using group_indices
-        original_encoded = outputs['original_encoded']
+        per_group = outputs.get("per_group_encoded")
+        if per_group:
+            return per_group
 
+        # Fallback for older checkpoints without per_group_encoded
+        original_encoded = outputs['original_encoded']
         category_embeddings = {}
         for family_cat, indices in self.group_indices.items():
             cat_emb = original_encoded[:, indices]
             category_embeddings[family_cat] = cat_emb
-
         return category_embeddings
 
     def _compute_token_utilization(
