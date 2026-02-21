@@ -712,58 +712,58 @@ def fig7_architecture_diagram(ckpt, out_dir):
     theta_out_dim      = enc_cfg['theta']['output_dim']          # 32
     theta_param_dim    = enc_cfg['theta']['param_dim']           # 14
 
-    fig = plt.figure(figsize=(20, 9))
+    fig = plt.figure(figsize=(22, 8.0))
     ax  = fig.add_axes([0, 0, 1, 1])
-    ax.set_xlim(0, 20)
-    ax.set_ylim(2.9, 9.3)   # trim dead space below theta row (y≈3.2) and above headers
+    ax.set_xlim(0, 22)
+    ax.set_ylim(2.8, 8.8)   # more compact vertical space
     ax.axis('off')
     fig.patch.set_facecolor('white')
 
-    # Column x-centres — extra space between Cleaning (5.2) and Grouping (7.5)
-    col_xs = [1.2, 3.2, 5.2, 7.5, 10.3, 14.0, 18.2]
+    # Column x-centres — increased spacing throughout for clarity
+    col_xs = [1.4, 3.6, 5.8, 8.5, 11.5, 15.5, 19.8]
     col_titles = ['Inputs', 'Feature\nextraction', 'Cleaning', 'Grouping',
                   'Per-group\nencoders', 'VQ hierarchy', 'Outputs']
     col_bg_color = '#f8f9fa'
 
-    # Column widths (VQ column is wider to hold 5 representative boxes)
-    col_widths = [2.0, 2.0, 2.0, 2.0, 2.6, 3.0, 2.0]
+    # Column widths — increased for better breathing room
+    col_widths = [2.2, 2.2, 2.2, 2.4, 3.0, 3.6, 2.4]
 
-    # Column separator backgrounds
+    # Column separator backgrounds — fully containing labels with proper padding
     for i, (cx, cw) in enumerate(zip(col_xs, col_widths)):
-        bg = FancyBboxPatch((cx - cw / 2, 3.1), cw, 6.0,
-                             boxstyle='round,pad=0.05',
-                             facecolor=col_bg_color, edgecolor='#dee2e6',
-                             linewidth=0.8, zorder=0)
+        bg = FancyBboxPatch((cx - cw / 2, 2.95), cw, 5.55,
+                             boxstyle='round,pad=0.06',
+                             facecolor=col_bg_color, edgecolor='#aaa',
+                             linewidth=1.4, zorder=0)
         ax.add_patch(bg)
-        ax.text(cx, 8.9, col_titles[i], ha='center', va='center', fontsize=8.5,
-                fontweight='bold', color='#555', zorder=5)
+        ax.text(cx, 8.35, col_titles[i], ha='center', va='center', fontsize=11,
+                fontweight='bold', color='#444', zorder=5)
 
-    def box(cx, cy, w, h, label, sublabel='', fc='#d6eaf8', ec=C_TEMPORAL, fs=9):
+    def box(cx, cy, w, h, label, sublabel='', fc='#d6eaf8', ec=C_TEMPORAL, fs=11):
         b = FancyBboxPatch((cx - w / 2, cy - h / 2), w, h,
-                            boxstyle='round,pad=0.08',
-                            facecolor=fc, edgecolor=ec, linewidth=1.5, zorder=3)
+                            boxstyle='round,pad=0.10',
+                            facecolor=fc, edgecolor=ec, linewidth=1.8, zorder=3)
         ax.add_patch(b)
-        ax.text(cx, cy + (0.08 if sublabel else 0), label,
+        ax.text(cx, cy + (0.10 if sublabel else 0), label,
                 ha='center', va='center', fontsize=fs, fontweight='bold', zorder=4)
         if sublabel:
-            ax.text(cx, cy - 0.22, sublabel, ha='center', va='center',
-                    fontsize=7, color='#444', zorder=4)
+            ax.text(cx, cy - 0.24, sublabel, ha='center', va='center',
+                    fontsize=9.5, color='#333', zorder=4)
 
     def arrow(x1, y1, x2, y2, dim_label=''):
         ax.annotate('', xy=(x2, y2), xytext=(x1, y1),
-                    arrowprops=dict(arrowstyle='->', color='#555', lw=1.5), zorder=6)
+                    arrowprops=dict(arrowstyle='->', color='#555', lw=2.0,
+                                   connectionstyle='arc3,rad=0', shrinkA=0, shrinkB=0), zorder=6)
         if dim_label:
             mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-            ax.text(mx, my + 0.14, dim_label, fontsize=6.5, color='#888',
-                    style='italic', va='bottom', ha='center', zorder=7,
-                    bbox=dict(boxstyle='round,pad=0.05', facecolor='white',
-                              edgecolor='none', alpha=0.85))
+            ax.text(mx, my + 0.18, dim_label, fontsize=9.5, color='#333',
+                    style='italic', va='bottom', ha='center', fontweight='semibold', zorder=7,
+                    bbox=dict(boxstyle='round,pad=0.10', facecolor='white',
+                              edgecolor='#d0d0d0', linewidth=0.6, alpha=0.96))
 
-    # Row y-positions: temporal=7.0, initial=4.8, theta=3.3
-    # (initial moved from 5.3 to 4.8 to clear the pyramid encoder bottom at 5.55)
-    Y_TEMPORAL = 7.0
+    # Row y-positions: compact but clear spacing
+    Y_TEMPORAL = 6.8
     Y_INITIAL  = 4.8
-    Y_THETA    = 3.3
+    Y_THETA    = 3.5
 
     # ── Col 1: Inputs ──
     box(col_xs[0], Y_TEMPORAL, 1.7, 0.75, 'CNO Fields', f'[T, 3, 64, 64]',
@@ -774,7 +774,7 @@ def fig7_architecture_diagram(ckpt, out_dir):
         fc='#e8daef', ec=C_THETA)
 
     # ── Col 2: Feature extraction ──
-    box(col_xs[1], Y_TEMPORAL, 1.7, 0.75, 'TemporalFeat.\nOrchestrator', f'→ [T, {n_raw}D]',
+    box(col_xs[1], Y_TEMPORAL, 1.7, 0.75, 'Temporal Feature\nExtraction', f'→ [T, {n_raw}D]',
         fc='#d6eaf8', ec=C_TEMPORAL)
     box(col_xs[1], Y_INITIAL, 1.7, 0.75, 'HybridInitial\nEncoder',
         f'manual {initial_manual_dim}D+CNN {initial_cnn_dim}D',
@@ -783,6 +783,7 @@ def fig7_architecture_diagram(ckpt, out_dir):
         f'→ {theta_out_dim}D',
         fc='#e8daef', ec=C_THETA)
 
+    # Arrows Col1 → Col2 (box half-width = 1.7/2 = 0.85)
     arrow(col_xs[0] + 0.85, Y_TEMPORAL, col_xs[1] - 0.85, Y_TEMPORAL)
     arrow(col_xs[0] + 0.85, Y_INITIAL,  col_xs[1] - 0.85, Y_INITIAL)
     arrow(col_xs[0] + 0.85, Y_THETA,    col_xs[1] - 0.85, Y_THETA)
@@ -794,9 +795,9 @@ def fig7_architecture_diagram(ckpt, out_dir):
         fc='#fef9e7', ec='#d4ac0d')
     # Initial and theta pass-through text floats above the long arrow line
     for y_pt in [Y_INITIAL, Y_THETA]:
-        ax.text(col_xs[2], y_pt + 0.28, '(pass-through)', ha='center', va='center',
-                fontsize=7.5, color='#888', style='italic', zorder=7,
-                bbox=dict(boxstyle='round,pad=0.1', facecolor='white', edgecolor='none', alpha=0.85))
+        ax.text(col_xs[2], y_pt + 0.32, '(pass-through)', ha='center', va='center',
+                fontsize=9.5, color='#666', style='italic', zorder=7,
+                bbox=dict(boxstyle='round,pad=0.12', facecolor='white', edgecolor='#ddd', linewidth=0.5, alpha=0.92))
 
     arrow(col_xs[1] + 0.85, Y_TEMPORAL, col_xs[2] - 0.75, Y_TEMPORAL, f'{n_raw}D')
     # Long pass-through arrows: start right edge of Cleaning col, end left edge of Encoder col
@@ -814,68 +815,68 @@ def fig7_architecture_diagram(ckpt, out_dir):
     arrow(col_xs[2] + 0.75, Y_INITIAL, col_xs[4] - 0.85, Y_INITIAL)
     arrow(col_xs[2] + 0.75, Y_THETA,   col_xs[4] - 0.85, Y_THETA)
 
-    # Fan-out arrows from grouping into pyramid encoders
-    for g_y in [7.8, 7.2, 6.6]:
-        ax.annotate('', xy=(col_xs[4] - 0.85, g_y), xytext=(col_xs[3] + 0.7, Y_TEMPORAL),
-                    arrowprops=dict(arrowstyle='->', color='#aaa', lw=0.8), zorder=6)
-
     # ── Col 5: Encoders ──
     # 30× temporal pyramid encoders with internal level breakdown
     pyr_cx   = col_xs[4]
-    pyr_w    = 2.3   # outer box width
-    pyr_bot  = 5.48   # lowered slightly to give concat bar clearance at bottom
-    pyr_top  = 8.45
+    pyr_w    = 2.6   # outer box width
+    pyr_bot  = 5.50   # adjusted for proper clearance from column label
+    pyr_top  = 8.10   # lowered to avoid overlap with column header
     pyr_h    = pyr_top - pyr_bot
 
     pyramid_box = FancyBboxPatch((pyr_cx - pyr_w / 2, pyr_bot), pyr_w, pyr_h,
-                                  boxstyle='round,pad=0.08',
+                                  boxstyle='round,pad=0.10',
                                   facecolor='#eaf4fb', edgecolor=C_TEMPORAL, linewidth=2.0, zorder=3)
     ax.add_patch(pyramid_box)
 
     # Header text
-    ax.text(pyr_cx, 8.28, f'{n_groups}×  PyramidEncoder', ha='center', va='center',
-            fontsize=9.5, fontweight='bold', color=C_TEMPORAL, zorder=4)
-    ax.text(pyr_cx, 8.0, f'[B, T, Gₖ]  →  {emb_dim}D', ha='center', va='center',
-            fontsize=7.5, color='#444', zorder=4)
+    ax.text(pyr_cx, 7.95, f'{n_groups}×  PyramidEncoder', ha='center', va='center',
+            fontsize=11.5, fontweight='bold', color=C_TEMPORAL, zorder=4)
+    ax.text(pyr_cx, 7.73, f'[B, T, Gₖ]  →  {emb_dim}D', ha='center', va='center',
+            fontsize=9.5, color='#444', zorder=4)
 
-    # Per-level sub-boxes
+    # Per-level sub-boxes — adjusted to fit within new pyramid bounds
     level_fill   = ['#aed6f1', '#a9dfbf', '#d7bde2', '#fadbd8']
     level_border = ['#2471a3', '#1a9e73', '#7b5ea7', '#c0392b']
     ds_labels    = [f'×{ds}' for ds in ds_factors]
-    sub_ys    = [7.60, 7.12, 6.64, 6.16]   # y-centres of sub-boxes
-    sub_h     = 0.38
-    sub_w     = pyr_w - 0.28
+    sub_ys    = [7.35, 6.92, 6.49, 6.06]   # adjusted for new pyramid height
+    sub_h     = 0.40   # slightly smaller boxes
+    sub_w     = pyr_w - 0.32
 
     for l, (sy, ld, lf, lb, ds_lbl) in enumerate(
             zip(sub_ys, level_dims, level_fill, level_border, ds_labels)):
         sub = FancyBboxPatch((pyr_cx - sub_w / 2, sy - sub_h / 2), sub_w, sub_h,
-                              boxstyle='round,pad=0.01',
-                              facecolor=lf, edgecolor=lb, linewidth=1.2, zorder=4)
+                              boxstyle='round,pad=0.02',
+                              facecolor=lf, edgecolor=lb, linewidth=1.4, zorder=4)
         ax.add_patch(sub)
-        ax.text(pyr_cx - sub_w / 2 + 0.22, sy, f'L{l}',
-                ha='center', va='center', fontsize=8, fontweight='bold', color=lb, zorder=5)
+        ax.text(pyr_cx - sub_w / 2 + 0.24, sy, f'L{l}',
+                ha='center', va='center', fontsize=10.5, fontweight='bold', color=lb, zorder=5)
         ax.text(pyr_cx, sy, f'T/{ds_factors[l]}  →  {ld}D',
-                ha='center', va='center', fontsize=7.5, color='#333', zorder=5)
-        ax.text(pyr_cx + sub_w / 2 - 0.12, sy, ds_lbl,
-                ha='right', va='center', fontsize=7, color='#666', style='italic', zorder=5)
+                ha='center', va='center', fontsize=10, color='#222', fontweight='semibold', zorder=5)
+        ax.text(pyr_cx + sub_w / 2 - 0.14, sy, ds_lbl,
+                ha='right', va='center', fontsize=9.5, color='#555', style='italic', zorder=5)
 
-    # Concat bar
-    concat_y = 5.72   # lowered to clear L3 bottom (which ends at ~5.96 with pad=0.01)
-    concat_h = 0.30
+    # Concat bar — positioned with clear separation from L3
+    concat_y = 5.70   # adjusted for new pyramid height
+    concat_h = 0.32
     concat_box = FancyBboxPatch((pyr_cx - sub_w / 2, concat_y - concat_h / 2), sub_w, concat_h,
-                                 boxstyle='round,pad=0.02',
+                                 boxstyle='round,pad=0.03',
                                  facecolor='#d6eaf8', edgecolor=C_TEMPORAL, linewidth=1.2, zorder=4)
     ax.add_patch(concat_box)
     ax.text(pyr_cx, concat_y, f'concat  →  {emb_dim}D',
-            ha='center', va='center', fontsize=7.5, fontweight='bold', color=C_TEMPORAL, zorder=5)
+            ha='center', va='center', fontsize=10, fontweight='bold', color=C_TEMPORAL, zorder=5)
 
-    # Col 5: Initial/Theta at new y-positions (clear of pyramid encoder bottom at 5.55)
-    box(col_xs[4], Y_INITIAL, 1.7, 0.65, 'InitialHybrid\nEncoder',
+    # Col 5: Initial/Theta encoders — matching height with VQ and output boxes
+    box(col_xs[4], Y_INITIAL, 1.8, 0.70, 'InitialHybrid\nEncoder',
         f'→ {initial_manual_dim + initial_cnn_dim}D',
-        fc='#d5f5e3', ec=C_INITIAL)
-    box(col_xs[4], Y_THETA, 1.7, 0.65, 'ThetaMLP',
+        fc='#d5f5e3', ec=C_INITIAL, fs=9.5)
+    box(col_xs[4], Y_THETA, 1.8, 0.70, 'ThetaMLP',
         f'→ {theta_out_dim}D',
-        fc='#e8daef', ec=C_THETA)
+        fc='#e8daef', ec=C_THETA, fs=9.5)
+
+    # Fan-out arrows from grouping into pyramid encoders (placed after pyr_w is defined)
+    for g_y in [7.5, 7.0, 6.5]:
+        ax.annotate('', xy=(col_xs[4] - pyr_w/2 - 0.05, g_y), xytext=(col_xs[3] + 0.7, Y_TEMPORAL),
+                    arrowprops=dict(arrowstyle='->', color='#666', lw=1.2, alpha=0.85), zorder=2)
 
     # ── Col 6: VQ hierarchy ──
     _all_vq_colors = ['#aed6f1', '#a9dfbf', '#d7bde2', '#fadbd8']
@@ -883,63 +884,65 @@ def fig7_architecture_diagram(ckpt, out_dir):
     vq_levels    = [f'L{i}' for i in range(n_levels)]
     vq_colors    = _all_vq_colors[:n_levels]
     vq_ec        = _all_vq_ec[:n_levels]
-    vq_y_centers = np.linspace(7.7, 6.5, n_levels).tolist()
+    vq_y_centers = np.linspace(7.5, 6.5, n_levels).tolist()   # compact positioning
 
-    # 30×3 VQ grid — labels on LEFT to avoid arrow overlap on right
+    # 30×3 VQ grid — increased spacing between boxes
     n_show  = 6
-    w_vq    = 0.38
-    gap_vq  = 0.07
+    w_vq    = 0.42   # wider boxes
+    gap_vq  = 0.10   # increased gap
     x_start = col_xs[5] - (n_show * (w_vq + gap_vq) - gap_vq) / 2
     for li, (lvl, vc, vce, vy) in enumerate(zip(vq_levels, vq_colors, vq_ec, vq_y_centers)):
         for g_show in range(n_show):
             x_vq = x_start + g_show * (w_vq + gap_vq)
-            vq_box = FancyBboxPatch((x_vq, vy - 0.22), w_vq, 0.44,
-                                     boxstyle='round,pad=0.03',
-                                     facecolor=vc, edgecolor=vce, linewidth=0.8, zorder=3)
+            vq_box = FancyBboxPatch((x_vq, vy - 0.24), w_vq, 0.48,
+                                     boxstyle='round,pad=0.05',
+                                     facecolor=vc, edgecolor=vce, linewidth=1.2, zorder=3)
             ax.add_patch(vq_box)
             if g_show == 3:
                 ax.text(x_vq + w_vq / 2, vy, '···', ha='center', va='center',
-                        fontsize=8, color='#555', zorder=4)
+                        fontsize=12, color='#555', fontweight='bold', zorder=4)
             else:
                 ax.text(x_vq + w_vq / 2, vy, f'VQ\n{lvl}', ha='center', va='center',
-                        fontsize=5.5, fontweight='bold', zorder=4)
-        ax.text(x_start - 0.15, vy, lvl, ha='right', va='center',
-                fontsize=9, fontweight='bold', color=vce, zorder=5)
+                        fontsize=8.5, fontweight='bold', zorder=4)
+        ax.text(x_start - 0.20, vy, lvl, ha='right', va='center',
+                fontsize=12, fontweight='bold', color=vce, zorder=5)
 
-    # Initial + theta VQ — at updated y-positions
-    box(col_xs[5], Y_INITIAL, 1.7, 0.55, 'Initial VQ\n(groups×3)',
-        fc='#d5f5e3', ec=C_INITIAL, fs=8)
-    box(col_xs[5], Y_THETA, 1.7, 0.55, 'Theta VQ\n(groups×3)',
-        fc='#e8daef', ec=C_THETA, fs=8)
+    # Initial + theta VQ — matching height with other boxes in rows
+    box(col_xs[5], Y_INITIAL, 1.8, 0.70, 'Initial VQ\n(groups×3)',
+        fc='#d5f5e3', ec=C_INITIAL, fs=9.5)
+    box(col_xs[5], Y_THETA, 1.8, 0.70, 'Theta VQ\n(groups×3)',
+        fc='#e8daef', ec=C_THETA, fs=9.5)
 
     # VQ grid right edge
     vq_row_half_w = (n_show * (w_vq + gap_vq) - gap_vq) / 2
     vq_right_x    = col_xs[5] + vq_row_half_w + 0.08
 
     # Arrows Col5 → Col6
-    # Temporal: pyramid right edge → VQ grid left edge (centre of VQ row cluster)
-    arrow(pyr_cx + pyr_w / 2, 7.1, x_start - 0.2, 7.1, f'{emb_dim}D')
-    # Initial/Theta: use box half-width (0.85), not pyramid half-width (1.15)
-    arrow(col_xs[4] + 0.85, Y_INITIAL, col_xs[5] - vq_row_half_w - 0.1, Y_INITIAL)
-    arrow(col_xs[4] + 0.85, Y_THETA,   col_xs[5] - vq_row_half_w - 0.1, Y_THETA)
+    # Temporal: pyramid right edge → VQ grid left edge (above L1 to avoid overlap)
+    temporal_arrow_y = 7.2   # positioned between L0 and L1 to avoid label overlap
+    arrow(pyr_cx + pyr_w / 2 + 0.05, temporal_arrow_y, x_start - 0.25, temporal_arrow_y, f'{emb_dim}D')
+    # Initial/Theta: use box half-width (0.85)
+    arrow(col_xs[4] + 0.85, Y_INITIAL, col_xs[5] - vq_row_half_w - 0.15, Y_INITIAL)
+    arrow(col_xs[4] + 0.85, Y_THETA,   col_xs[5] - vq_row_half_w - 0.15, Y_THETA)
 
     # ── Col 7: Outputs ──
-    box(col_xs[6], 7.1, 1.7, 1.1, 'Token dict', '{cat_level: int}',
-        fc='#fdebd0', ec='#e67e22')
-    box(col_xs[6], Y_INITIAL, 1.7, 0.65, 'θ̂ (optional)', 'inverse MLP',
-        fc='#e8daef', ec=C_THETA, fs=8)
-    box(col_xs[6], Y_THETA, 1.7, 0.65, 'IĈ (optional)', 'inverse CNN',
-        fc='#d5f5e3', ec=C_INITIAL, fs=8)
+    box(col_xs[6], temporal_arrow_y, 1.8, 1.25, 'Token dict', '{cat_level: int}',
+        fc='#fdebd0', ec='#e67e22', fs=10.5)
+    box(col_xs[6], Y_INITIAL, 1.8, 0.70, 'IĈ', 'inverse CNN',
+        fc='#d5f5e3', ec=C_INITIAL, fs=9.5)
+    box(col_xs[6], Y_THETA, 1.8, 0.70, 'θ̂', 'inverse MLP',
+        fc='#e8daef', ec=C_THETA, fs=9.5)
 
-    arrow(vq_right_x, 7.1, col_xs[6] - 0.85, 7.1)
-    arrow(col_xs[5] + vq_row_half_w + 0.08, Y_INITIAL, col_xs[6] - 0.85, Y_INITIAL)
-    arrow(col_xs[5] + vq_row_half_w + 0.08, Y_THETA,   col_xs[6] - 0.85, Y_THETA)
+    # Arrows Col6 → Col7
+    arrow(vq_right_x + 0.05, temporal_arrow_y, col_xs[6] - 0.85, temporal_arrow_y)
+    arrow(col_xs[5] + vq_row_half_w + 0.12, Y_INITIAL, col_xs[6] - 0.85, Y_INITIAL)
+    arrow(col_xs[5] + vq_row_half_w + 0.12, Y_THETA,   col_xs[6] - 0.85, Y_THETA)
 
     # Title / caption
-    ax.text(10.0, 3.05,
+    ax.text(11.0, 2.80,
             f'VQTokenizer v5 (CNO, 3ch)  ·  {n_groups} groups × {n_levels} levels = '
             f'{n_groups * n_levels} temporal quantizers  ·  emb_dim={emb_dim}D',
-            ha='center', va='top', fontsize=8, color='#555', style='italic')
+            ha='center', va='top', fontsize=10, color='#444', style='italic')
 
     out = out_dir / '07_architecture_diagram.png'
     fig.savefig(out, dpi=DPI, bbox_inches='tight')

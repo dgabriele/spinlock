@@ -1,16 +1,7 @@
 """MNO (Meta Neural Operator) - Neural Operator Implementation.
 
-This module implements the MNO architecture with two training paradigms:
-
-MSE-led (Physics First):
-    - Trajectory matching (L_traj) as primary loss
-    - VQ alignment losses as auxiliary regularizers
-    - Use when exact physics fidelity is required
-
-VQ-led (Creative Observer):
-    - VQ reconstruction (L_recon) as primary loss
-    - Trajectory matching as auxiliary regularizer
-    - Enables "creative" exploration where meaningful deviation is allowed
+V2 uses trajectory-first training: MSE + contrastive loss, then separate
+VQTokenizer training on MNO outputs.
 
 For loading real HDF5 datasets, use spinlock.data.SpinlockDataset — it is the
 single authoritative interface to GT field data in this codebase.
@@ -26,7 +17,7 @@ from .base_loss import BaseNOALoss, LossOutput
 from .backbone import MNOBackbone
 
 # Training losses
-from .losses import MSELedLoss, VQLedLoss, MultiScaleRoundtripLoss
+from .losses import ContrastiveLoss
 
 # Perceptual losses (VQ-VAE feature-based)
 from .perceptual_losses import VQVAEPerceptualLoss, FeatureProjector, NOALoss
@@ -59,9 +50,7 @@ __all__ = [
     # Backbone
     "MNOBackbone",
     # Training losses
-    "MSELedLoss",
-    "VQLedLoss",
-    "MultiScaleRoundtripLoss",
+    "ContrastiveLoss",
     # Feature extraction
     "MNOFeatureExtractor",
     # In-memory datasets (synthetic / unit-test only; use SpinlockDataset for real data)

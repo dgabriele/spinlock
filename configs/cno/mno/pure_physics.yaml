@@ -7,7 +7,7 @@
 # (copy checkpoint path there, reduce LR, add roundtrip at lambda ~0.05).
 
 model:
-  base_channels: 24
+  base_channels: 32              # ~145M params — increased capacity for dual-objective (physics + tokens later)
   encoder_levels: 3
   modes: 16
   afno_blocks: 4
@@ -34,10 +34,10 @@ model:
 training:
   n_samples: 10000
   sampling_strategy: "sequential"
-  batch_size: 1
-  gradient_accumulation_steps: 8
+  batch_size: 1                      # Reduced for OOM (7GB GPU, ~6GB used by system)
+  gradient_accumulation_steps: 8     # Maintains effective batch = 8
   epochs: 30
-  learning_rate: 1.2e-4
+  learning_rate: 2.0e-4              # Increased for larger model (145M params)
   warmup_steps: 500
   weight_decay: 1.0e-4
   clip_grad: 1.0
@@ -57,14 +57,40 @@ training:
   prefetch_factor: 2
 
 loss:
-  mode: "mse_led"
-  lambda_traj: 1.0    # Full weight — primary physics signal
-  lambda_ic: 1.0      # Full weight — boundary condition anchor
+  mode: "mse_led_param_sensitive"  # Includes parameter contrastive
+
+  # Weak physics regularizers (keep rollouts plausible, not exact)
+  lambda_traj: 0.1                 # WEAK — physical plausibility only, not exact reconstruction
+  lambda_ic: 0.1                   # WEAK — IC plausibility only
+
+  # Diversity regularizers - PARAMETER SPECIFICITY
+  lambda_contrastive: 0.0          # DISABLED - redundant with token_contrastive
+  lambda_param_recon: 2.0          # ENABLED - force rollout to encode params (prevent mode collapse)
+
+  # Contrastive configs
+  contrastive:
+    temperature: 0.1               # InfoNCE temperature for param contrastive
+    queue_size: 64                 # MoCo-style queue for additional negatives (critical for small batches)
+
+  # Parameter reconstruction
+  param_recon:
+    architecture: "mlp"
+    hidden_dim: 256
+    num_layers: 3
 
   multi_scale_roundtrip:
-    enabled: false
-
-  lambda_token_contrastive: 0.0
+    enabled: true                      # Required for token_contrastive + roundtrip
+    pretokenized_path: "datasets/50k_cno_v3_tokenized_temporal_res.h5"
+    lambda_roundtrip: 1.0              # PRIMARY — token cycle consistency (tokens → params → CNO → same tokens)
+    lambda_feat_mse: 0.0               # NO feature MSE
+    lambda_token_contrastive: 5.0      # REDUCED from 80.0 — gradient was exploding (100→850)
+    families: ["temporal"]
+    token_contrastive:
+      nce_temperature: 0.1
+      token_temperature: 0.5
+      queue_size: 64
+      embed_dim: 128
+      hidden_dim: 256
 
 data:
   dataset_path: "datasets/50k_baseline.h5"
@@ -75,9 +101,13 @@ data:
   persistent_workers: true
   prefetch_factor: 2
 
+# Tokenizer for token_contrastive
+tokenizer:
+  checkpoint: "checkpoints/cno/v3/vq_tokenizer_best.pt"
+
 checkpointing:
   save_dir: "checkpoints/mno/cno_pure_physics"
-  save_every: 5
+  save_every: 1                              # Save every epoch to prevent data loss
   keep_best: true
 
 device: "cuda"

@@ -33,7 +33,7 @@ model:
   # ============================================================================
   # ALGORITHMIC CHOICES
   # ============================================================================
-  base_channels: 24              # ~80M params — fits 8 GB GPU (40→226M overflows)
+  base_channels: 32              # ~140M params — increased for dual-objective capacity (physics + tokens)
   encoder_levels: 3
   modes: 16
   afno_blocks: 4
@@ -63,8 +63,8 @@ model:
 training:
   n_samples: 10000
   sampling_strategy: "sequential"
-  batch_size: 1
-  gradient_accumulation_steps: 8   # effective batch = 8 (same as before)
+  batch_size: 2                      # Reduced for stage 2 (multi-scale roundtrip uses more memory)
+  gradient_accumulation_steps: 4     # Maintains effective batch = 8
   epochs: 30
   learning_rate: 1.2e-4
   warmup_steps: 500                 # ~10 % of first epoch at 10k samples
@@ -87,24 +87,25 @@ training:
 
 loss:
   mode: "mse_led"
-  lambda_traj: 0.1                  # Tertiary — trajectory MSE kept for physics grounding
-  lambda_ic: 0.1                    # IC preservation: prevents NaN divergence at t=0
+  lambda_traj: 1.0                  # PRIMARY — trajectory MSE drives optimization, prevents divergence
+  lambda_ic: 0.5                    # SECONDARY — IC preservation: prevents NaN divergence at t=0
 
-  # ── Multi-scale VQ feature supervision (INVERTED hierarchy) ──────────────
+  # ── Multi-scale VQ supervision (PHYSICS-LED hierarchy) ──────────────────
   #
   # Supervision hierarchy (primary → secondary → tertiary):
-  #   1. Feature-space MSE (lambda_feat_mse=1.0):  PRIMARY
-  #      MSE(extract_features(pred_traj), clean_raw_features(gt_raw_from_hdf5))
-  #      GT features loaded directly from 50k_baseline.h5 → no CNO replayer needed
-  #      in the hot path. Shorter gradient path than roundtrip CE.
+  #   1. Trajectory MSE (lambda_traj=1.0):  PRIMARY
+  #      Direct physics supervision — prevents model from diverging to unphysical states.
+  #      Maintains CNO replayer accuracy as foundation.
   #
-  #   2. Roundtrip cross-entropy (lambda_roundtrip=0.2):  SECONDARY
+  #   2. IC preservation (lambda_ic=0.5):  SECONDARY
+  #      Boundary condition stability — ensures continuity at t=0.
+  #
+  #   3. Roundtrip cross-entropy (lambda_roundtrip=0.1):  TERTIARY
   #      CE(soft_logits(pred), hard_tokens(gt)) at 4 temporal scales.
-  #      Discrete alignment signal: penalises token-space divergence.
+  #      Auxiliary signal: guides token structure without destroying physics.
   #
-  #   3. Trajectory MSE (lambda_traj=0.1):  TERTIARY
-  #      Maintains physical state accuracy; keeps CNO replayer active.
-  #      Eliminable by setting lambda_traj=0 once feature MSE is stable.
+  #   4. Token contrastive (lambda_token_contrastive=0.05):  REGULARIZER
+  #      InfoNCE diversity signal — prevents token collapse.
   #
   # Prefix-slice compatibility: v3 tokenizer trained with 345 features;
   # current extractor produces 439. VQCoherenceAdapter auto-detects and slices.
@@ -113,15 +114,15 @@ loss:
     pretokenized_path: "datasets/50k_cno_v3_tokenized_temporal_res.h5"
     # truncation_lengths: null      # null = auto-detected from tokeniser config
     scale_weights: null             # null = uniform across all scales
-    lambda_feat_mse: 1.0            # PRIMARY — feature-space MSE against HDF5 GT features
-    lambda_roundtrip: 0.2           # SECONDARY — token CE (discrete alignment)
+    lambda_feat_mse: 0.0            # DISABLED — feature MSE was dominating and degrading physics
+    lambda_roundtrip: 0.1           # TERTIARY — token CE as auxiliary signal (10x weaker than physics)
     families: ["temporal"]          # temporal groups only (theta/initial unchanged)
 
   # ── Token contrastive loss (additive, same VQ adapter as multi-scale) ────
   # Diversity signal: different (θ, IC) → different token distributions.
   # Complements roundtrip (accuracy) with InfoNCE in soft-probability space.
-  # MoCo queue essential for batch_size=1 — accumulates negatives across batches.
-  lambda_token_contrastive: 0.5
+  # MoCo queue essential for batch_size=2 — accumulates negatives across batches.
+  lambda_token_contrastive: 0.05          # Token diversity regularizer (20x weaker than physics)
   token_contrastive:
     nce_temperature: 0.1          # Standard InfoNCE temperature
     token_temperature: 0.5        # Per-quantizer softmax sharpness
@@ -144,7 +145,7 @@ tokenizer:
 
 checkpointing:
   save_dir: "checkpoints/mno/cno_multi_scale_roundtrip"
-  save_every: 5
+  save_every: 1                              # Save every epoch to prevent data loss
   keep_best: true
 
 device: "cuda"

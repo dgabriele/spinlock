@@ -1,0 +1,62 @@
+model:
+  base_channels: 32
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  dropout: 0.1
+  param_conditioning: true
+  param_embed_dim: 128
+  conditioning_mode: "film"
+  film: {enabled: true, embed_dim: 128, hidden_dim: 256}
+  update_mode: "residual"
+  use_checkpointing: true
+
+training:
+  n_samples: 10000
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  epochs: 30
+  learning_rate: 2.0e-4
+  warmup_steps: 500
+  weight_decay: 0.01
+  clip_grad: 1.0
+  timesteps: 256
+  bptt_window: 32
+  film_lr_multiplier: 5.0
+  replayer_cache_size: 32
+  eval_every: 1
+  eval_samples: 50
+
+loss:
+  lambda_traj: 0.1            # auxiliary — pixel-level regularization
+  lambda_ic: 0.0              # disabled — redundant with traj MSE in QA mode
+  lambda_contrastive: 0.3     # auxiliary — diversity
+  lambda_token_ce: 1.0        # PRIMARY — soft VQ cross-entropy
+  token_ce_temperature: 1.0   # soft logit temperature
+  normalize_loss_scales: true  # EMA normalization so lambdas = true gradient ratios
+  loss_scale_ema_momentum: 0.99
+  contrastive:
+    temperature: 0.1
+    embed_dim: 128
+    queue_size: 64
+
+data:
+  dataset_path: "datasets/50k_baseline.h5"
+  config: "configs/50k_baseline/50k_baseline.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/mno/v2_quantization_aware"
+  save_every: 1
+  keep_best: true
+
+# Quantization-aware training:
+# Decodes VQ tokens → θ̂/IC_hat via inverse heads, trains MNO on
+# these decoded (quantized) parameters instead of raw continuous θ/IC.
+quantization_aware: true
+tokenizer_checkpoint: "checkpoints/cno/v3/vq_tokenizer_best.pt"
+token_dataset: "datasets/cno_v3_tokenized.h5"
+
+device: "cuda"
+seed: 42

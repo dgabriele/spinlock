@@ -601,10 +601,16 @@ class VQCoherenceAdapter(nn.Module):
         Raises:
             RuntimeError: If no inverse heads are loaded
         """
-        if not hasattr(self, '_theta_inverse') and not hasattr(self, '_initial_inverse'):
+        # Resolve inverse heads: prefer separately-loaded ones, fall back
+        # to the model's built-in inverse heads (trained end-to-end in VQTokenizer)
+        theta_inv = getattr(self, '_theta_inverse', None) or getattr(self.model, 'theta_inverse', None)
+        initial_inv = getattr(self, '_initial_inverse', None) or getattr(self.model, 'initial_inverse', None)
+
+        if theta_inv is None and initial_inv is None:
             raise RuntimeError(
-                "No inverse heads loaded. Call load_inverse_heads() first, "
-                "or use Mode A (pretokenized GT tokens) instead."
+                "No inverse heads available. Either the VQTokenizer checkpoint "
+                "was trained without inverse_heads config, or call "
+                "load_inverse_heads() to load them separately."
             )
 
         model = self.model
@@ -633,10 +639,10 @@ class VQCoherenceAdapter(nn.Module):
                 continue
             family_recon = reconstructed[:, offset:offset + dim]
 
-            if family == 'theta' and hasattr(self, '_theta_inverse'):
-                result['theta'] = self._theta_inverse(family_recon)
-            elif family == 'initial' and hasattr(self, '_initial_inverse'):
-                result['u0'] = self._initial_inverse(family_recon)
+            if family == 'theta' and theta_inv is not None:
+                result['theta'] = theta_inv(family_recon)
+            elif family == 'initial' and initial_inv is not None:
+                result['u0'] = initial_inv(family_recon)
 
         return result
 

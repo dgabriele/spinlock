@@ -20,7 +20,6 @@ from .extract_features import ExtractFeaturesCommand
 from .analyze_features import AnalyzeFeaturesCommand
 from .train_vqvae import TrainVQVAECommand
 from .train_vq_tokenizer import TrainVQTokenizerCommand
-from .train_meta_operator import TrainMetaOperatorCommand
 from .compute_ground_truth_tokens import ComputeGroundTruthTokensCommand
 from .pretokenize_dataset import PretokenizeDatasetCommand
 from .generate_noa_features import GenerateNOAFeaturesCommand
@@ -35,6 +34,7 @@ from .train_alignment import TrainAlignmentCommand
 from .launch_salad_generation import LaunchSaladGenerationCommand
 from .merge_datasets import MergeDatasetsCommand
 from .train_diffusion import TrainDiffusionCommand
+from .train_mno_v2 import TrainMNOV2Command
 
 __all__ = [
     "CLICommand",
@@ -50,7 +50,6 @@ __all__ = [
     "AnalyzeFeaturesCommand",
     "TrainVQVAECommand",
     "TrainVQTokenizerCommand",
-    "TrainMetaOperatorCommand",
     "ComputeGroundTruthTokensCommand",
     "PretokenizeDatasetCommand",
     "GenerateNOAFeaturesCommand",
@@ -65,6 +64,7 @@ __all__ = [
     "LaunchSaladGenerationCommand",
     "MergeDatasetsCommand",
     "TrainDiffusionCommand",
+    "TrainMNOV2Command",
     "main",
 ]
 
@@ -120,7 +120,6 @@ For more help on a specific command:
         AnalyzeFeaturesCommand(),
         TrainVQVAECommand(),
         TrainVQTokenizerCommand(),
-        TrainMetaOperatorCommand(),
         ComputeGroundTruthTokensCommand(),
         PretokenizeDatasetCommand(),
         DiagnoseMNOCommand(),
@@ -131,6 +130,7 @@ For more help on a specific command:
         LaunchSaladGenerationCommand(),
         MergeDatasetsCommand(),
         TrainDiffusionCommand(),
+        TrainMNOV2Command(),
     ]
 
     for command in commands:
