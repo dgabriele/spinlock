@@ -1,21 +1,16 @@
 # VQ Tokenizer — Learned CNN Temporal Features
 #
-# Replaces the hand-crafted TemporalFeatureOrchestrator with a per-frame
-# ResNet-3 CNN that provides dense, spatially-specific gradients.
+# Identical to vqtokenizer_v1.yaml EXCEPT:
+#   1. feature_source: "learned" — per-frame CNN replaces hand-crafted features
+#   2. encoder.initial.variant: "cnn" (no manual features in learned mode)
+#   3. encoder.temporal.learned: new CNN config section
+#   4. No feature_cleaning (CNN has internal BatchNorm)
+#   5. No grouping (sequential slicing of CNN output, automatic)
+#   6. training.batch_size: 32 (on-the-fly trajectory generation is expensive)
+#   7. cno_config_path: for CNOReplayer trajectory generation
 #
-# Key differences from vqtokenizer_v1.yaml:
-#   1. feature_source: "learned" — CNN replaces summary statistics
-#   2. No feature_cleaning — CNN handles normalization internally (BatchNorm)
-#   3. No correlation-based grouping — sequential group slicing of CNN output
-#   4. On-the-fly trajectory generation via CNOReplayer
-#   5. Smaller batch_size (32 vs 256) due to trajectory generation cost
-#
-# Dataset structure (auto-detected at runtime):
-#   params:       (N, 14)
-#   fields:       (N, M, C, H, W)  — ICs, M realizations
-#   temporal features: NOT used (generated on-the-fly by CNN)
-#
-# All dataset-dependent dimensions (channels, param count) are auto-detected.
+# All other settings (loss, quantizer, hierarchy, optimizer, scheduler, etc.)
+# are kept identical to v1 for a fair comparison.
 
 dataset_path: "datasets/50k_baseline.h5"
 
@@ -30,22 +25,25 @@ replayer_cache_size: 16
 
 encoder:
   initial:
-    variant: "cnn"              # CNN-only, NO manual features
-    cnn_embedding_dim: 28
+    variant: "cnn"              # CNN-only (no manual features in learned mode)
+    cnn_embedding_dim: 384      # Same as v1
+    use_final_batchnorm: true
     # in_channels: auto-detected from dataset
 
   temporal:
     variant: "pyramid"
     learned:
       # in_channels: auto-detected from ICs
-      embedding_dim: 240        # 30 groups x 8 dim/group
+      embedding_dim: 240        # 30 groups × 8 dim/group
       num_groups: 30
-    level_dims: [32, 64, 96, 128]  # pyramid encodes [B, T, 8] per group -> [B, 320]
+    level_dims: [6, 12, 20, 26]    # Same as v1: sum=64D per group
     downsample_factors: [1, 2, 4, 8]
     variable_length:
       enabled: true
-      min_timesteps: 16
+      min_timesteps: 32
       max_timesteps: 256
+      length_bins: [32, 64, 128, 256]
+      sampling_strategy: "fixed_bins"
       adaptive_pyramid: true
       min_pyramid_length: 1
       mask_downsample_method: "ceil"
@@ -60,7 +58,7 @@ encoder:
 
   embedding_dim: 64
   hidden_dim: 128
-  dropout: 0.3
+  dropout: 0.5                  # Same as v1
   use_layer_norm: true
 
 # ═══════════════════════════════════════════════════════════════
@@ -85,66 +83,70 @@ hierarchy:
   max_latent_dim: 192
 
 # ═══════════════════════════════════════════════════════════════
-# Feature Cleaning — DISABLED (CNN has internal BatchNorm)
+# Inverse Heads (same as v1)
 # ═══════════════════════════════════════════════════════════════
 
-# feature_cleaning: null  # Not needed in learned mode
+inverse_heads:
+  theta_hidden_dim: 128
+  theta_dropout: 0.15
+  initial_base_channels: 256
 
 # ═══════════════════════════════════════════════════════════════
-# Grouping — null (sequential slicing in learned mode)
-# ═══════════════════════════════════════════════════════════════
-
-# grouping: null  # Sequential group indices computed automatically
-
-# ═══════════════════════════════════════════════════════════════
-# Training
+# Training (same as v1 except batch_size)
 # ═══════════════════════════════════════════════════════════════
 
 training:
-  num_epochs: 100
-  batch_size: 32              # Smaller due to on-the-fly trajectory generation
-  learning_rate: 1.0e-3
+  num_epochs: 1000
+  batch_size: 32                # Smaller due to on-the-fly trajectory generation
+  learning_rate: 0.001
   val_split: 0.1
-  val_every_n_epochs: 5
+  val_every_n_epochs: 3
 
   optimizer: "adamw"
-  weight_decay: 0.01
+  weight_decay: 0.05
   gradient_clip_norm: 1.0
 
   use_scheduler: true
   scheduler_type: "cosine"
-  warmup_epochs: 5
+  warmup_epochs: 10
 
-  early_stopping_patience: 20
+  early_stopping_patience: 30
   early_stopping_min_delta: 0.001
 
-  dead_code_reset_interval: 10
+  dead_code_reset_interval: 0
   dead_code_threshold: 0.01
 
   device: "auto"
   compile_model: false
 
 # ═══════════════════════════════════════════════════════════════
-# Loss
+# Loss (same as v1)
 # ═══════════════════════════════════════════════════════════════
 
 loss:
-  reconstruction_weight: 1.0
+  reconstruction_weight: 0.0003
   orthogonality_weight: 0.1
   informativeness_weight: 0.1
-  topographic_weight: 0.1
-  topographic_n_samples: 32
+  topographic_weight: 0.2
+  topographic_n_samples: 8     # 25% of batch_size=32 (v1 used 64/256=25%)
   normalize_reconstruction: true
 
+  roundtrip:
+    enabled: true
+    weight: 8.0
+    theta_weight: 1.0
+    initial_weight: 1.0
+
 # ═══════════════════════════════════════════════════════════════
-# Normalization — NONE (CNN output is self-normalized via BatchNorm)
+# Normalization (same as v1)
 # ═══════════════════════════════════════════════════════════════
 
 normalization:
   method: "none"
+  clip_std_multiplier: null
 
 # ═══════════════════════════════════════════════════════════════
-# System
+# System (same as v1)
 # ═══════════════════════════════════════════════════════════════
 
 random_seed: 42
