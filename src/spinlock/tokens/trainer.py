@@ -194,6 +194,12 @@ class VQTokenizerTrainer:
         logger.info(f"  Learning rate: {self.config.training.learning_rate}")
         logger.info(f"  Train batches: {len(train_loader)}")
         logger.info(f"  Val batches: {len(val_loader)}")
+        if self.device.type == "cuda":
+            _alloc = torch.cuda.memory_allocated() / 1024**2
+            _resv = torch.cuda.memory_reserved() / 1024**2
+            logger.info(
+                f"  GPU memory before training: alloc={_alloc:.0f}MB reserved={_resv:.0f}MB"
+            )
 
         # Training loop
         val_loss = None  # Initialize for final checkpoint saving
@@ -502,9 +508,10 @@ class VQTokenizerTrainer:
                             ic=initial_r[i],
                             timesteps=timesteps,
                             return_all_steps=True,
-                        )  # [1, T+1, C, H, W]
-                        trajectories.append(traj.squeeze(0))  # [T+1, C, H, W]
-                temporal_raw = torch.stack(trajectories, dim=0).to(self.device)  # [B, T+1, C, H, W]
+                        )  # [1, T+1, C, H, W] on replayer device
+                        trajectories.append(traj.squeeze(0).cpu())  # [T+1, C, H, W] → CPU
+                # Keep on CPU — TemporalCNNFeatureEncoder streams chunks to GPU
+                temporal_raw = torch.stack(trajectories, dim=0)  # [B, T+1, C, H, W]
 
             # Random length sampling for variable-length training
             if self.length_sampler is not None and temporal_feats is not None:
@@ -520,6 +527,14 @@ class VQTokenizerTrainer:
                 temp_mask = sampled_mask.to(self.device)
                 temp_lens = sampled_lengths.to(self.device)
 
+            # Memory profiling (first batch only)
+            _do_mem_log = self.config.verbose and batch_idx == 0 and epoch == 0
+            if _do_mem_log and self.device.type == "cuda":
+                torch.cuda.reset_peak_memory_stats()
+                logger.info(
+                    f"  [MEM pre-fwd] alloc={torch.cuda.memory_allocated()/1024**2:.0f}MB"
+                )
+
             # Forward pass
             outputs = self.model(
                 temporal_features=temporal_feats,
@@ -530,6 +545,12 @@ class VQTokenizerTrainer:
                 temporal_lengths=temp_lens,
                 temporal_raw=temporal_raw,
             )
+
+            if _do_mem_log and self.device.type == "cuda":
+                logger.info(
+                    f"  [MEM post-fwd] alloc={torch.cuda.memory_allocated()/1024**2:.0f}MB "
+                    f"peak={torch.cuda.max_memory_allocated()/1024**2:.0f}MB"
+                )
 
             # VALIDATION: Ensure dimensions match if roundtrip loss is enabled
             if self.loss_fn.roundtrip_loss is not None and initial_man is not None:
@@ -579,9 +600,21 @@ class VQTokenizerTrainer:
 
             loss = losses['total']
 
+            if _do_mem_log and self.device.type == "cuda":
+                logger.info(
+                    f"  [MEM post-loss] alloc={torch.cuda.memory_allocated()/1024**2:.0f}MB "
+                    f"peak={torch.cuda.max_memory_allocated()/1024**2:.0f}MB"
+                )
+
             # Backward pass
             self.optimizer.zero_grad()
             loss.backward()
+
+            if _do_mem_log and self.device.type == "cuda":
+                logger.info(
+                    f"  [MEM post-bwd] alloc={torch.cuda.memory_allocated()/1024**2:.0f}MB "
+                    f"peak={torch.cuda.max_memory_allocated()/1024**2:.0f}MB"
+                )
 
             # Gradient clipping (optional)
             if self.config.training.gradient_clip_norm is not None:
@@ -612,12 +645,29 @@ class VQTokenizerTrainer:
                     )
 
             # Accumulate metrics
-            total_loss += loss.item()
+            batch_loss = loss.item()
+            total_loss += batch_loss
             total_recon += losses['reconstruction'].item()
             total_vq += losses['vq'].item()
             total_ortho += losses['orthogonality'].item()
             total_info += losses['informativeness'].item()
             num_batches += 1
+
+            # Per-batch logging
+            if self.config.verbose:
+                parts = [
+                    f"  [E{epoch+1} B{batch_idx+1}/{num_batches_total}]",
+                    f"loss={batch_loss:.4f}",
+                    f"recon={losses['reconstruction'].item():.4f}",
+                    f"vq={losses['vq'].item():.4f}",
+                    f"ortho={losses['orthogonality'].item():.4f}",
+                    f"info={losses['informativeness'].item():.4f}",
+                ]
+                if 'roundtrip/total' in losses:
+                    parts.append(f"rt={losses['roundtrip/total']:.4f}")
+                if 'topographic' in losses:
+                    parts.append(f"topo={losses['topographic'].item():.4f}")
+                logger.info(" ".join(parts))
 
         metrics = {
             'loss': total_loss / num_batches,
@@ -707,8 +757,9 @@ class VQTokenizerTrainer:
                             timesteps=timesteps,
                             return_all_steps=True,
                         )
-                        trajectories.append(traj.squeeze(0))
-                    temporal_raw = torch.stack(trajectories, dim=0).to(self.device)
+                        trajectories.append(traj.squeeze(0).cpu())
+                    # Keep on CPU — TemporalCNNFeatureEncoder streams chunks to GPU
+                    temporal_raw = torch.stack(trajectories, dim=0)
 
                 # Random length sampling for variable-length training
                 if self.length_sampler is not None and temporal_feats is not None:
