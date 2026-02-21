@@ -60,6 +60,40 @@ class VariableLengthConfig(BaseModel):
     mask_downsample_method: Literal["ceil", "floor"] = "ceil"
 
 
+class LearnedTemporalConfig(BaseModel):
+    """Config for learned CNN temporal feature extraction.
+
+    Used when feature_source="learned". The CNN replaces the entire
+    hand-crafted TemporalFeatureOrchestrator pipeline.
+    """
+    in_channels: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Number of input channels per frame (auto-detected from data)"
+    )
+    embedding_dim: int = Field(
+        default=240,
+        gt=0,
+        description="Total CNN output dim per frame (num_groups * group_dim)"
+    )
+    num_groups: int = Field(
+        default=30,
+        gt=0,
+        description="Number of temporal groups (sequential slices of CNN output)"
+    )
+
+    @field_validator('embedding_dim')
+    @classmethod
+    def validate_divisible(cls, v, info):
+        """Ensure embedding_dim is divisible by num_groups."""
+        num_groups = info.data.get('num_groups', 30)
+        if v % num_groups != 0:
+            raise ValueError(
+                f"embedding_dim ({v}) must be divisible by num_groups ({num_groups})"
+            )
+        return v
+
+
 class TemporalEncoderConfig(BaseModel):
     """Temporal sequence encoder configuration."""
     variant: Literal["mean", "cnn", "pyramid"] = "pyramid"
@@ -69,6 +103,10 @@ class TemporalEncoderConfig(BaseModel):
     min_timesteps: int = Field(default=16, ge=1)
     max_timesteps: int = Field(default=256, ge=1)
     adaptive_pyramid: bool = True
+    learned: Optional[LearnedTemporalConfig] = Field(
+        default=None,
+        description="Config for learned CNN temporal features (used when feature_source='learned')"
+    )
 
 
 class ThetaEncoderConfig(BaseModel):
@@ -262,10 +300,33 @@ class TokenizerConfig(BaseModel):
     verbose: bool = True
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
-    # NEW: Inverse heads configuration
+    # Inverse heads configuration
     inverse_heads: Optional[InverseHeadConfig] = Field(
         default=None,
         description="Configuration for inverse decoder heads (theta/initial reconstruction)"
+    )
+
+    # Learned temporal feature mode
+    feature_source: Literal["manual", "learned"] = Field(
+        default="manual",
+        description=(
+            "'manual': hand-crafted TemporalFeatureOrchestrator (default). "
+            "'learned': per-frame CNN replaces entire feature pipeline."
+        ),
+    )
+    cno_config_path: Optional[str] = Field(
+        default=None,
+        description="Path to CNO config YAML for on-the-fly trajectory generation (learned mode)"
+    )
+    replayer_cache_size: int = Field(
+        default=8,
+        ge=0,
+        description="CNOReplayer operator cache size (learned mode)"
+    )
+    generation_timesteps: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Number of timesteps for on-the-fly trajectory generation (auto-detected if None)"
     )
 
 

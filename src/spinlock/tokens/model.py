@@ -24,6 +24,7 @@ from .encoders import (
     InitialHybridEncoder,
 )
 from .encoders.theta import ThetaMLPEncoder
+from .encoders.temporal_cnn_feature import TemporalCNNFeatureEncoder
 from .config import TokenizerConfig, HierarchyConfig
 from .projector import HierarchicalProjector
 from .inverse_models import ThetaInverseMLP, InitialInverseCNN
@@ -84,10 +85,13 @@ class JointHierarchicalVQVAE(nn.Module):
         self.initial_dim = 0
         self.theta_dim = 0
 
+        # Learned temporal CNN encoder (active when feature_source = "learned")
+        self.temporal_cnn_encoder: Optional[TemporalCNNFeatureEncoder] = None
         # Per-group encoder mode (active when grouping.method = pca_striped | opq)
         # Each entry encodes one group's raw features [B, G_k] → [B, embedding_dim]
         self.per_group_temporal_encoders: Optional[nn.ModuleDict] = None
         # Per-group pyramid encoder mode (active when method = pca_raw + variant = pyramid)
+        # OR when feature_source = "learned" (CNN output → per-group pyramid).
         # Each entry encodes [B, T, G_k] directly, preserving temporal dynamics.
         self.per_group_pyramid_encoders: Optional[nn.ModuleDict] = None
         # Rotation buffers (registered so they move with .to(device))
@@ -137,14 +141,13 @@ class JointHierarchicalVQVAE(nn.Module):
             family, _ = family_cat.split('_', 1)
 
             # Determine source dimension for this category.
-            # In per-group encoder mode (pca_striped MLP or pca_raw pyramid), each
-            # temporal group's projector receives embedding_dim input (output of the
-            # per-group encoder) rather than the raw feature count.
-            # All other families still use raw feature count.
-            if family == "temporal" and (
-                self.per_group_temporal_encoders is not None
-                or self.per_group_pyramid_encoders is not None
-            ):
+            # In per-group encoder mode, each temporal group's projector receives
+            # the encoder output dimension rather than the raw feature count.
+            # - Per-group MLP (pca_striped/opq): output = embedding_dim
+            # - Per-group pyramid (pca_raw or learned): output = sum(level_dims)
+            if family == "temporal" and self.per_group_pyramid_encoders is not None:
+                cat_dim = sum(config.encoder.temporal.level_dims)
+            elif family == "temporal" and self.per_group_temporal_encoders is not None:
                 cat_dim = config.encoder.embedding_dim
             else:
                 cat_dim = len(indices)
@@ -299,7 +302,63 @@ class JointHierarchicalVQVAE(nn.Module):
         config = self.config
 
         # Temporal encoder
-        if "temporal" in self.families:
+        if "temporal" in self.families and config.feature_source == "learned":
+            # ── Learned mode: per-frame CNN + per-group pyramid encoders ──
+            learned_cfg = config.encoder.temporal.learned
+            if learned_cfg is None:
+                raise ValueError(
+                    "feature_source='learned' requires encoder.temporal.learned config"
+                )
+            self.temporal_cnn_encoder = TemporalCNNFeatureEncoder(
+                in_channels=learned_cfg.in_channels,
+                embedding_dim=learned_cfg.embedding_dim,
+            )
+            group_dim = learned_cfg.embedding_dim // learned_cfg.num_groups
+
+            # Set up per-group pyramid encoders on CNN output slices
+            temporal_groups = {
+                k: v for k, v in self.group_indices.items()
+                if k.startswith("temporal_")
+            }
+            pyramid_cfg = config.encoder.temporal
+
+            vl_config = None
+            if pyramid_cfg.variable_length:
+                if isinstance(pyramid_cfg.variable_length, bool):
+                    vl_config = {
+                        "enabled": True,
+                        "adaptive_pyramid": pyramid_cfg.adaptive_pyramid,
+                        "min_pyramid_length": pyramid_cfg.min_timesteps,
+                    }
+                else:
+                    vl_cfg = pyramid_cfg.variable_length
+                    vl_config = {
+                        "enabled": vl_cfg.enabled,
+                        "adaptive_pyramid": vl_cfg.adaptive_pyramid,
+                        "min_pyramid_length": vl_cfg.min_pyramid_length,
+                        "mask_downsample_method": vl_cfg.mask_downsample_method,
+                    }
+
+            self.per_group_pyramid_encoders = nn.ModuleDict({
+                group_name: PyramidTemporalEncoder(
+                    input_dim=group_dim,
+                    level_dims=pyramid_cfg.level_dims,
+                    variable_length_config=vl_config,
+                )
+                for group_name in temporal_groups.keys()
+            })
+
+            embedding_dim = sum(pyramid_cfg.level_dims)
+            self.temporal_dim = len(temporal_groups) * embedding_dim
+            logger.info(
+                "Learned mode: CNN(%dD) → %d groups × %dD pyramid = %dD temporal",
+                learned_cfg.embedding_dim,
+                len(temporal_groups),
+                embedding_dim,
+                self.temporal_dim,
+            )
+
+        elif "temporal" in self.families:
             if config.encoder.temporal.variant == "pyramid" and self._use_per_group_pyramid():
                 # ── pca_raw + pyramid: per-group pyramid encoders ────────────
                 # No shared temporal_encoder; each group slice goes to its own
@@ -579,16 +638,18 @@ class JointHierarchicalVQVAE(nn.Module):
         theta_features: Optional[torch.Tensor] = None,
         temporal_mask: Optional[torch.Tensor] = None,
         temporal_lengths: Optional[torch.Tensor] = None,
+        temporal_raw: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Forward pass through joint VQ-VAE.
 
         Args:
-            temporal_features: Temporal sequences [B, T, D_t] (required if temporal family exists)
+            temporal_features: Temporal sequences [B, T, D_t] (required if temporal family exists in manual mode)
             initial_manual: Manual initial features [B, D_i_manual] (required if initial_hybrid)
             initial_raw: Raw initial conditions [B, C, H, W] (required if initial_hybrid)
             theta_features: Operator parameters [B, param_dim] (required if theta family exists)
             temporal_mask: Validity mask for temporal [B, T] (optional)
             temporal_lengths: Actual sequence lengths [B] (optional)
+            temporal_raw: Raw trajectory [B, T, C, H, W] (required in learned feature mode)
 
         Returns:
             Dict with keys:
@@ -599,7 +660,9 @@ class JointHierarchicalVQVAE(nn.Module):
                 - encodings: Dict of per-family-category-level encodings
         """
         # Determine batch size from available inputs
-        if temporal_features is not None:
+        if temporal_raw is not None:
+            batch_size = temporal_raw.shape[0]
+        elif temporal_features is not None:
             batch_size = temporal_features.shape[0]
         elif initial_manual is not None:
             batch_size = initial_manual.shape[0]
@@ -611,7 +674,37 @@ class JointHierarchicalVQVAE(nn.Module):
         # Encode families
         encoded = {}
 
-        if "temporal" in self.families:
+        if "temporal" in self.families and self.temporal_cnn_encoder is not None:
+            # ── Learned mode: raw trajectory → CNN → per-group pyramid ──
+            if temporal_raw is None:
+                raise ValueError(
+                    "temporal_raw [B, T, C, H, W] required in learned feature mode"
+                )
+            # CNN: [B, T, C, H, W] → [B, T, D_per_frame]
+            cnn_features = self.temporal_cnn_encoder(temporal_raw)
+            learned_cfg = self.config.encoder.temporal.learned
+            group_dim = learned_cfg.embedding_dim // learned_cfg.num_groups
+
+            # Per-group pyramid encoding on sequential slices
+            group_encoded_parts = []
+            group_idx = 0
+            for family_cat in sorted(self.group_indices.keys()):
+                if not family_cat.startswith("temporal_"):
+                    continue
+                # Sequential slice: group i gets features [i*gd : (i+1)*gd]
+                group_temporal = cnn_features[:, :, group_idx * group_dim:(group_idx + 1) * group_dim]
+                encoder = self.per_group_pyramid_encoders[family_cat]
+                if temporal_mask is not None:
+                    enc, _ = encoder(group_temporal, mask=temporal_mask, lengths=temporal_lengths)
+                else:
+                    enc = encoder(group_temporal)
+                encoded[family_cat] = enc
+                group_encoded_parts.append(enc)
+                group_idx += 1
+
+            encoded["temporal"] = torch.cat(group_encoded_parts, dim=1)
+
+        elif "temporal" in self.families:
             if temporal_features is None:
                 raise ValueError("temporal_features required for temporal family")
 
@@ -800,6 +893,7 @@ class JointHierarchicalVQVAE(nn.Module):
         theta_features: Optional[torch.Tensor] = None,
         temporal_mask: Optional[torch.Tensor] = None,
         temporal_lengths: Optional[torch.Tensor] = None,
+        temporal_raw: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Encode inputs to discrete token indices.
 
@@ -817,6 +911,7 @@ class JointHierarchicalVQVAE(nn.Module):
             theta_features=theta_features,
             temporal_mask=temporal_mask,
             temporal_lengths=temporal_lengths,
+            temporal_raw=temporal_raw,
         )
 
         # Extract token indices from quantizers

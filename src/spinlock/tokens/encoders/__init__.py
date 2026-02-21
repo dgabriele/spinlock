@@ -23,11 +23,14 @@ from .initial import (
     InitialHybridEncoder,
 )
 
+from .temporal_cnn_feature import TemporalCNNFeatureEncoder
+
 __all__ = [
     # Temporal encoders
     "TemporalMeanEncoder",
     "TemporalCNNEncoder",
     "PyramidTemporalEncoder",
+    "TemporalCNNFeatureEncoder",
     # Initial encoders
     "InitialCNNEncoder",
     "InitialHybridEncoder",

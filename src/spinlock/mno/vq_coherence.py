@@ -166,6 +166,15 @@ class VQCoherenceAdapter(nn.Module):
             offset += dim
 
         self._total_encoded_dim = offset
+
+        # Detect learned CNN mode from model
+        self._learned_mode = (
+            hasattr(model, 'temporal_cnn_encoder')
+            and model.temporal_cnn_encoder is not None
+        )
+        if self._learned_mode:
+            logger.info("Learned CNN temporal mode detected — using frozen CNN for feature extraction")
+
         logger.info(
             f"Encoded space: {self._total_encoded_dim}D "
             f"({', '.join(f'{f}={self._family_dims[f]}' for f in sorted(model.families))})"
@@ -218,6 +227,40 @@ class VQCoherenceAdapter(nn.Module):
         if model is None:
             raise ValueError(f"Checkpoint at {checkpoint_path} has no model")
 
+        # Freeze VQ model
+        model.eval()
+        for param in model.parameters():
+            param.requires_grad_(False)
+        model = model.to(device)
+
+        # Detect learned CNN mode
+        is_learned = (
+            hasattr(model, 'temporal_cnn_encoder')
+            and model.temporal_cnn_encoder is not None
+        )
+
+        if is_learned:
+            # Learned mode: CNN is the feature extractor — no MNOFeatureExtractor needed
+            logger.info(
+                "Learned CNN mode detected — bypassing MNOFeatureExtractor. "
+                "CNN provides dense spatial gradients directly."
+            )
+            # Use empty kept_feature_indices (entire CNN output is used)
+            learned_cfg = tokenizer.config.encoder.temporal.learned
+            kept_feature_indices = list(range(learned_cfg.embedding_dim))
+
+            adapter = cls(
+                model=model,
+                extractor=None,  # Not used in learned mode
+                kept_feature_indices=kept_feature_indices,
+                normalization_stats=tokenizer.normalization_stats,
+                group_indices=tokenizer.group_indices,
+                config=tokenizer.config,
+                feature_prefix_len=None,
+            )
+            return adapter
+
+        # ── Manual mode: standard feature extractor setup ──
         feature_metadata = tokenizer.feature_metadata
         if feature_metadata is None:
             raise ValueError(
@@ -236,12 +279,6 @@ class VQCoherenceAdapter(nn.Module):
             f"Temporal features: {temporal_meta.original_feature_count} original → "
             f"{temporal_meta.cleaned_feature_count} cleaned"
         )
-
-        # Freeze VQ model
-        model.eval()
-        for param in model.parameters():
-            param.requires_grad_(False)
-        model = model.to(device)
 
         # Create feature extractor with differentiable=True so gradient
         # flows from contrastive loss through features back to the MNO
@@ -365,12 +402,28 @@ class VQCoherenceAdapter(nn.Module):
         so contrastive loss can backprop through feature extraction → MNO
         while VQ encoding runs separately without gradient.
 
+        In learned CNN mode, the frozen CNN provides dense per-frame features
+        with spatially-specific gradients. In manual mode, the hand-crafted
+        MNOFeatureExtractor is used with gradient sanitization.
+
         Args:
             trajectory: MNO output [B, T, C, H, W] (should already be sanitized)
 
         Returns:
             cleaned_features: [B, T, D_clean] with gradient to trajectory
         """
+        # Learned CNN mode: use frozen CNN directly
+        if self._learned_mode:
+            # Sanitize input
+            nan_mask = torch.isnan(trajectory) | torch.isinf(trajectory)
+            if nan_mask.any():
+                trajectory = torch.nan_to_num(
+                    trajectory, nan=0.0, posinf=1e6, neginf=-1e6
+                )
+            # CNN: [B, T, C, H, W] → [B, T, D_per_frame]
+            return self.model.temporal_cnn_encoder(trajectory)
+
+        # ── Manual mode: hand-crafted feature extraction ──
         # 1. Sanitize — same logic as extract_and_encode
         nan_mask = torch.isnan(trajectory) | torch.isinf(trajectory)
         if nan_mask.any():

@@ -51,12 +51,14 @@ class VQTokenizerTrainer:
         group_indices: Dict[str, list],
         normalization_stats: Optional[Dict] = None,
         feature_metadata: Optional[Any] = None,
+        replayer=None,
     ):
         self.model = model
         self.config = config
         self.group_indices = group_indices
         self.normalization_stats = normalization_stats
         self.feature_metadata = feature_metadata
+        self.replayer = replayer  # CNOReplayer for on-the-fly trajectory generation
 
         # Determine device
         if config.training.device == "auto":
@@ -487,6 +489,23 @@ class VQTokenizerTrainer:
                 if 'temporal_lengths' in self.tensor_map else None
             )
 
+            # On-the-fly trajectory generation for learned mode
+            temporal_raw = None
+            if self.replayer is not None and theta_feats is not None and initial_r is not None:
+                B_batch = theta_feats.shape[0]
+                timesteps = self.config.generation_timesteps or 64
+                trajectories = []
+                with torch.no_grad():
+                    for i in range(B_batch):
+                        traj = self.replayer.rollout(
+                            params_vector=theta_feats[i].cpu(),
+                            ic=initial_r[i],
+                            timesteps=timesteps,
+                            return_all_steps=True,
+                        )  # [1, T+1, C, H, W]
+                        trajectories.append(traj.squeeze(0))  # [T+1, C, H, W]
+                temporal_raw = torch.stack(trajectories, dim=0).to(self.device)  # [B, T+1, C, H, W]
+
             # Random length sampling for variable-length training
             if self.length_sampler is not None and temporal_feats is not None:
                 B, T, D = temporal_feats.shape
@@ -509,6 +528,7 @@ class VQTokenizerTrainer:
                 theta_features=theta_feats,
                 temporal_mask=temp_mask,
                 temporal_lengths=temp_lens,
+                temporal_raw=temporal_raw,
             )
 
             # VALIDATION: Ensure dimensions match if roundtrip loss is enabled
@@ -674,6 +694,22 @@ class VQTokenizerTrainer:
                     if 'temporal_lengths' in self.tensor_map else None
                 )
 
+                # On-the-fly trajectory generation for learned mode
+                temporal_raw = None
+                if self.replayer is not None and theta_feats is not None and initial_r is not None:
+                    B_batch = theta_feats.shape[0]
+                    timesteps = self.config.generation_timesteps or 64
+                    trajectories = []
+                    for i in range(B_batch):
+                        traj = self.replayer.rollout(
+                            params_vector=theta_feats[i].cpu(),
+                            ic=initial_r[i],
+                            timesteps=timesteps,
+                            return_all_steps=True,
+                        )
+                        trajectories.append(traj.squeeze(0))
+                    temporal_raw = torch.stack(trajectories, dim=0).to(self.device)
+
                 # Random length sampling for variable-length training
                 if self.length_sampler is not None and temporal_feats is not None:
                     B, T, D = temporal_feats.shape
@@ -696,6 +732,7 @@ class VQTokenizerTrainer:
                     theta_features=theta_feats,
                     temporal_mask=temp_mask,
                     temporal_lengths=temp_lens,
+                    temporal_raw=temporal_raw,
                 )
 
                 # Extract category embeddings

@@ -1,0 +1,152 @@
+# VQ Tokenizer — Learned CNN Temporal Features
+#
+# Replaces the hand-crafted TemporalFeatureOrchestrator with a per-frame
+# ResNet-3 CNN that provides dense, spatially-specific gradients.
+#
+# Key differences from vqtokenizer_v1.yaml:
+#   1. feature_source: "learned" — CNN replaces summary statistics
+#   2. No feature_cleaning — CNN handles normalization internally (BatchNorm)
+#   3. No correlation-based grouping — sequential group slicing of CNN output
+#   4. On-the-fly trajectory generation via CNOReplayer
+#   5. Smaller batch_size (32 vs 256) due to trajectory generation cost
+#
+# Dataset structure (auto-detected at runtime):
+#   params:       (N, 14)
+#   fields:       (N, M, C, H, W)  — ICs, M realizations
+#   temporal features: NOT used (generated on-the-fly by CNN)
+#
+# All dataset-dependent dimensions (channels, param count) are auto-detected.
+
+dataset_path: "datasets/50k_baseline.h5"
+
+# ── Feature source: learned CNN ──────────────────────────────
+feature_source: "learned"
+cno_config_path: "configs/50k_baseline/50k_baseline.yaml"
+replayer_cache_size: 16
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  initial:
+    variant: "cnn"              # CNN-only, NO manual features
+    cnn_embedding_dim: 28
+    # in_channels: auto-detected from dataset
+
+  temporal:
+    variant: "pyramid"
+    learned:
+      # in_channels: auto-detected from ICs
+      embedding_dim: 240        # 30 groups x 8 dim/group
+      num_groups: 30
+    level_dims: [32, 64, 96, 128]  # pyramid encodes [B, T, 8] per group -> [B, 320]
+    downsample_factors: [1, 2, 4, 8]
+    variable_length:
+      enabled: true
+      min_timesteps: 16
+      max_timesteps: 256
+      adaptive_pyramid: true
+      min_pyramid_length: 1
+      mask_downsample_method: "ceil"
+
+  theta:
+    variant: "mlp"
+    # param_dim: auto-detected
+    hidden_dim: 64
+    output_dim: 32
+    dropout: 0.25
+    use_layer_norm: true
+
+  embedding_dim: 64
+  hidden_dim: 128
+  dropout: 0.3
+  use_layer_norm: true
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  embedding_dim: 64
+  commitment_cost: 0.25
+  use_ema: true
+  ema_decay: 0.99
+  epsilon: 1.0e-5
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchy
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3
+  compression_ratios: "0.5:1.0:1.5"
+  min_latent_dim: 4
+  max_latent_dim: 192
+
+# ═══════════════════════════════════════════════════════════════
+# Feature Cleaning — DISABLED (CNN has internal BatchNorm)
+# ═══════════════════════════════════════════════════════════════
+
+# feature_cleaning: null  # Not needed in learned mode
+
+# ═══════════════════════════════════════════════════════════════
+# Grouping — null (sequential slicing in learned mode)
+# ═══════════════════════════════════════════════════════════════
+
+# grouping: null  # Sequential group indices computed automatically
+
+# ═══════════════════════════════════════════════════════════════
+# Training
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 100
+  batch_size: 32              # Smaller due to on-the-fly trajectory generation
+  learning_rate: 1.0e-3
+  val_split: 0.1
+  val_every_n_epochs: 5
+
+  optimizer: "adamw"
+  weight_decay: 0.01
+  gradient_clip_norm: 1.0
+
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 5
+
+  early_stopping_patience: 20
+  early_stopping_min_delta: 0.001
+
+  dead_code_reset_interval: 10
+  dead_code_threshold: 0.01
+
+  device: "auto"
+  compile_model: false
+
+# ═══════════════════════════════════════════════════════════════
+# Loss
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  reconstruction_weight: 1.0
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  topographic_weight: 0.1
+  topographic_n_samples: 32
+  normalize_reconstruction: true
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization — NONE (CNN output is self-normalized via BatchNorm)
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "none"
+
+# ═══════════════════════════════════════════════════════════════
+# System
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 42
+verbose: true
+log_level: "INFO"
