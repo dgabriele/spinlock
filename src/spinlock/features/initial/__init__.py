@@ -28,7 +28,9 @@ from .extraction_pipeline import (
     extract_initial_features,
 )
 from .cnn_encoder import (
+    ResNet3Encoder,
     InitialCNNEncoder,
+    FrameCNNEncoder,
     InitialCNNDecoder,
     InitialVAE,
     ResidualBlock,
@@ -48,7 +50,9 @@ __all__ = [
     'ExtractorType',
     'extract_initial_features',
     # CNN components
+    'ResNet3Encoder',
     'InitialCNNEncoder',
+    'FrameCNNEncoder',
     'InitialCNNDecoder',
     'InitialVAE',
     'ResidualBlock',

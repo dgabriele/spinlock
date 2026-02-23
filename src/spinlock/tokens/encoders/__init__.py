@@ -21,9 +21,11 @@ from .temporal import (
 from .initial import (
     InitialCNNEncoder,
     InitialHybridEncoder,
+    FrameCNNEncoder,
 )
 
 from .temporal_cnn_feature import TemporalCNNFeatureEncoder
+from .pyramid_first import PyramidFirstEncoder
 
 __all__ = [
     # Temporal encoders
@@ -31,7 +33,9 @@ __all__ = [
     "TemporalCNNEncoder",
     "PyramidTemporalEncoder",
     "TemporalCNNFeatureEncoder",
+    "PyramidFirstEncoder",
     # Initial encoders
     "InitialCNNEncoder",
     "InitialHybridEncoder",
+    "FrameCNNEncoder",
 ]

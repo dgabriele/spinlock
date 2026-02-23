@@ -146,6 +146,13 @@ Output:
             help="Resume training from checkpoint",
         )
 
+        parser.add_argument(
+            "--max-samples",
+            type=int,
+            metavar="N",
+            help="Limit dataset to first N samples (useful for smoke tests)",
+        )
+
     def execute(self, args: Namespace) -> int:
         """Execute the train-vq-tokenizer command."""
         import logging
@@ -185,11 +192,15 @@ Output:
         # All encoder dimensions should come from the actual dataset, not hardcoded config
         logger.info(f"Loading and introspecting dataset: {dataset_path}")
         try:
+            max_samples = getattr(args, 'max_samples', None)
             dataset, config_dict = SpinlockDataset.infer_and_update_config(
                 config_dict,
                 dataset_path,
-                verbose=args.verbose or config_dict.get("verbose", False)
+                verbose=args.verbose or config_dict.get("verbose", False),
+                max_samples=max_samples,
             )
+            if max_samples:
+                logger.info(f"Dataset limited to {max_samples} samples (smoke test mode)")
         except Exception as e:
             return self.error(f"Failed to load/introspect dataset: {e}")
 
@@ -248,6 +259,11 @@ Output:
         logger.info(f"Device: {config.training.device}")
         logger.info("=" * 80)
 
+        # Enable TF32 tensor cores on Ampere+ GPUs for faster float32 matmuls.
+        if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
+            torch.set_float32_matmul_precision('high')
+            logger.info("TensorFloat32 enabled for matmul (Ampere+ GPU detected)")
+
         # Set global seeds for reproducible grouping, training, and initialization.
         # The clustering pipeline uses np.random internally; GPU correlation
         # matrices are non-deterministic, so we also force deterministic mode.
@@ -270,6 +286,8 @@ Output:
             logger.warning("Training interrupted by user")
             return 130
         except Exception as e:
+            import traceback
+            logger.error(f"Training failed:\n{traceback.format_exc()}")
             return self.error(f"Training failed: {e}")
 
         # Print results

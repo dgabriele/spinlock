@@ -234,16 +234,18 @@ class VQTokenizer:
         theta_features: Optional[torch.Tensor] = None,
         temporal_mask: Optional[torch.Tensor] = None,
         temporal_lengths: Optional[torch.Tensor] = None,
+        temporal_raw: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Tokenize trajectories to discrete codes.
 
         Args:
-            temporal_features: Temporal sequences [B, T, D_t] (optional)
+            temporal_features: Temporal sequences [B, T, D_t] (optional, manual mode)
             initial_manual: Manual initial features [B, D_i] (optional)
             initial_raw: Raw initial conditions [B, C, H, W] (optional)
             theta_features: Operator parameters [B, param_dim] (optional)
             temporal_mask: Validity mask for temporal [B, T] (optional)
             temporal_lengths: Actual sequence lengths [B] (optional)
+            temporal_raw: Raw trajectories [B, T, C, H, W] (required for learned mode)
 
         Returns:
             Dict mapping "family_category_Ll" → token indices [B]
@@ -271,6 +273,7 @@ class VQTokenizer:
                 theta_features=theta_features,
                 temporal_mask=temporal_mask,
                 temporal_lengths=temporal_lengths,
+                temporal_raw=temporal_raw,
             )
 
         return tokens
@@ -495,22 +498,24 @@ class VQTokenizer:
 
         Bypasses the entire manual feature extraction/cleaning/grouping pipeline.
         Instead:
-        1. Loads params + ICs from dataset
+        1. Loads params lazily + ICs lazily from dataset
         2. Creates sequential group indices (CNN output slices)
         3. Creates CNOReplayer for on-the-fly trajectory generation
-        4. Trains with per-batch trajectory generation
+        4. Trains with per-batch trajectory generation via lazy Dataset
+
+        Uses lazy HDF5 IC loading to avoid OOM on large datasets (e.g. 500K
+        samples at 73 GB). Per-batch HDF5 reads add ~10-50ms latency, which
+        is negligible vs. the ~1s Lenia simulation per batch.
         """
         logger.info("LEARNED MODE: CNN temporal features with on-the-fly trajectories")
 
-        # Prepare data: params, ICs, sequential groups, replayer
-        features, replayer = self._prepare_learned_mode_data(dataset)
+        # Prepare data: lazy dataset, sequential groups, replayer
+        learned_dataset, replayer = self._prepare_learned_mode_data(dataset)
 
-        # Detect initial_input_dim
+        # Detect initial_input_dim from introspected dataset dimensions
         initial_input_dim = None
-        if features.get('initial_manual') is not None:
-            initial_input_dim = features['initial_manual'].shape[1]
-        elif features.get('initial_raw') is not None and self.config.encoder.initial.variant == "hybrid":
-            initial_input_dim = 0  # hybrid but no manual features
+        if self.config.encoder.initial.variant == "hybrid":
+            initial_input_dim = dataset.initial_feature_dim or 0
 
         # Create model (temporal_input_dim not needed — CNN sets its own dims)
         logger.info("Creating VQ-VAE model (learned mode)")
@@ -522,7 +527,7 @@ class VQTokenizer:
         )
 
         # Create trainer with replayer
-        logger.info("Creating trainer with CNOReplayer")
+        logger.info(f"Creating trainer with {type(replayer).__name__ if replayer else 'no'} replayer")
         trainer = VQTokenizerTrainer(
             self.model,
             self.config,
@@ -532,18 +537,16 @@ class VQTokenizer:
             replayer=replayer,
         )
 
-        # Train — no temporal_features needed (generated on-the-fly)
+        # Train — pass lazy dataset directly (no tensors in RAM)
         logger.info(f"Starting learned-mode training for {self.config.training.num_epochs} epochs")
         history = trainer.train(
-            temporal_features=None,
-            initial_manual=features.get("initial_manual"),
-            initial_raw=features.get("initial_raw"),
-            theta_features=features.get("theta"),
-            temporal_mask=None,
-            temporal_lengths=None,
+            dataset=learned_dataset,
             output_dir=output_dir,
             checkpoint_prefix=checkpoint_prefix,
         )
+
+        # Clean up lazy HDF5 handle
+        learned_dataset.close_lazy()
 
         logger.info("Learned-mode training complete")
         return history
@@ -554,111 +557,172 @@ class VQTokenizer:
     ) -> tuple:
         """Prepare data for learned CNN temporal feature mode.
 
-        Loads params and ICs from dataset, creates sequential group indices,
-        and builds a CNOReplayer for on-the-fly trajectory generation.
+        Creates a lazy SpinlockDataset that reads ICs per-sample from HDF5
+        instead of loading all into RAM. Params are loaded eagerly (small).
+        Creates sequential group indices and builds a replayer for on-the-fly
+        trajectory generation.
+
+        Args:
+            dataset: SpinlockDataset (introspection-only, already opened by CLI)
 
         Returns:
-            Tuple of (features_dict, replayer):
-                features_dict: Dict with theta, initial_raw (no temporal)
-                replayer: CNOReplayer instance for trajectory generation
+            Tuple of (learned_dataset, replayer):
+                learned_dataset: SpinlockDataset with lazy_ics=True
+                replayer: Replayer instance for trajectory generation
         """
-        features = {}
+        # ── Create lazy dataset (ICs read per-sample, params loaded eagerly) ──
+        total = dataset.raw_input_shape[0]
+        # Respect --max-samples CLI override (smoke test mode)
+        max_override = getattr(dataset, '_max_samples_override', None)
+        if max_override is not None:
+            total = min(total, max_override)
+            logger.info(f"Dataset capped to {total} samples (--max-samples override)")
+        learned_dataset = SpinlockDataset(
+            str(dataset.file_path),
+            max_samples=total,
+            realization_mode="mean",
+            lazy_ics=True,
+        )
+        logger.info(
+            f"Lazy dataset created: {learned_dataset.n_samples} samples, "
+            f"ICs read per-sample from HDF5 (realization_mode='mean')"
+        )
 
-        with dataset.open():
-            # Theta parameters
-            if dataset.parameters is not None and dataset.parameters.params is not None:
-                params = dataset.parameters.params.load_all()
-                features['theta'] = torch.from_numpy(params).float()
-                logger.info(f"Loaded theta parameters: {features['theta'].shape}")
-            else:
-                features['theta'] = None
-
-            # Raw ICs
-            features['initial_manual'] = None
-            if dataset.inputs is not None:
-                ics = dataset.inputs.load_all()
-                if ics.ndim == 5:  # [N, M, C, H, W]
-                    ics = ics.mean(axis=1)
-                elif ics.ndim == 3:  # [N, H, W]
-                    ics = ics[:, None, :, :]
-                features['initial_raw'] = torch.from_numpy(ics).float()
-                logger.info(f"Loaded raw ICs: {features['initial_raw'].shape}")
-            else:
-                features['initial_raw'] = None
-
-        # Auto-detect in_channels from IC shape
+        # ── Auto-detect dimensions from introspected metadata ──
         learned_cfg = self.config.encoder.temporal.learned
         if learned_cfg is None:
             raise ValueError(
                 "feature_source='learned' requires encoder.temporal.learned config"
             )
 
-        if features['initial_raw'] is not None and learned_cfg.in_channels is None:
-            learned_cfg.in_channels = features['initial_raw'].shape[1]  # C from [N, C, H, W]
-            logger.info(f"Auto-detected in_channels={learned_cfg.in_channels} from ICs")
+        num_channels = dataset.num_channels
+        if num_channels is not None and learned_cfg.in_channels is None:
+            learned_cfg.in_channels = num_channels
+            logger.info(f"Auto-detected in_channels={learned_cfg.in_channels} from dataset metadata")
 
-        # Create sequential group indices (no data-dependent grouping)
+        param_dim = dataset.theta_param_dim
+
+        # ── Create group indices ──
         num_groups = learned_cfg.num_groups
-        group_dim = learned_cfg.embedding_dim // num_groups
         self.group_indices = {}
-        for i in range(num_groups):
-            self.group_indices[f"temporal_group_{i}"] = list(
-                range(i * group_dim, (i + 1) * group_dim)
-            )
+
+        if learned_cfg.architecture == "pyramid_first":
+            # Pyramid-first mode: grouping is learned (not index-based).
+            # Indices are placeholders — the LearnedGroupProjection handles
+            # assignment. Each group gets D_group = encoder.embedding_dim.
+            d_group = self.config.encoder.embedding_dim  # 64
+            for i in range(num_groups):
+                self.group_indices[f"temporal_group_{i}"] = list(
+                    range(i * d_group, (i + 1) * d_group)
+                )
+        else:
+            # Legacy per_frame mode: sequential slicing of CNN output
+            group_dim = learned_cfg.embedding_dim // num_groups
+            for i in range(num_groups):
+                self.group_indices[f"temporal_group_{i}"] = list(
+                    range(i * group_dim, (i + 1) * group_dim)
+                )
 
         # Add theta and initial groups if data available
-        if features.get('theta') is not None:
-            param_dim = features['theta'].shape[1]
-            self.group_indices["theta_group_0"] = list(range(param_dim))
-
-            # Auto-detect theta param_dim in config
+        # In temporal-only mode, skip theta/initial VQ groups (they're decoded
+        # from temporal tokens via aux heads), but still auto-detect dimensions
+        # needed for aux head creation.
+        if param_dim is not None:
+            # Auto-detect theta param_dim in config (needed for aux head dim)
             if self.config.encoder.theta is not None and self.config.encoder.theta.param_dim is None:
                 self.config.encoder.theta.param_dim = param_dim
 
-        if features.get('initial_raw') is not None and self.config.encoder.initial.variant == "cnn":
-            # Initial CNN: no feature indices needed, but create a placeholder group
-            cnn_dim = self.config.encoder.initial.cnn_embedding_dim
-            self.group_indices["initial_group_0"] = list(range(cnn_dim))
+            if not self.config.temporal_only:
+                theta_cfg = self.config.encoder.theta
+                if theta_cfg is not None and theta_cfg.variant == "direct":
+                    for i in range(param_dim):
+                        self.group_indices[f"theta_param_{i}"] = [i]
+                else:
+                    self.group_indices["theta_group_0"] = list(range(param_dim))
 
-            # Auto-detect in_channels
+        if num_channels is not None:
+            # Auto-detect in_channels (needed for aux head creation)
             if self.config.encoder.initial.in_channels is None:
-                self.config.encoder.initial.in_channels = features['initial_raw'].shape[1]
+                self.config.encoder.initial.in_channels = num_channels
+
+            if not self.config.temporal_only and self.config.encoder.initial.variant == "cnn":
+                cnn_dim = self.config.encoder.initial.cnn_embedding_dim
+                self.group_indices["initial_group_0"] = list(range(cnn_dim))
 
         logger.info(f"Sequential group indices: {len(self.group_indices)} groups")
 
-        # Create CNOReplayer
-        replayer = None
-        if self.config.cno_config_path is not None:
-            from spinlock.mno.cno_replay import CNOReplayer
-            replayer = CNOReplayer.from_config(
-                self.config.cno_config_path,
-                device="cuda" if torch.cuda.is_available() else "cpu",
-                cache_size=self.config.replayer_cache_size,
-            )
-            logger.info(f"Created CNOReplayer from {self.config.cno_config_path}")
-        else:
-            logger.warning(
-                "No cno_config_path specified — trajectories must be provided externally"
-            )
+        # Create trajectory replayer (auto-detect operator type from config)
+        replayer = self._create_replayer()
 
         # Auto-detect generation_timesteps from dataset if not specified
         if self.config.generation_timesteps is None:
-            # Try to infer from dataset metadata
-            with dataset.open():
-                if hasattr(dataset, 'features') and hasattr(dataset.features, 'temporal'):
-                    temporal_shape = dataset.features.temporal.shape
-                    if temporal_shape is not None and len(temporal_shape) >= 2:
-                        self.config.generation_timesteps = temporal_shape[1]
-                        logger.info(
-                            f"Auto-detected generation_timesteps={self.config.generation_timesteps}"
-                        )
-            if self.config.generation_timesteps is None:
+            ts = dataset.temporal_feature_dim  # Check if temporal features exist
+            if dataset._dimension_cache.get('temporal_timesteps') is not None:
+                self.config.generation_timesteps = dataset._dimension_cache['temporal_timesteps']
+                logger.info(
+                    f"Auto-detected generation_timesteps={self.config.generation_timesteps}"
+                )
+            else:
                 self.config.generation_timesteps = 64  # Sensible default
                 logger.info(
                     f"Using default generation_timesteps={self.config.generation_timesteps}"
                 )
 
-        return features, replayer
+        return learned_dataset, replayer
+
+    def _create_replayer(self):
+        """Create trajectory replayer from config, auto-detecting operator type.
+
+        Resolution order:
+            1. generation_config_path (preferred — auto-detects operator type)
+            2. cno_config_path (backward compat — always creates CNOReplayer)
+            3. None (no replayer — trajectories must be in dataset)
+        """
+        import yaml as _yaml
+
+        config_path = self.config.generation_config_path or self.config.cno_config_path
+        if config_path is None:
+            logger.warning(
+                "No generation_config_path or cno_config_path — "
+                "trajectories must be provided externally"
+            )
+            return None
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # Auto-detect operator type from generation config
+        with open(config_path) as f:
+            gen_config = _yaml.safe_load(f)
+        operator_type = gen_config.get("simulation", {}).get("operator_type")
+
+        match operator_type:
+            case "lenia":
+                from spinlock.lenia.replay_adapter import LeniaReplayAdapter
+                replayer = LeniaReplayAdapter.from_config(config_path, device=device)
+            case "cnn" | "u_afno":
+                from spinlock.mno.cno_replay import CNOReplayer
+                replayer = CNOReplayer.from_config(
+                    config_path,
+                    device=device,
+                    cache_size=self.config.replayer_cache_size,
+                )
+            case "qbm":
+                raise NotImplementedError(
+                    f"QBM replay adapter not yet implemented. "
+                    f"QBM trajectories must be stored in the dataset."
+                )
+            case _:
+                raise NotImplementedError(
+                    f"No replay adapter for operator_type='{operator_type}'. "
+                    f"Supported types: cnn, u_afno, lenia. "
+                    f"QBM requires stored trajectories."
+                )
+
+        logger.info(
+            f"Created {type(replayer).__name__} for operator_type='{operator_type}' "
+            f"from {config_path}"
+        )
+        return replayer
 
     def _extract_features(
         self, dataset: SpinlockDataset

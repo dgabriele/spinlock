@@ -44,6 +44,7 @@ class V2LossConfig(BaseModel):
     lambda_feat_mse: float = 0.0
     lambda_token_ce: float = 0.0
     token_ce_temperature: float = 1.0
+    gate_weight_token_ce: bool = False
     normalize_loss_scales: bool = False
     loss_scale_ema_momentum: float = 0.99
     contrastive: V2ContrastiveConfig = V2ContrastiveConfig()

@@ -13,7 +13,6 @@ from typing import Dict, Optional
 import torch
 from torch.utils.data import DataLoader
 
-from spinlock.mno.cno_replay import CNOReplayer
 from spinlock.mno.losses.components.contrastive import ContrastiveLoss
 from spinlock.mno.truncated_bptt import TruncatedBPTT
 
@@ -25,7 +24,7 @@ class TrajectoryEvaluator:
 
     def __init__(
         self,
-        replayer: CNOReplayer,
+        replayer,
         contrastive: ContrastiveLoss,
         bptt: TruncatedBPTT,
     ) -> None:

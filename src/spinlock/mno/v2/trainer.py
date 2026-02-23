@@ -28,7 +28,6 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader, Subset
 
 from spinlock.data import SpinlockDataset
-from spinlock.mno.cno_replay import CNOReplayer
 from spinlock.mno.truncated_bptt import TruncatedBPTT
 from spinlock.mno.v2.config import V2MNOConfig
 from spinlock.mno.v2.evaluation import TrajectoryEvaluator
@@ -68,7 +67,7 @@ class V2Trainer:
         loss_fn: TrajectoryLoss,
         evaluator: TrajectoryEvaluator,
         dataset: SpinlockDataset,
-        replayer: CNOReplayer,
+        replayer: Any,
         bptt: TruncatedBPTT,
         device: str = "cuda",
         token_store: Optional[Any] = None,

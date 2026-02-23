@@ -1,12 +1,17 @@
 """
-CNN encoder for learned IC representations.
+ResNet-3 CNN encoder for spatial feature extraction.
 
 Architecture: ResNet-3 (3 residual blocks)
 - Lighter than ResNet-18, optimized for 128×128 single-channel inputs
 - Adapted from unisim's IC encoder but with richer 28D output
 
-Input: [B*M, 1, 128, 128]
-Output: [B*M, 28] learned embeddings
+Input: [B*M, C, H, W]
+Output: [B*M, embedding_dim] learned embeddings
+
+Class hierarchy:
+- ResNet3Encoder: Base ResNet-3 architecture ([B,C,H,W] → [B,D])
+- InitialCNNEncoder: Subclass for initial condition (IC) spatial encoding
+- FrameCNNEncoder: Subclass for per-frame trajectory feature extraction
 
 Note: Designed for generative extension - can add decoder for VAE/autoencoder.
 """
@@ -86,12 +91,16 @@ class ResidualBlock(nn.Module):
         return out
 
 
-class InitialCNNEncoder(nn.Module):
+class ResNet3Encoder(nn.Module):
     """
-    ResNet-3 CNN encoder for IC embeddings.
+    ResNet-3 CNN encoder for spatial feature extraction.
+
+    Generic base class — maps [B, C, H, W] → [B, embedding_dim] using three
+    residual blocks with global average pooling. Subclassed for domain-specific
+    uses (IC encoding, per-frame trajectory encoding).
 
     Architecture:
-        Stage 0: Conv(1→32, k=7, s=2) + BN + ReLU + MaxPool
+        Stage 0: Conv(C→32, k=7, s=2) + BN + ReLU + MaxPool
         Stage 1: ResBlock(32→64, s=2)
         Stage 2: ResBlock(64→128, s=2)
         Stage 3: ResBlock(128→256, s=2)
@@ -102,8 +111,8 @@ class InitialCNNEncoder(nn.Module):
         16×16 (stage1) → 8×8 (stage2) → 4×4 (stage3) →
         1×1 (global pool) → embedding_dim
 
-    Input: [B*M, 1, H, W] where H=W=128
-    Output: [B*M, embedding_dim] learned features
+    Input: [B, C, H, W]
+    Output: [B, embedding_dim] learned features
     """
 
     def __init__(self, embedding_dim: int = 28, in_channels: int = 3):
@@ -213,6 +222,25 @@ class InitialCNNEncoder(nn.Module):
         features['embedding'] = x
 
         return features
+
+
+class InitialCNNEncoder(ResNet3Encoder):
+    """ResNet-3 encoder for initial condition (IC) spatial features.
+
+    Thin subclass of ResNet3Encoder with IC-specific documentation.
+    All existing imports of InitialCNNEncoder continue to work unchanged.
+    """
+    pass
+
+
+class FrameCNNEncoder(ResNet3Encoder):
+    """ResNet-3 encoder for per-frame trajectory feature extraction.
+
+    Used by PyramidFirstEncoder and TemporalCNNFeatureEncoder to encode
+    individual trajectory frames [B*T, C, H, W] → [B*T, D].
+    Same architecture as InitialCNNEncoder but with temporal-specific semantics.
+    """
+    pass
 
 
 class InitialCNNDecoder(nn.Module):

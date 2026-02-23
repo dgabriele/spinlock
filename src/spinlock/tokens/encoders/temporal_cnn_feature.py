@@ -19,14 +19,14 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from spinlock.features.initial.cnn_encoder import InitialCNNEncoder
+from spinlock.features.initial.cnn_encoder import FrameCNNEncoder
 
 
 class TemporalCNNFeatureEncoder(nn.Module):
     """Per-frame 2D CNN for learned temporal feature extraction.
 
     Processes each trajectory frame independently with shared weights.
-    The same InitialCNNEncoder (ResNet-3) is applied to every timestep,
+    The same FrameCNNEncoder (ResNet-3) is applied to every timestep,
     producing per-frame feature vectors that preserve temporal ordering.
 
     Uses gradient checkpointing per chunk: intermediate CNN activations are
@@ -44,7 +44,7 @@ class TemporalCNNFeatureEncoder(nn.Module):
 
     def __init__(self, in_channels: int, embedding_dim: int):
         super().__init__()
-        self.frame_encoder = InitialCNNEncoder(
+        self.frame_encoder = FrameCNNEncoder(
             embedding_dim=embedding_dim,
             in_channels=in_channels,
         )

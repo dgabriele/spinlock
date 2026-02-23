@@ -94,6 +94,7 @@ class StratifiedSobolSampler(BaseSampler):
         scramble: bool = True,
         seed: int = 42,
         validation_targets: Optional[Dict[str, float]] = None,
+        backend: str = "scipy",
     ):
         """
         Initialize Sobol sampler.
@@ -103,15 +104,21 @@ class StratifiedSobolSampler(BaseSampler):
             scramble: Enable Owen scrambling
             seed: Random seed for scrambling
             validation_targets: Quality targets for validation
+            backend: "scipy" for scipy.stats.qmc.Sobol (CPU/numpy),
+                     "torch" for torch.quasirandom.SobolEngine (GPU-native)
         """
         super().__init__(dimensionality, seed)
+        self.backend = backend
 
-        # Initialize Sobol engine
-        # Note: scipy.stats.qmc.Sobol uses numpy RNG for scrambling
-        # Set seed before creating engine to ensure reproducibility
-        if seed is not None:
-            np.random.seed(seed)
-        self.sobol_engine = Sobol(d=dimensionality, scramble=scramble, seed=seed)
+        if backend == "torch":
+            self.sobol_engine = torch.quasirandom.SobolEngine(
+                dimension=dimensionality, scramble=scramble, seed=seed
+            )
+        else:
+            # scipy backend (default)
+            if seed is not None:
+                np.random.seed(seed)
+            self.sobol_engine = Sobol(d=dimensionality, scramble=scramble, seed=seed)
 
         # Validation targets
         self.validation_targets = validation_targets or {
@@ -159,6 +166,7 @@ class StratifiedSobolSampler(BaseSampler):
             scramble=config.sobol.scramble,
             seed=config.sobol.seed,
             validation_targets=validation_targets,
+            backend=config.sobol.backend,
         )
 
     def sample(self, n_samples: int, offset: int = 0) -> NDArray[np.float64]:
@@ -211,12 +219,17 @@ class StratifiedSobolSampler(BaseSampler):
             self.sobol_engine.fast_forward(offset)
 
         # Round up to nearest power of 2 for optimal Sobol balance properties
-        # This avoids scipy warnings and maintains statistical quality
-        n_pow2 = 1 << (n_samples - 1).bit_length()  # Next power of 2 >= n_samples
+        m = (n_samples - 1).bit_length()  # exponent: 2^m >= n_samples
+        n_pow2 = 1 << m
 
-        # Generate Sobol samples (power of 2 count)
         start_time = time.time()
-        samples_pow2 = self.sobol_engine.random(n_pow2)
+        if self.backend == "torch":
+            # Use draw(n) rather than draw_base2(m) to support arbitrary offsets.
+            # We still round to power-of-2 for Sobol balance properties.
+            samples_pow2 = self.sobol_engine.draw(n_pow2).numpy()
+        else:
+            # scipy backend — .random(n) draws n points
+            samples_pow2 = self.sobol_engine.random(n_pow2)
         elapsed = time.time() - start_time
 
         # Return only the requested number of samples

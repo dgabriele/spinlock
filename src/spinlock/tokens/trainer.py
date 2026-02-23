@@ -13,9 +13,10 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
 
+import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.utils.data import DataLoader, Dataset, TensorDataset, random_split
 
 from .model import JointHierarchicalVQVAE
 from .losses import VQVAELoss
@@ -68,8 +69,9 @@ class VQTokenizerTrainer:
 
         self.model.to(self.device)
 
-        # Loss function
-        self.loss_fn = VQVAELoss(config.loss)
+        # Loss function (pass aux_config for temporal-only mode)
+        aux_config = config.aux_heads if config.temporal_only else None
+        self.loss_fn = VQVAELoss(config.loss, aux_config=aux_config)
 
         # Optimizer
         if config.training.optimizer == "adam":
@@ -139,8 +141,12 @@ class VQTokenizerTrainer:
                         f"bins={vl_dict.get('length_bins', 'N/A')}"
                     )
 
+        # Batch unpacking mode: False = TensorDataset (index-based), True = dict batches
+        self._dict_batch_mode = False
+
         # Tracking
-        self.best_val_loss = float('inf')
+        self.best_val_loss = float('inf')       # Best-model saving (no min_delta)
+        self._best_es_metric = float('inf')     # Early-stopping patience (uses min_delta)
         self.epochs_without_improvement = 0
         self.training_history = {
             'train_losses': [],
@@ -159,8 +165,16 @@ class VQTokenizerTrainer:
         temporal_lengths: Optional[torch.Tensor] = None,
         output_dir: Path = Path("checkpoints"),
         checkpoint_prefix: str = "vq_tokenizer",
+        dataset: Optional[Dataset] = None,
     ) -> Dict[str, Any]:
         """Run complete training loop.
+
+        Two data paths:
+        1. Tensor path (default): Pass pre-loaded tensors. Creates TensorDataset
+           internally. Used by manual-mode and train_on_features().
+        2. Dataset path: Pass a PyTorch Dataset directly (e.g. SpinlockDataset
+           with lazy_ics=True). Batches are dicts with 'ic', 'params' keys.
+           Used by learned-mode to avoid loading all ICs into RAM.
 
         Args:
             temporal_features: Temporal sequences [N, T, D_t] (optional)
@@ -171,6 +185,7 @@ class VQTokenizerTrainer:
             temporal_lengths: Actual sequence lengths [N] (optional)
             output_dir: Directory to save checkpoints
             checkpoint_prefix: Prefix for checkpoint filenames
+            dataset: Optional PyTorch Dataset (overrides tensor args when provided)
 
         Returns:
             Training history dict
@@ -178,15 +193,18 @@ class VQTokenizerTrainer:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create train/val split
-        train_loader, val_loader = self._create_dataloaders(
-            temporal_features,
-            initial_manual,
-            initial_raw,
-            theta_features,
-            temporal_mask,
-            temporal_lengths,
-        )
+        # Create train/val split — dataset path or tensor path
+        if dataset is not None:
+            train_loader, val_loader = self._create_dataloaders_from_dataset(dataset)
+        else:
+            train_loader, val_loader = self._create_dataloaders(
+                temporal_features,
+                initial_manual,
+                initial_raw,
+                theta_features,
+                temporal_mask,
+                temporal_lengths,
+            )
 
         logger.info(f"Training VQ Tokenizer on {self.device}")
         logger.info(f"  Epochs: {self.config.training.num_epochs}")
@@ -201,6 +219,17 @@ class VQTokenizerTrainer:
                 f"  GPU memory before training: alloc={_alloc:.0f}MB reserved={_resv:.0f}MB"
             )
 
+        # OPQ calibration: compute rotation before training begins
+        # Skip in pyramid_first mode — learned projection subsumes OPQ
+        if (
+            self.config.training.opq_enabled
+            and self.model.temporal_rotation_matrix is None
+            and self.model.temporal_cnn_encoder is not None
+            and self.model.pyramid_first_encoder is None
+            and self.config.training.opq_warmup_epochs == 0
+        ):
+            self._calibrate_opq(train_loader)
+
         # Training loop
         val_loss = None  # Initialize for final checkpoint saving
         for epoch in range(self.config.training.num_epochs):
@@ -208,6 +237,18 @@ class VQTokenizerTrainer:
             train_metrics = self._train_epoch(train_loader, epoch)
             self.training_history['train_losses'].append(train_metrics['loss'])
             self.training_history['train_metrics'].append(train_metrics)
+
+            # Deferred OPQ calibration (after warmup epochs)
+            # Skip in pyramid_first mode — learned projection subsumes OPQ
+            if (
+                self.config.training.opq_enabled
+                and self.model.temporal_rotation_matrix is None
+                and self.model.temporal_cnn_encoder is not None
+                and self.model.pyramid_first_encoder is None
+                and self.config.training.opq_warmup_epochs > 0
+                and (epoch + 1) == self.config.training.opq_warmup_epochs
+            ):
+                self._calibrate_opq(train_loader)
 
             # Validate every N epochs
             if (epoch + 1) % self.config.training.val_every_n_epochs == 0:
@@ -233,20 +274,21 @@ class VQTokenizerTrainer:
                 avg_codebook_size = total_codes / num_quantizers if num_quantizers > 0 else 1
                 util_epoch = (perplexity / avg_codebook_size) * 100  # Percentage
 
-                # Custom metric: lower is better, so we subtract utilization bonus
-                # Utilization is in [0, 100], scaled by 0.0001 to avoid overwhelming recon
-                # Prioritize reconstruction quality over utilization
+                # Custom metric: lower is better.  Includes all validation
+                # components that indicate token quality.
+                vq = val_metrics['vq']
                 best_metric = (
                     recon
                     + roundtrip
-                    + 0.1 * topo  # De-emphasize topo (was dominating)
-                    - 0.0001 * util_epoch  # Tiny utilization bonus (was 0.01, too large!)
+                    + vq             # VQ commitment — codebook convergence
+                    + 0.1 * topo     # Distance preservation (de-emphasised)
+                    - 0.0001 * util_epoch  # Tiny utilization bonus
                 )
 
-                # Check for improvement using custom metric
-                if best_metric < self.best_val_loss - self.config.training.early_stopping_min_delta:
+                # Always save if metric is strictly better (no min_delta gate).
+                # Early-stopping patience uses min_delta separately below.
+                if best_metric < self.best_val_loss:
                     self.best_val_loss = best_metric
-                    self.epochs_without_improvement = 0
 
                     # Save best checkpoint
                     best_path = output_dir / f"{checkpoint_prefix}_best.pt"
@@ -254,8 +296,13 @@ class VQTokenizerTrainer:
                     logger.info(
                         f"New best model saved: metric={best_metric:.6f} "
                         f"(recon={recon:.4f}, roundtrip={roundtrip:.4f}, "
-                        f"topo={topo:.4f}, util_epoch={util_epoch:.1f}%)"
+                        f"vq={vq:.4f}, topo={topo:.4f}, util_epoch={util_epoch:.1f}%)"
                     )
+
+                # Early stopping uses min_delta for patience counting
+                if best_metric < self._best_es_metric - self.config.training.early_stopping_min_delta:
+                    self._best_es_metric = best_metric
+                    self.epochs_without_improvement = 0
                 else:
                     self.epochs_without_improvement += 1
 
@@ -299,6 +346,11 @@ class VQTokenizerTrainer:
                         f"util_epoch={util_pct:.1f}%)"
                     )
                 logger.info(log_msg)
+
+            # Save latest checkpoint every validation epoch (survives kill)
+            if (epoch + 1) % self.config.training.val_every_n_epochs == 0:
+                latest_path = output_dir / f"{checkpoint_prefix}_latest.pt"
+                self._save_checkpoint(latest_path, epoch, val_loss)
 
         # Compute final validation metrics (post-convergence)
         logger.info("Computing final validation metrics...")
@@ -445,6 +497,237 @@ class VQTokenizerTrainer:
 
         return train_loader, val_loader
 
+    def _create_dataloaders_from_dataset(
+        self,
+        dataset: Dataset,
+    ) -> Tuple[DataLoader, DataLoader]:
+        """Create train/val dataloaders from a PyTorch Dataset.
+
+        Used by learned-mode with lazy HDF5 IC loading. Batches are dicts
+        (collated by default dict collation) rather than indexed tuples.
+
+        Args:
+            dataset: PyTorch Dataset returning dicts with 'ic', 'params', etc.
+
+        Returns:
+            Tuple of (train_loader, val_loader)
+        """
+        self._dict_batch_mode = True
+        self.tensor_map = {}  # Not used in dict mode, but avoids AttributeError
+
+        val_size = int(len(dataset) * self.config.training.val_split)
+        train_size = len(dataset) - val_size
+
+        train_dataset, val_dataset = random_split(
+            dataset,
+            [train_size, val_size],
+            generator=torch.Generator().manual_seed(
+                self.config.random_seed if self.config.random_seed else 42
+            ),
+        )
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.config.training.batch_size,
+            shuffle=True,
+            num_workers=0,
+            pin_memory=True if self.device.type == "cuda" else False,
+        )
+
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.config.training.batch_size,
+            shuffle=False,
+            num_workers=0,
+            pin_memory=True if self.device.type == "cuda" else False,
+        )
+
+        return train_loader, val_loader
+
+    def _unpack_batch(self, batch) -> Dict[str, Optional[torch.Tensor]]:
+        """Unpack a batch into a standard dict of named tensors.
+
+        Handles both batch modes:
+        - dict mode (lazy Dataset): batch is a dict with 'ic', 'params' keys
+        - tensor mode (TensorDataset): batch is a list, indexed via tensor_map
+
+        Returns:
+            Dict with keys: temporal_features, initial_manual, initial_raw,
+            theta_features, temporal_mask, temporal_lengths — each either a
+            device tensor or None.
+        """
+        if self._dict_batch_mode:
+            return {
+                'temporal_features': None,
+                'initial_manual': (
+                    batch['initial_manual'].to(self.device)
+                    if 'initial_manual' in batch else None
+                ),
+                'initial_raw': batch['ic'].to(self.device),
+                'theta_features': batch['params'].to(self.device),
+                'temporal_mask': None,
+                'temporal_lengths': None,
+            }
+        else:
+            return {
+                key: (
+                    batch[self.tensor_map[key]].to(self.device)
+                    if key in self.tensor_map else None
+                )
+                for key in [
+                    'temporal_features', 'initial_manual', 'initial_raw',
+                    'theta_features', 'temporal_mask', 'temporal_lengths',
+                ]
+            }
+
+    def _generate_trajectories(
+        self,
+        theta_feats: torch.Tensor,
+        initial_raw: torch.Tensor,
+    ) -> Optional[torch.Tensor]:
+        """Generate trajectories on-the-fly using the replayer.
+
+        Prefers batched rollout (LeniaReplayAdapter) when available,
+        falling back to per-sample rollout (CNOReplayer) otherwise.
+
+        Returns:
+            [B, T+1, C, H, W] on CPU, or None if replayer unavailable.
+        """
+        if self.replayer is None or theta_feats is None or initial_raw is None:
+            return None
+
+        # Determine timesteps
+        if self.length_sampler is not None:
+            batch_len = self.length_sampler.sample_lengths(1)  # [1]
+            timesteps = int(batch_len[0].item())
+        else:
+            timesteps = self.config.generation_timesteps or 64
+
+        # Batched path: replayer supports rollout_batch (e.g. LeniaReplayAdapter)
+        if hasattr(self.replayer, 'rollout_batch'):
+            with torch.no_grad():
+                return self.replayer.rollout_batch(
+                    params_batch=theta_feats.cpu(),
+                    ics=initial_raw,
+                    timesteps=timesteps,
+                    return_all_steps=True,
+                )  # [B, T+1, C, H, W] on CPU
+
+        # Per-sample path: replayer only has rollout() (e.g. CNOReplayer)
+        B = theta_feats.shape[0]
+        trajectories = []
+        with torch.no_grad():
+            for i in range(B):
+                traj = self.replayer.rollout(
+                    params_vector=theta_feats[i].cpu(),
+                    ic=initial_raw[i],
+                    timesteps=timesteps,
+                    return_all_steps=True,
+                )  # [1, T+1, C, H, W]
+                trajectories.append(traj.squeeze(0).cpu())
+        return torch.stack(trajectories, dim=0)  # [B, T+1, C, H, W]
+
+    def _calibrate_opq(self, train_loader: DataLoader) -> None:
+        """Compute OPQ rotation from CNN features and register on the model.
+
+        Collects CNN output features from a subset of training batches,
+        flattens [N_batch, T, D] → [N_batch*T, D], subsamples to
+        max_calibration_samples, then runs OPQ alternating optimization.
+        The resulting rotation is registered as model buffers so it is
+        automatically saved/loaded with checkpoints.
+        """
+        from spinlock.features.grouping.opq import compute_opq_rotation
+        from spinlock.encoding.normalization import LinearTransform
+
+        cfg = self.config.training
+        learned_cfg = self.config.encoder.temporal.learned
+
+        logger.info("Calibrating OPQ rotation from CNN features...")
+
+        self.model.eval()
+        all_features = []
+        n_batches = 0
+
+        with torch.no_grad():
+            for batch in train_loader:
+                unpacked = self._unpack_batch(batch)
+                initial_r = unpacked['initial_raw']
+                theta_feats = unpacked['theta_features']
+
+                temporal_raw = self._generate_trajectories(theta_feats, initial_r)
+                if temporal_raw is None:
+                    logger.warning("OPQ calibration: no trajectories generated, skipping")
+                    self.model.train()
+                    return
+
+                # CNN forward only (no grad)
+                temporal_raw_dev = temporal_raw.to(self.device)
+                cnn_features = self.model.temporal_cnn_encoder(temporal_raw_dev)  # [B, T, D]
+                # Flatten to per-frame features and move to CPU
+                B, T, D = cnn_features.shape
+                all_features.append(cnn_features.reshape(B * T, D).cpu())
+
+                n_batches += 1
+                if n_batches >= cfg.opq_n_calibration_batches:
+                    break
+
+        self.model.train()
+
+        if not all_features:
+            logger.warning("OPQ calibration: no features collected, skipping")
+            return
+
+        X = torch.cat(all_features, dim=0).numpy()  # [N_total, D]
+        logger.info(
+            "OPQ calibration: collected %d frames from %d batches (D=%d)",
+            X.shape[0], n_batches, X.shape[1],
+        )
+
+        # Subsample if needed
+        if X.shape[0] > cfg.opq_max_samples:
+            rng = np.random.RandomState(self.config.random_seed or 42)
+            indices = rng.choice(X.shape[0], cfg.opq_max_samples, replace=False)
+            X = X[indices]
+            logger.info("  Subsampled to %d frames", X.shape[0])
+
+        M = learned_cfg.num_groups
+        d_sub = learned_cfg.embedding_dim // M
+
+        # Log per-group variance BEFORE rotation
+        group_vars_before = [
+            X[:, g * d_sub:(g + 1) * d_sub].var()
+            for g in range(M)
+        ]
+        logger.info(
+            "  Pre-OPQ per-group var: min=%.4f, max=%.4f, ratio=%.1f",
+            min(group_vars_before), max(group_vars_before),
+            max(group_vars_before) / max(min(group_vars_before), 1e-12),
+        )
+
+        # Compute OPQ rotation
+        R, mean = compute_opq_rotation(
+            X, M=M, d_sub=d_sub,
+            n_iter=cfg.opq_n_iter,
+            n_codes=cfg.opq_n_codes,
+            random_state=self.config.random_seed,
+        )
+
+        # Log per-group variance AFTER rotation
+        X_rot = (X - mean) @ R.T
+        group_vars_after = [
+            X_rot[:, g * d_sub:(g + 1) * d_sub].var()
+            for g in range(M)
+        ]
+        logger.info(
+            "  Post-OPQ per-group var: min=%.4f, max=%.4f, ratio=%.1f",
+            min(group_vars_after), max(group_vars_after),
+            max(group_vars_after) / max(min(group_vars_after), 1e-12),
+        )
+
+        # Register on model
+        transform = LinearTransform(mean=mean, components=R)
+        self.model.set_temporal_rotation(transform)
+
     def _train_epoch(self, loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Run one training epoch.
 
@@ -469,51 +752,18 @@ class VQTokenizerTrainer:
         num_batches_total = len(loader)
 
         for batch_idx, batch in enumerate(loader):
-            # Unpack batch using tensor_map to handle variable tensor order
-            temporal_feats = (
-                batch[self.tensor_map['temporal_features']].to(self.device)
-                if 'temporal_features' in self.tensor_map else None
-            )
-            initial_man = (
-                batch[self.tensor_map['initial_manual']].to(self.device)
-                if 'initial_manual' in self.tensor_map else None
-            )
-            initial_r = (
-                batch[self.tensor_map['initial_raw']].to(self.device)
-                if 'initial_raw' in self.tensor_map else None
-            )
-            theta_feats = (
-                batch[self.tensor_map['theta_features']].to(self.device)
-                if 'theta_features' in self.tensor_map else None
-            )
-            temp_mask = (
-                batch[self.tensor_map['temporal_mask']].to(self.device)
-                if 'temporal_mask' in self.tensor_map else None
-            )
-            temp_lens = (
-                batch[self.tensor_map['temporal_lengths']].to(self.device)
-                if 'temporal_lengths' in self.tensor_map else None
-            )
+            unpacked = self._unpack_batch(batch)
+            temporal_feats = unpacked['temporal_features']
+            initial_man = unpacked['initial_manual']
+            initial_r = unpacked['initial_raw']
+            theta_feats = unpacked['theta_features']
+            temp_mask = unpacked['temporal_mask']
+            temp_lens = unpacked['temporal_lengths']
 
             # On-the-fly trajectory generation for learned mode
-            temporal_raw = None
-            if self.replayer is not None and theta_feats is not None and initial_r is not None:
-                B_batch = theta_feats.shape[0]
-                timesteps = self.config.generation_timesteps or 64
-                trajectories = []
-                with torch.no_grad():
-                    for i in range(B_batch):
-                        traj = self.replayer.rollout(
-                            params_vector=theta_feats[i].cpu(),
-                            ic=initial_r[i],
-                            timesteps=timesteps,
-                            return_all_steps=True,
-                        )  # [1, T+1, C, H, W] on replayer device
-                        trajectories.append(traj.squeeze(0).cpu())  # [T+1, C, H, W] → CPU
-                # Keep on CPU — TemporalCNNFeatureEncoder streams chunks to GPU
-                temporal_raw = torch.stack(trajectories, dim=0)  # [B, T+1, C, H, W]
+            temporal_raw = self._generate_trajectories(theta_feats, initial_r)
 
-            # Random length sampling for variable-length training
+            # Random length sampling for variable-length training (manual mode only)
             if self.length_sampler is not None and temporal_feats is not None:
                 B, T, D = temporal_feats.shape
 
@@ -535,16 +785,25 @@ class VQTokenizerTrainer:
                     f"  [MEM pre-fwd] alloc={torch.cuda.memory_allocated()/1024**2:.0f}MB"
                 )
 
-            # Forward pass
-            outputs = self.model(
-                temporal_features=temporal_feats,
-                initial_manual=initial_man,
-                initial_raw=initial_r,
-                theta_features=theta_feats,
-                temporal_mask=temp_mask,
-                temporal_lengths=temp_lens,
-                temporal_raw=temporal_raw,
-            )
+            # Forward pass — in temporal-only mode, don't pass theta/initial to model
+            # (they have no encoders), but keep them for aux loss computation.
+            if self.config.temporal_only:
+                outputs = self.model(
+                    temporal_features=temporal_feats,
+                    temporal_mask=temp_mask,
+                    temporal_lengths=temp_lens,
+                    temporal_raw=temporal_raw,
+                )
+            else:
+                outputs = self.model(
+                    temporal_features=temporal_feats,
+                    initial_manual=initial_man,
+                    initial_raw=initial_r,
+                    theta_features=theta_feats,
+                    temporal_mask=temp_mask,
+                    temporal_lengths=temp_lens,
+                    temporal_raw=temporal_raw,
+                )
 
             if _do_mem_log and self.device.type == "cuda":
                 logger.info(
@@ -583,6 +842,11 @@ class VQTokenizerTrainer:
                 # Extract token indices from quantized outputs
                 tokens = outputs.get('token_indices')
 
+            # Determine num_groups for group balance loss (dynamic from model)
+            _num_groups = sum(
+                1 for k in self.group_indices if k.startswith("temporal_")
+            ) if outputs.get('cnn_features') is not None else None
+
             losses = self.loss_fn(
                 original=outputs['original_encoded'],
                 reconstructed=outputs['reconstructed'],
@@ -592,10 +856,15 @@ class VQTokenizerTrainer:
                 token_indices=outputs.get('token_indices'),
                 codebooks=codebooks,
                 latent_vectors=outputs.get('latents'),
-                model=self.model,  # NEW: for roundtrip loss
-                tokens=tokens,  # NEW: for roundtrip loss
-                decoded=decoded,  # NEW: for roundtrip loss
-                initial_manual=initial_man,  # NEW: for roundtrip loss
+                model=self.model,
+                tokens=tokens,
+                decoded=decoded,
+                initial_manual=initial_man,
+                original_theta=theta_feats,
+                original_initial=initial_r,
+                cnn_features=outputs.get('cnn_features'),
+                num_groups=_num_groups,
+                gate_values=outputs.get('gate_values'),
             )
 
             loss = losses['total']
@@ -655,18 +924,59 @@ class VQTokenizerTrainer:
 
             # Per-batch logging
             if self.config.verbose:
+                recon_val = losses['reconstruction']
+                recon_str = f"{recon_val.item():.4f}" if hasattr(recon_val, 'item') else f"{recon_val:.4f}"
                 parts = [
                     f"  [E{epoch+1} B{batch_idx+1}/{num_batches_total}]",
                     f"loss={batch_loss:.4f}",
-                    f"recon={losses['reconstruction'].item():.4f}",
+                    f"recon={recon_str}",
+                ]
+                # Show per-family inverse reconstruction if available
+                if 'recon/theta' in losses:
+                    parts.append(f"θ={losses['recon/theta']:.4f}")
+                if 'recon/initial' in losses:
+                    parts.append(f"ic={losses['recon/initial']:.4f}")
+                # Show aux head losses (temporal-only mode)
+                if 'aux/theta' in losses:
+                    parts.append(f"aux_θ={losses['aux/theta']:.4f}")
+                if 'aux/initial' in losses:
+                    parts.append(f"aux_ic={losses['aux/initial']:.4f}")
+                if 'aux/theta_probe' in losses:
+                    parts.append(f"probe_θ={losses['aux/theta_probe']:.4f}")
+                if 'aux/initial_probe' in losses:
+                    parts.append(f"probe_ic={losses['aux/initial_probe']:.4f}")
+                parts.extend([
                     f"vq={losses['vq'].item():.4f}",
                     f"ortho={losses['orthogonality'].item():.4f}",
                     f"info={losses['informativeness'].item():.4f}",
-                ]
+                ])
                 if 'roundtrip/total' in losses:
                     parts.append(f"rt={losses['roundtrip/total']:.4f}")
+                    # Mean roundtrip token accuracy across all quantizers
+                    rt_accs = [v for k, v in losses.items() if k.startswith('roundtrip_acc/')]
+                    if rt_accs:
+                        parts.append(f"rt_acc={sum(rt_accs)/len(rt_accs):.3f}")
                 if 'topographic' in losses:
                     parts.append(f"topo={losses['topographic'].item():.4f}")
+                    if 'topo_pre' in losses and 'topo_post' in losses:
+                        pre = losses['topo_pre']
+                        post = losses['topo_post']
+                        pre_val = pre.item() if hasattr(pre, 'item') else pre
+                        post_val = post.item() if hasattr(post, 'item') else post
+                        parts.append(f"pre={pre_val:.3f}")
+                        parts.append(f"post={post_val:.3f}")
+                if losses.get('group_balance') is not None:
+                    bal = losses['group_balance']
+                    bal_val = bal.item() if hasattr(bal, 'item') else bal
+                    if bal_val > 0:
+                        parts.append(f"bal={bal_val:.4f}")
+                # Gate stats: show mean gate value and how many gates are "open" (>0.5)
+                gate_vals = outputs.get('gate_values')
+                if gate_vals is not None:
+                    g_mean = gate_vals.mean().item()
+                    g_open = (gate_vals > 0.5).sum().item()
+                    g_total = gate_vals.numel()
+                    parts.append(f"gates={g_open:.0f}/{g_total}({g_mean:.3f})")
                 logger.info(" ".join(parts))
 
         metrics = {
@@ -718,50 +1028,18 @@ class VQTokenizerTrainer:
 
         with torch.no_grad():
             for batch in loader:
-                # Unpack batch using tensor_map to handle variable tensor order
-                temporal_feats = (
-                    batch[self.tensor_map['temporal_features']].to(self.device)
-                    if 'temporal_features' in self.tensor_map else None
-                )
-                initial_man = (
-                    batch[self.tensor_map['initial_manual']].to(self.device)
-                    if 'initial_manual' in self.tensor_map else None
-                )
-                initial_r = (
-                    batch[self.tensor_map['initial_raw']].to(self.device)
-                    if 'initial_raw' in self.tensor_map else None
-                )
-                theta_feats = (
-                    batch[self.tensor_map['theta_features']].to(self.device)
-                    if 'theta_features' in self.tensor_map else None
-                )
-                temp_mask = (
-                    batch[self.tensor_map['temporal_mask']].to(self.device)
-                    if 'temporal_mask' in self.tensor_map else None
-                )
-                temp_lens = (
-                    batch[self.tensor_map['temporal_lengths']].to(self.device)
-                    if 'temporal_lengths' in self.tensor_map else None
-                )
+                unpacked = self._unpack_batch(batch)
+                temporal_feats = unpacked['temporal_features']
+                initial_man = unpacked['initial_manual']
+                initial_r = unpacked['initial_raw']
+                theta_feats = unpacked['theta_features']
+                temp_mask = unpacked['temporal_mask']
+                temp_lens = unpacked['temporal_lengths']
 
                 # On-the-fly trajectory generation for learned mode
-                temporal_raw = None
-                if self.replayer is not None and theta_feats is not None and initial_r is not None:
-                    B_batch = theta_feats.shape[0]
-                    timesteps = self.config.generation_timesteps or 64
-                    trajectories = []
-                    for i in range(B_batch):
-                        traj = self.replayer.rollout(
-                            params_vector=theta_feats[i].cpu(),
-                            ic=initial_r[i],
-                            timesteps=timesteps,
-                            return_all_steps=True,
-                        )
-                        trajectories.append(traj.squeeze(0).cpu())
-                    # Keep on CPU — TemporalCNNFeatureEncoder streams chunks to GPU
-                    temporal_raw = torch.stack(trajectories, dim=0)
+                temporal_raw = self._generate_trajectories(theta_feats, initial_r)
 
-                # Random length sampling for variable-length training
+                # Random length sampling for variable-length training (manual mode only)
                 if self.length_sampler is not None and temporal_feats is not None:
                     B, T, D = temporal_feats.shape
 
@@ -775,16 +1053,24 @@ class VQTokenizerTrainer:
                     temp_mask = sampled_mask.to(self.device)
                     temp_lens = sampled_lengths.to(self.device)
 
-                # Forward pass
-                outputs = self.model(
-                    temporal_features=temporal_feats,
-                    initial_manual=initial_man,
-                    initial_raw=initial_r,
-                    theta_features=theta_feats,
-                    temporal_mask=temp_mask,
-                    temporal_lengths=temp_lens,
-                    temporal_raw=temporal_raw,
-                )
+                # Forward pass — temporal-only mode skips theta/initial inputs
+                if self.config.temporal_only:
+                    outputs = self.model(
+                        temporal_features=temporal_feats,
+                        temporal_mask=temp_mask,
+                        temporal_lengths=temp_lens,
+                        temporal_raw=temporal_raw,
+                    )
+                else:
+                    outputs = self.model(
+                        temporal_features=temporal_feats,
+                        initial_manual=initial_man,
+                        initial_raw=initial_r,
+                        theta_features=theta_feats,
+                        temporal_mask=temp_mask,
+                        temporal_lengths=temp_lens,
+                        temporal_raw=temporal_raw,
+                    )
 
                 # Extract category embeddings
                 category_embeddings = self._extract_category_embeddings(outputs)
@@ -802,6 +1088,11 @@ class VQTokenizerTrainer:
                 if self.loss_fn.roundtrip_loss is not None and decoded is not None:
                     tokens = outputs.get('token_indices')
 
+                # Determine num_groups for group balance loss (dynamic from model)
+                _num_groups = sum(
+                    1 for k in self.group_indices if k.startswith("temporal_")
+                ) if outputs.get('cnn_features') is not None else None
+
                 losses = self.loss_fn(
                     original=outputs['original_encoded'],
                     reconstructed=outputs['reconstructed'],
@@ -811,10 +1102,15 @@ class VQTokenizerTrainer:
                     token_indices=outputs.get('token_indices'),
                     codebooks=codebooks,
                     latent_vectors=outputs.get('latents'),
-                    model=self.model,  # NEW: for roundtrip loss
-                    tokens=tokens,  # NEW: for roundtrip loss
-                    decoded=decoded,  # NEW: for roundtrip loss
-                    initial_manual=initial_man,  # NEW: for roundtrip loss
+                    model=self.model,
+                    tokens=tokens,
+                    decoded=decoded,
+                    initial_manual=initial_man,
+                    original_theta=theta_feats,
+                    original_initial=initial_r,
+                    cnn_features=outputs.get('cnn_features'),
+                    num_groups=_num_groups,
+                    gate_values=outputs.get('gate_values'),
                 )
 
                 # Accumulate metrics

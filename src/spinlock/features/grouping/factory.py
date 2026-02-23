@@ -56,11 +56,8 @@ def create_grouper(
         if method in ("pca_striped", "pca_raw"):
             return PCAGrouper(config)
         elif method == "opq":
-            # Stage 2: OPQ via FAISS (same interface as PCAGrouper)
-            from .pca_grouper import PCAGrouper as _PCA  # noqa: F401
-            raise NotImplementedError(
-                "OPQ grouper is not yet implemented. Use method='pca_striped' for now."
-            )
+            from .opq import OPQGrouper
+            return OPQGrouper(config)
         # else: fall through to correlation grouper
 
     grouper_map = {

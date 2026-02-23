@@ -246,16 +246,31 @@ class InitialFeatureExtractionPipeline:
             print(f"Dataset: {dataset_path}")
 
         with h5py.File(dataset_path, 'a') as f:
-            # Load raw ICs
+            # Validate raw ICs exist
             if 'inputs/fields' not in f:
                 raise KeyError("No raw ICs found at /inputs/fields")
 
-            ics = f['inputs/fields'][:]  # Load all ICs
+            ic_dataset = f['inputs/fields']
+            num_samples = ic_dataset.shape[0]
 
-            # Extract features
-            features = self.extract_from_array(ics)
+            if self.verbose:
+                print(f"  Total samples: {num_samples:,}")
+                print(f"  IC shape: {ic_dataset.shape}")
+                print(f"  Streaming in batches of {self.batch_size}...")
 
-            # Save to dataset
+            # Determine feature dimension from a small probe batch
+            probe = torch.from_numpy(ic_dataset[:1]).float()
+            probe_norm, _ = self._normalize_input_shape(probe)
+            if self.extractor_type == ExtractorType.STATISTICAL:
+                with torch.no_grad():
+                    probe_feat = self.extractor(probe_norm)
+            else:
+                probe_feat = self.extractor.extract_all(probe_norm)
+                if probe_feat.shape[1] == 1:
+                    probe_feat = probe_feat.squeeze(1)
+            feat_dim = probe_feat.shape[-1]
+
+            # Prepare output group
             if 'features/initial' in f:
                 if overwrite:
                     if self.verbose:
@@ -269,18 +284,37 @@ class InitialFeatureExtractionPipeline:
             init_group = f.create_group('features/initial')
             agg_group = init_group.create_group('aggregated')
 
+            # Pre-allocate output dataset
+            ds_kwargs = dict(shape=(num_samples, feat_dim), dtype='float32')
             if compression:
-                agg_group.create_dataset(
-                    'features',
-                    data=features,
-                    compression='gzip',
-                    compression_opts=4
-                )
-            else:
-                agg_group.create_dataset('features', data=features)
+                ds_kwargs.update(compression='gzip', compression_opts=4,
+                                 chunks=(min(self.batch_size, num_samples), feat_dim))
+            feat_ds = agg_group.create_dataset('features', **ds_kwargs)
+
+            # Stream: read batch from HDF5 → extract → write back
+            for start in range(0, num_samples, self.batch_size):
+                end = min(start + self.batch_size, num_samples)
+                batch_np = ic_dataset[start:end]
+                batch_t = torch.from_numpy(batch_np).float()
+                del batch_np  # free numpy copy immediately
+
+                batch_norm, _ = self._normalize_input_shape(batch_t)
+                del batch_t
+
+                if self.extractor_type == ExtractorType.STATISTICAL:
+                    with torch.no_grad():
+                        batch_feat = self.extractor(batch_norm)
+                else:
+                    batch_feat = self.extractor.extract_all(batch_norm)
+                    if batch_feat.shape[1] == 1:
+                        batch_feat = batch_feat.squeeze(1)
+                del batch_norm
+
+                feat_ds[start:end] = batch_feat.cpu().numpy()
+                del batch_feat
 
             if self.verbose:
-                print(f"  ✓ Saved to /features/initial/aggregated/features")
+                print(f"  ✓ Saved to /features/initial/aggregated/features [{num_samples}, {feat_dim}]")
                 print("=" * 60)
 
     def get_feature_dimension(self, num_channels: int) -> int:

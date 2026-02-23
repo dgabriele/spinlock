@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import LossConfig, RoundtripLossConfig
+from .config import LossConfig, RoundtripLossConfig, AuxHeadConfig
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,108 @@ def compute_reconstruction_loss(
         mse = mse / original.shape[1]
 
     return mse
+
+
+def compute_inverse_reconstruction_loss(
+    decoded: Dict[str, torch.Tensor],
+    original_theta: Optional[torch.Tensor] = None,
+    original_initial: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, Dict[str, float]]:
+    """Compute reconstruction loss on inverse head outputs vs actual physical inputs.
+
+    Unlike the encoded-space reconstruction loss, this measures whether the
+    discrete tokens contain enough information to recover the actual physical
+    inputs (operator parameters θ and initial conditions).
+
+    Args:
+        decoded: Dict with inverse head outputs:
+            - "theta": [B, param_dim] decoded parameters (Sigmoid → [0,1])
+            - "initial": [B, C, H, W] decoded initial conditions
+        original_theta: [B, param_dim] ground-truth parameters in [0,1]
+        original_initial: [B, C, H, W] ground-truth initial conditions
+
+    Returns:
+        (total_loss, metrics_dict) where metrics_dict has per-family losses
+    """
+    losses = []
+    metrics = {}
+
+    if "theta" in decoded and original_theta is not None:
+        theta_loss = F.mse_loss(decoded["theta"], original_theta)
+        losses.append(theta_loss)
+        metrics["recon/theta"] = theta_loss.item()
+
+    if "initial" in decoded and original_initial is not None:
+        initial_loss = F.mse_loss(decoded["initial"], original_initial)
+        losses.append(initial_loss)
+        metrics["recon/initial"] = initial_loss.item()
+
+    if losses:
+        total = torch.stack(losses).mean()
+    else:
+        device = next(iter(decoded.values())).device if decoded else torch.device("cpu")
+        total = torch.tensor(0.0, device=device)
+
+    metrics["recon/total"] = total.item()
+    return total, metrics
+
+
+def compute_aux_head_losses(
+    decoded: Dict[str, torch.Tensor],
+    theta_gt: Optional[torch.Tensor],
+    ic_gt: Optional[torch.Tensor],
+    aux_config: AuxHeadConfig,
+) -> tuple[torch.Tensor, Dict[str, float]]:
+    """Compute auxiliary head losses for temporal-only mode.
+
+    In temporal-only mode, theta and IC are decoded from the concatenated
+    quantized temporal latents via auxiliary heads. These losses supervise
+    those heads with the ground-truth theta params and IC grids.
+
+    Args:
+        decoded: Dict with aux head outputs:
+            - "theta": [B, param_dim] predicted parameters (Sigmoid → [0,1])
+            - "initial": [B, C, H, W] predicted initial conditions
+        theta_gt: [B, param_dim] ground-truth parameters in [0,1]
+        ic_gt: [B, C, H, W] ground-truth initial conditions
+        aux_config: Auxiliary head configuration with per-family weights
+
+    Returns:
+        (weighted_total_loss, metrics_dict)
+    """
+    losses = []
+    metrics = {}
+
+    if "theta" in decoded and theta_gt is not None:
+        theta_loss = F.mse_loss(decoded["theta"], theta_gt)
+        losses.append(aux_config.theta_weight * theta_loss)
+        metrics["aux/theta"] = theta_loss.item()
+
+    if "initial" in decoded and ic_gt is not None:
+        ic_loss = F.mse_loss(decoded["initial"], ic_gt)
+        losses.append(aux_config.initial_weight * ic_loss)
+        metrics["aux/initial"] = ic_loss.item()
+
+    # Pre-VQ theta probe: direct CNN → theta gradient (no VQ bottleneck)
+    if "theta_probe" in decoded and theta_gt is not None:
+        probe_loss = F.mse_loss(decoded["theta_probe"], theta_gt)
+        losses.append(aux_config.theta_probe_weight * probe_loss)
+        metrics["aux/theta_probe"] = probe_loss.item()
+
+    # Pre-VQ IC probe: direct CNN → IC gradient (no VQ bottleneck)
+    if "initial_probe" in decoded and ic_gt is not None:
+        ic_probe_loss = F.mse_loss(decoded["initial_probe"], ic_gt)
+        losses.append(aux_config.initial_probe_weight * ic_probe_loss)
+        metrics["aux/initial_probe"] = ic_probe_loss.item()
+
+    if losses:
+        total = sum(losses)
+    else:
+        device = next(iter(decoded.values())).device if decoded else torch.device("cpu")
+        total = torch.tensor(0.0, device=device)
+
+    metrics["aux/total"] = total.item() if hasattr(total, 'item') else total
+    return total, metrics
 
 
 def compute_orthogonality_loss(
@@ -100,15 +202,23 @@ def compute_orthogonality_loss(
 def compute_informativeness_loss(
     category_embeddings: Dict[str, torch.Tensor],
     min_variance: float = 0.01,
+    mode: str = "log_barrier",
 ) -> torch.Tensor:
     """Compute informativeness loss to encourage high variance within categories.
 
-    Penalizes low variance in category embeddings to prevent collapse
-    to constant representations.
+    Two modes:
+      - ``"floor"``: Original ReLU formulation. Only activates when variance
+        drops below ``min_variance`` (collapse prevention safety net).
+      - ``"log_barrier"``: Continuously active log-barrier. Penalizes any
+        group whose variance falls below 1.0 with ``clamp(-log(var), min=0)``.
+        Provides smooth gradients throughout training, preventing the CNN
+        from drifting toward low-variance representations before collapse
+        actually occurs.
 
     Args:
         category_embeddings: Dict mapping category_name → embeddings [B, D_cat]
-        min_variance: Minimum target variance threshold
+        min_variance: Minimum target variance threshold (used in floor mode)
+        mode: ``"floor"`` or ``"log_barrier"``
 
     Returns:
         Scalar informativeness loss (lower variance = higher loss)
@@ -116,6 +226,10 @@ def compute_informativeness_loss(
     variances = []
 
     for cat_name, embeddings in category_embeddings.items():
+        # Skip direct theta param groups — their variance is fixed (raw params)
+        # and would create irreducible loss that wastes optimization pressure.
+        if cat_name.startswith("theta_param_"):
+            continue
         # Compute variance along batch dimension for each feature
         var = embeddings.var(dim=0, unbiased=False).mean()  # Average across features
         variances.append(var)
@@ -125,10 +239,59 @@ def compute_informativeness_loss(
 
     variances = torch.stack(variances)
 
-    # Penalize variance below threshold (ReLU ensures only low variance is penalized)
-    loss = F.relu(min_variance - variances).mean()
+    if mode == "floor":
+        # Original: hard floor, only activates on near-collapse
+        loss = F.relu(min_variance - variances).mean()
+    else:
+        # Log-barrier: -log(var) is 0 at var=1, positive for var<1
+        # Clamp at 0 so we never reward variance > 1 (only penalize low variance)
+        loss = torch.clamp(-torch.log(variances + 1e-8), min=0.0).mean()
 
     return loss
+
+
+def compute_group_balance_loss(
+    cnn_features: torch.Tensor,
+    num_groups: int,
+) -> torch.Tensor:
+    """Penalize per-group variance imbalance in CNN output features.
+
+    Computes the coefficient of variation (CV) of per-group variances.
+    CV = std(group_vars) / mean(group_vars).  CV=0 means perfectly balanced
+    groups; the CNN learns to distribute variance evenly across groups.
+
+    Supports both 3D [B, T, D] (legacy per-frame mode) and 2D [B, D]
+    (pyramid-first mode where D = num_levels * D_agg).
+
+    Args:
+        cnn_features: CNN output [B, T, D] or [B, D] before group slicing.
+        num_groups: Number of groups (D must be divisible by num_groups).
+
+    Returns:
+        Scalar balance loss (CV of per-group variances).
+    """
+    if cnn_features.dim() == 3:
+        # Legacy: [B, T, D] — variance across batch and time
+        D = cnn_features.shape[-1]
+        d_sub = D // num_groups
+        group_vars = [
+            cnn_features[:, :, g * d_sub:(g + 1) * d_sub].var()
+            for g in range(num_groups)
+        ]
+    elif cnn_features.dim() == 2:
+        # Pyramid-first: [B, D_multi_res] — variance across batch only
+        D = cnn_features.shape[-1]
+        d_sub = D // num_groups
+        group_vars = [
+            cnn_features[:, g * d_sub:(g + 1) * d_sub].var()
+            for g in range(num_groups)
+        ]
+    else:
+        return torch.tensor(0.0, device=cnn_features.device)
+
+    group_vars = torch.stack(group_vars)
+    cv = group_vars.std() / (group_vars.mean() + 1e-8)
+    return cv
 
 
 def compute_topographic_loss(
@@ -220,16 +383,24 @@ class RoundtripConsistencyLoss(nn.Module):
 
     Ensures that decode(tokens) → encode(decode(tokens)) produces the same tokens,
     creating self-consistent equivalence classes in the latent space.
+
+    For each family:
+      - **theta**: decoded params → ThetaEncoder → per-group projector → VQ → check tokens
+      - **initial**: decoded ICs → InitialCNNEncoder → per-group projector → VQ → check tokens
+      - **temporal** (learned mode): decoded CNN features [B, T_rt, D] → split per group →
+        real PyramidTemporalEncoders → per-group projector → VQ → check tokens
     """
 
     def __init__(
         self,
         theta_weight: float = 1.0,
         initial_weight: float = 1.0,
+        temporal_weight: float = 1.0,
     ):
         super().__init__()
         self.theta_weight = theta_weight
         self.initial_weight = initial_weight
+        self.temporal_weight = temporal_weight
 
     def forward(
         self,
@@ -243,7 +414,8 @@ class RoundtripConsistencyLoss(nn.Module):
         Args:
             model: JointHierarchicalVQVAE instance
             tokens: Original tokens per quantizer
-            decoded: Decoded continuous values
+            decoded: Decoded continuous values (theta → params, initial → ICs,
+                     temporal → synthetic CNN features [B, T_rt, D_cnn])
             initial_manual: Manual features for initial encoder (if needed)
 
         Returns:
@@ -251,110 +423,69 @@ class RoundtripConsistencyLoss(nn.Module):
         """
         losses = []
         metrics = {}
+        device = next(iter(decoded.values())).device
 
-        # Re-encode all families (matching forward pass)
-        encoded_rt = {}
+        # ── Re-encode each family through its REAL encoder ──
+        rt_per_group: Dict[str, torch.Tensor] = {}
+
+        # Theta: decoded params → ThetaEncoder → [B, theta_encoded_dim]
         if 'theta' in decoded:
-            encoded_rt['theta'] = model.theta_encoder(decoded['theta'])
+            theta_encoded_rt = model.theta_encoder(decoded['theta'])
+            for fc in model.group_indices:
+                if fc.startswith("theta_"):
+                    rt_per_group[fc] = theta_encoded_rt
+
+        # Initial: decoded ICs → InitialCNNEncoder → [B, initial_encoded_dim]
         if 'initial' in decoded:
-            encoded_rt['initial'] = self._encode_initial(model, decoded['initial'], initial_manual)
+            initial_encoded_rt = self._encode_initial(
+                model, decoded['initial'], initial_manual
+            )
+            for fc in model.group_indices:
+                if fc.startswith("initial_"):
+                    rt_per_group[fc] = initial_encoded_rt
 
-        # Concatenate all encodings (matching forward pass: temporal + initial + theta)
-        all_encoded_rt = []
-        for family in sorted(model.families):
-            if family in encoded_rt:
-                all_encoded_rt.append(encoded_rt[family])
-        all_encoded_rt = torch.cat(all_encoded_rt, dim=1) if all_encoded_rt else None
+        # Temporal: decoded CNN features → split groups → real PyramidTemporalEncoders
+        if 'temporal' in decoded and model.per_group_pyramid_encoders is not None:
+            temporal_cnn_rt = decoded['temporal']  # [B, T_rt, D_cnn]
+            learned_cfg = model.config.encoder.temporal.learned
+            group_dim = learned_cfg.embedding_dim // learned_cfg.num_groups
+            group_idx = 0
+            for fc in sorted(model.group_indices):
+                if not fc.startswith("temporal_"):
+                    continue
+                start = group_idx * group_dim
+                end = start + group_dim
+                group_features = temporal_cnn_rt[:, :, start:end]  # [B, T_rt, group_dim]
+                encoder = model.per_group_pyramid_encoders[fc]
+                enc = encoder(group_features)  # [B, pyramid_out_dim]
+                rt_per_group[fc] = enc
+                group_idx += 1
 
-        # Compute roundtrip loss for each category
-        if all_encoded_rt is not None:
-            for family_cat, indices in model.group_indices.items():
-                family, _ = family_cat.split('_', 1)
+        # ── Compute roundtrip loss for each group ──
+        for family_cat in model.group_indices:
+            if family_cat not in rt_per_group:
+                continue
 
-                # Determine weight based on family
-                if family == 'theta':
-                    weight = self.theta_weight
-                elif family == 'initial':
-                    weight = self.initial_weight
-                else:
-                    continue  # Skip temporal (no inverse head)
+            family = family_cat.split('_', 1)[0]
+            if family == 'theta':
+                weight = self.theta_weight
+            elif family == 'initial':
+                weight = self.initial_weight
+            elif family == 'temporal':
+                weight = self.temporal_weight
+            else:
+                continue
 
-                cat_losses = self._compute_category_roundtrip(
-                    model, tokens, all_encoded_rt, family_cat, indices, weight
-                )
-                losses.extend(cat_losses['losses'])
-                metrics.update(cat_losses['metrics'])
+            cat_losses = self._compute_category_roundtrip_direct(
+                model, tokens, rt_per_group[family_cat], family_cat, weight
+            )
+            losses.extend(cat_losses['losses'])
+            metrics.update(cat_losses['metrics'])
 
-        device = all_encoded_rt.device if all_encoded_rt is not None else next(iter(decoded.values())).device
-        total_loss = torch.stack(losses).mean() if losses else torch.tensor(0.0, device=device)
+        total_loss = torch.stack(losses).sum() if losses else torch.tensor(0.0, device=device)
         metrics['roundtrip/total'] = total_loss.item()
 
         return total_loss, metrics
-
-    def _compute_theta_roundtrip(
-        self,
-        model: Any,
-        tokens: Dict[str, torch.Tensor],
-        theta_decoded: torch.Tensor,
-    ) -> Dict[str, Any]:
-        """Compute roundtrip loss for theta family."""
-        losses = []
-        metrics = {}
-
-        # Re-encode decoded theta
-        theta_encoded_rt = model.theta_encoder(theta_decoded)
-
-        # Compute loss for each theta category
-        for family_cat, indices in model.group_indices.items():
-            if not family_cat.startswith('theta_'):
-                continue
-
-            cat_losses = self._compute_category_roundtrip(
-                model, tokens, theta_encoded_rt, family_cat, indices, self.theta_weight
-            )
-            losses.extend(cat_losses['losses'])
-            metrics.update(cat_losses['metrics'])
-
-        return {'losses': losses, 'metrics': metrics}
-
-    def _compute_initial_roundtrip(
-        self,
-        model: Any,
-        tokens: Dict[str, torch.Tensor],
-        u0_decoded: torch.Tensor,
-        cached_manual_features: Optional[torch.Tensor] = None,
-    ) -> Dict[str, Any]:
-        """Compute roundtrip loss for initial family.
-
-        Args:
-            model: VQ tokenizer model
-            tokens: Original token indices
-            u0_decoded: Decoded initial conditions [B, C, H, W]
-            cached_manual_features: Pre-extracted manual features [B, D] from dataset
-
-        Returns:
-            Dict with losses and metrics
-        """
-        losses = []
-        metrics = {}
-
-        # Re-encode decoded initial conditions using CACHED features
-        initial_encoded_rt = self._encode_initial(
-            model, u0_decoded, cached_manual_features=cached_manual_features
-        )
-
-        # Compute loss for each initial category
-        for family_cat, indices in model.group_indices.items():
-            if not family_cat.startswith('initial_'):
-                continue
-
-            cat_losses = self._compute_category_roundtrip(
-                model, tokens, initial_encoded_rt, family_cat, indices, self.initial_weight
-            )
-            losses.extend(cat_losses['losses'])
-            metrics.update(cat_losses['metrics'])
-
-        return {'losses': losses, 'metrics': metrics}
 
     def _encode_initial(
         self,
@@ -390,23 +521,34 @@ class RoundtripConsistencyLoss(nn.Module):
             # CNN-only mode: only needs raw ICs
             return model.initial_encoder(u0_decoded)
 
-    def _compute_category_roundtrip(
+    def _compute_category_roundtrip_direct(
         self,
         model: Any,
         tokens: Dict[str, torch.Tensor],
-        encoded_rt: torch.Tensor,
+        cat_features_rt: torch.Tensor,
         family_cat: str,
-        indices: List[int],
         weight: float,
     ) -> Dict[str, Any]:
-        """Compute roundtrip loss for a single category across all levels."""
+        """Compute roundtrip loss for a single category across all hierarchy levels.
+
+        Uses cross-entropy over codebook distances: for each sample, compute
+        squared distances to ALL codebook entries and use CE with the original
+        token as the target. This directly optimizes for landing in the correct
+        Voronoi cell (same token identity) rather than matching the exact
+        embedding vector.
+
+        Args:
+            model: JointHierarchicalVQVAE instance
+            tokens: Original token indices per quantizer key
+            cat_features_rt: Re-encoded features for this group [B, D_group]
+            family_cat: Group key like ``"temporal_group_0"``
+            weight: Family-specific loss weight
+
+        Returns:
+            Dict with ``losses`` (list of weighted loss tensors) and ``metrics``
+        """
         losses = []
         metrics = {}
-
-        # Extract category features from concatenated encoding (matching forward pass)
-        # encoded_rt is the full concatenation (temporal + initial + theta)
-        # indices reference positions in this concatenated space
-        cat_features_rt = encoded_rt[:, indices]  # [B, cat_dim]
 
         # Project to hierarchical latents
         projector = model.projectors[family_cat]
@@ -417,14 +559,23 @@ class RoundtripConsistencyLoss(nn.Module):
             quantizer_key = f"{family_cat}_L{level_idx}"
             quantizer = model.quantizers[quantizer_key]
 
-            # Target: embeddings of original tokens
-            target_tokens = tokens[quantizer_key]
-            target_embeddings = quantizer.embedding(target_tokens)
+            target_tokens = tokens[quantizer_key]  # [B]
 
-            # MSE loss between roundtrip latents and target embeddings
-            loss = F.mse_loss(latent_rt, target_embeddings)
+            # Cross-entropy over codebook: negative squared distances as logits
+            # codebook: [K, D], latent_rt: [B, D]
+            codebook = quantizer.embedding.weight  # [K, D]
+            # Squared distances: [B, K]
+            dists = torch.cdist(latent_rt.unsqueeze(0), codebook.unsqueeze(0)).squeeze(0).pow(2)
+            logits = -dists  # [B, K] — closer = higher logit
+
+            loss = F.cross_entropy(logits, target_tokens)
             losses.append(weight * loss)
+
+            # Track token match accuracy as a metric
+            predicted_tokens = logits.argmax(dim=-1)
+            accuracy = (predicted_tokens == target_tokens).float().mean().item()
             metrics[f'roundtrip/{quantizer_key}'] = loss.item()
+            metrics[f'roundtrip_acc/{quantizer_key}'] = accuracy
 
         return {'losses': losses, 'metrics': metrics}
 
@@ -440,12 +591,27 @@ class VQVAELoss:
     5. Topographic loss (optional)
     6. Roundtrip loss (optional)
 
+    When ``normalize_loss_scales`` is enabled, each loss L_i is replaced by
+    L_i / EMA(L_i) before weighting. This makes all losses roughly unit-scale,
+    so the config weights reflect actual gradient ratios regardless of raw
+    loss magnitudes.
+
     Args:
         config: Loss configuration with weights
     """
 
-    def __init__(self, config: LossConfig):
+    _EMA_KEYS = ("reconstruction", "vq", "orthogonality", "informativeness",
+                 "topographic", "roundtrip", "aux", "group_balance",
+                 "gate_sparsity")
+
+    def __init__(self, config: LossConfig, aux_config: Optional[AuxHeadConfig] = None):
         self.config = config
+        self.aux_config = aux_config  # For temporal-only mode
+
+        # EMA loss-scale normalization
+        self._normalize = config.normalize_loss_scales
+        self._ema_momentum = config.loss_scale_ema_momentum
+        self._ema: Dict[str, float] = {k: 1.0 for k in self._EMA_KEYS}
 
         # Create roundtrip loss if enabled
         self.roundtrip_loss = None
@@ -453,7 +619,32 @@ class VQVAELoss:
             self.roundtrip_loss = RoundtripConsistencyLoss(
                 theta_weight=config.roundtrip.theta_weight,
                 initial_weight=config.roundtrip.initial_weight,
+                temporal_weight=config.roundtrip.temporal_weight,
             )
+
+    def _scale_loss(self, name: str, raw_loss: torch.Tensor) -> torch.Tensor:
+        """Normalize a loss component by its running EMA magnitude.
+
+        When normalize_loss_scales is enabled, each loss L_i is replaced by
+        L_i / EMA(L_i), so that weights reflect actual gradient ratios
+        regardless of raw loss scale differences.
+
+        Args:
+            name: Loss component name (must be in _EMA_KEYS).
+            raw_loss: Raw loss tensor (scalar).
+
+        Returns:
+            raw_loss / EMA if normalizing and loss is non-zero, else raw_loss.
+        """
+        if not self._normalize:
+            return raw_loss
+        raw_val = raw_loss.item()
+        if raw_val == 0.0:
+            return raw_loss
+        # Update EMA (no grad — bookkeeping, not part of loss graph)
+        m = self._ema_momentum
+        self._ema[name] = m * self._ema[name] + (1.0 - m) * raw_val
+        return raw_loss / max(self._ema[name], 1e-8)
 
     def __call__(
         self,
@@ -469,6 +660,11 @@ class VQVAELoss:
         tokens: Optional[Dict[str, torch.Tensor]] = None,
         decoded: Optional[Dict[str, torch.Tensor]] = None,
         initial_manual: Optional[torch.Tensor] = None,
+        original_theta: Optional[torch.Tensor] = None,
+        original_initial: Optional[torch.Tensor] = None,
+        cnn_features: Optional[torch.Tensor] = None,
+        num_groups: Optional[int] = None,
+        gate_values: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Compute total VQ-VAE loss.
 
@@ -485,24 +681,43 @@ class VQVAELoss:
             tokens: Optional original tokens (needed for roundtrip loss)
             decoded: Optional decoded values (needed for roundtrip loss)
             initial_manual: Optional manual features for initial encoder
+            original_theta: Optional original θ params [B, param_dim] for inverse recon
+            original_initial: Optional original ICs [B, C, H, W] for inverse recon
+            cnn_features: Optional CNN output [B, T, D] for group balance loss
+            num_groups: Number of groups for group balance loss
 
         Returns:
-            Dict with keys:
-                - total: Total weighted loss
-                - reconstruction: Reconstruction loss component
-                - vq: VQ loss component
-                - orthogonality: Orthogonality loss component
-                - informativeness: Informativeness loss component
-                - topographic: Topographic loss component (if enabled)
-                - topo_pre: Pre-quantization correlation (if topographic enabled)
-                - topo_post: Post-quantization correlation (if topographic enabled)
-                - roundtrip/total: Roundtrip loss component (if enabled)
-                - roundtrip/*: Per-quantizer roundtrip losses (if enabled)
+            Dict with loss components and metrics
         """
         # 1. Reconstruction loss
-        recon_loss = compute_reconstruction_loss(
-            original, reconstructed, normalize=self.config.normalize_reconstruction
-        )
+        recon_metrics = {}
+        aux_loss = torch.tensor(0.0, device=original.device)
+        aux_metrics = {}
+
+        if self.aux_config is not None and decoded:
+            # Temporal-only mode: encoded-space recon for temporal features,
+            # PLUS separate aux head losses for theta/IC decoded from quantized latents.
+            recon_loss = compute_reconstruction_loss(
+                original, reconstructed, normalize=self.config.normalize_reconstruction
+            )
+            aux_loss, aux_metrics = compute_aux_head_losses(
+                decoded=decoded,
+                theta_gt=original_theta,
+                ic_gt=original_initial,
+                aux_config=self.aux_config,
+            )
+        elif decoded is not None and (original_theta is not None or original_initial is not None):
+            # Standard mode: inverse head outputs vs actual physical inputs
+            recon_loss, recon_metrics = compute_inverse_reconstruction_loss(
+                decoded=decoded,
+                original_theta=original_theta,
+                original_initial=original_initial,
+            )
+        else:
+            # Fallback: encoded-space reconstruction (legacy, when no inverse heads)
+            recon_loss = compute_reconstruction_loss(
+                original, reconstructed, normalize=self.config.normalize_reconstruction
+            )
 
         # 2. VQ loss (already computed by quantizers)
         # This includes commitment cost from VectorQuantizer
@@ -511,7 +726,9 @@ class VQVAELoss:
         ortho_loss = compute_orthogonality_loss(category_embeddings)
 
         # 4. Informativeness loss
-        info_loss = compute_informativeness_loss(category_embeddings)
+        info_loss = compute_informativeness_loss(
+            category_embeddings, mode=self.config.informativeness_mode
+        )
 
         # 5. Topographic loss (optional)
         topo_loss = torch.tensor(0.0, device=original.device)
@@ -561,14 +778,33 @@ class VQVAELoss:
                 # Roundtrip loss requires decoded values, tokens, and model
                 roundtrip_metrics['roundtrip/total'] = 0.0
 
-        # Weighted combination
+        # 7. Group balance loss (learned mode only)
+        balance_loss = torch.tensor(0.0, device=original.device)
+        if (
+            self.config.group_balance_weight > 0
+            and cnn_features is not None
+            and num_groups is not None
+        ):
+            balance_loss = compute_group_balance_loss(cnn_features, num_groups)
+
+        # 8. Gate sparsity loss (gated pyramid_first mode only)
+        gate_sparsity_loss = torch.tensor(0.0, device=original.device)
+        if self.config.gate_sparsity_weight > 0 and gate_values is not None:
+            # L1 penalty on gate activations: mean(sigmoid(g_i))
+            gate_sparsity_loss = gate_values.mean()
+
+        # Weighted combination (with optional EMA loss-scale normalization)
         total_loss = (
-            self.config.reconstruction_weight * recon_loss
-            + vq_loss  # VQ loss already weighted by commitment_cost in quantizer
-            + self.config.orthogonality_weight * ortho_loss
-            + self.config.informativeness_weight * info_loss
-            + self.config.topographic_weight * topo_loss
-            + (self.config.roundtrip.weight * roundtrip_loss if self.config.roundtrip else 0.0)
+            self.config.reconstruction_weight * self._scale_loss('reconstruction', recon_loss)
+            + self._scale_loss('vq', vq_loss)
+            + self.config.orthogonality_weight * self._scale_loss('orthogonality', ortho_loss)
+            + self.config.informativeness_weight * self._scale_loss('informativeness', info_loss)
+            + self.config.topographic_weight * self._scale_loss('topographic', topo_loss)
+            + self.config.group_balance_weight * self._scale_loss('group_balance', balance_loss)
+            + self.config.gate_sparsity_weight * self._scale_loss('gate_sparsity', gate_sparsity_loss)
+            + (self.config.roundtrip.weight * self._scale_loss('roundtrip', roundtrip_loss)
+               if self.config.roundtrip else 0.0)
+            + self._scale_loss('aux', aux_loss)  # 0.0 when not temporal-only
         )
 
         result = {
@@ -580,7 +816,15 @@ class VQVAELoss:
             "topographic": topo_loss,
             "topo_pre": topo_pre_corr,
             "topo_post": topo_post_corr,
+            "group_balance": balance_loss,
+            "gate_sparsity": gate_sparsity_loss,
         }
+
+        # Add per-family inverse reconstruction metrics
+        result.update(recon_metrics)
+
+        # Add aux head metrics if computed (temporal-only mode)
+        result.update(aux_metrics)
 
         # Add roundtrip metrics if computed
         result.update(roundtrip_metrics)

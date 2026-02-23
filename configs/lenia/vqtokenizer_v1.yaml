@@ -1,0 +1,185 @@
+# VQ Tokenizer — Lenia Pyramid-First (Behavioral Focus)
+#
+# Produces 60 BEHAVIORAL tokens (20 groups × 3 levels) from Lenia trajectory
+# dynamics. Tokens are grounded symbols representing what the CA system DOES,
+# not what parameters generated it.
+#
+# Architecture (pyramid-first):
+#   Raw trajectory [B,T,C,H,W]
+#     → SpatioTemporalPyramid (downsample raw trajectory along T)
+#     → shared FrameCNNEncoder (gradient-checkpointed)
+#     → per-level TemporalAggregator (Conv1d+BN+ReLU+GAP)
+#     → LearnedGroupProjection (Linear + LayerNorm)
+#     → 20 per-group VQ hierarchy → 60 tokens
+#   Quantized latents → ic_aux_head → [B, C, H, W] ICs (behavioral consistency)
+#
+# Key improvements over per_frame mode:
+#   - CNN sees multi-resolution SPATIAL data (real time-averaged fields)
+#   - Learned group projection eliminates 92x variance imbalance
+#   - Per-level temporal aggregation captures level-specific patterns
+#
+# Lenia-specific notes:
+#   - 3-channel CA system (C=3), 64x64 grid, 256 timesteps
+#   - 16 Sobol params: 3 kernel radii + 3 growth_mu + 3 growth_sigma + dt + 6 coupling
+#   - Uses LeniaReplayAdapter (auto-detected from generation_config_path)
+#     for fully batched on-the-fly trajectory generation during training.
+
+dataset_path: "datasets/lenia_500k.h5"
+
+# ── Feature source: learned CNN ──────────────────────────────
+feature_source: "learned"
+generation_config_path: "configs/lenia/lenia_500k.yaml"
+generation_timesteps: 256
+replayer_cache_size: 16
+
+# ── Temporal-only mode ───────────────────────────────────────
+temporal_only: true
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  initial:
+    variant: "cnn"
+    cnn_embedding_dim: 384
+    use_final_batchnorm: true
+    # in_channels: auto-detected from dataset (3 for Lenia)
+
+  temporal:
+    variant: "pyramid"
+    learned:
+      architecture: "pyramid_first"
+      # in_channels: auto-detected from ICs (3 for Lenia)
+      d_cnn: 256              # CNN output dim per frame
+      d_agg: 128              # per-level temporal aggregation dim
+      num_groups: 20           # 20 learned groups
+      gated_groups: true       # per-group learnable gates for downstream adaptivity
+      gate_init_bias: 5.0      # sigmoid(5.0) ≈ 0.993 → gates start nearly open
+    level_dims: [6, 12, 20, 26]        # VQ hierarchy split (sum=64 = D_group)
+    downsample_factors: [1, 2, 4, 8]   # Trajectory pyramid factors
+    variable_length:
+      enabled: true
+      min_timesteps: 16
+      max_timesteps: 256
+      length_bins: [16, 32, 64, 128, 256]
+      sampling_strategy: "fixed_bins"
+      adaptive_pyramid: true
+      min_pyramid_length: 1
+      mask_downsample_method: "ceil"
+
+  # Theta config kept for param_dim auto-detection (dimensions only)
+  theta:
+    variant: "direct"
+    # param_dim: auto-detected from dataset (16 for 3-channel Lenia)
+
+  embedding_dim: 64                    # per-group VQ input dim (= D_group)
+  hidden_dim: 128
+  dropout: 0.6
+  use_layer_norm: true
+
+# ═══════════════════════════════════════════════════════════════
+# Auxiliary Heads — IC decoded from temporal tokens
+# ═══════════════════════════════════════════════════════════════
+
+aux_heads:
+  # Theta: predict Lenia params from temporal tokens.
+  # Some params (kernel radii, growth_mu/sigma) have strong behavioral signatures;
+  # others (coupling, dt) are subtler. The aux head provides a useful gradient
+  # signal even if prediction is imperfect — it encourages temporal tokens to
+  # capture param-dependent dynamics.
+  theta_enabled: false
+  theta_probe_enabled: false
+
+  # IC: ENABLED — the initial condition IS observable behavior (t=0 state).
+  # Predicting IC from temporal tokens is a valid behavioral consistency check.
+  initial_enabled: true
+  initial_base_channels: 256
+  initial_weight: 1.0            # primary behavioral grounding signal
+
+  # Pre-VQ IC probe: DISABLED — marginal benefit, VQ discretization is the bottleneck.
+  initial_probe_enabled: false
+  initial_probe_weight: 1.0
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  embedding_dim: 64
+  commitment_cost: 0.25
+  use_ema: true
+  ema_decay: 0.99
+  epsilon: 1.0e-5
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchy
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3
+  compression_ratios: "0.5:1.0:1.5"
+  min_latent_dim: 4
+  max_latent_dim: 192
+
+# ═══════════════════════════════════════════════════════════════
+# Training
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 3
+  batch_size: 128
+  learning_rate: 0.001
+  val_split: 0.1
+  val_every_n_epochs: 1
+
+  optimizer: "adamw"
+  weight_decay: 0.05
+  gradient_clip_norm: 1.0
+
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 1
+
+  early_stopping_patience: 30
+  early_stopping_min_delta: 0.001
+
+  dead_code_reset_interval: 0
+  dead_code_threshold: 0.01
+
+  device: "auto"
+  compile_model: false
+
+
+# ═══════════════════════════════════════════════════════════════
+# Loss — Behavioral Discriminability
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  reconstruction_weight: 0.1     # tokens must preserve encoded behavioral content
+  orthogonality_weight: 0.1      # decorrelated group representations
+  informativeness_weight: 0.1    # prevent group collapse
+  informativeness_mode: "log_barrier"
+  topographic_weight: 0.5        # KEY: distance preservation = behavioral discriminability
+  topographic_n_samples: 128
+  group_balance_weight: 2.0      # equalize per-group variance (learned projection mode)
+  gate_sparsity_weight: 0.0      # 0 during pretraining; increase during joint fine-tuning
+  normalize_reconstruction: true
+  normalize_loss_scales: true
+  loss_scale_ema_momentum: 0.99
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "none"
+  clip_std_multiplier: null
+
+# ═══════════════════════════════════════════════════════════════
+# System
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 7
+verbose: true
+log_level: "INFO"

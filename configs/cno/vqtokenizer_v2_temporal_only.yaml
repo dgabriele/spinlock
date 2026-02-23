@@ -1,16 +1,21 @@
-# VQ Tokenizer — Learned CNN Temporal Features
+# VQ Tokenizer — Temporal-Only Mode (Behavioral Focus)
 #
-# Identical to vqtokenizer_v1.yaml EXCEPT:
-#   1. feature_source: "learned" — per-frame CNN replaces hand-crafted features
-#   2. encoder.initial.variant: "cnn" (no manual features in learned mode)
-#   3. encoder.temporal.learned: new CNN config section
-#   4. No feature_cleaning (CNN has internal BatchNorm)
-#   5. No grouping (sequential slicing of CNN output, automatic)
-#   6. training.batch_size: 32 (on-the-fly trajectory generation is expensive)
-#   7. cno_config_path: for CNOReplayer trajectory generation
+# Produces 90 BEHAVIORAL tokens (30 groups × 3 levels) from trajectory dynamics.
+# Tokens are grounded symbols representing what the system DOES, not what
+# parameters generated it. Optimized for behavioral discriminability:
+# different dynamics → different token sets, same dynamics → same tokens.
 #
-# All other settings (loss, quantizer, hierarchy, optimizer, scheduler, etc.)
-# are kept identical to v1 for a fair comparison.
+# Architecture:
+#   Raw trajectory → CNN → 30 per-group pyramid encoders → 90 VQ tokens
+#   Quantized latents → ic_aux_head → [B, C, H, W] ICs (behavioral consistency)
+#
+# Loss design:
+#   - VQ commitment: codebook quality
+#   - Topographic: distance preservation (behavioral discriminability)
+#   - Orthogonality: decorrelated group representations
+#   - Informativeness: prevent group collapse
+#   - IC aux: spatial grounding (IC is the observable starting state)
+#   - Reconstruction: tokens must preserve encoded behavioral content
 
 dataset_path: "datasets/50k_baseline.h5"
 
@@ -19,14 +24,17 @@ feature_source: "learned"
 cno_config_path: "configs/50k_baseline/50k_baseline.yaml"
 replayer_cache_size: 16
 
+# ── Temporal-only mode ───────────────────────────────────────
+temporal_only: true
+
 # ═══════════════════════════════════════════════════════════════
 # Encoder Configuration
 # ═══════════════════════════════════════════════════════════════
 
 encoder:
   initial:
-    variant: "cnn"              # CNN-only (no manual features in learned mode)
-    cnn_embedding_dim: 384      # Same as v1
+    variant: "cnn"
+    cnn_embedding_dim: 384
     use_final_batchnorm: true
     # in_channels: auto-detected from dataset
 
@@ -36,7 +44,7 @@ encoder:
       # in_channels: auto-detected from ICs
       embedding_dim: 240        # 30 groups × 8 dim/group
       num_groups: 30
-    level_dims: [6, 12, 20, 26]    # Same as v1: sum=64D per group
+    level_dims: [6, 12, 20, 26]    # sum=64D per group
     downsample_factors: [1, 2, 4, 8]
     variable_length:
       enabled: true
@@ -48,15 +56,35 @@ encoder:
       min_pyramid_length: 1
       mask_downsample_method: "ceil"
 
+  # Theta config kept for param_dim auto-detection (dimensions only)
   theta:
-    variant: "direct"           # Per-parameter VQ: 14 independent tokens (~10 bits/param)
-    # param_dim: auto-detected
-    # hidden_dim, output_dim, dropout, use_layer_norm are ignored in direct mode
+    variant: "direct"
+    # param_dim: auto-detected from dataset
 
   embedding_dim: 64
   hidden_dim: 128
-  dropout: 0.5                  # Same as v1
+  dropout: 0.5
   use_layer_norm: true
+
+# ═══════════════════════════════════════════════════════════════
+# Auxiliary Heads — IC decoded from temporal tokens
+# ═══════════════════════════════════════════════════════════════
+
+aux_heads:
+  # Theta: DISABLED — most params are "dark" (unobservable in dynamics).
+  # Forcing tokens to predict dark params dilutes behavioral signal.
+  theta_enabled: false
+  theta_probe_enabled: false
+
+  # IC: ENABLED — the initial condition IS observable behavior (t=0 state).
+  # Predicting IC from temporal tokens is a valid behavioral consistency check.
+  initial_enabled: true
+  initial_base_channels: 256
+  initial_weight: 1.0            # primary behavioral grounding signal
+
+  # Pre-VQ IC probe: bypasses VQ bottleneck for direct CNN → IC gradient.
+  initial_probe_enabled: true
+  initial_probe_weight: 1.0
 
 # ═══════════════════════════════════════════════════════════════
 # Quantizer
@@ -80,24 +108,15 @@ hierarchy:
   max_latent_dim: 192
 
 # ═══════════════════════════════════════════════════════════════
-# Inverse Heads — theta + IC reconstruction
-# ═══════════════════════════════════════════════════════════════
-
-inverse_heads:
-  theta_hidden_dim: 128
-  theta_dropout: 0.15
-  initial_base_channels: 256
-
-# ═══════════════════════════════════════════════════════════════
-# Training (same as v1 except batch_size)
+# Training
 # ═══════════════════════════════════════════════════════════════
 
 training:
   num_epochs: 1000
-  batch_size: 128               # No roundtrip → headroom for larger batch
+  batch_size: 128
   learning_rate: 0.001
   val_split: 0.1
-  val_every_n_epochs: 1          # Validate every epoch (epochs are slow with on-the-fly rollouts)
+  val_every_n_epochs: 1
 
   optimizer: "adamw"
   weight_decay: 0.05
@@ -117,21 +136,22 @@ training:
   compile_model: false
 
 # ═══════════════════════════════════════════════════════════════
-# Loss (same as v1)
+# Loss — Behavioral Discriminability
 # ═══════════════════════════════════════════════════════════════
 
 loss:
-  reconstruction_weight: 1.0       # EMA-normalized: weights are gradient ratios
-  orthogonality_weight: 0.1
-  informativeness_weight: 0.1
-  topographic_weight: 0.2
-  topographic_n_samples: 128     # 100% of batch_size=128
+  reconstruction_weight: 0.1     # tokens must preserve encoded behavioral content
+  orthogonality_weight: 0.1      # decorrelated group representations
+  informativeness_weight: 0.1    # prevent group collapse
+  informativeness_mode: "log_barrier"
+  topographic_weight: 0.5        # KEY: distance preservation = behavioral discriminability
+  topographic_n_samples: 128
   normalize_reconstruction: true
-  normalize_loss_scales: true       # EMA normalization: all losses ≈ 1.0 before weighting
+  normalize_loss_scales: true
   loss_scale_ema_momentum: 0.99
 
 # ═══════════════════════════════════════════════════════════════
-# Normalization (same as v1)
+# Normalization
 # ═══════════════════════════════════════════════════════════════
 
 normalization:
@@ -139,7 +159,7 @@ normalization:
   clip_std_multiplier: null
 
 # ═══════════════════════════════════════════════════════════════
-# System (same as v1)
+# System
 # ═══════════════════════════════════════════════════════════════
 
 random_seed: 42

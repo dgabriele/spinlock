@@ -35,6 +35,9 @@ class PretokenizeDatasetCommand(CLICommand):
 
     Tokenizes all samples once using batch processing and saves tokens to HDF5,
     eliminating the need for on-the-fly tokenization during training.
+
+    Supports both manual-mode (pre-extracted features) and learned-mode
+    (CNN temporal features with on-the-fly trajectory generation via replayer).
     """
 
     @property
@@ -96,7 +99,7 @@ Examples:
             type=Path,
             required=True,
             metavar="PATH",
-            help="Path to input CNO dataset HDF5 file",
+            help="Path to input dataset HDF5 file",
         )
 
         parser.add_argument(
@@ -155,13 +158,26 @@ Examples:
         if tokenizer is None:
             return 1
 
+        # Detect learned mode from tokenizer config
+        self.is_learned_mode = tokenizer.config.feature_source == "learned"
+        self.is_temporal_only = tokenizer.config.temporal_only
+        self.replayer = None
+
+        # Setup replayer for learned mode (trajectory generation)
+        if self.is_learned_mode:
+            self.replayer = self._setup_replayer(tokenizer.config, device)
+            if self.replayer is None:
+                return 1
+
         # Load dataset features
-        features = self._load_dataset_features(args.dataset)
+        features = self._load_dataset_features(args.dataset, tokenizer)
         if features is None:
             return 1
 
         # Apply feature cleaning to match tokenizer's expected dimensions
-        features = self._apply_feature_cleaning(tokenizer, features)
+        # (only relevant for manual mode — learned mode has no pre-extracted temporal)
+        if not self.is_learned_mode:
+            features = self._apply_feature_cleaning(tokenizer, features)
 
         # Extract truncation lengths if temporal resolution mode
         truncation_lengths = None
@@ -192,17 +208,32 @@ Examples:
 
         # Batch tokenize and save
         try:
-            self._batch_tokenize_and_save(
-                tokenizer,
-                features,
-                category_levels,
-                output_file,
-                args.batch_size,
-                device,
-                truncation_lengths,
-            )
+            if features.get('dataset') is not None:
+                # Streaming mode: DataLoader-based batch loop (learned mode)
+                self._batch_tokenize_streaming(
+                    tokenizer,
+                    features['dataset'],
+                    category_levels,
+                    output_file,
+                    args.batch_size,
+                    device,
+                    truncation_lengths,
+                )
+            else:
+                # Eager mode: slice pre-loaded numpy arrays (manual mode)
+                self._batch_tokenize_and_save(
+                    tokenizer,
+                    features,
+                    category_levels,
+                    output_file,
+                    args.batch_size,
+                    device,
+                    truncation_lengths,
+                )
         finally:
             output_file.close()
+            if features.get('dataset') is not None:
+                features['dataset'].close_lazy()
 
         # Report results
         self._report_results(args.output, features, category_levels, truncation_lengths)
@@ -237,16 +268,48 @@ Examples:
             self.error(f"Failed to load tokenizer: {e}")
             return None
 
-    def _load_dataset_features(self, dataset_path: Path) -> Optional[Dict[str, np.ndarray]]:
-        """Load features from SpinlockDataset."""
+    def _load_dataset_features(
+        self, dataset_path: Path, tokenizer=None,
+    ) -> Optional[Dict[str, np.ndarray]]:
+        """Load features from SpinlockDataset.
+
+        In learned mode, temporal features are NOT loaded from the dataset
+        (they come from the CNN operating on generated trajectories). Only
+        theta parameters and raw ICs are loaded.
+        """
         from spinlock.data import SpinlockDataset
 
         print(f"\nLoading dataset from {dataset_path}")
         try:
+            if self.is_learned_mode:
+                # ── Streaming mode (learned) ─────────────────────────
+                # Only params (~32 MB) loaded eagerly; ICs read per-sample
+                # from HDF5 in __getitem__ (lazy_ics=True). This avoids
+                # the 73+ GB eager load of inputs/fields.
+                streaming_ds = SpinlockDataset(
+                    str(dataset_path),
+                    max_samples=int(1e9),  # Clamped to actual total
+                    lazy_ics=True,
+                    realization_mode="mean",
+                )
+                print(f"✓ Streaming dataset: {streaming_ds.n_samples:,} samples (lazy ICs)")
+                print(f"  Mode: learned (temporal features from CNN, not dataset)")
+                return {
+                    'dataset': streaming_ds,
+                    'temporal': None,
+                    'initial_manual': None,
+                    'initial_raw': None,
+                    'theta': None,
+                    'num_samples': streaming_ds.n_samples,
+                }
+
+            # ── Eager mode (manual) ──────────────────────────────────
             dataset = SpinlockDataset.from_file(str(dataset_path))
             with dataset.open():
-                # Load temporal features
-                temporal = dataset.features.temporal.load_all() if dataset.features.temporal else None
+                # Load temporal features (skip in learned mode — CNN generates them)
+                temporal = None
+                if not self.is_learned_mode:
+                    temporal = dataset.features.temporal.load_all() if dataset.features.temporal else None
 
                 # Load initial manual features (aggregated)
                 initial_manual = dataset.features.initial.load_all() if dataset.features.initial else None
@@ -268,13 +331,23 @@ Examples:
                     theta = dataset.parameters.params.load_all()
                     print(f"  Theta (parameters): {theta.shape}")
 
-                if temporal is None and initial_manual is None:
+                # Determine num_samples from whatever is available
+                if temporal is not None:
+                    num_samples = temporal.shape[0]
+                elif theta is not None:
+                    num_samples = theta.shape[0]
+                elif initial_raw is not None:
+                    num_samples = initial_raw.shape[0]
+                elif initial_manual is not None:
+                    num_samples = initial_manual.shape[0]
+                else:
                     self.error("No features found in dataset")
                     return None
 
-                num_samples = temporal.shape[0] if temporal is not None else initial_manual.shape[0]
                 print(f"✓ Loaded {num_samples:,} samples")
 
+                if self.is_learned_mode:
+                    print(f"  Mode: learned (temporal features from CNN, not dataset)")
                 if temporal is not None:
                     print(f"  Temporal features: {temporal.shape}")
                 if initial_manual is not None:
@@ -292,6 +365,101 @@ Examples:
         except Exception as e:
             self.error(f"Failed to load dataset: {e}")
             return None
+
+    def _setup_replayer(self, config, device: torch.device):
+        """Set up trajectory replayer for learned-mode trajectory generation.
+
+        Auto-detects operator type from generation config and creates the
+        appropriate replayer (LeniaReplayAdapter, CNOReplayer, etc.).
+
+        Args:
+            config: TokenizerConfig from loaded checkpoint
+            device: Computation device
+
+        Returns:
+            Replayer instance, or None on failure
+        """
+        import yaml as _yaml
+
+        config_path = config.generation_config_path or config.cno_config_path
+        if config_path is None:
+            self.error(
+                "Learned-mode tokenizer requires generation_config_path (or cno_config_path) in config.\n"
+                "Set it in the training config YAML."
+            )
+            return None
+
+        try:
+            with open(config_path) as f:
+                gen_config = _yaml.safe_load(f)
+            operator_type = gen_config.get("simulation", {}).get("operator_type")
+
+            match operator_type:
+                case "lenia":
+                    from spinlock.lenia.replay_adapter import LeniaReplayAdapter
+                    replayer = LeniaReplayAdapter.from_config(config_path, device=str(device))
+                case "cnn" | "u_afno":
+                    from spinlock.mno.cno_replay import CNOReplayer
+                    replayer = CNOReplayer.from_config(
+                        config_path, device=str(device),
+                        cache_size=config.replayer_cache_size,
+                    )
+                case "qbm":
+                    raise NotImplementedError("QBM replay adapter not yet implemented.")
+                case _:
+                    raise NotImplementedError(
+                        f"No replay adapter for operator_type='{operator_type}'."
+                    )
+
+            print(f"✓ {type(replayer).__name__} created from {config_path}")
+            print(f"  Generation timesteps: {config.generation_timesteps}")
+            return replayer
+        except Exception as e:
+            self.error(f"Failed to create replayer: {e}")
+            return None
+
+    def _generate_trajectories(
+        self,
+        theta_batch: torch.Tensor,
+        initial_raw_batch: torch.Tensor,
+        generation_timesteps: int,
+    ) -> torch.Tensor:
+        """Generate trajectories via replayer for a batch.
+
+        Prefers batched rollout_batch() when available (e.g. LeniaReplayAdapter),
+        falls back to per-sample rollout() loop (e.g. CNOReplayer).
+
+        Args:
+            theta_batch: [B, param_dim] on any device
+            initial_raw_batch: [B, C, H, W] on any device
+            generation_timesteps: Number of timesteps to generate
+
+        Returns:
+            trajectories: [B, T+1, C, H, W] on CPU
+        """
+        # Batched path (e.g. LeniaReplayAdapter)
+        if hasattr(self.replayer, 'rollout_batch'):
+            with torch.no_grad():
+                return self.replayer.rollout_batch(
+                    params_batch=theta_batch.cpu(),
+                    ics=initial_raw_batch,
+                    timesteps=generation_timesteps,
+                    return_all_steps=True,
+                )  # [B, T+1, C, H, W] on CPU
+
+        # Per-sample path (e.g. CNOReplayer)
+        B = theta_batch.shape[0]
+        trajectories = []
+        with torch.no_grad():
+            for i in range(B):
+                traj = self.replayer.rollout(
+                    params_vector=theta_batch[i].cpu(),
+                    ic=initial_raw_batch[i],
+                    timesteps=generation_timesteps,
+                    return_all_steps=True,
+                )  # [1, T+1, C, H, W] on replayer device
+                trajectories.append(traj.squeeze(0).cpu())  # [T+1, C, H, W]
+        return torch.stack(trajectories, dim=0)  # [B, T+1, C, H, W]
 
     def _apply_feature_cleaning(
         self,
@@ -398,27 +566,17 @@ Examples:
             )
             return None
 
-        # Extract truncation lengths from downsample_factors
-        downsample_factors = config.encoder.temporal.downsample_factors
-        max_timesteps = config.encoder.temporal.max_timesteps
+        # Extract truncation lengths from variable_length.length_bins
+        vl = config.encoder.temporal.variable_length
+        if vl is None or not vl.length_bins:
+            self.error(
+                "Temporal resolution mode requires variable_length.length_bins "
+                "in tokenizer config, but none found."
+            )
+            return None
 
-        # Compute truncation points: max_timesteps / factor
-        truncation_lengths = [max_timesteps // factor for factor in downsample_factors]
-        truncation_lengths = sorted(truncation_lengths)
-
-        # Validate against dataset
-        if features['temporal'] is not None:
-            dataset_timesteps = features['temporal'].shape[1]
-            max_trunc = max(truncation_lengths)
-            if max_trunc > dataset_timesteps:
-                self.error(
-                    f"Max truncation length {max_trunc} exceeds dataset timesteps {dataset_timesteps}"
-                )
-                return None
-
-        print(f"✓ Extracted truncation lengths from pyramid config:")
-        print(f"  max_timesteps={max_timesteps}, downsample_factors={downsample_factors}")
-        print(f"  Truncation points: {truncation_lengths}")
+        truncation_lengths = sorted(vl.length_bins)
+        print(f"✓ Truncation lengths: {truncation_lengths}")
 
         return truncation_lengths
 
@@ -447,37 +605,62 @@ Examples:
             # Process each truncation length
             for trunc_len in lengths_to_process:
                 with torch.no_grad():
-                    # Prepare batch (truncate temporal if needed)
-                    if trunc_len is not None and features['temporal'] is not None:
-                        temp_batch = torch.from_numpy(features['temporal'][:1, :trunc_len, :]).to(device)
+                    # Prepare probe batch (first sample)
+                    if features.get('dataset') is not None:
+                        # Streaming mode: get first sample from dataset
+                        sample = features['dataset'][0]
+                        init_raw_batch = sample['ic'].unsqueeze(0).to(device)
+                        theta_batch = sample['params'].unsqueeze(0).to(device)
+                        temp_batch = None
+                        init_manual_batch = None
                     else:
-                        temp_batch = (
-                            torch.from_numpy(features['temporal'][:1]).to(device)
-                            if features['temporal'] is not None
+                        # Eager mode: slice from numpy arrays
+                        if trunc_len is not None and features['temporal'] is not None:
+                            temp_batch = torch.from_numpy(features['temporal'][:1, :trunc_len, :]).to(device)
+                        else:
+                            temp_batch = (
+                                torch.from_numpy(features['temporal'][:1]).to(device)
+                                if features['temporal'] is not None
+                                else None
+                            )
+
+                        init_manual_batch = (
+                            torch.from_numpy(features['initial_manual'][:1]).to(device)
+                            if features['initial_manual'] is not None
+                            else None
+                        )
+                        init_raw_batch = (
+                            torch.from_numpy(features['initial_raw'][:1]).to(device)
+                            if features['initial_raw'] is not None
+                            else None
+                        )
+                        theta_batch = (
+                            torch.from_numpy(features['theta'][:1]).to(device)
+                            if features['theta'] is not None
                             else None
                         )
 
-                    init_manual_batch = (
-                        torch.from_numpy(features['initial_manual'][:1]).to(device)
-                        if features['initial_manual'] is not None
-                        else None
-                    )
-                    init_raw_batch = (
-                        torch.from_numpy(features['initial_raw'][:1]).to(device)
-                        if features['initial_raw'] is not None
-                        else None
-                    )
-                    theta_batch = (
-                        torch.from_numpy(features['theta'][:1]).to(device)
-                        if features['theta'] is not None
-                        else None
-                    )
+                    # Generate trajectories for learned mode
+                    # Use trunc_len when in temporal resolution mode, else full timesteps
+                    temporal_raw_batch = None
+                    if self.is_learned_mode and theta_batch is not None and init_raw_batch is not None:
+                        gen_timesteps = trunc_len if trunc_len is not None else (tokenizer.config.generation_timesteps or 64)
+                        temporal_raw_batch = self._generate_trajectories(
+                            theta_batch, init_raw_batch, gen_timesteps,
+                        )  # [1, gen_timesteps+1, C, H, W] on CPU
+
+                    # In temporal_only mode, don't pass theta/initial to tokenize
+                    # (they're decoded from temporal tokens via aux heads, not separate families)
+                    tok_theta = None if self.is_temporal_only else theta_batch
+                    tok_init_manual = None if self.is_temporal_only else init_manual_batch
+                    tok_init_raw = None if self.is_temporal_only else init_raw_batch
 
                     sample_tokens = tokenizer.tokenize(
                         temporal_features=temp_batch,
-                        initial_manual=init_manual_batch,
-                        initial_raw=init_raw_batch,
-                        theta_features=theta_batch,
+                        initial_manual=tok_init_manual,
+                        initial_raw=tok_init_raw,
+                        theta_features=tok_theta,
+                        temporal_raw=temporal_raw_batch,
                     )
 
                 # Add truncation suffix if temporal resolution mode
@@ -556,31 +739,149 @@ Examples:
 
             # Optionally copy features
             if copy_features:
-                print("  Copying features to output...")
-                features_group = f.create_group('features')
-                if features['temporal'] is not None:
-                    features_group.create_dataset(
-                        'temporal',
-                        data=features['temporal'],
-                        compression='gzip',
-                    )
-                if features['initial_manual'] is not None:
-                    features_group.create_dataset(
-                        'initial_manual',
-                        data=features['initial_manual'],
-                        compression='gzip',
-                    )
-                if features['initial_raw'] is not None:
-                    features_group.create_dataset(
-                        'initial_raw',
-                        data=features['initial_raw'],
-                        compression='gzip',
-                    )
+                has_copyable = any(
+                    features[k] is not None
+                    for k in ('temporal', 'initial_manual', 'initial_raw')
+                )
+                if not has_copyable:
+                    print("  --copy-features: skipped (no eager features in streaming mode)")
+                else:
+                    print("  Copying features to output...")
+                    features_group = f.create_group('features')
+                    if features['temporal'] is not None:
+                        features_group.create_dataset(
+                            'temporal',
+                            data=features['temporal'],
+                            compression='gzip',
+                        )
+                    if features['initial_manual'] is not None:
+                        features_group.create_dataset(
+                            'initial_manual',
+                            data=features['initial_manual'],
+                            compression='gzip',
+                        )
+                    if features['initial_raw'] is not None:
+                        features_group.create_dataset(
+                            'initial_raw',
+                            data=features['initial_raw'],
+                            compression='gzip',
+                        )
 
             return f
         except Exception as e:
             self.error(f"Failed to create output file: {e}")
             return None
+
+    def _batch_tokenize_streaming(
+        self,
+        tokenizer,
+        dataset,
+        category_levels: list,
+        output_file: h5py.File,
+        batch_size: int,
+        device: torch.device,
+        truncation_lengths: Optional[list] = None,
+    ):
+        """Tokenize dataset via DataLoader streaming and save to HDF5.
+
+        Used for learned mode: ICs are read lazily per-batch from HDF5,
+        trajectories generated via replayer, then tokenized. Peak memory
+        is O(batch_size) instead of O(N).
+
+        Args:
+            tokenizer: Loaded VQTokenizer instance.
+            dataset: SpinlockDataset in lazy_ics mode.
+            category_levels: List of token key names for HDF5 output.
+            output_file: Open HDF5 file with 'tokens' group pre-created.
+            batch_size: Samples per batch.
+            device: Computation device.
+            truncation_lengths: If set, tokenize at each truncation point.
+        """
+        from torch.utils.data import DataLoader
+
+        tokens_group = output_file['tokens']
+        generation_timesteps = tokenizer.config.generation_timesteps or 64
+
+        if truncation_lengths is not None:
+            lengths_to_process = truncation_lengths
+            print(
+                f"\nTokenizing {dataset.n_samples:,} samples at "
+                f"{len(truncation_lengths)} truncation lengths "
+                f"[learned mode, streaming]..."
+            )
+        else:
+            lengths_to_process = [None]
+            print(
+                f"\nTokenizing {dataset.n_samples:,} samples "
+                f"(batch_size={batch_size}) [learned mode, streaming]..."
+            )
+
+        # Close any lazy HDF5 handle opened during token structure analysis,
+        # so forked worker processes don't inherit a shared file descriptor.
+        # Each worker will open its own handle via _ensure_h5_open().
+        dataset.close_lazy()
+
+        loader = DataLoader(
+            dataset, batch_size=batch_size, num_workers=3,
+            prefetch_factor=2, shuffle=False, persistent_workers=False,
+        )
+
+        for trunc_idx, trunc_len in enumerate(lengths_to_process):
+            gen_timesteps = trunc_len if trunc_len is not None else generation_timesteps
+
+            if trunc_len is not None:
+                desc = f"  t={trunc_len} ({trunc_idx+1}/{len(lengths_to_process)})"
+            else:
+                desc = "Batches"
+
+            with torch.no_grad():
+                for batch in tqdm(loader, desc=desc, unit="batch"):
+                    theta_batch = batch['params'].to(device)
+                    ic_batch = batch['ic'].to(device)
+                    sample_indices = batch['sample_idx']  # [B] original HDF5 indices
+
+                    # Generate trajectories via replayer
+                    temporal_raw_batch = self._generate_trajectories(
+                        theta_batch, ic_batch, gen_timesteps,
+                    )  # [B, T+1, C, H, W] on CPU
+
+                    # In temporal_only mode, don't pass theta/initial to tokenize
+                    tok_theta = None if self.is_temporal_only else theta_batch
+                    tok_init_raw = None if self.is_temporal_only else ic_batch
+
+                    # Tokenize
+                    batch_tokens = tokenizer.tokenize(
+                        temporal_features=None,
+                        initial_manual=None,
+                        initial_raw=tok_init_raw,
+                        theta_features=tok_theta,
+                        temporal_raw=temporal_raw_batch,
+                    )
+
+                    # Determine write indices — contiguous slice when possible
+                    si_start = int(sample_indices[0])
+                    si_end = int(sample_indices[-1]) + 1
+                    contiguous = (si_end - si_start == len(sample_indices))
+
+                    # Write tokens to HDF5
+                    for key, tokens in batch_tokens.items():
+                        tokens_cpu = tokens.cpu().numpy()
+
+                        if trunc_len is not None and "temporal" in key:
+                            base_key, level_suffix = key.rsplit("_L", 1)
+                            save_key = f"{base_key}_trunc_T{trunc_len:03d}_L{level_suffix}"
+                        elif trunc_len is not None:
+                            # Initial/theta: save only from final truncation
+                            if trunc_len != lengths_to_process[-1]:
+                                continue
+                            save_key = key
+                        else:
+                            save_key = key
+
+                        if contiguous:
+                            tokens_group[save_key][si_start:si_end] = tokens_cpu
+                        else:
+                            tokens_group[save_key][sample_indices.numpy()] = tokens_cpu
 
     def _batch_tokenize_and_save(
         self,
@@ -601,7 +902,8 @@ Examples:
 
         if truncation_lengths is not None:
             # Temporal resolution mode: tokenize at each truncation length
-            print(f"\nTokenizing {num_samples:,} samples at {len(truncation_lengths)} truncation lengths...")
+            mode_str = " [learned mode]" if self.is_learned_mode else ""
+            print(f"\nTokenizing {num_samples:,} samples at {len(truncation_lengths)} truncation lengths{mode_str}...")
 
             for trunc_idx, trunc_len in enumerate(truncation_lengths):
                 print(f"\n  Truncation {trunc_idx+1}/{len(truncation_lengths)}: t={trunc_len}")
@@ -612,7 +914,7 @@ Examples:
                         start_idx = batch_idx * batch_size
                         end_idx = min(start_idx + batch_size, num_samples)
 
-                        # Extract batch (truncate temporal)
+                        # Extract batch (truncate temporal for manual mode)
                         temp_batch = (
                             torch.from_numpy(features['temporal'][start_idx:end_idx, :trunc_len, :]).to(device)
                             if features['temporal'] is not None
@@ -634,12 +936,25 @@ Examples:
                             else None
                         )
 
+                        # Generate trajectories for learned mode (truncated to trunc_len)
+                        temporal_raw_batch = None
+                        if self.is_learned_mode and theta_batch is not None and init_raw_batch is not None:
+                            temporal_raw_batch = self._generate_trajectories(
+                                theta_batch, init_raw_batch, trunc_len,
+                            )  # [B, trunc_len+1, C, H, W] on CPU
+
+                        # In temporal_only mode, don't pass theta/initial to tokenize
+                        tok_theta = None if self.is_temporal_only else theta_batch
+                        tok_init_manual = None if self.is_temporal_only else init_manual_batch
+                        tok_init_raw = None if self.is_temporal_only else init_raw_batch
+
                         # Tokenize
                         batch_tokens = tokenizer.tokenize(
                             temporal_features=temp_batch,
-                            initial_manual=init_manual_batch,
-                            initial_raw=init_raw_batch,
-                            theta_features=theta_batch,
+                            initial_manual=tok_init_manual,
+                            initial_raw=tok_init_raw,
+                            theta_features=tok_theta,
+                            temporal_raw=temporal_raw_batch,
                         )
 
                         # Save tokens with truncation suffix
@@ -659,8 +974,10 @@ Examples:
 
         else:
             # Standard mode: tokenize once at full length
-            print(f"\nTokenizing {num_samples:,} samples (batch_size={batch_size})...")
+            mode_str = " [learned mode]" if self.is_learned_mode else ""
+            print(f"\nTokenizing {num_samples:,} samples (batch_size={batch_size}){mode_str}...")
             num_batches = (num_samples + batch_size - 1) // batch_size
+            generation_timesteps = tokenizer.config.generation_timesteps or 64
 
             with torch.no_grad():
                 for batch_idx in tqdm(range(num_batches), desc="Batches", unit="batch"):
@@ -689,12 +1006,25 @@ Examples:
                         else None
                     )
 
+                    # Generate trajectories for learned mode
+                    temporal_raw_batch = None
+                    if self.is_learned_mode and theta_batch is not None and init_raw_batch is not None:
+                        temporal_raw_batch = self._generate_trajectories(
+                            theta_batch, init_raw_batch, generation_timesteps,
+                        )  # [B, T+1, C, H, W] on CPU
+
+                    # In temporal_only mode, don't pass theta/initial to tokenize
+                    tok_theta = None if self.is_temporal_only else theta_batch
+                    tok_init_manual = None if self.is_temporal_only else init_manual_batch
+                    tok_init_raw = None if self.is_temporal_only else init_raw_batch
+
                     # Tokenize
                     batch_tokens = tokenizer.tokenize(
                         temporal_features=temp_batch,
-                        initial_manual=init_manual_batch,
-                        initial_raw=init_raw_batch,
-                        theta_features=theta_batch,
+                        initial_manual=tok_init_manual,
+                        initial_raw=tok_init_raw,
+                        theta_features=tok_theta,
+                        temporal_raw=temporal_raw_batch,
                     )
 
                     # Save tokens

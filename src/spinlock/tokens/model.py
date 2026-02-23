@@ -25,9 +25,10 @@ from .encoders import (
 )
 from .encoders.theta import ThetaMLPEncoder
 from .encoders.temporal_cnn_feature import TemporalCNNFeatureEncoder
-from .config import TokenizerConfig, HierarchyConfig
+from .encoders.pyramid_first import PyramidFirstEncoder
+from .config import TokenizerConfig, HierarchyConfig, AuxHeadConfig
 from .projector import HierarchicalProjector
-from .inverse_models import ThetaInverseMLP, InitialInverseCNN
+from .inverse_models import ThetaInverseMLP, InitialInverseCNN, TemporalInverseMLP
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +73,20 @@ class JointHierarchicalVQVAE(nn.Module):
         super().__init__()
 
         self.config = config
-        self.group_indices = group_indices
         self.temporal_input_dim = temporal_input_dim
         self.initial_input_dim = initial_input_dim
 
+        # In temporal-only mode, filter out non-temporal groups
+        if config.temporal_only:
+            self.group_indices = {
+                k: v for k, v in group_indices.items()
+                if k.startswith("temporal_")
+            }
+        else:
+            self.group_indices = group_indices
+
         # Parse families from group_indices keys
-        self.families = self._parse_families(group_indices)
+        self.families = self._parse_families(self.group_indices)
         logger.info(f"Families detected: {self.families}")
 
         # Total input dimension (after encoding)
@@ -85,8 +94,10 @@ class JointHierarchicalVQVAE(nn.Module):
         self.initial_dim = 0
         self.theta_dim = 0
 
-        # Learned temporal CNN encoder (active when feature_source = "learned")
+        # Learned temporal CNN encoder (active when feature_source = "learned", architecture = "per_frame")
         self.temporal_cnn_encoder: Optional[TemporalCNNFeatureEncoder] = None
+        # Pyramid-first encoder (active when feature_source = "learned", architecture = "pyramid_first")
+        self.pyramid_first_encoder: Optional[PyramidFirstEncoder] = None
         # Per-group encoder mode (active when grouping.method = pca_striped | opq)
         # Each entry encodes one group's raw features [B, G_k] → [B, embedding_dim]
         self.per_group_temporal_encoders: Optional[nn.ModuleDict] = None
@@ -105,19 +116,45 @@ class JointHierarchicalVQVAE(nn.Module):
         # Inverse decoders (created if config provided, otherwise None)
         self.theta_inverse: Optional[ThetaInverseMLP] = None
         self.initial_inverse: Optional[InitialInverseCNN] = None
+        self.temporal_inverse: Optional[TemporalInverseMLP] = None
+
+        # Dedicated theta bypass decoder (direct quantization mode only).
+        # In direct mode, the shared decoder's 2318D output space has only 14D
+        # for θ (0.6%), so gradients get diluted. This bypass gives θ a short,
+        # high-bandwidth gradient path: quantized theta latents → MLP → params.
+        self.theta_bypass_decoder: Optional[nn.Module] = None
 
         if config.inverse_heads is not None:
             # Create theta inverse if theta family exists
             if "theta" in self.families and self.theta_dim > 0:
                 # Infer param_dim from encoder config (adaptive to dataset)
                 theta_param_dim = config.encoder.theta.param_dim if config.encoder.theta else 14
-                self.theta_inverse = ThetaInverseMLP(
-                    encoded_dim=self.theta_dim,
-                    param_dim=theta_param_dim,
-                    hidden_dim=config.inverse_heads.theta_hidden_dim,
-                    dropout=config.inverse_heads.theta_dropout,
-                )
-                logger.info(f"Created ThetaInverseMLP: {self.theta_dim} → {theta_param_dim}")
+
+                if getattr(self, '_theta_direct', False):
+                    # Direct mode: bypass decoder maps quantized theta latents → params
+                    theta_latent_dim = sum(
+                        self._get_latent_dim(fc, l)
+                        for fc in group_indices if fc.startswith("theta_")
+                        for l in range(config.hierarchy.num_levels)
+                    )
+                    self.theta_bypass_decoder = nn.Sequential(
+                        nn.Linear(theta_latent_dim, 64),
+                        nn.LayerNorm(64),
+                        nn.ReLU(),
+                        nn.Linear(64, theta_param_dim),
+                    )
+                    logger.info(
+                        f"Created theta bypass decoder: {theta_latent_dim}D → {theta_param_dim}D"
+                    )
+                    # No ThetaInverseMLP needed — bypass decoder does it directly
+                else:
+                    self.theta_inverse = ThetaInverseMLP(
+                        encoded_dim=self.theta_dim,
+                        param_dim=theta_param_dim,
+                        hidden_dim=config.inverse_heads.theta_hidden_dim,
+                        dropout=config.inverse_heads.theta_dropout,
+                    )
+                    logger.info(f"Created ThetaInverseMLP: {self.theta_dim} → {theta_param_dim}")
 
             # Create initial inverse if initial family exists
             if "initial" in self.families and self.initial_dim > 0:
@@ -132,23 +169,133 @@ class JointHierarchicalVQVAE(nn.Module):
                 )
                 logger.info(f"Created InitialInverseCNN: {self.initial_dim} → [{initial_channels}, {initial_spatial_size}, {initial_spatial_size}]")
 
+            # Create temporal inverse if learned mode (CNN features)
+            if (
+                "temporal" in self.families
+                and self.temporal_dim > 0
+                and self.temporal_cnn_encoder is not None
+                and config.encoder.temporal.learned is not None
+            ):
+                learned_cfg = config.encoder.temporal.learned
+                self.temporal_inverse = TemporalInverseMLP(
+                    encoded_dim=self.temporal_dim,
+                    cnn_dim=learned_cfg.embedding_dim,
+                    roundtrip_timesteps=config.inverse_heads.temporal_roundtrip_timesteps,
+                    hidden_dim=config.inverse_heads.temporal_hidden_dim,
+                    dropout=config.inverse_heads.temporal_dropout,
+                )
+                logger.info(
+                    f"Created TemporalInverseMLP: {self.temporal_dim} → "
+                    f"[{config.inverse_heads.temporal_roundtrip_timesteps}, {learned_cfg.embedding_dim}]"
+                )
+
+        # Auxiliary heads for temporal-only mode (theta/IC decoded from temporal tokens)
+        self.theta_aux_head: Optional[nn.Module] = None
+        self.ic_aux_head: Optional[nn.Module] = None
+        self.theta_probe: Optional[nn.Module] = None  # Pre-VQ theta probe
+        self.ic_probe: Optional[nn.Module] = None     # Pre-VQ IC probe
+
+        if config.temporal_only and config.aux_heads is not None:
+            # Compute total quantized latent dimension across all temporal groups
+            temporal_groups = [fc for fc in group_indices if fc.startswith("temporal_")]
+            total_quantized_dim = sum(
+                self._get_latent_dim(fc, l)
+                for fc in temporal_groups
+                for l in range(config.hierarchy.num_levels)
+            )
+
+            if config.aux_heads.theta_enabled:
+                theta_param_dim = (
+                    config.encoder.theta.param_dim
+                    if config.encoder.theta is not None and config.encoder.theta.param_dim is not None
+                    else 14  # fallback, will be overridden at runtime
+                )
+                self.theta_aux_head = nn.Sequential(
+                    nn.Linear(total_quantized_dim, config.aux_heads.theta_hidden_dim),
+                    nn.LayerNorm(config.aux_heads.theta_hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(config.aux_heads.theta_hidden_dim, theta_param_dim),
+                    nn.Sigmoid(),  # params in [0,1]
+                )
+                logger.info(
+                    f"Created theta aux head: {total_quantized_dim}D → {theta_param_dim}D"
+                )
+
+            if config.aux_heads.initial_enabled:
+                initial_channels = (
+                    config.encoder.initial.in_channels
+                    if config.encoder.initial.in_channels is not None
+                    else 3  # fallback, will be overridden at runtime
+                )
+                self.ic_aux_head = InitialInverseCNN(
+                    encoded_dim=total_quantized_dim,
+                    channels=initial_channels,
+                    spatial_size=64,
+                )
+                logger.info(
+                    f"Created IC aux head: {total_quantized_dim}D → "
+                    f"[{initial_channels}, 64, 64]"
+                )
+
+            # Pre-VQ theta probe: predicts theta from encoded temporal features
+            # BEFORE quantization, giving the CNN a direct gradient path for
+            # learning param-dependent dynamics (no VQ bottleneck in the way).
+            if config.aux_heads.theta_probe_enabled:
+                self.theta_probe = nn.Sequential(
+                    nn.Linear(self.temporal_dim, config.aux_heads.theta_probe_hidden_dim),
+                    nn.LayerNorm(config.aux_heads.theta_probe_hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(config.aux_heads.theta_probe_hidden_dim, theta_param_dim),
+                    nn.Sigmoid(),  # params in [0,1]
+                )
+                logger.info(
+                    f"Created pre-VQ theta probe: {self.temporal_dim}D → {theta_param_dim}D"
+                )
+
+            # Pre-VQ IC probe: predicts ICs from encoded temporal features
+            # BEFORE quantization, bypassing the VQ bottleneck for a direct
+            # gradient signal to encode IC-relevant spatial patterns.
+            if config.aux_heads.initial_probe_enabled:
+                probe_channels = (
+                    config.encoder.initial.in_channels
+                    if config.encoder.initial.in_channels is not None
+                    else 3
+                )
+                self.ic_probe = InitialInverseCNN(
+                    encoded_dim=self.temporal_dim,
+                    channels=probe_channels,
+                    spatial_size=64,
+                )
+                logger.info(
+                    f"Created pre-VQ IC probe: {self.temporal_dim}D → "
+                    f"[{probe_channels}, 64, 64]"
+                )
+
         # Compute total encoded dimension
         total_encoded_dim = self.temporal_dim + self.initial_dim + self.theta_dim
 
         # Create categorical projectors (one per family-category)
+        # Use self.group_indices (filtered in temporal-only mode)
         self.projectors = nn.ModuleDict()
-        for family_cat, indices in group_indices.items():
+        for family_cat, indices in self.group_indices.items():
             family, _ = family_cat.split('_', 1)
 
-            # Determine source dimension for this category.
-            # In per-group encoder mode, each temporal group's projector receives
-            # the encoder output dimension rather than the raw feature count.
-            # - Per-group MLP (pca_striped/opq): output = embedding_dim
-            # - Per-group pyramid (pca_raw or learned): output = sum(level_dims)
-            if family == "temporal" and self.per_group_pyramid_encoders is not None:
+            # Determine source dimension for this category from the ENCODER
+            # output, not from raw feature indices. Each projector receives the
+            # output of its family's encoder, so the input dim must match.
+            if family == "temporal" and self.pyramid_first_encoder is not None:
+                cat_dim = config.encoder.embedding_dim  # D_group
+            elif family == "temporal" and self.per_group_pyramid_encoders is not None:
                 cat_dim = sum(config.encoder.temporal.level_dims)
             elif family == "temporal" and self.per_group_temporal_encoders is not None:
                 cat_dim = config.encoder.embedding_dim
+            elif family == "theta" and getattr(self, '_theta_direct', False):
+                # Direct mode: each theta_param_i group receives 1D input
+                cat_dim = 1
+            elif family == "theta":
+                cat_dim = self.theta_dim
+            elif family == "initial":
+                cat_dim = self.initial_dim
             else:
                 cat_dim = len(indices)
 
@@ -159,7 +306,7 @@ class JointHierarchicalVQVAE(nn.Module):
 
         # Create vector quantizers (N×L total, one per family-category-level)
         self.quantizers = nn.ModuleDict()
-        for family_cat in group_indices.keys():
+        for family_cat in self.group_indices.keys():
             family, _ = family_cat.split('_', 1)
             num_levels = config.hierarchy.num_levels
 
@@ -180,7 +327,7 @@ class JointHierarchicalVQVAE(nn.Module):
         # Shared decoder
         total_latent_dim = sum(
             self._get_latent_dim(fc, l)
-            for fc in group_indices.keys()
+            for fc in self.group_indices.keys()
             for l in range(config.hierarchy.num_levels)
         )
 
@@ -193,12 +340,19 @@ class JointHierarchicalVQVAE(nn.Module):
     def _parse_families(self, group_indices: Dict[str, List[int]]) -> List[str]:
         """Parse unique families from group_indices keys.
 
+        In temporal_only mode, only "temporal" is treated as a VQ family.
+        Theta and IC are decoded from temporal tokens via auxiliary heads,
+        not encoded/quantized separately.
+
         Args:
             group_indices: Dict with keys like "temporal_group_1", "initial_group_2"
 
         Returns:
             List of unique families, e.g., ["temporal", "initial"]
         """
+        if self.config.temporal_only:
+            return ["temporal"]
+
         families = set()
         for key in group_indices.keys():
             family = key.split('_', 1)[0]
@@ -288,8 +442,10 @@ class JointHierarchicalVQVAE(nn.Module):
             transform: LinearTransform with .mean [D] and .components [D, D].
         """
         import torch
-        mean_t = torch.from_numpy(transform.mean).float()
-        comps_t = torch.from_numpy(transform.components).float()
+        # Detect model's current device so buffers land on the right device
+        device = next(self.parameters()).device
+        mean_t = torch.from_numpy(transform.mean).float().to(device)
+        comps_t = torch.from_numpy(transform.components).float().to(device)
         # Re-register as persistent buffers (replaces the None registered in __init__)
         self.register_buffer("temporal_rotation_mean", mean_t)
         self.register_buffer("temporal_rotation_matrix", comps_t)
@@ -302,8 +458,58 @@ class JointHierarchicalVQVAE(nn.Module):
         config = self.config
 
         # Temporal encoder
-        if "temporal" in self.families and config.feature_source == "learned":
-            # ── Learned mode: per-frame CNN + per-group pyramid encoders ──
+        if "temporal" in self.families and config.feature_source == "learned" and (
+            config.encoder.temporal.learned is not None
+            and config.encoder.temporal.learned.architecture == "pyramid_first"
+        ):
+            # ── Pyramid-first mode: raw trajectory → pyramid → CNN → learned groups ──
+            learned_cfg = config.encoder.temporal.learned
+            pyramid_cfg = config.encoder.temporal
+
+            # Parse variable-length config for pyramid
+            vl_kwargs = {}
+            if pyramid_cfg.variable_length:
+                if isinstance(pyramid_cfg.variable_length, bool):
+                    vl_kwargs = {
+                        "adaptive": pyramid_cfg.adaptive_pyramid,
+                        "min_pyramid_length": pyramid_cfg.min_timesteps,
+                    }
+                else:
+                    vl_cfg = pyramid_cfg.variable_length
+                    vl_kwargs = {
+                        "adaptive": vl_cfg.adaptive_pyramid,
+                        "min_pyramid_length": vl_cfg.min_pyramid_length,
+                        "mask_downsample_method": vl_cfg.mask_downsample_method,
+                    }
+
+            self.pyramid_first_encoder = PyramidFirstEncoder(
+                in_channels=learned_cfg.in_channels,
+                d_cnn=learned_cfg.d_cnn,
+                d_agg=learned_cfg.d_agg,
+                num_groups=learned_cfg.num_groups,
+                d_group=config.encoder.embedding_dim,  # D_group = per-group VQ input dim
+                downsample_factors=pyramid_cfg.downsample_factors,
+                gated_groups=learned_cfg.gated_groups,
+                gate_init_bias=learned_cfg.gate_init_bias,
+                **vl_kwargs,
+            )
+
+            temporal_groups = {
+                k: v for k, v in self.group_indices.items()
+                if k.startswith("temporal_")
+            }
+            self.temporal_dim = len(temporal_groups) * config.encoder.embedding_dim
+            logger.info(
+                "Pyramid-first mode: %d levels × %dD_agg → %d groups × %dD = %dD temporal",
+                len(pyramid_cfg.downsample_factors),
+                learned_cfg.d_agg,
+                len(temporal_groups),
+                config.encoder.embedding_dim,
+                self.temporal_dim,
+            )
+
+        elif "temporal" in self.families and config.feature_source == "learned":
+            # ── Legacy per-frame learned mode: per-frame CNN + per-group pyramid encoders ──
             learned_cfg = config.encoder.temporal.learned
             if learned_cfg is None:
                 raise ValueError(
@@ -351,7 +557,7 @@ class JointHierarchicalVQVAE(nn.Module):
             embedding_dim = sum(pyramid_cfg.level_dims)
             self.temporal_dim = len(temporal_groups) * embedding_dim
             logger.info(
-                "Learned mode: CNN(%dD) → %d groups × %dD pyramid = %dD temporal",
+                "Learned mode (per_frame): CNN(%dD) → %d groups × %dD pyramid = %dD temporal",
                 learned_cfg.embedding_dim,
                 len(temporal_groups),
                 embedding_dim,
@@ -490,7 +696,16 @@ class JointHierarchicalVQVAE(nn.Module):
             if theta_cfg is None:
                 raise ValueError("Theta family enabled but theta encoder config missing")
 
-            if theta_cfg.variant == "mlp":
+            if theta_cfg.variant == "direct":
+                # Direct quantization: no encoder, raw params pass through.
+                # Each parameter gets its own independent VQ group.
+                self.theta_dim = theta_cfg.param_dim
+                self._theta_direct = True
+                logger.info(
+                    f"Direct theta quantization: {theta_cfg.param_dim} params → "
+                    f"{theta_cfg.param_dim} independent VQ groups"
+                )
+            elif theta_cfg.variant == "mlp":
                 self.theta_encoder = ThetaMLPEncoder(
                     param_dim=theta_cfg.param_dim,
                     hidden_dim=theta_cfg.hidden_dim,
@@ -499,6 +714,7 @@ class JointHierarchicalVQVAE(nn.Module):
                     use_layer_norm=theta_cfg.use_layer_norm,
                 )
                 self.theta_dim = theta_cfg.output_dim
+                self._theta_direct = False
             else:
                 raise ValueError(f"Unknown theta encoder variant: {theta_cfg.variant}")
 
@@ -545,6 +761,13 @@ class JointHierarchicalVQVAE(nn.Module):
         import numpy as np
 
         category_feature_count = len(self.group_indices[family_cat])
+
+        # For tiny categories (1-2 features, e.g., direct theta params),
+        # use fixed small dims rather than the adaptive formula which
+        # over-allocates due to dataset-aware minimums.
+        if category_feature_count <= 2:
+            tiny_dims = [8, 4, 4]  # L0, L1, L2
+            return tiny_dims[min(level_idx, len(tiny_dims) - 1)]
 
         # Compute num_tokens for this level (needed for token_factor)
         num_tokens = self._get_num_embeddings(family_cat, level_idx, n_samples)
@@ -673,8 +896,30 @@ class JointHierarchicalVQVAE(nn.Module):
 
         # Encode families
         encoded = {}
+        cnn_features = None  # Only set in learned mode
 
-        if "temporal" in self.families and self.temporal_cnn_encoder is not None:
+        if "temporal" in self.families and self.pyramid_first_encoder is not None:
+            # ── Pyramid-first mode: raw trajectory → pyramid → CNN → learned groups ──
+            if temporal_raw is None:
+                raise ValueError(
+                    "temporal_raw [B, T, C, H, W] required in pyramid_first mode"
+                )
+            per_group, multi_res_features = self.pyramid_first_encoder(
+                temporal_raw, mask=temporal_mask, lengths=temporal_lengths
+            )
+            cnn_features = multi_res_features  # [B, num_levels*D_agg] for balance loss
+
+            group_encoded_parts = []
+            group_idx = 0
+            for family_cat in sorted(self.group_indices.keys()):
+                if not family_cat.startswith("temporal_"):
+                    continue
+                encoded[family_cat] = per_group[:, group_idx, :]  # [B, D_group]
+                group_encoded_parts.append(encoded[family_cat])
+                group_idx += 1
+            encoded["temporal"] = torch.cat(group_encoded_parts, dim=1)
+
+        elif "temporal" in self.families and self.temporal_cnn_encoder is not None:
             # ── Learned mode: raw trajectory → CNN → per-group pyramid ──
             if temporal_raw is None:
                 raise ValueError(
@@ -682,6 +927,14 @@ class JointHierarchicalVQVAE(nn.Module):
                 )
             # CNN: [B, T, C, H, W] → [B, T, D_per_frame]
             cnn_features = self.temporal_cnn_encoder(temporal_raw)
+
+            # Apply OPQ rotation if calibrated (decorrelates features across groups)
+            if self.temporal_rotation_matrix is not None:
+                cnn_features = (
+                    (cnn_features - self.temporal_rotation_mean)
+                    @ self.temporal_rotation_matrix.T
+                )
+
             learned_cfg = self.config.encoder.temporal.learned
             group_dim = learned_cfg.embedding_dim // learned_cfg.num_groups
 
@@ -794,9 +1047,18 @@ class JointHierarchicalVQVAE(nn.Module):
             if theta_features is None:
                 raise ValueError("theta_features required for theta family")
 
-            # Encode theta parameters
-            theta_encoded = self.theta_encoder(theta_features)
-            encoded["theta"] = theta_encoded
+            if getattr(self, '_theta_direct', False):
+                # Direct mode: raw parameters, each param → its own group
+                encoded["theta"] = theta_features  # [B, P] for decoder
+                theta_keys = sorted(
+                    k for k in self.group_indices if k.startswith("theta_")
+                )
+                for i, key in enumerate(theta_keys):
+                    encoded[key] = theta_features[:, i:i+1]  # [B, 1]
+            else:
+                # MLP mode: encode all params into shared embedding
+                theta_encoded = self.theta_encoder(theta_features)
+                encoded["theta"] = theta_encoded
 
         # Concatenate all encoded features
         all_encoded = []
@@ -814,17 +1076,22 @@ class JointHierarchicalVQVAE(nn.Module):
         for family_cat, indices in self.group_indices.items():
             family, cat_name = family_cat.split('_', 1)
 
-            # Extract features for this category.
-            # Per-group paths (pca_raw pyramid or pca_striped MLP): temporal groups
-            # are already encoded individually in encoded[family_cat].
-            # Legacy path: slice from the concatenated all_encoded.
+            # Extract features for this category from the ENCODER output.
+            # Each family's encoder produces the correct feature tensor;
+            # we use it directly instead of slicing a concatenated tensor.
             if family == "temporal" and (
                 self.per_group_temporal_encoders is not None
                 or self.per_group_pyramid_encoders is not None
+                or self.pyramid_first_encoder is not None
             ):
-                cat_features = encoded[family_cat]  # [B, embedding_dim]
+                cat_features = encoded[family_cat]  # [B, per_group_dim]
+            elif family == "theta" and family_cat in encoded:
+                # Direct theta mode: per-param entries; MLP mode: falls through
+                cat_features = encoded[family_cat]  # [B, 1] or [B, theta_dim]
+            elif family in encoded:
+                cat_features = encoded[family]  # [B, family_encoded_dim]
             else:
-                cat_features = all_encoded[:, indices]  # [B, cat_dim]
+                cat_features = all_encoded[:, indices]  # fallback for legacy
 
             # Project to hierarchical latents
             projector = self.projectors[family_cat]
@@ -858,12 +1125,37 @@ class JointHierarchicalVQVAE(nn.Module):
         # Split reconstructed back into family components
         reconstructed_split = self._split_reconstructed(reconstructed, all_encoded)
 
-        # Apply inverse heads if they exist (NEW!)
+        # Apply decode heads (aux heads for temporal-only, inverse heads otherwise)
         decoded = {}
-        if self.theta_inverse is not None and "theta" in reconstructed_split:
-            decoded["theta"] = self.theta_inverse(reconstructed_split["theta"])
-        if self.initial_inverse is not None and "initial" in reconstructed_split:
-            decoded["initial"] = self.initial_inverse(reconstructed_split["initial"])
+        if self.config.temporal_only:
+            # Temporal-only mode: aux heads decode theta/IC from quantized latents
+            if self.theta_aux_head is not None:
+                decoded["theta"] = self.theta_aux_head(all_quantized_cat)
+            if self.ic_aux_head is not None:
+                decoded["initial"] = self.ic_aux_head(all_quantized_cat)
+            # Pre-VQ probes: direct CNN → gradient (no VQ bottleneck)
+            if self.theta_probe is not None:
+                decoded["theta_probe"] = self.theta_probe(encoded["temporal"])
+            if self.ic_probe is not None:
+                decoded["initial_probe"] = self.ic_probe(encoded["temporal"])
+        else:
+            # Standard mode: inverse heads decode from reconstructed encoded space
+            if self.theta_bypass_decoder is not None:
+                # Direct mode: bypass the shared decoder — gather theta quantized
+                # latents and decode directly to parameter space.
+                theta_q_parts = []
+                for key in sorted(encodings_dict.keys()):
+                    if key.startswith("theta_"):
+                        theta_q_parts.append(encodings_dict[key])
+                if theta_q_parts:
+                    theta_q_cat = torch.cat(theta_q_parts, dim=1)
+                    decoded["theta"] = self.theta_bypass_decoder(theta_q_cat)
+            elif self.theta_inverse is not None and "theta" in reconstructed_split:
+                decoded["theta"] = self.theta_inverse(reconstructed_split["theta"])
+            if self.initial_inverse is not None and "initial" in reconstructed_split:
+                decoded["initial"] = self.initial_inverse(reconstructed_split["initial"])
+            if self.temporal_inverse is not None and "temporal" in reconstructed_split:
+                decoded["temporal"] = self.temporal_inverse(reconstructed_split["temporal"])
 
         # Aggregate VQ losses
         total_vq_loss = torch.stack(vq_losses).mean()
@@ -896,6 +1188,8 @@ class JointHierarchicalVQVAE(nn.Module):
             "token_indices": token_indices,
             "original_encoded": all_encoded,
             "per_group_encoded": per_group_encoded,
+            "cnn_features": cnn_features if (self.temporal_cnn_encoder is not None or self.pyramid_first_encoder is not None) else None,
+            "gate_values": self.pyramid_first_encoder.group_proj.get_gate_values() if self.pyramid_first_encoder is not None else None,
         }
 
     def encode(

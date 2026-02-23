@@ -45,6 +45,7 @@ class TrajectoryLoss(BaseNOALoss):
         lambda_feat_mse: float = 0.0,
         lambda_token_ce: float = 0.0,
         token_ce_temperature: float = 1.0,
+        gate_weight_token_ce: bool = False,
         normalize_loss_scales: bool = False,
         loss_scale_ema_momentum: float = 0.99,
         vq_adapter: Optional[nn.Module] = None,
@@ -57,6 +58,7 @@ class TrajectoryLoss(BaseNOALoss):
         self._lambda_feat_mse = lambda_feat_mse
         self._lambda_token_ce = lambda_token_ce
         self._token_ce_temperature = token_ce_temperature
+        self._gate_weight_token_ce = gate_weight_token_ce
         self._normalize = normalize_loss_scales
         self._ema_momentum = loss_scale_ema_momentum
         self._vq_adapter = vq_adapter
@@ -194,13 +196,17 @@ class TrajectoryLoss(BaseNOALoss):
             and gt_tokens is not None
             and self._lambda_token_ce > 0
         ):
-            # Differentiable: pred_trajectory → features → soft logits
-            cleaned = self._vq_adapter.extract_features(pred_trajectory)
-            result = self._vq_adapter.extract_soft_logits_and_hard_tokens(
-                cleaned, temperature=self._token_ce_temperature,
+            # Unified pipeline: handles pyramid-first, learned CNN, and manual modes
+            result = self._vq_adapter.extract_soft_logits_from_trajectory(
+                pred_trajectory, temperature=self._token_ce_temperature,
+            )
+            # Gate-weighted CE: weight each group's CE by its frozen gate value
+            gate_values = (
+                self._vq_adapter.get_gate_values()
+                if self._gate_weight_token_ce else None
             )
             token_ce = self._temporal_token_ce(
-                result["soft_logits"], gt_tokens,
+                result["soft_logits"], gt_tokens, gate_values=gate_values,
             )
             token_match_acc = self._temporal_token_accuracy(
                 result["hard_tokens"], gt_tokens,
@@ -239,17 +245,25 @@ class TrajectoryLoss(BaseNOALoss):
     def _temporal_token_ce(
         soft_logits: Dict[str, Tensor],
         gt_tokens: Dict[str, Tensor],
+        gate_values: Optional[Tensor] = None,
     ) -> Tensor:
         """Per-quantizer cross-entropy averaged over temporal families only.
+
+        When ``gate_values`` is provided, each group's CE is weighted by its
+        frozen gate activation (groups the tokenizer deemed unimportant
+        contribute less to the MNO's token matching objective).
 
         Args:
             soft_logits: {quantizer_key: [B, K]} negative L2 distances / temp
             gt_tokens: {quantizer_key: [B]} hard GT token indices
+            gate_values: Optional [num_groups] gate activations in [0,1].
+                Parsed from quantizer key "temporal_group_X_LY" → group X.
 
         Returns:
-            Scalar mean CE loss across all temporal quantizers.
+            Scalar (weighted) mean CE loss across all temporal quantizers.
         """
         losses = []
+        weights = []
         for key in sorted(gt_tokens.keys()):
             if not key.startswith("temporal_"):
                 continue
@@ -260,10 +274,19 @@ class TrajectoryLoss(BaseNOALoss):
             V = logit.shape[1]
             valid = target < V              # guard against vocab mismatch
             if valid.any():
-                losses.append(F.cross_entropy(logit[valid], target[valid]))
-        if losses:
-            return torch.stack(losses).mean()
-        return torch.tensor(0.0, device=next(iter(soft_logits.values())).device)
+                ce = F.cross_entropy(logit[valid], target[valid])
+                losses.append(ce)
+                if gate_values is not None:
+                    # "temporal_group_X_LY" → X is the group index
+                    group_idx = int(key.split('_')[2])
+                    weights.append(gate_values[group_idx].detach())
+        if not losses:
+            return torch.tensor(0.0, device=next(iter(soft_logits.values())).device)
+        loss_stack = torch.stack(losses)
+        if weights:
+            w = torch.stack(weights)
+            return (w * loss_stack).sum() / w.sum().clamp(min=1e-8)
+        return loss_stack.mean()
 
     @staticmethod
     def _temporal_token_accuracy(

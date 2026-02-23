@@ -694,7 +694,13 @@ class DatasetGenerationPipeline:
         sample_start = time.time()
         offset = self.config.sampling.sobol.offset
         parameters = self.sampler.sample(self.config.sampling.total_samples, offset=offset)
-        validation_metrics = self.sampler.validate(parameters)
+        # Subsample for validation when N is large (discrepancy is O(N²·d))
+        if len(parameters) > 50_000:
+            rng = np.random.RandomState(42)
+            val_idx = rng.choice(len(parameters), 50_000, replace=False)
+            validation_metrics = self.sampler.validate(parameters[val_idx])
+        else:
+            validation_metrics = self.sampler.validate(parameters)
         self.stats["sampling_time"] = time.time() - sample_start
 
         print(f"✓ Generated {len(parameters)} parameter sets")
@@ -774,15 +780,15 @@ class DatasetGenerationPipeline:
         # Determine if TEMPORAL features are enabled from typed config
         temporal_enabled = self.config.features.temporal.enabled
 
-        if not store_trajectories:
+        summary_enabled = self.config.features.summary.enabled
+        if not store_trajectories and (temporal_enabled or summary_enabled):
             print("Initializing inline feature extractor...")
             summary_config = SummaryConfig.from_schema_config(self.config.features.summary)
             summary_extractor = SummaryExtractor(device=self.device, config=summary_config)
 
             # Log extraction mode
-            if not temporal_enabled:
-                print("  TEMPORAL features: DISABLED (per-timestep time series)")
-                print("  SUMMARY features: ENABLED (aggregated scalars only)")
+            print(f"  TEMPORAL features: {'ENABLED' if temporal_enabled else 'DISABLED'}")
+            print(f"  SUMMARY features: {'ENABLED' if summary_enabled else 'DISABLED'}")
 
             print(f"  Feature extractor ready on {self.device}\n")
             self._summary_extractor = summary_extractor
@@ -949,7 +955,7 @@ class DatasetGenerationPipeline:
 
             # Initialize async operator builder for pipelined generation (Phase 2 optimization)
             # Skip for QBM (physics simulation, not neural operators)
-            if self.config.simulation.operator_type != "qbm":
+            if self.config.simulation.operator_type not in ("qbm", "lenia"):
                 self._async_operator_builder = AsyncOperatorBuilder(
                     device=str(self.device),
                     max_queue_size=2,  # Build batch N+1 while running batch N
@@ -1058,11 +1064,12 @@ class DatasetGenerationPipeline:
                             group_processed += actual_batch_size
                             pbar.update(actual_batch_size)
 
-                            # Save intermediate checkpoints every 10K samples
-                            total_generated = self.stats["samples_generated"]
-                            checkpoint_interval = 10000
-                            if total_generated % checkpoint_interval == 0 and total_generated > 0:
-                                self._save_checkpoint(total_generated)
+                            # Save intermediate checkpoints if configured
+                            checkpoint_interval = self.config.dataset.checkpoint_interval
+                            if checkpoint_interval is not None:
+                                total_generated = self.stats["samples_generated"]
+                                if total_generated % checkpoint_interval == 0 and total_generated > 0:
+                                    self._save_checkpoint(total_generated)
 
                             # Periodic garbage collection and cache clear (every 20 batches)
                             if group_processed % (20 * current_batch_size) == 0:
@@ -1156,7 +1163,11 @@ class DatasetGenerationPipeline:
         from pathlib import Path
 
         source_path = Path(self.config.dataset.output_path)
-        checkpoint_path = source_path.parent / f"{source_path.stem}_{num_samples}k{source_path.suffix}"
+        if num_samples >= 1000 and num_samples % 1000 == 0:
+            count_str = f"{num_samples // 1000}k"
+        else:
+            count_str = str(num_samples)
+        checkpoint_path = source_path.parent / f"{source_path.stem}_{count_str}{source_path.suffix}"
 
         try:
             # Flush storage backend to ensure all data is written
@@ -1376,6 +1387,8 @@ class DatasetGenerationPipeline:
         if hasattr(self, '_lenia_replayer'):
             return
 
+        import re
+
         from spinlock.lenia import LeniaReplayer
         from spinlock.config.schema import LeniaSimulationConfig
 
@@ -1385,6 +1398,36 @@ class DatasetGenerationPipeline:
         if cfg.n_channels is None:
             raise ValueError("simulation.n_channels required for operator_type='lenia'")
 
+        # Build diverse IC generator if input_generation.ic_type_weights is configured
+        ic_generator = None
+        input_gen_cfg = cfg.input_generation
+        if input_gen_cfg and input_gen_cfg.ic_type_weights:
+            from spinlock.lenia.initial_conditions import DiverseLeniaICGenerator
+
+            ic_type_params: dict[str, dict] = {}
+            variant_params = input_gen_cfg.ic_variant_params or {}
+            for ic_type in input_gen_cfg.ic_type_weights:
+                base_type = re.sub(r'_(v\d+|low|mid|high)$', '', ic_type)
+                # Look up params: variant-specific first, then base type schema field
+                if ic_type in variant_params:
+                    ic_type_params[ic_type] = dict(variant_params[ic_type])
+                elif hasattr(input_gen_cfg, base_type) and getattr(input_gen_cfg, base_type):
+                    ic_type_params[ic_type] = dict(getattr(input_gen_cfg, base_type))
+                else:
+                    ic_type_params[ic_type] = {}
+
+            ic_generator = DiverseLeniaICGenerator(
+                grid_size=cfg.grid_size,
+                n_channels=cfg.n_channels,
+                device=self.device,
+                ic_type_weights=dict(input_gen_cfg.ic_type_weights),
+                ic_type_params=ic_type_params,
+            )
+            print(
+                f"Lenia: diverse IC generation enabled with "
+                f"{len(input_gen_cfg.ic_type_weights)} IC types"
+            )
+
         self._lenia_replayer = LeniaReplayer(
             n_channels=cfg.n_channels,
             grid_size=cfg.grid_size,
@@ -1393,18 +1436,44 @@ class DatasetGenerationPipeline:
             alive_threshold=lenia_cfg.alive_threshold,
             saturation_threshold=lenia_cfg.saturation_threshold,
             max_retries=lenia_cfg.max_retries,
+            ic_generator=ic_generator,
         )
+
+    def _needs_rollout(self) -> bool:
+        """Whether the current config requires running full simulations.
+
+        Returns False when trajectories aren't stored AND no feature
+        pipeline needs trajectory data. Applies to any operator type.
+        """
+        store_traj = getattr(self.config.dataset.storage, 'store_trajectories', False)
+        if store_traj:
+            return True
+        return self._feature_pipeline is not None
 
     def _process_batch_lenia(
         self, param_batch, batch_size: int
     ):
         """Process batch using Lenia CA simulation.
 
+        If rollouts aren't needed (no trajectory storage, no feature pipeline),
+        delegates to the replayer's generate_ics_only() for a fast IC-only path.
+
         Returns:
             inputs:  [B, M, C, H, W]    — initial conditions per realization
-            outputs: [B, M, T, C, H, W] — full trajectories
+            outputs: [B, M, T, C, H, W] — full trajectories (or [B, M, 0, C, H, W] if skipped)
         """
         self._ensure_lenia_initialized()
+
+        if not self._needs_rollout():
+            inputs, _ic_types = self._lenia_replayer.generate_ics_only(
+                batch_size=batch_size,
+                num_realizations=self.config.simulation.num_realizations,
+            )
+            # Minimal dummy output (T=0) — never stored, never transferred
+            B, M, C, H, W = inputs.shape
+            outputs = torch.empty(B, M, 0, C, H, W, device=self.device)
+            return inputs, outputs
+
         inputs, outputs = self._lenia_replayer.rollout_batch(
             params_batch=param_batch,
             num_realizations=self.config.simulation.num_realizations,
@@ -1883,7 +1952,12 @@ class DatasetGenerationPipeline:
             return inputs, outputs, ic_types_used, None
         if operator_type == "lenia":
             inputs, outputs = self._process_batch_lenia(param_batch, batch_size)
-            ic_types_used = ["lenia_gaussian_blobs"] * batch_size
+            # Read IC types from diverse generator if available
+            ic_gen = getattr(self._lenia_replayer, 'ic_generator', None)
+            if ic_gen is not None and getattr(ic_gen, 'last_types', None) is not None:
+                ic_types_used = list(ic_gen.last_types)
+            else:
+                ic_types_used = ["lenia_gaussian_blobs"] * batch_size
             return inputs, outputs, ic_types_used, None
 
         # Build operators with this grid size (or use pre-built from async builder)

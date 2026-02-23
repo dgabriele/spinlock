@@ -186,10 +186,18 @@ class StandardOps(FeatureOps):
     # Linear algebra -------------------------------------------------------
 
     def safe_eigvalsh(self, x: Tensor) -> Tensor:
-        return torch.linalg.eigvalsh(x)
+        try:
+            return torch.linalg.eigvalsh(x)
+        except RuntimeError:
+            return torch.linalg.eigvalsh(x.cpu()).to(x.device)
 
     def safe_svd(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
-        return torch.linalg.svd(x, full_matrices=False)
+        try:
+            return torch.linalg.svd(x, full_matrices=False)
+        except RuntimeError:
+            # cusolver can fail under GPU memory pressure; fall back to CPU
+            U, S, Vh = torch.linalg.svd(x.cpu(), full_matrices=False)
+            return U.to(x.device), S.to(x.device), Vh.to(x.device)
 
 
 # ---------------------------------------------------------------------------

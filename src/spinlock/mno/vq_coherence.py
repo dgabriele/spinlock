@@ -175,6 +175,14 @@ class VQCoherenceAdapter(nn.Module):
         if self._learned_mode:
             logger.info("Learned CNN temporal mode detected — using frozen CNN for feature extraction")
 
+        # Detect pyramid-first mode (spatio-temporal pyramid → per-group embeddings)
+        self._pyramid_first_mode = (
+            hasattr(model, 'pyramid_first_encoder')
+            and model.pyramid_first_encoder is not None
+        )
+        if self._pyramid_first_mode:
+            logger.info("Pyramid-first temporal mode detected — bypassing extract_features()")
+
         logger.info(
             f"Encoded space: {self._total_encoded_dim}D "
             f"({', '.join(f'{f}={self._family_dims[f]}' for f in sorted(model.families))})"
@@ -252,6 +260,31 @@ class VQCoherenceAdapter(nn.Module):
             adapter = cls(
                 model=model,
                 extractor=None,  # Not used in learned mode
+                kept_feature_indices=kept_feature_indices,
+                normalization_stats=tokenizer.normalization_stats,
+                group_indices=tokenizer.group_indices,
+                config=tokenizer.config,
+                feature_prefix_len=None,
+            )
+            return adapter
+
+        # Detect pyramid-first mode
+        is_pyramid_first = (
+            hasattr(model, 'pyramid_first_encoder')
+            and model.pyramid_first_encoder is not None
+        )
+
+        if is_pyramid_first:
+            logger.info(
+                "Pyramid-first mode detected — bypassing MNOFeatureExtractor. "
+                "Raw trajectory is encoded directly by spatio-temporal pyramid."
+            )
+            pf_encoder = model.pyramid_first_encoder
+            kept_feature_indices = list(range(pf_encoder.d_group))
+
+            adapter = cls(
+                model=model,
+                extractor=None,  # Not used in pyramid-first mode
                 kept_feature_indices=kept_feature_indices,
                 normalization_stats=tokenizer.normalization_stats,
                 group_indices=tokenizer.group_indices,
@@ -626,6 +659,78 @@ class VQCoherenceAdapter(nn.Module):
             'soft_logits': soft_logits,
             'hard_tokens': hard_tokens,
         }
+
+    def extract_soft_logits_from_trajectory(
+        self,
+        trajectory: torch.Tensor,
+        temperature: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Unified pipeline: raw trajectory → soft logits + hard tokens.
+
+        Handles all encoder modes automatically:
+        - Pyramid-first: runs encoder directly on raw trajectory [B, T, C, H, W],
+          then per-group projectors and quantizers. Bypasses extract_features().
+        - Other modes: delegates to extract_features() → extract_soft_logits_and_hard_tokens().
+
+        Args:
+            trajectory: Raw trajectory [B, T, C, H, W].
+            temperature: Softmax temperature for soft logits.
+
+        Returns:
+            Dict with 'soft_logits' and 'hard_tokens' dicts keyed by quantizer key.
+        """
+        if self._pyramid_first_mode:
+            # Sanitize input
+            nan_mask = torch.isnan(trajectory) | torch.isinf(trajectory)
+            if nan_mask.any():
+                trajectory = torch.nan_to_num(
+                    trajectory, nan=0.0, posinf=1e6, neginf=-1e6
+                )
+
+            # Pyramid-first: [B, T, C, H, W] → [B, G, D_group]
+            per_group, _ = self.model.pyramid_first_encoder(trajectory)
+
+            model = self.model
+            soft_logits = {}
+            hard_tokens = {}
+            group_idx = 0
+
+            for family_cat in sorted(model.group_indices.keys()):
+                if not family_cat.startswith('temporal_'):
+                    continue
+                cat_features = per_group[:, group_idx, :]  # [B, D_group]
+                projector = model.projectors[family_cat]
+                latents = projector(cat_features)
+
+                num_levels = model.config.hierarchy.num_levels
+                for level_idx, latent in enumerate(latents):
+                    qkey = f"{family_cat}_L{level_idx}"
+                    codebook = model.quantizers[qkey].embedding.weight  # [K, D]
+                    dists = torch.cdist(
+                        latent.unsqueeze(1), codebook.unsqueeze(0), p=2.0
+                    ).squeeze(1).pow(2)
+                    soft_logits[qkey] = -dists / temperature
+                    hard_tokens[qkey] = dists.argmin(dim=1)
+                group_idx += 1
+
+            return {'soft_logits': soft_logits, 'hard_tokens': hard_tokens}
+        else:
+            # Standard path: extract_features → extract_soft_logits_and_hard_tokens
+            cleaned = self.extract_features(trajectory)
+            return self.extract_soft_logits_and_hard_tokens(
+                cleaned, temperature=temperature,
+            )
+
+    def get_gate_values(self) -> Optional[torch.Tensor]:
+        """Return per-group gate activations [num_groups] in [0,1], or None.
+
+        Only available in pyramid-first mode with gated groups enabled.
+        Gate values indicate how much each VQ group contributes to the
+        tokenization — useful for weighting per-group losses.
+        """
+        if self._pyramid_first_mode:
+            return self.model.pyramid_first_encoder.group_proj.get_gate_values()
+        return None
 
     @torch.no_grad()
     def decode_tokens_to_params(

@@ -24,6 +24,7 @@ from .temporal import TemporalFeatureGrouper
 from .initial import InitialFeatureGrouper
 from .theta import ThetaFeatureGrouper
 from .pca_grouper import PCAGrouper
+from .opq import OPQGrouper
 from .models import (
     GroupingConfig,
     TemporalGroupingConfig,
@@ -50,6 +51,7 @@ __all__ = [
     "InitialFeatureGrouper",
     "ThetaFeatureGrouper",
     "PCAGrouper",
+    "OPQGrouper",
     # Configuration models
     "GroupingConfig",
     "TemporalGroupingConfig",

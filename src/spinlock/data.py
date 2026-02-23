@@ -162,6 +162,8 @@ class SpinlockDataset:
         sampling_strategy: str = "sequential",
         random_seed: int = 42,
         load_gt_temporal_features: bool = False,
+        lazy_ics: bool = False,
+        realization_mode: str = "single",
     ):
         """Initialize dataset with optional eager data loading.
 
@@ -183,6 +185,12 @@ class SpinlockDataset:
                 'features/temporal/features', each __getitem__ sample will
                 include 'gt_raw_temporal': [T, D_raw]. Loaded lazily per sample.
                 Used for feature-space MSE supervision without CNO replayer.
+            lazy_ics: When True, skip eager IC loading; read per-sample from
+                HDF5 in __getitem__. Params are still loaded eagerly (small).
+                This avoids loading all ICs into RAM for large datasets.
+            realization_mode: How to handle M realizations per sample.
+                - "single": Use realization_idx (existing behavior).
+                - "mean": Compute mean across M realizations per sample.
         """
         import torch
         self._torch = torch
@@ -192,6 +200,12 @@ class SpinlockDataset:
         self._features = None
         self._inputs = None
         self._parameters = None
+
+        # Lazy IC loading state
+        self._lazy_ics = lazy_ics
+        self._realization_mode = realization_mode
+        self._realization_idx = realization_idx
+        self._lazy_h5: Optional[h5py.File] = None
 
         # Always run dimension introspection immediately (brief file open)
         self._introspector = _DatasetDimensionInferrer(str(self.file_path))
@@ -224,7 +238,7 @@ class SpinlockDataset:
         random_seed: int,
         load_gt_temporal_features: bool,
     ) -> None:
-        """Eagerly load ICs and params; detect GT feature availability."""
+        """Eagerly load params (and ICs unless lazy); detect GT feature availability."""
         import torch
 
         with h5py.File(self.file_path, "r") as f:
@@ -254,24 +268,48 @@ class SpinlockDataset:
                     f"Must be one of: 'sequential', 'stratified', 'random'"
                 )
 
-            inputs = f["inputs/fields"][indices, realization_idx, :, :, :]
             params = f["parameters/params"][indices]
 
-            # Trim to populated (non-zero) samples — handles pre-allocated HDF5
-            sample_norms = np.linalg.norm(inputs.reshape(inputs.shape[0], -1), axis=1)
-            populated_mask = sample_norms > 1e-10
-            num_populated = populated_mask.sum()
-            if num_populated < inputs.shape[0]:
-                inputs = inputs[populated_mask]
-                params = params[populated_mask]
-                indices = indices[populated_mask]
-                print(f"  Dataset pre-allocated to {inputs.shape[0]} but only {num_populated} populated")
-                print(f"  Trimmed to {num_populated} non-zero samples")
+            if self._lazy_ics:
+                # Lazy mode: skip IC loading, validate population via params
+                sample_norms = np.linalg.norm(params, axis=1)
+                populated_mask = sample_norms > 1e-10
+                num_populated = populated_mask.sum()
+                if num_populated < params.shape[0]:
+                    params = params[populated_mask]
+                    indices = indices[populated_mask]
+                    print(f"  Dataset pre-allocated to {len(indices)} but only {num_populated} populated")
+                    print(f"  Trimmed to {num_populated} non-zero samples (checked via params)")
 
-            self.ics = torch.from_numpy(inputs).float()   # [N', C, H, W]
-            self.params = torch.from_numpy(params).float()
-            self.indices = indices
-            self.n_samples = self.ics.shape[0]
+                self.ics = None  # ICs will be read per-sample in __getitem__
+                self.params = torch.from_numpy(params).float()
+                self.indices = indices
+                self.n_samples = len(indices)
+                ic_bytes = total * np.prod(f["inputs/fields"].shape[1:]) * 4
+                print(
+                    f"  Lazy IC mode: skipped {ic_bytes / 1e9:.1f} GB IC load, "
+                    f"{self.n_samples} samples indexed, "
+                    f"realization_mode='{self._realization_mode}'"
+                )
+            else:
+                # Eager mode: load ICs into RAM
+                inputs = f["inputs/fields"][indices, realization_idx, :, :, :]
+
+                # Trim to populated (non-zero) samples — handles pre-allocated HDF5
+                sample_norms = np.linalg.norm(inputs.reshape(inputs.shape[0], -1), axis=1)
+                populated_mask = sample_norms > 1e-10
+                num_populated = populated_mask.sum()
+                if num_populated < inputs.shape[0]:
+                    inputs = inputs[populated_mask]
+                    params = params[populated_mask]
+                    indices = indices[populated_mask]
+                    print(f"  Dataset pre-allocated to {inputs.shape[0]} but only {num_populated} populated")
+                    print(f"  Trimmed to {num_populated} non-zero samples")
+
+                self.ics = torch.from_numpy(inputs).float()   # [N', C, H, W]
+                self.params = torch.from_numpy(params).float()
+                self.indices = indices
+                self.n_samples = self.ics.shape[0]
 
             self._has_gt_features = (
                 load_gt_temporal_features
@@ -313,17 +351,45 @@ class SpinlockDataset:
                 "SpinlockDataset: __getitem__ requires Dataset mode. "
                 "Pass max_samples= to __init__."
             )
+
+        orig_idx = int(self.indices[idx])
+
+        # IC: lazy or eager
+        if self._lazy_ics:
+            self._ensure_h5_open()
+            fields = self._lazy_h5["inputs/fields"]
+            if self._realization_mode == "mean":
+                # Read all M realizations and average → [C, H, W]
+                ic_np = fields[orig_idx].mean(axis=0)  # [M,C,H,W] → [C,H,W]
+            else:
+                ic_np = fields[orig_idx, self._realization_idx]  # [C, H, W]
+            ic = self._torch.from_numpy(ic_np.astype(np.float32))
+        else:
+            ic = self.ics[idx]
+
         result = {
-            "ic": self.ics[idx],
+            "ic": ic,
             "params": self.params[idx],
-            "sample_idx": int(self.indices[idx]),
+            "sample_idx": orig_idx,
         }
         if self._has_gt_features:
-            orig_idx = int(self.indices[idx])
-            with h5py.File(self.file_path, "r") as f:
-                feat = f["features/temporal/features"][orig_idx]
+            self._ensure_h5_open()
+            feat = self._lazy_h5["features/temporal/features"][orig_idx]
             result["gt_raw_temporal"] = self._torch.from_numpy(feat.astype(np.float32))
         return result
+
+    # ── Lazy HDF5 handle management ──────────────────────────────────────
+
+    def _ensure_h5_open(self):
+        """Open persistent HDF5 handle for lazy reads (safe with num_workers=0)."""
+        if self._lazy_h5 is None:
+            self._lazy_h5 = h5py.File(self.file_path, "r")
+
+    def close_lazy(self):
+        """Close the persistent lazy HDF5 handle."""
+        if self._lazy_h5 is not None:
+            self._lazy_h5.close()
+            self._lazy_h5 = None
 
     # ── Introspection / context manager interface ─────────────────────────
 
@@ -466,7 +532,8 @@ class SpinlockDataset:
         cls,
         config_dict: Dict,
         dataset_path: Path,
-        verbose: bool = True
+        verbose: bool = True,
+        max_samples: Optional[int] = None,
     ) -> Tuple['SpinlockDataset', Dict]:
         """Load dataset, introspect, and update config in one operation.
 
@@ -474,11 +541,15 @@ class SpinlockDataset:
             config_dict: Configuration dictionary (will be deep-merged)
             dataset_path: Path to HDF5 dataset file
             verbose: Log dimension inference results
+            max_samples: If set, limit dataset to first N samples
 
         Returns:
             (dataset, updated_config_dict) tuple
         """
         dataset = cls.from_file(dataset_path).open()
+        if max_samples is not None:
+            # Store on instance so downstream code can cap the dataset
+            dataset._max_samples_override = max_samples
 
         if verbose:
             logger.info(f"Infered dataset: {dataset_path}")

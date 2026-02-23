@@ -294,6 +294,15 @@ class SobolConfig(BaseModel):
     scramble_method: Literal["owen", "lms_shift"] = "owen"
     seed: int = Field(default=42, ge=0)
     offset: int = Field(default=0, ge=0, description="Sequence offset for distributed generation")
+    backend: Literal["scipy", "torch"] = Field(
+        default="scipy",
+        description=(
+            "Sobol engine backend. 'scipy' uses scipy.stats.qmc.Sobol (CPU, numpy). "
+            "'torch' uses torch.quasirandom.SobolEngine (GPU-native, avoids CPU→GPU transfer "
+            "for large-scale generation). Note: backends produce different sequences for the "
+            "same seed due to different Owen scrambling implementations."
+        )
+    )
 
 
 class StratificationConfig(BaseModel):
@@ -407,6 +416,9 @@ class InputGenerationConfig(BaseModel):
     variance: float = Field(default=1.0, gt=0)
     # Optional parameters for sampled IC type method
     ic_type_weights: Dict[str, float] = Field(default_factory=dict)
+    # Per-variant IC parameters (e.g., gaussian_random_field_v0 → {variance: 0.5})
+    # Used when ic_type_weights contains variant names that differ from base type defaults
+    ic_variant_params: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     # Per-channel IC configuration (for method="per_channel")
     channel_configs: Dict[str, ChannelICConfig] = Field(default_factory=dict)
     # Existing IC type parameter dicts
@@ -542,6 +554,14 @@ class DatasetConfig(BaseModel):
 
     output_path: Path
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    checkpoint_interval: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Save intermediate HDF5 checkpoint copies every N samples during generation. "
+            "None (default) disables checkpoints. E.g., 10000 saves a copy at 10K, 20K, etc."
+        )
+    )
     data_to_store: list[str] = Field(
         default_factory=lambda: [
             "operator_parameters",

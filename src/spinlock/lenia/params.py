@@ -1,8 +1,9 @@
 """Lenia CA parameter definition and Sobol vector mapping."""
 
-from dataclasses import dataclass, field
-from typing import List
+from dataclasses import dataclass
+from typing import List, Tuple
 import numpy as np
+import torch
 
 
 @dataclass
@@ -80,3 +81,47 @@ def sobol_to_lenia_params(
         coupling=coupling,
         kernel_type=kernel_type,
     )
+
+
+def sobol_batch_to_tensors(
+    unit_vecs: np.ndarray,
+    n_channels: int,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Vectorized Sobol→tensor conversion for a batch of unit vectors.
+
+    Converts B Sobol vectors directly to GPU tensors without constructing
+    intermediate LeniaParams dataclasses.
+
+    Args:
+        unit_vecs: [B, C²+2C+1] Sobol unit vectors in [0,1].
+        n_channels: Number of Lenia channels (C).
+        device: Target device for output tensors.
+
+    Returns:
+        radii:      [B, C] kernel radii ∈ [1.5, 35.0]
+        growth_mu:  [B, C] growth centers ∈ [0.01, 0.6]
+        growth_sigma: [B, C] growth widths ∈ [0.003, 0.25]
+        dt:         [B] timestep sizes ∈ [0.01, 0.4]
+        coupling:   [B, C, C] coupling matrices (diagonal=1.0)
+    """
+    C = n_channels
+    uv = torch.as_tensor(unit_vecs, dtype=torch.float32, device=device)
+
+    # Per-channel params via tensor slicing
+    radii = 1.5 + uv[:, :C] * (35.0 - 1.5)
+    growth_mu = 0.01 + uv[:, C:2*C] * (0.6 - 0.01)
+    growth_sigma = 0.003 + uv[:, 2*C:3*C] * (0.25 - 0.003)
+    dt = 0.01 + uv[:, 3*C] * (0.4 - 0.01)
+
+    # Coupling: start with identity, fill off-diagonal
+    B = uv.shape[0]
+    coupling = torch.eye(C, device=device, dtype=torch.float32).unsqueeze(0).expand(B, -1, -1).clone()
+    off_diag_raw = uv[:, 3*C + 1:]  # [B, C*(C-1)]
+    off_diag_vals = -1.0 + off_diag_raw * (1.5 - (-1.0))
+
+    # Build off-diagonal mask and scatter
+    mask = ~torch.eye(C, dtype=torch.bool, device=device)  # [C, C]
+    coupling[:, mask] = off_diag_vals
+
+    return radii, growth_mu, growth_sigma, dt, coupling

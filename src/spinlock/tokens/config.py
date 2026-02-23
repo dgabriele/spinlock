@@ -65,27 +65,64 @@ class LearnedTemporalConfig(BaseModel):
 
     Used when feature_source="learned". The CNN replaces the entire
     hand-crafted TemporalFeatureOrchestrator pipeline.
+
+    Two architectures:
+      - ``"per_frame"``: Per-frame CNN → sequential group slicing → per-group
+        pyramid. Legacy mode with known variance imbalance issues.
+      - ``"pyramid_first"``: Raw trajectory → SpatioTemporalPyramid → shared CNN →
+        per-level temporal aggregation → learned group projection. Fixes the
+        temporal context and group balance problems.
     """
+    architecture: Literal["per_frame", "pyramid_first"] = Field(
+        default="per_frame",
+        description="Encoder architecture: 'per_frame' (legacy) or 'pyramid_first' (recommended)",
+    )
     in_channels: Optional[int] = Field(
         default=None,
         ge=1,
         description="Number of input channels per frame (auto-detected from data)"
     )
+    # per_frame mode only:
     embedding_dim: int = Field(
         default=240,
         gt=0,
-        description="Total CNN output dim per frame (num_groups * group_dim)"
+        description="Total CNN output dim per frame (num_groups * group_dim). Only used in per_frame mode."
     )
+    # Shared:
     num_groups: int = Field(
         default=30,
         gt=0,
-        description="Number of temporal groups (sequential slices of CNN output)"
+        description="Number of temporal groups"
+    )
+    # pyramid_first mode:
+    d_cnn: int = Field(
+        default=256,
+        gt=0,
+        description="Per-frame CNN output dim (pyramid_first mode)"
+    )
+    d_agg: int = Field(
+        default=128,
+        gt=0,
+        description="Per-level temporal aggregation dim (pyramid_first mode)"
+    )
+    # Gated groups (pyramid_first mode): learnable per-group gates for
+    # downstream-driven group selection during joint fine-tuning.
+    gated_groups: bool = Field(
+        default=False,
+        description="Enable per-group learnable gates (pyramid_first mode)"
+    )
+    gate_init_bias: float = Field(
+        default=5.0,
+        description="Initial gate logit bias (sigmoid(5)≈0.993, gates start open)"
     )
 
     @field_validator('embedding_dim')
     @classmethod
     def validate_divisible(cls, v, info):
-        """Ensure embedding_dim is divisible by num_groups."""
+        """Ensure embedding_dim is divisible by num_groups (per_frame mode only)."""
+        architecture = info.data.get('architecture', 'per_frame')
+        if architecture != "per_frame":
+            return v  # Skip validation for pyramid_first mode
         num_groups = info.data.get('num_groups', 30)
         if v % num_groups != 0:
             raise ValueError(
@@ -114,11 +151,16 @@ class ThetaEncoderConfig(BaseModel):
 
     Parameter dimension (param_dim) is automatically detected from dataset
     if not specified. Manual specification only needed for overrides.
+
+    Variants:
+        - "mlp": Two-layer MLP mapping all params to shared embedding space.
+        - "direct": No encoder — each parameter gets its own independent VQ group.
+          This gives ~10 bits/param vs ~0.8 bits/param with the MLP bottleneck.
     """
 
-    variant: Literal["mlp"] = Field(
+    variant: Literal["mlp", "direct"] = Field(
         default="mlp",
-        description="Encoder variant (currently only MLP supported)"
+        description="Encoder variant: 'mlp' (shared embedding) or 'direct' (per-param VQ)"
     )
     param_dim: Optional[int] = Field(
         default=None,
@@ -174,6 +216,38 @@ class HierarchyConfig(BaseModel):
         return v
 
 
+class AuxHeadConfig(BaseModel):
+    """Config for auxiliary decoder heads in temporal-only mode.
+
+    When temporal_only=True, theta and IC are NOT separate token families.
+    Instead, they are DECODED from the concatenated quantized temporal latents
+    via lightweight auxiliary MLP/CNN heads. This eliminates the cross-family
+    consistency problem: every valid temporal token sequence automatically
+    produces valid (theta, IC) by construction.
+
+    Note: theta_param_dim and initial channels/spatial_size are auto-detected
+    from encoder config and dataset at runtime.
+    """
+    theta_enabled: bool = Field(default=True, description="Enable theta auxiliary head")
+    theta_hidden_dim: int = Field(default=128, gt=0, description="Hidden dim for theta MLP")
+    theta_weight: float = Field(default=1.0, ge=0.0, description="Weight for theta aux loss")
+    initial_enabled: bool = Field(default=True, description="Enable IC auxiliary head")
+    initial_base_channels: int = Field(default=256, gt=0, description="Base channels for IC CNN decoder")
+    initial_weight: float = Field(default=0.5, ge=0.0, description="Weight for IC aux loss")
+
+    # Pre-VQ theta probe: predicts theta from encoded temporal features BEFORE
+    # quantization, giving the CNN a direct gradient signal to encode
+    # param-dependent dynamics without passing through the VQ bottleneck.
+    theta_probe_enabled: bool = Field(default=True, description="Enable pre-VQ theta probe")
+    theta_probe_hidden_dim: int = Field(default=256, gt=0, description="Hidden dim for probe MLP")
+    theta_probe_weight: float = Field(default=5.0, ge=0.0, description="Weight for probe loss")
+
+    # Pre-VQ IC probe: predicts ICs from encoded temporal features BEFORE
+    # quantization, bypassing the VQ bottleneck for a direct gradient signal.
+    initial_probe_enabled: bool = Field(default=False, description="Enable pre-VQ IC probe")
+    initial_probe_weight: float = Field(default=1.0, ge=0.0, description="Weight for IC probe loss")
+
+
 class InverseHeadConfig(BaseModel):
     """Configuration for inverse decoder heads.
 
@@ -188,6 +262,14 @@ class InverseHeadConfig(BaseModel):
     # Initial inverse (dimensions inferred from encoder config and data)
     initial_base_channels: int = Field(default=256, description="Base channels for CNN decoder")
 
+    # Temporal inverse (only used in learned feature mode)
+    temporal_hidden_dim: int = Field(default=1536, description="Hidden dimension for temporal inverse MLP")
+    temporal_dropout: float = Field(default=0.1, description="Dropout rate for temporal inverse MLP")
+    temporal_roundtrip_timesteps: int = Field(
+        default=8,
+        description="Number of synthetic timesteps for temporal roundtrip re-encoding",
+    )
+
 
 class RoundtripLossConfig(BaseModel):
     """Configuration for roundtrip consistency loss."""
@@ -196,6 +278,7 @@ class RoundtripLossConfig(BaseModel):
     weight: float = Field(default=1.0, description="Weight for roundtrip loss in total loss")
     theta_weight: float = Field(default=1.0, description="Weight for theta roundtrip")
     initial_weight: float = Field(default=1.0, description="Weight for initial roundtrip")
+    temporal_weight: float = Field(default=1.0, description="Weight for temporal roundtrip")
 
 
 class LossConfig(BaseModel):
@@ -203,6 +286,14 @@ class LossConfig(BaseModel):
     reconstruction_weight: float = Field(default=1.0, ge=0.0)
     orthogonality_weight: float = Field(default=0.1, ge=0.0)
     informativeness_weight: float = Field(default=0.1, ge=0.0)
+    informativeness_mode: str = Field(
+        default="log_barrier",
+        description=(
+            "Informativeness loss formulation: 'floor' (original, activates only "
+            "on near-collapse) or 'log_barrier' (continuously active, penalizes "
+            "any group with variance < 1.0 via -log(var))"
+        ),
+    )
     topographic_weight: float = Field(default=0.0, ge=0.0)
     topographic_n_samples: int = Field(
         default=64,
@@ -214,8 +305,39 @@ class LossConfig(BaseModel):
         ),
     )
     normalize_reconstruction: bool = True
+    normalize_loss_scales: bool = Field(
+        default=False,
+        description=(
+            "EMA loss-scale normalization: each loss L_i is replaced by "
+            "L_i / EMA(L_i), so weights reflect actual gradient ratios "
+            "regardless of raw loss magnitudes. Eliminates manual tuning."
+        ),
+    )
+    loss_scale_ema_momentum: float = Field(
+        default=0.99,
+        ge=0.0,
+        le=1.0,
+        description="EMA momentum for loss-scale normalization (higher = slower adaptation)",
+    )
 
-    # NEW: Roundtrip loss configuration
+    # Group balance loss (learned mode): penalizes per-group variance imbalance
+    # in CNN output features. CV = std(group_vars)/mean(group_vars).
+    group_balance_weight: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Weight for group balance loss (0 = disabled, try 0.5-2.0 for learned mode)",
+    )
+
+    # Gate sparsity loss (pyramid_first gated mode): L1 penalty on group gates
+    # to encourage the model to concentrate info into fewer groups.
+    # Set to 0.0 during tokenizer pretraining; increase during joint fine-tuning.
+    gate_sparsity_weight: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Weight for L1 gate sparsity loss (0 = disabled)",
+    )
+
+    # Roundtrip loss configuration
     roundtrip: Optional[RoundtripLossConfig] = Field(
         default=None,
         description="Configuration for roundtrip consistency loss"
@@ -246,6 +368,25 @@ class TrainingConfig(BaseModel):
 
     device: Literal["cuda", "cpu", "auto"] = "auto"
     compile_model: bool = False
+
+    # OPQ (Optimized Product Quantization) rotation calibration
+    opq_enabled: bool = Field(default=False, description="Enable OPQ rotation before training")
+    opq_warmup_epochs: int = Field(
+        default=0, ge=0,
+        description="Epochs to train before OPQ calibration (0 = calibrate immediately)",
+    )
+    opq_n_calibration_batches: int = Field(
+        default=50, ge=1, description="Batches to collect CNN features from",
+    )
+    opq_max_samples: int = Field(
+        default=50000, ge=100, description="Max flattened frames for OPQ fitting",
+    )
+    opq_n_iter: int = Field(
+        default=20, ge=1, description="Alternating optimization iterations",
+    )
+    opq_n_codes: int = Field(
+        default=32, ge=2, description="Proxy codebook size per subspace",
+    )
 
 
 class NormalizationConfig(BaseModel):
@@ -306,6 +447,20 @@ class TokenizerConfig(BaseModel):
         description="Configuration for inverse decoder heads (theta/initial reconstruction)"
     )
 
+    # Temporal-only mode: only temporal tokens, theta/IC decoded from aux heads
+    temporal_only: bool = Field(
+        default=False,
+        description=(
+            "When True, only temporal features go through VQ encoding/quantization. "
+            "Theta and IC are decoded from quantized temporal latents via auxiliary heads, "
+            "eliminating the cross-family consistency problem for D3PM."
+        ),
+    )
+    aux_heads: Optional[AuxHeadConfig] = Field(
+        default=None,
+        description="Auxiliary head config for temporal-only mode (theta/IC prediction from temporal tokens)"
+    )
+
     # Learned temporal feature mode
     feature_source: Literal["manual", "learned"] = Field(
         default="manual",
@@ -314,14 +469,21 @@ class TokenizerConfig(BaseModel):
             "'learned': per-frame CNN replaces entire feature pipeline."
         ),
     )
+    generation_config_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to dataset generation config YAML for on-the-fly trajectory replay. "
+            "Auto-detects operator type (CNO, Lenia, etc.) and creates the appropriate replayer."
+        ),
+    )
     cno_config_path: Optional[str] = Field(
         default=None,
-        description="Path to CNO config YAML for on-the-fly trajectory generation (learned mode)"
+        description="Deprecated: use generation_config_path instead. Kept for backward compatibility."
     )
     replayer_cache_size: int = Field(
         default=8,
         ge=0,
-        description="CNOReplayer operator cache size (learned mode)"
+        description="Operator cache size for CNOReplayer (ignored by Lenia)"
     )
     generation_timesteps: Optional[int] = Field(
         default=None,
