@@ -13,6 +13,7 @@ parameters differ. This means the entire batch can be vectorized.
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Optional, Union
 
@@ -20,8 +21,16 @@ import numpy as np
 import torch
 import yaml
 
-from .params import sobol_batch_to_tensors
-from .simulator import LeniaSimulator
+from .params import (
+    DEFAULT_RANGES,
+    LeniaBatchTensors,
+    LeniaParamRanges,
+    sobol_batch_to_tensors,
+)
+from .simulator import (
+    LeniaSimulator,
+    build_multiring_kernel_ffts_batched,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +52,16 @@ class LeniaReplayAdapter:
         kernel_type: str = "gaussian",
         device: str = "cuda",
         max_gpu_batch: int = 16,
+        substeps: int = 1,
+        param_ranges: Optional[LeniaParamRanges] = None,
     ):
         self.n_channels = n_channels
         self.grid_size = grid_size
         self.kernel_type = kernel_type
         self.device = torch.device(device)
         self.max_gpu_batch = max_gpu_batch
+        self.substeps = substeps
+        self.param_ranges = param_ranges
 
         self.simulator = LeniaSimulator(grid_size=grid_size, device=device)
 
@@ -79,11 +92,20 @@ class LeniaReplayAdapter:
         sim_cfg = config.get("simulation", {})
         lenia_cfg = sim_cfg.get("lenia", {})
 
+        grid_size = sim_cfg.get("grid_size", 64)
+        # Scale max_gpu_batch inversely with pixel count (baseline: 16 @ 64²)
+        max_gpu_batch = max(1, 16 * (64 * 64) // (grid_size * grid_size))
+
+        param_ranges = DEFAULT_RANGES
+
         return cls(
             n_channels=sim_cfg.get("n_channels", 3),
-            grid_size=sim_cfg.get("grid_size", 64),
+            grid_size=grid_size,
             kernel_type=lenia_cfg.get("kernel_type", "gaussian"),
             device=device,
+            max_gpu_batch=max_gpu_batch,
+            substeps=lenia_cfg.get("substeps", 1),
+            param_ranges=param_ranges,
         )
 
     def _to_numpy_batch(
@@ -100,36 +122,137 @@ class LeniaReplayAdapter:
     def _build_lenia_tensors(
         self,
         params_batch: np.ndarray,
-    ) -> tuple:
-        """Convert Sobol batch → kernel FFTs + physics tensors on device."""
-        radii, growth_mu, growth_sigma, dt, coupling = sobol_batch_to_tensors(
+    ) -> LeniaBatchTensors:
+        """Convert Sobol batch → LeniaBatchTensors on device."""
+        return sobol_batch_to_tensors(
             params_batch, self.n_channels, self.device,
+            ranges=self.param_ranges,
         )
+
+    def _build_kernel_ffts(
+        self,
+        tensors: LeniaBatchTensors,
+    ) -> torch.Tensor:
+        """Build kernel FFTs from batch tensors.
+
+        Delegates to multi-ring builder when kernel_rank/beta are present,
+        otherwise uses the single-Gaussian compiled builder.
+        """
         dist_grid = self.simulator._get_dist_grid()
-        kernel_ffts = self.simulator._compiled_kernel_builder(
-            radii, self.grid_size, dist_grid,
-        )
-        return kernel_ffts, coupling, growth_mu, growth_sigma, dt
+
+        if tensors.kernel_rank is not None and tensors.beta is not None:
+            return build_multiring_kernel_ffts_batched(
+                radii=tensors.radii,
+                grid_size=self.grid_size,
+                dist_grid=dist_grid,
+                kernel_rank=tensors.kernel_rank,
+                beta=tensors.beta,
+                kernel_type_ids=tensors.kernel_type,
+                kernel_types_list=(
+                    self.param_ranges.kernel_types
+                    if self.param_ranges else None
+                ),
+            )
+        else:
+            return self.simulator._compiled_kernel_builder(
+                tensors.radii, self.grid_size, dist_grid,
+            )
+
+    def _compute_adaptive_substeps(
+        self,
+        dt: torch.Tensor,
+        growth_sigma: torch.Tensor,
+        growth_type: Optional[torch.Tensor] = None,
+    ) -> int:
+        """Compute substep count K for CFL stability.
+
+        See LeniaReplayer._compute_adaptive_substeps for full rationale.
+        Uses growth-type-aware |G'|_max constants and caps at K=32.
+        """
+        K = self.substeps
+        if self.param_ranges is None:
+            return K
+
+        sigma_min = growth_sigma.min(dim=1).values.clamp(min=1e-8)
+
+        if growth_type is None:
+            g_prime_const = 1.716
+        else:
+            has_step = (growth_type == 2).any().item()
+            has_poly = (growth_type == 1).any().item()
+            if has_step:
+                g_prime_const = 5.0
+            elif has_poly:
+                g_prime_const = 3.079
+            else:
+                g_prime_const = 1.716
+
+        cfl_max = (dt * g_prime_const / sigma_min).max().item()
+        K_cfl = math.ceil(cfl_max / 1.0)
+        K = max(K, K_cfl)
+        K = min(K, 32)
+        return K
 
     def _simulate(
         self,
         ics: torch.Tensor,
+        tensors: LeniaBatchTensors,
         kernel_ffts: torch.Tensor,
-        coupling: torch.Tensor,
-        growth_mu: torch.Tensor,
-        growth_sigma: torch.Tensor,
-        dt: torch.Tensor,
         timesteps: int,
         return_all_steps: bool,
     ) -> torch.Tensor:
-        """Run simulator and format output."""
-        traj = self.simulator.rollout_batch_from_tensors(
-            ics, kernel_ffts, coupling, growth_mu, growth_sigma, dt, timesteps,
-        )  # [B, T, C, H, W]
+        """Run simulator and format output.
+
+        When ``substeps > 1``, each visible frame is produced by K Euler
+        steps at dt/K instead of one step at dt.  The total simulated time
+        per visible frame is unchanged, but the integration is more stable
+        (eliminates period-2 oscillations from large dt + sharp growth).
+
+        Memory-efficient: only stores one frame per visible timestep.
+        If K is capped (at 32), per-sample dt clamping ensures CFL < 1.0.
+        """
+        K = self._compute_adaptive_substeps(
+            tensors.dt, tensors.growth_sigma, tensors.growth_type,
+        )
+
+        if K <= 1:
+            traj = self.simulator.rollout_batch_from_tensors(
+                ics, kernel_ffts, tensors.coupling,
+                tensors.growth_mu, tensors.growth_sigma, tensors.dt, timesteps,
+                growth_type=tensors.growth_type,
+            )
+        else:
+            sim_dt = tensors.dt / K
+
+            # Per-sample dt safety clamp when K was capped
+            if tensors.growth_type is not None:
+                sigma_min = tensors.growth_sigma.min(dim=1).values.clamp(min=1e-8)
+                g_prime = torch.full_like(tensors.dt, 1.716)
+                g_prime[tensors.growth_type == 1] = 3.079
+                g_prime[tensors.growth_type == 2] = 5.0
+                dt_safe = sigma_min / g_prime
+                sim_dt = torch.minimum(sim_dt, dt_safe)
+
+            # Memory-efficient substep loop
+            B, C, H, W = ics.shape
+            state = ics.float()
+            mu = tensors.growth_mu[:, :, None, None]
+            sigma = tensors.growth_sigma[:, :, None, None]
+            dt_view = sim_dt[:, None, None, None]
+
+            traj = torch.empty(B, timesteps, C, H, W,
+                               device=self.device, dtype=torch.float32)
+            step_fn = self.simulator._compiled_step
+
+            for t in range(timesteps):
+                for _k in range(K):
+                    state = step_fn(state, kernel_ffts, tensors.coupling,
+                                    mu, sigma, dt_view, tensors.growth_type)
+                traj[:, t] = state
 
         if return_all_steps:
-            return torch.cat([ics.unsqueeze(1), traj], dim=1)  # [B, T+1, C, H, W]
-        return traj[:, -1]  # [B, C, H, W]
+            return torch.cat([ics.unsqueeze(1), traj], dim=1)
+        return traj[:, -1]
 
     # ── Per-sample interface (CNOReplayer compat) ─────────────
 
@@ -160,13 +283,9 @@ class LeniaReplayAdapter:
         ic = ic.to(self.device)
 
         params_np = self._to_numpy_batch(params_vector)
-        kernel_ffts, coupling, growth_mu, growth_sigma, dt = self._build_lenia_tensors(
-            params_np,
-        )
-        return self._simulate(
-            ic, kernel_ffts, coupling, growth_mu, growth_sigma, dt,
-            timesteps, return_all_steps,
-        )
+        tensors = self._build_lenia_tensors(params_np)
+        kernel_ffts = self._build_kernel_ffts(tensors)
+        return self._simulate(ic, tensors, kernel_ffts, timesteps, return_all_steps)
 
     # ── Batched interface (throughput path) ───────────────────
 
@@ -197,12 +316,10 @@ class LeniaReplayAdapter:
         if B <= self.max_gpu_batch:
             # Single batch — no sub-batching needed
             ics_dev = ics.to(self.device)
-            kernel_ffts, coupling, growth_mu, growth_sigma, dt = (
-                self._build_lenia_tensors(params_np)
-            )
+            tensors = self._build_lenia_tensors(params_np)
+            kernel_ffts = self._build_kernel_ffts(tensors)
             result = self._simulate(
-                ics_dev, kernel_ffts, coupling, growth_mu, growth_sigma, dt,
-                timesteps, return_all_steps,
+                ics_dev, tensors, kernel_ffts, timesteps, return_all_steps,
             )
             return result.cpu()
 
@@ -213,12 +330,10 @@ class LeniaReplayAdapter:
         for start in range(0, B, self.max_gpu_batch):
             end = min(start + self.max_gpu_batch, B)
             sub_ics = ics[start:end].to(self.device)
-            sub_kfft, sub_coup, sub_gmu, sub_gsig, sub_dt = (
-                self._build_lenia_tensors(params_np[start:end])
-            )
+            sub_tensors = self._build_lenia_tensors(params_np[start:end])
+            sub_kfft = self._build_kernel_ffts(sub_tensors)
             sub_result = self._simulate(
-                sub_ics, sub_kfft, sub_coup, sub_gmu, sub_gsig, sub_dt,
-                timesteps, return_all_steps,
+                sub_ics, sub_tensors, sub_kfft, timesteps, return_all_steps,
             )
             chunks.append(sub_result.cpu())
 

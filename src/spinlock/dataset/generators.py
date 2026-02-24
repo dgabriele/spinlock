@@ -112,7 +112,7 @@ class InputFieldGenerator:
         batch_size: int,
         field_type: Literal[
             "gaussian_random_field", "random", "structured", "mixed",
-            "multiscale_grf", "localized", "composite", "heavy_tailed",
+            "multiscale_grf", "localized", "asymmetric_blobs", "composite", "heavy_tailed",
             # Tier 1 domain-specific ICs
             "quantum_wave_packet", "turing_pattern", "thermal_gradient",
             "morphogen_gradient", "reaction_front",
@@ -170,6 +170,8 @@ class InputFieldGenerator:
             return self._generate_multiscale_grf(batch_size, **kwargs)
         elif field_type == "localized":
             return self._generate_localized_features(batch_size, **kwargs)
+        elif field_type == "asymmetric_blobs":
+            return self._generate_asymmetric_blobs(batch_size, **kwargs)
         elif field_type == "composite":
             return self._generate_composite_field(batch_size, **kwargs)
         elif field_type == "heavy_tailed":
@@ -224,7 +226,7 @@ class InputFieldGenerator:
             raise ValueError(
                 f"Unknown field type: {field_type}. "
                 f"Must be one of: 'gaussian_random_field', 'random', 'structured', 'mixed', "
-                f"'multiscale_grf', 'localized', 'composite', 'heavy_tailed', "
+                f"'multiscale_grf', 'localized', 'asymmetric_blobs', 'composite', 'heavy_tailed', "
                 f"'quantum_wave_packet', 'turing_pattern', 'thermal_gradient', "
                 f"'morphogen_gradient', 'reaction_front', 'light_cone', 'critical_fluctuation', "
                 f"'phase_boundary', 'bz_reaction', 'shannon_entropy', 'interference_pattern', "
@@ -554,6 +556,53 @@ class InputFieldGenerator:
         fields = blobs.sum(dim=1)  # [B, C, H, W]
 
         return fields
+
+    def _generate_asymmetric_blobs(
+        self,
+        batch_size: int,
+        num_blobs: int = 3,
+        min_width: float = 6.0,
+        max_width: float = 18.0,
+    ) -> torch.Tensor:
+        """Generate blobs with independently random positions per channel.
+
+        Unlike ``localized`` (which shares blob positions across channels and
+        varies only amplitude), this generator samples **independent** center
+        coordinates for every (sample, channel, blob) triple.  The result is
+        spatially asymmetric across channels — crucial for breaking the
+        symmetry that leads to standing-wave rather than traveling-structure
+        dynamics in multi-channel Lenia.
+
+        Args:
+            batch_size: Number of samples.
+            num_blobs: Blobs per channel (fewer than ``localized`` default
+                to keep blobs well-separated).
+            min_width: Minimum blob sigma (pixels).
+            max_width: Maximum blob sigma (pixels).
+
+        Returns:
+            Tensor [B, C, H, W]
+        """
+        C = self.num_channels
+        H = W = self.grid_size
+
+        x = self._cached_x.unsqueeze(0)  # [1, H, W]
+        y = self._cached_y.unsqueeze(0)  # [1, H, W]
+
+        # Independent positions per (sample, channel, blob)
+        total = batch_size * C * num_blobs
+        cx = torch.rand(total, 1, 1, device=self.device) * W
+        cy = torch.rand(total, 1, 1, device=self.device) * H
+        sigma = (
+            torch.rand(total, 1, 1, device=self.device) * (max_width - min_width)
+            + min_width
+        )
+        amp = 0.3 + torch.rand(total, 1, 1, device=self.device) * 0.7  # [0.3, 1.0]
+
+        blobs = amp * torch.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma ** 2))
+        # [B*C*num_blobs, H, W] → [B, C, num_blobs, H, W] → sum over blobs
+        blobs = blobs.reshape(batch_size, C, num_blobs, H, W).sum(dim=2)
+        return blobs  # [B, C, H, W]
 
     def _generate_composite_field(
         self,

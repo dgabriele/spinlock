@@ -149,6 +149,139 @@ def build_kernel_ffts_batched(
 
 
 # =============================================================================
+# Multi-ring kernel builder (V3: variable B rings, multiple shell types)
+# =============================================================================
+
+
+def _kernel_shell(
+    type_name: str,
+    x: torch.Tensor,
+    peak: torch.Tensor,
+    width: torch.Tensor,
+) -> torch.Tensor:
+    """Compute kernel shell value for a given type.
+
+    Args:
+        type_name: "gaussian", "polynomial", or "step".
+        x: Normalized distance tensor [B, C, H, W].
+        peak: Ring center in normalized space [B, 1, 1, 1].
+        width: Ring width [B, 1, 1, 1].
+
+    Returns:
+        Shell values [B, C, H, W].
+    """
+    if type_name == "gaussian":
+        return torch.exp(-((x - peak) ** 2) / (2 * width ** 2))
+    elif type_name == "polynomial":
+        # Compact support, quartic smoothness: max(0, 1 - ((x-peak)/w)²)^4
+        return torch.clamp(1.0 - ((x - peak).abs() / width) ** 2, min=0.0) ** 4
+    elif type_name == "step":
+        # Rectangular rings
+        return ((x - peak).abs() < width).float()
+    else:
+        raise ValueError(f"Unknown kernel shell type: {type_name}")
+
+
+def build_multiring_kernel_ffts_batched(
+    radii: torch.Tensor,
+    grid_size: int,
+    dist_grid: torch.Tensor,
+    kernel_rank: Optional[torch.Tensor] = None,
+    beta: Optional[torch.Tensor] = None,
+    kernel_type_ids: Optional[torch.Tensor] = None,
+    kernel_types_list: Optional[List[str]] = None,
+) -> torch.Tensor:
+    """Build multi-ring kernel FFTs for a batch.
+
+    Generalizes build_kernel_ffts_batched to support:
+    - Variable number of concentric rings (kernel_rank B ∈ [1, max_rings])
+    - Per-channel beta weights for ring mixing
+    - Multiple kernel shell types (gaussian, polynomial, step)
+
+    When kernel_rank is None or beta is None, falls back to the single-ring
+    Gaussian builder for backward compatibility.
+
+    Args:
+        radii:            [B, C] kernel radii per sample per channel.
+        grid_size:        Spatial grid size (H = W).
+        dist_grid:        [H, W] precomputed periodic distance grid.
+        kernel_rank:      [B] integer, number of active rings per sample.
+        beta:             [B, C, max_rings] normalized ring weights.
+        kernel_type_ids:  [B] integer kernel type indices (0=gauss, 1=poly, 2=step).
+        kernel_types_list: List mapping type index to name.
+
+    Returns:
+        [B, C, H, W//2+1] complex64 — kernel FFTs.
+    """
+    # Fast path: no multi-ring params → delegate to single-Gaussian builder
+    if kernel_rank is None or beta is None:
+        return build_kernel_ffts_batched(radii, grid_size, dist_grid)
+
+    B, C = radii.shape
+    H = W = grid_size
+    max_rings = beta.shape[2]
+    device = radii.device
+
+    # Normalized distance: x = dist / R for each sample and channel
+    x = dist_grid[None, None] / radii[:, :, None, None]  # [B, C, H, W]
+    kr = kernel_rank[:, None, None, None].float()  # [B, 1, 1, 1]
+
+    kernel = torch.zeros(B, C, H, W, device=device)
+
+    # Determine if batch is homogeneous in kernel type
+    all_same_type = (
+        kernel_type_ids is None or kernel_type_ids.unique().numel() == 1
+    )
+
+    if all_same_type:
+        # Homogeneous batch — one shell function for all samples
+        type_name = "gaussian"
+        if kernel_type_ids is not None and kernel_types_list is not None:
+            type_name = kernel_types_list[kernel_type_ids[0].item()]
+
+        for ring in range(max_rings):
+            peak = (ring + 0.5) / kr
+            width = 1.0 / (3.0 * kr)
+            shell = _kernel_shell(type_name, x, peak, width)
+            kernel = kernel + beta[:, :, ring, None, None] * shell
+    else:
+        # Heterogeneous batch — sort and partition by kernel type
+        for type_idx, type_name in enumerate(kernel_types_list or ["gaussian"]):
+            type_mask = kernel_type_ids == type_idx
+            if not type_mask.any():
+                continue
+            idx = type_mask.nonzero(as_tuple=True)[0]
+            sub_x = x[idx]
+            sub_kr = kr[idx]
+            sub_beta = beta[idx]
+            sub_kernel = torch.zeros_like(sub_x)
+
+            for ring in range(max_rings):
+                peak = (ring + 0.5) / sub_kr
+                width = 1.0 / (3.0 * sub_kr)
+                shell = _kernel_shell(type_name, sub_x, peak, width)
+                sub_kernel = sub_kernel + sub_beta[:, :, ring, None, None] * shell
+
+            kernel[idx] = sub_kernel
+
+    # Zero outside radius, normalize, FFT
+    kernel = torch.where(x <= 1.0, kernel, torch.zeros_like(kernel))
+    total = kernel.sum(dim=(-2, -1), keepdim=True).clamp(min=1e-12)
+    kernel = kernel / total
+
+    return torch.fft.rfft2(kernel)
+
+
+# =============================================================================
+# Growth function constants
+# =============================================================================
+
+GROWTH_GAUSSIAN = 0
+GROWTH_POLYNOMIAL = 1
+GROWTH_STEP = 2
+
+
+# =============================================================================
 # Main simulator
 # =============================================================================
 
@@ -175,6 +308,8 @@ class LeniaSimulator:
         self._compiled_step = self._step
         self._compiled_kernel_builder = build_kernel_ffts_batched
         if torch.cuda.is_available():
+            # Enable TF32 for faster float32 matmul on Ampere+ GPUs
+            torch.set_float32_matmul_precision("high")
             try:
                 warnings.filterwarnings(
                     "ignore",
@@ -182,6 +317,13 @@ class LeniaSimulator:
                     category=UserWarning,
                     module=r"torch\._inductor",
                 )
+                warnings.filterwarnings(
+                    "ignore",
+                    message=".*TensorFloat32.*",
+                    category=UserWarning,
+                )
+                # Suppress inductor warnings about SM count / autotune
+                logging.getLogger("torch._inductor.utils").setLevel(logging.ERROR)
                 self._compiled_step = torch.compile(self._step)
                 self._compiled_kernel_builder = torch.compile(build_kernel_ffts_batched)
                 logger.info("LeniaSimulator: torch.compile enabled for _step and kernel builder")
@@ -250,12 +392,17 @@ class LeniaSimulator:
         growth_sigma: torch.Tensor,    # [B, C]
         dt: torch.Tensor,              # [B]
         num_timesteps: int = 256,
+        growth_type: Optional[torch.Tensor] = None,  # [B] long or None
     ) -> torch.Tensor:
         """Run Lenia with precomputed kernel FFTs and pre-extracted tensors.
 
         This is the fast path: no Python loops for param extraction, no
         kernel rebuilding. All tensors are pre-shaped before the timestep
         loop to eliminate per-step reshape overhead.
+
+        Args:
+            growth_type: Per-sample growth function index (0=gaussian,
+                1=polynomial, 2=step). None = all gaussian (V2 fast path).
 
         Returns:
             Trajectories [B, T, C, H, W] float32 ∈ [0,1].
@@ -273,7 +420,7 @@ class LeniaSimulator:
 
         step_fn = self._compiled_step
         for t in range(num_timesteps):
-            state = step_fn(state, kernel_ffts, coupling, mu, sigma, dt_view)
+            state = step_fn(state, kernel_ffts, coupling, mu, sigma, dt_view, growth_type)
             traj[:, t] = state
 
         return traj
@@ -343,6 +490,7 @@ class LeniaSimulator:
         growth_mu: torch.Tensor,        # [B, C, 1, 1]  (pre-shaped)
         growth_sigma: torch.Tensor,     # [B, C, 1, 1]  (pre-shaped)
         dt: torch.Tensor,               # [B, 1, 1, 1]  (pre-shaped)
+        growth_type: Optional[torch.Tensor] = None,  # [B] long or None
     ) -> torch.Tensor:
         """Single Lenia time step (fully batched).
 
@@ -353,7 +501,7 @@ class LeniaSimulator:
             2. Multiply pointwise with kernel FFT (circular convolution)
             3. IFFT to get per-channel neighborhood sums U_i ∈ [0,1]
             4. Mix channels via coupling matrix: U = coupling @ U_flat
-            5. Apply growth function G = 2*exp(-((U-μ)/σ)²) - 1  ∈ [-1, 1]
+            5. Apply growth function G ∈ [-1, 1] (type-dispatched for V3)
             6. Euler step: new_state = clamp(state + dt * G, 0, 1)
         """
         B, C, H, W = state.shape
@@ -369,7 +517,23 @@ class LeniaSimulator:
         U_mixed = U_mixed.view(B, C, H, W)          # [B, C, H, W]
 
         # Step 5: growth function G ∈ [-1, 1]
-        G = 2.0 * torch.exp(-((U_mixed - growth_mu) / growth_sigma) ** 2) - 1.0
+        if growth_type is None:
+            # V2 fast path: all Gaussian
+            G = 2.0 * torch.exp(-((U_mixed - growth_mu) / growth_sigma) ** 2) - 1.0
+        else:
+            # V3: compute all three growth functions and select per-sample.
+            # Computing all three avoids dynamic indexing / graph breaks, at
+            # ~3x cost on the growth step (negligible vs FFT convolution).
+            z = (U_mixed - growth_mu) / growth_sigma
+            G_gauss = 2.0 * torch.exp(-(z ** 2)) - 1.0
+            G_poly = 2.0 * torch.clamp(1.0 - z ** 2, min=0.0) ** 2 - 1.0
+            # Smoothed step: tanh(α·(1−|z|)) with α=5.  Preserves near-binary
+            # growth/decay while keeping G' finite (|G'|_max = α/σ), which is
+            # essential for CFL-based substep stability.
+            G_step = torch.tanh(5.0 * (1.0 - z.abs()))
+            G_all = torch.stack([G_gauss, G_poly, G_step], dim=0)  # [3, B, C, H, W]
+            gt_idx = growth_type.view(1, -1, 1, 1, 1).expand(1, -1, C, H, W)
+            G = G_all.gather(0, gt_idx).squeeze(0)  # [B, C, H, W]
 
         # Step 6: Euler update
         return torch.clamp(state + dt * G, 0.0, 1.0)

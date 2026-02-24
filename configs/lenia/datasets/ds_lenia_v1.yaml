@@ -1,0 +1,140 @@
+metadata:
+  name: "lenia_v1"
+  description: "3ch Lenia, 128x128, multi-ring kernels, literature-informed ranges"
+
+parameter_space:
+  architecture: {}
+  stochastic: {}
+  operator:
+    # Per-channel kernel radii (dims 0-2) — full range for 128² toroidal grid
+    kernel_radius_0: {type: integer, bounds: [8, 200]}
+    kernel_radius_1: {type: integer, bounds: [8, 200]}
+    kernel_radius_2: {type: integer, bounds: [8, 200]}
+    # Per-channel growth mu (dims 3-5) — Goldilocks zone for motility/diversity
+    growth_mu_0: {type: continuous, bounds: [0.12, 0.38]}
+    growth_mu_1: {type: continuous, bounds: [0.12, 0.38]}
+    growth_mu_2: {type: continuous, bounds: [0.12, 0.38]}
+    # Per-channel growth sigma (dims 6-8) — log-uniform for sharpness coverage
+    growth_sigma_0: {type: continuous, bounds: [0.01, 0.1], log_scale: true}
+    growth_sigma_1: {type: continuous, bounds: [0.01, 0.1], log_scale: true}
+    growth_sigma_2: {type: continuous, bounds: [0.01, 0.1], log_scale: true}
+    # Off-diagonal coupling (dims 10-15)
+    coupling_01: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_02: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_10: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_12: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_20: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_21: {type: continuous, bounds: [-0.5, 1.0]}
+    # Multi-ring kernel rank (dim 16)
+    kernel_rank: {type: integer, bounds: [1, 5]}
+    # Per-channel per-ring beta weights (dims 17-31) — 3ch × 5 rings
+    beta_c0_r0: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c0_r1: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c0_r2: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c0_r3: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c0_r4: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r0: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r1: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r2: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r3: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r4: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r0: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r1: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r2: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r3: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r4: {type: continuous, bounds: [0.0, 1.0]}
+    # Categorical kernel type (dim 32)
+    kernel_type: {type: choice, choices: [gaussian, polynomial, step]}
+    # Categorical growth type (dim 33)
+    growth_type: {type: choice, choices: [gaussian, polynomial, step]}
+  evolution:
+    # Time scale T (dim 9) — dt = 1/T
+    time_scale: {type: integer, bounds: [4, 400]}
+
+sampling:
+  strategy: "sobol_stratified"
+  sobol:
+    scramble: true
+    seed: 42
+    backend: "torch"
+  total_samples: 500000
+  batch_size: 500
+
+simulation:
+  operator_type: "lenia"
+  device: "cuda"
+  n_channels: 3
+  grid_size: 128
+  num_realizations: 3
+  num_timesteps: 256
+  lenia:
+    kernel_type: "gaussian"
+    alive_threshold: 0.01
+    saturation_threshold: 0.95
+    max_retries: 5
+    substeps: 2       # base substeps; CFL-adaptive at runtime
+
+  # Diverse IC generation — same as v2
+  input_generation:
+    method: "sampled"
+    ic_type_weights:
+      localized: 0.15
+      asymmetric_blobs: 0.15
+      gaussian_random_field_v0: 0.083
+      gaussian_random_field_v1: 0.083
+      gaussian_random_field_v2: 0.084
+      multiscale_grf_low: 0.083
+      multiscale_grf_mid: 0.083
+      multiscale_grf_high: 0.084
+      structured: 0.20
+
+    localized:
+      num_blobs: 5
+      min_width: 4.0
+      max_width: 16.0
+    asymmetric_blobs:
+      num_blobs: 3
+      min_width: 6.0
+      max_width: 18.0
+    structured:
+      num_structures: 3
+      structure_types: ["circle", "stripe", "blob"]
+
+    ic_variant_params:
+      gaussian_random_field_v0:
+        length_scale: 0.08
+        variance: 0.5
+      gaussian_random_field_v1:
+        length_scale: 0.08
+        variance: 1.0
+      gaussian_random_field_v2:
+        length_scale: 0.08
+        variance: 2.0
+      multiscale_grf_low:
+        scales: [0.25, 0.30, 0.35]
+        variance: 1.0
+      multiscale_grf_mid:
+        scales: [0.08, 0.10, 0.12]
+        variance: 1.0
+      multiscale_grf_high:
+        scales: [0.02, 0.03, 0.04]
+        variance: 1.0
+
+dataset:
+  output_path: "datasets/ds_lenia_v1.h5"
+  storage:
+    compression: "lzf"
+    chunk_size: 8
+    store_trajectories: false
+
+features:
+  initial:
+    enabled: true
+  temporal:
+    enabled: false
+  summary:
+    enabled: false
+
+logging:
+  level: "INFO"
+  format: "structured"

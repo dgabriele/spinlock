@@ -108,11 +108,36 @@ class VQTokenizer:
         self.normalization_stats = None
         self.feature_metadata = None  # Will be populated during training
 
+    def _resume_training(
+        self,
+        resume_from: Path,
+        trainer: VQTokenizerTrainer,
+    ) -> int:
+        """Load checkpoint and restore model + trainer state for resume.
+
+        Args:
+            resume_from: Path to checkpoint file
+            trainer: Trainer to restore optimizer/scheduler/tracking state into
+
+        Returns:
+            start_epoch for the training loop
+        """
+        logger.info(f"Resuming from checkpoint: {resume_from}")
+        ckpt = load_checkpoint(resume_from)
+
+        # Restore model weights
+        self.model.load_state_dict(ckpt.model_state_dict)
+        logger.info("Restored model weights")
+
+        # Restore trainer state (optimizer, scheduler, loss EMA, tracking)
+        return trainer.resume_state(ckpt)
+
     def train(
         self,
         dataset: Union[SpinlockDataset, str, Path],
         output_dir: Union[str, Path] = "checkpoints",
         checkpoint_prefix: str = "vq_tokenizer",
+        resume_from: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """Train VQ tokenizer on dataset.
 
@@ -120,6 +145,7 @@ class VQTokenizer:
             dataset: SpinlockDataset or path to dataset file
             output_dir: Directory to save checkpoints
             checkpoint_prefix: Prefix for checkpoint filenames
+            resume_from: Path to checkpoint to resume from (optional)
 
         Returns:
             Training history dict
@@ -133,7 +159,7 @@ class VQTokenizer:
 
         # ── Learned mode: entirely different data/grouping/training path ──
         if self.config.feature_source == "learned":
-            return self._train_learned_mode(dataset, output_dir, checkpoint_prefix)
+            return self._train_learned_mode(dataset, output_dir, checkpoint_prefix, resume_from)
 
         # ── Manual mode (default): hand-crafted features ──
         # Extract features
@@ -210,6 +236,11 @@ class VQTokenizer:
             self.feature_metadata,
         )
 
+        # Resume from checkpoint if requested
+        start_epoch = 0
+        if resume_from:
+            start_epoch = self._resume_training(resume_from, trainer)
+
         # Train
         logger.info(f"Starting training for {self.config.training.num_epochs} epochs")
         history = trainer.train(
@@ -221,6 +252,7 @@ class VQTokenizer:
             temporal_lengths=features.get("temporal_lengths"),
             output_dir=output_dir,
             checkpoint_prefix=checkpoint_prefix,
+            start_epoch=start_epoch,
         )
 
         logger.info("Training complete")
@@ -493,6 +525,7 @@ class VQTokenizer:
         dataset: SpinlockDataset,
         output_dir: Path,
         checkpoint_prefix: str,
+        resume_from: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """Training path for learned CNN temporal features.
 
@@ -537,12 +570,18 @@ class VQTokenizer:
             replayer=replayer,
         )
 
+        # Resume from checkpoint if requested
+        start_epoch = 0
+        if resume_from:
+            start_epoch = self._resume_training(resume_from, trainer)
+
         # Train — pass lazy dataset directly (no tensors in RAM)
         logger.info(f"Starting learned-mode training for {self.config.training.num_epochs} epochs")
         history = trainer.train(
             dataset=learned_dataset,
             output_dir=output_dir,
             checkpoint_prefix=checkpoint_prefix,
+            start_epoch=start_epoch,
         )
 
         # Clean up lazy HDF5 handle

@@ -64,6 +64,7 @@ class InitialFeatureExtractionPipeline:
         self.batch_size = batch_size
         self.include_spatial = include_spatial
         self.verbose = verbose
+        self._shape_logged = False
 
         # Initialize extractor
         if self.extractor_type == ExtractorType.STATISTICAL:
@@ -98,7 +99,7 @@ class InitialFeatureExtractionPipeline:
         original_shape = ics.shape
         metadata = {'original_shape': original_shape}
 
-        if self.verbose:
+        if self.verbose and not self._shape_logged:
             print(f"  Input shape: {original_shape}")
 
         # Handle different input shapes
@@ -130,7 +131,7 @@ class InitialFeatureExtractionPipeline:
                 metadata['flattened_channels_species'] = True
                 metadata['original_channels'] = C
                 metadata['original_species'] = S
-                if self.verbose:
+                if self.verbose and not self._shape_logged:
                     print(f"  Flattened {C} channels × {S} species -> {C*S} channels")
             else:
                 # [N, M, C, H, W] -> take first realization
@@ -159,8 +160,9 @@ class InitialFeatureExtractionPipeline:
                     f"Manual extractor expects 4D or 5D input, got {ics.shape}"
                 )
 
-        if self.verbose:
+        if self.verbose and not self._shape_logged:
             print(f"  Normalized shape: {normalized.shape}")
+            self._shape_logged = True
 
         return normalized, metadata
 
@@ -192,7 +194,7 @@ class InitialFeatureExtractionPipeline:
         num_samples = len(ics_normalized)
 
         for i in range(0, num_samples, self.batch_size):
-            batch = ics_normalized[i:i + self.batch_size]
+            batch = ics_normalized[i:i + self.batch_size].to(self.device)
 
             if self.extractor_type == ExtractorType.STATISTICAL:
                 # Statistical extractor: [B, C, H, W] -> [B, D]
@@ -205,7 +207,7 @@ class InitialFeatureExtractionPipeline:
                 if batch_features.shape[1] == 1:
                     batch_features = batch_features.squeeze(1)
 
-            features_list.append(batch_features)
+            features_list.append(batch_features.cpu())
 
         features = torch.cat(features_list, dim=0)  # [N, D]
 
@@ -261,6 +263,7 @@ class InitialFeatureExtractionPipeline:
             # Determine feature dimension from a small probe batch
             probe = torch.from_numpy(ic_dataset[:1]).float()
             probe_norm, _ = self._normalize_input_shape(probe)
+            probe_norm = probe_norm.to(self.device)
             if self.extractor_type == ExtractorType.STATISTICAL:
                 with torch.no_grad():
                     probe_feat = self.extractor(probe_norm)
@@ -291,7 +294,7 @@ class InitialFeatureExtractionPipeline:
                                  chunks=(min(self.batch_size, num_samples), feat_dim))
             feat_ds = agg_group.create_dataset('features', **ds_kwargs)
 
-            # Stream: read batch from HDF5 → extract → write back
+            # Stream: read batch from HDF5 → GPU → extract → CPU → write back
             for start in range(0, num_samples, self.batch_size):
                 end = min(start + self.batch_size, num_samples)
                 batch_np = ic_dataset[start:end]
@@ -300,6 +303,9 @@ class InitialFeatureExtractionPipeline:
 
                 batch_norm, _ = self._normalize_input_shape(batch_t)
                 del batch_t
+
+                # Move to device (GPU if available) for faster extraction
+                batch_norm = batch_norm.to(self.device)
 
                 if self.extractor_type == ExtractorType.STATISTICAL:
                     with torch.no_grad():

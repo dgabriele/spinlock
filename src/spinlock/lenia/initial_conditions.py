@@ -86,7 +86,10 @@ class DiverseLeniaICGenerator:
     """Diverse IC generator for Lenia using InputFieldGenerator.
 
     Samples IC types from a weighted distribution, generates via InputFieldGenerator,
-    then applies per-sample min-max normalization to [0, 1] (Lenia state constraint).
+    then applies per-sample percentile-based normalization to [0, 1] (Lenia state
+    constraint). Uses 1st/99th percentiles instead of min/max to avoid stretching
+    outlier-dominated fields to artificially high energy states.
+
     Supports IC type locking for realization-consistent IC assignment.
     """
 
@@ -177,12 +180,18 @@ class DiverseLeniaICGenerator:
                 **params,
             )
 
-            # Per-sample min-max normalization to [0, 1]
+            # Per-sample percentile-based soft normalization to [0, 1].
+            # Unlike min-max, this resists outlier stretching and preserves
+            # the natural energy distribution of the IC field.
             for j, idx in enumerate(indices):
                 sample = fields[j]  # [C, H, W]
-                s_min = sample.min()
-                s_max = sample.max()
-                normalized = (sample - s_min) / (s_max - s_min + 1e-8)
+                flat = sample.flatten()
+                p99 = torch.quantile(flat, 0.99)
+                p01 = torch.quantile(flat, 0.01)
+                if (p99 - p01).abs() < 1e-8:
+                    normalized = torch.zeros_like(sample)
+                else:
+                    normalized = (sample - p01) / (p99 - p01)
                 output[idx] = normalized.clamp(0.0, 1.0).to(device)
 
         return output

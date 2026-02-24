@@ -233,16 +233,17 @@ Output:
         except Exception as e:
             return self.error(f"Failed to create tokenizer: {e}")
 
-        # TODO: Add resume support later if needed
-        if args.resume:
-            logger.warning("Resume from checkpoint not yet implemented")
+        resume_from = Path(args.resume) if args.resume else None
+        if resume_from and not resume_from.exists():
+            return self.error(f"Resume checkpoint not found: {resume_from}")
 
-        # Determine output directory
+        # Determine output directory: CLI flag > config > default
         if args.output:
             output_dir = args.output
+        elif config.checkpoint_dir:
+            output_dir = Path(config.checkpoint_dir)
         else:
-            # Use checkpoint_dir from config if available
-            output_dir = Path("checkpoints/v2/vqvae")
+            output_dir = Path("checkpoints/vq_tokenizer")
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -281,9 +282,14 @@ Output:
                 dataset=dataset,
                 output_dir=output_dir,
                 checkpoint_prefix="vq_tokenizer",
+                resume_from=resume_from,
             )
         except KeyboardInterrupt:
-            logger.warning("Training interrupted by user")
+            logger.warning(
+                "Training interrupted by user. "
+                "Resume with: --resume %s/vq_tokenizer_latest.pt",
+                output_dir,
+            )
             return 130
         except Exception as e:
             import traceback

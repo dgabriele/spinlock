@@ -158,10 +158,8 @@ class JointHierarchicalVQVAE(nn.Module):
 
             # Create initial inverse if initial family exists
             if "initial" in self.families and self.initial_dim > 0:
-                # Infer channels and spatial_size from encoder config (adaptive to dataset)
                 initial_channels = config.encoder.initial.in_channels
-                # Spatial size is typically 64 for CNO, but could be inferred from data
-                initial_spatial_size = 64  # Default, could be made configurable
+                initial_spatial_size = config.encoder.initial.spatial_size or 64
                 self.initial_inverse = InitialInverseCNN(
                     encoded_dim=self.initial_dim,
                     channels=initial_channels,
@@ -227,14 +225,15 @@ class JointHierarchicalVQVAE(nn.Module):
                     if config.encoder.initial.in_channels is not None
                     else 3  # fallback, will be overridden at runtime
                 )
+                ic_spatial = config.encoder.initial.spatial_size or 64
                 self.ic_aux_head = InitialInverseCNN(
                     encoded_dim=total_quantized_dim,
                     channels=initial_channels,
-                    spatial_size=64,
+                    spatial_size=ic_spatial,
                 )
                 logger.info(
                     f"Created IC aux head: {total_quantized_dim}D → "
-                    f"[{initial_channels}, 64, 64]"
+                    f"[{initial_channels}, {ic_spatial}, {ic_spatial}]"
                 )
 
             # Pre-VQ theta probe: predicts theta from encoded temporal features
@@ -261,14 +260,15 @@ class JointHierarchicalVQVAE(nn.Module):
                     if config.encoder.initial.in_channels is not None
                     else 3
                 )
+                probe_spatial = config.encoder.initial.spatial_size or 64
                 self.ic_probe = InitialInverseCNN(
                     encoded_dim=self.temporal_dim,
                     channels=probe_channels,
-                    spatial_size=64,
+                    spatial_size=probe_spatial,
                 )
                 logger.info(
                     f"Created pre-VQ IC probe: {self.temporal_dim}D → "
-                    f"[{probe_channels}, 64, 64]"
+                    f"[{probe_channels}, {probe_spatial}, {probe_spatial}]"
                 )
 
         # Compute total encoded dimension

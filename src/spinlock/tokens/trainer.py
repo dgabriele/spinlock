@@ -166,6 +166,7 @@ class VQTokenizerTrainer:
         output_dir: Path = Path("checkpoints"),
         checkpoint_prefix: str = "vq_tokenizer",
         dataset: Optional[Dataset] = None,
+        start_epoch: int = 0,
     ) -> Dict[str, Any]:
         """Run complete training loop.
 
@@ -186,6 +187,7 @@ class VQTokenizerTrainer:
             output_dir: Directory to save checkpoints
             checkpoint_prefix: Prefix for checkpoint filenames
             dataset: Optional PyTorch Dataset (overrides tensor args when provided)
+            start_epoch: Epoch to start from (>0 when resuming from checkpoint)
 
         Returns:
             Training history dict
@@ -207,6 +209,8 @@ class VQTokenizerTrainer:
             )
 
         logger.info(f"Training VQ Tokenizer on {self.device}")
+        if start_epoch > 0:
+            logger.info(f"  Resuming from epoch: {start_epoch}")
         logger.info(f"  Epochs: {self.config.training.num_epochs}")
         logger.info(f"  Batch size: {self.config.training.batch_size}")
         logger.info(f"  Learning rate: {self.config.training.learning_rate}")
@@ -232,7 +236,7 @@ class VQTokenizerTrainer:
 
         # Training loop
         val_loss = None  # Initialize for final checkpoint saving
-        for epoch in range(self.config.training.num_epochs):
+        for epoch in range(start_epoch, self.config.training.num_epochs):
             # Train
             train_metrics = self._train_epoch(train_loader, epoch)
             self.training_history['train_losses'].append(train_metrics['loss'])
@@ -1372,10 +1376,65 @@ class VQTokenizerTrainer:
 
         return final_metrics
 
+    def _build_resume_metadata(self) -> Dict[str, Any]:
+        """Build metadata dict containing all state needed for training resume."""
+        return {
+            'training_history': self.training_history,
+            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
+            'loss_ema_state': dict(self.loss_fn._ema),
+            'best_val_loss': self.best_val_loss,
+            'best_es_metric': self._best_es_metric,
+            'epochs_without_improvement': self.epochs_without_improvement,
+        }
+
+    def resume_state(self, checkpoint: 'TokenizerCheckpoint') -> int:
+        """Restore training state from a checkpoint.
+
+        Loads optimizer, scheduler, loss EMA, and tracking state.
+        Model state dict should be loaded before constructing the trainer
+        (so the optimizer wraps the correct parameters).
+
+        Args:
+            checkpoint: TokenizerCheckpoint from load_checkpoint()
+
+        Returns:
+            start_epoch: Epoch to resume from (checkpoint.epoch + 1)
+        """
+        # Optimizer
+        if checkpoint.optimizer_state_dict is not None:
+            self.optimizer.load_state_dict(checkpoint.optimizer_state_dict)
+            logger.info("Restored optimizer state")
+
+        # Scheduler, loss EMA, tracking — stored in metadata
+        meta = checkpoint.metadata or {}
+
+        if self.scheduler is not None and meta.get('scheduler_state_dict') is not None:
+            self.scheduler.load_state_dict(meta['scheduler_state_dict'])
+            logger.info("Restored LR scheduler state")
+
+        if 'loss_ema_state' in meta:
+            self.loss_fn._ema.update(meta['loss_ema_state'])
+            logger.info("Restored loss EMA normalization state")
+
+        self.best_val_loss = meta.get('best_val_loss', float('inf'))
+        self._best_es_metric = meta.get('best_es_metric', float('inf'))
+        self.epochs_without_improvement = meta.get('epochs_without_improvement', 0)
+
+        if 'training_history' in meta:
+            self.training_history = meta['training_history']
+
+        start_epoch = (checkpoint.epoch or 0) + 1
+        logger.info(
+            f"Resuming from epoch {start_epoch}/{self.config.training.num_epochs}, "
+            f"best_val={self.best_val_loss:.6f}, "
+            f"patience={self.epochs_without_improvement}"
+        )
+        return start_epoch
+
     def _save_checkpoint(
         self, path: Path, epoch: int, val_loss: Optional[float]
     ):
-        """Save training checkpoint.
+        """Save training checkpoint with full resume state.
 
         Args:
             path: Output path for checkpoint
@@ -1391,7 +1450,7 @@ class VQTokenizerTrainer:
             optimizer=self.optimizer,
             epoch=epoch,
             val_loss=val_loss,
-            metadata={'training_history': self.training_history},
+            metadata=self._build_resume_metadata(),
             temporal_input_dim=self.model.temporal_input_dim,
             initial_input_dim=self.model.initial_input_dim,
             feature_metadata=self.feature_metadata,

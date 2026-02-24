@@ -483,6 +483,13 @@ class SpinlockDataset:
         if info.get('initial_raw_channels') is not None:
             overrides.setdefault('encoder', {}).setdefault('initial', {})['in_channels'] = info['initial_raw_channels']
 
+        if info.get('initial_raw_shape') is not None:
+            shape = info['initial_raw_shape']
+            if len(shape) >= 2:
+                H, W = shape[-2:]
+                if H == W:
+                    overrides.setdefault('encoder', {}).setdefault('initial', {})['spatial_size'] = H
+
         if info.get('theta_param_dim') is not None:
             overrides.setdefault('encoder', {}).setdefault('theta', {})['param_dim'] = info['theta_param_dim']
 

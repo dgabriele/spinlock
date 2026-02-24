@@ -416,9 +416,7 @@ class DatasetGenerationPipeline:
 
     def _create_input_generator(self) -> InputFieldGenerator:
         """Create input field generator from config."""
-        # Fixed dimensions for MVP (homogeneous operators)
-        # Future: Extract from parameter space for heterogeneous support
-        grid_size = 64
+        grid_size = self.config.simulation.grid_size
 
         # Dynamically detect channels (no hardcoding!)
         if self._num_input_channels is None:
@@ -1261,7 +1259,7 @@ class DatasetGenerationPipeline:
         # Use detected values, fallback to 3 only if truly unknown (shouldn't happen)
         fixed_input_channels = self._num_input_channels if self._num_input_channels is not None else 3
         fixed_output_channels = self._num_output_channels if self._num_output_channels is not None else 3
-        fixed_grid_size = 64
+        fixed_grid_size = self.config.simulation.grid_size
 
         for params in param_batch:
             # Map parameters
@@ -1428,6 +1426,9 @@ class DatasetGenerationPipeline:
                 f"{len(input_gen_cfg.ic_type_weights)} IC types"
             )
 
+        from spinlock.lenia.params import DEFAULT_RANGES
+        param_ranges = DEFAULT_RANGES
+
         self._lenia_replayer = LeniaReplayer(
             n_channels=cfg.n_channels,
             grid_size=cfg.grid_size,
@@ -1437,6 +1438,8 @@ class DatasetGenerationPipeline:
             saturation_threshold=lenia_cfg.saturation_threshold,
             max_retries=lenia_cfg.max_retries,
             ic_generator=ic_generator,
+            substeps=lenia_cfg.substeps,
+            param_ranges=param_ranges,
         )
 
     def _needs_rollout(self) -> bool:
@@ -1855,7 +1858,7 @@ class DatasetGenerationPipeline:
 
         for idx, params in enumerate(parameters):
             param_dict = self._map_single_parameter_set(params)
-            grid_size = int(param_dict.get("grid_size", 64))  # Default to 64 if not found
+            grid_size = int(param_dict.get("grid_size", self.config.simulation.grid_size))
             groups[grid_size].append(idx)
 
         # Convert lists to numpy arrays
@@ -2443,8 +2446,8 @@ class DatasetGenerationPipeline:
             extract_initial_features(
                 dataset_path=dataset_path,
                 extractor_type=ExtractorType.STATISTICAL,
-                device='cpu',  # Use CPU for feature extraction
-                batch_size=100,
+                device=None,  # Auto-detect: GPU if available
+                batch_size=1024,
                 include_spatial=False,  # Spatial features have collapsed variance
                 overwrite=True,
                 verbose=True,

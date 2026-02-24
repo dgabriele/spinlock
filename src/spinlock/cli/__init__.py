@@ -35,6 +35,7 @@ from .launch_salad_generation import LaunchSaladGenerationCommand
 from .merge_datasets import MergeDatasetsCommand
 from .train_diffusion import TrainDiffusionCommand
 from .train_mno_v2 import TrainMNOV2Command
+from .visualize_lenia_ca import VisualizeLeniaCaCommand
 
 __all__ = [
     "CLICommand",
@@ -65,6 +66,7 @@ __all__ = [
     "MergeDatasetsCommand",
     "TrainDiffusionCommand",
     "TrainMNOV2Command",
+    "VisualizeLeniaCaCommand",
     "main",
 ]
 
@@ -131,6 +133,7 @@ For more help on a specific command:
         MergeDatasetsCommand(),
         TrainDiffusionCommand(),
         TrainMNOV2Command(),
+        VisualizeLeniaCaCommand(),
     ]
 
     for command in commands:

@@ -268,7 +268,7 @@ class PyramidFirstEncoder(nn.Module):
         mask_downsample_method: "ceil" or "floor" for mask propagation.
     """
 
-    CHUNK_SIZE = 128  # Frames per CNN forward pass (gradient checkpointing)
+    BASE_CHUNK_SIZE = 128  # Frames per CNN forward pass at 64×64 resolution
 
     def __init__(
         self,
@@ -325,25 +325,43 @@ class PyramidFirstEncoder(nn.Module):
             num_levels, d_agg, d_multi_res, num_groups, d_group, gate_str,
         )
 
+    def _get_chunk_size(self, H: int, W: int) -> int:
+        """Scale chunk size inversely with spatial area to keep per-chunk memory constant."""
+        ref_area = 64 * 64  # reference resolution
+        return max(16, self.BASE_CHUNK_SIZE * ref_area // max(1, H * W))
+
     def _encode_frames_chunked(self, frames: torch.Tensor) -> torch.Tensor:
         """Encode flattened frames [N, C, H, W] → [N, D_cnn] with gradient checkpointing.
 
-        Streams frames to model device in chunks of CHUNK_SIZE. Each chunk uses
-        gradient checkpointing to bound backward-pass memory.
+        Streams CPU frames to model device in chunks.  Crucially, the CPU tensor
+        is passed to ``checkpoint()`` so that backward saves the small CPU tensor
+        rather than a GPU copy — this avoids O(num_chunks) GPU memory for saved
+        inputs.  Chunk size scales inversely with spatial area so per-chunk GPU
+        memory stays constant regardless of grid resolution.
         """
         N = frames.shape[0]
         device = next(self.frame_cnn.parameters()).device
+        H, W = frames.shape[-2:]
+        chunk_size = self._get_chunk_size(H, W)
 
-        if N <= self.CHUNK_SIZE:
+        if N <= chunk_size:
             return self.frame_cnn(frames.to(device))
 
+        frame_cnn = self.frame_cnn  # local ref for closure
+
+        def _forward_on_device(x: torch.Tensor) -> torch.Tensor:
+            """Transfer chunk to GPU inside checkpoint boundary."""
+            return frame_cnn(x.to(device))
+
         chunks = []
-        for i in range(0, N, self.CHUNK_SIZE):
-            chunk = frames[i : i + self.CHUNK_SIZE].to(device)
+        for i in range(0, N, chunk_size):
+            chunk_cpu = frames[i : i + chunk_size]
             if self.training:
-                out = checkpoint(self.frame_cnn, chunk, use_reentrant=False)
+                # Pass CPU tensor to checkpoint — backward saves the CPU tensor
+                # and re-transfers to GPU only during recomputation.
+                out = checkpoint(_forward_on_device, chunk_cpu, use_reentrant=False)
             else:
-                out = self.frame_cnn(chunk)
+                out = frame_cnn(chunk_cpu.to(device))
             chunks.append(out)
         return torch.cat(chunks, dim=0)
 

@@ -1,0 +1,107 @@
+metadata:
+  name: "lenia_v1_smoke"
+  description: "1000-sample smoke test for v1 parameter space"
+
+parameter_space:
+  architecture: {}
+  stochastic: {}
+  operator:
+    kernel_radius_0: {type: integer, bounds: [8, 200]}
+    kernel_radius_1: {type: integer, bounds: [8, 200]}
+    kernel_radius_2: {type: integer, bounds: [8, 200]}
+    growth_mu_0: {type: continuous, bounds: [0.12, 0.38]}
+    growth_mu_1: {type: continuous, bounds: [0.12, 0.38]}
+    growth_mu_2: {type: continuous, bounds: [0.12, 0.38]}
+    growth_sigma_0: {type: continuous, bounds: [0.01, 0.1], log_scale: true}
+    growth_sigma_1: {type: continuous, bounds: [0.01, 0.1], log_scale: true}
+    growth_sigma_2: {type: continuous, bounds: [0.01, 0.1], log_scale: true}
+    coupling_01: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_02: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_10: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_12: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_20: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_21: {type: continuous, bounds: [-0.5, 1.0]}
+    kernel_rank: {type: integer, bounds: [1, 5]}
+    beta_c0_r0: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c0_r1: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c0_r2: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c0_r3: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c0_r4: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r0: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r1: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r2: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r3: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r4: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r0: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r1: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r2: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r3: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r4: {type: continuous, bounds: [0.0, 1.0]}
+    kernel_type: {type: choice, choices: [gaussian, polynomial, step]}
+    growth_type: {type: choice, choices: [gaussian, polynomial, step]}
+  evolution:
+    time_scale: {type: integer, bounds: [4, 400]}
+
+sampling:
+  strategy: "sobol_stratified"
+  sobol:
+    scramble: true
+    seed: 42
+    backend: "torch"
+  total_samples: 1000
+  batch_size: 500
+
+simulation:
+  operator_type: "lenia"
+  device: "cuda"
+  n_channels: 3
+  grid_size: 128
+  num_realizations: 1
+  num_timesteps: 256
+  lenia:
+    kernel_type: "gaussian"
+    alive_threshold: 0.01
+    saturation_threshold: 0.95
+    max_retries: 5
+    substeps: 2       # base substeps; CFL-adaptive at runtime
+
+  input_generation:
+    method: "sampled"
+    ic_type_weights:
+      localized: 0.25
+      asymmetric_blobs: 0.25
+      gaussian_random_field_v0: 0.25
+      structured: 0.25
+
+    localized:
+      num_blobs: 5
+      min_width: 4.0
+      max_width: 16.0
+    asymmetric_blobs:
+      num_blobs: 3
+      min_width: 6.0
+      max_width: 18.0
+    structured:
+      num_structures: 3
+      structure_types: ["circle", "stripe", "blob"]
+    ic_variant_params:
+      gaussian_random_field_v0:
+        length_scale: 0.08
+        variance: 1.0
+
+dataset:
+  output_path: "datasets/ds_lenia_v1_smoke.h5"
+  storage:
+    compression: "lzf"
+    chunk_size: 8
+    store_trajectories: false
+
+features:
+  temporal:
+    enabled: false
+  summary:
+    enabled: false
+
+logging:
+  level: "INFO"
+  format: "structured"

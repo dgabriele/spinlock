@@ -43,6 +43,11 @@ class InitialEncoderConfig(BaseModel):
         ge=1,
         description="Number of input channels (auto-detected if None)"
     )
+    spatial_size: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Spatial grid size H=W (auto-detected if None)"
+    )
     pretrained_cnn_path: Optional[Path] = None
     use_final_batchnorm: bool = False
     encode_manual: bool = False
@@ -489,6 +494,10 @@ class TokenizerConfig(BaseModel):
         default=None,
         ge=1,
         description="Number of timesteps for on-the-fly trajectory generation (auto-detected if None)"
+    )
+    checkpoint_dir: Optional[str] = Field(
+        default=None,
+        description="Output directory for training checkpoints. Overridden by --output CLI flag."
     )
 
 

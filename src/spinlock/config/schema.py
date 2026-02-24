@@ -494,6 +494,19 @@ class LeniaSimulationConfig(BaseModel):
         ge=0,
         description="Maximum IC retry attempts per realization when alive check fails"
     )
+    substeps: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Integration substeps per visible frame. Each frame uses K Euler steps "
+            "at dt/K instead of one step at dt, eliminating period-2 oscillation "
+            "from sharp growth functions (small sigma) without changing physical time."
+        )
+    )
+    param_ranges_version: int = Field(
+        default=3,
+        description="Deprecated — single range version now. Kept for config compat."
+    )
 
 
 class SimulationConfig(BaseModel):

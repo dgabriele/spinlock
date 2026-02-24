@@ -19,16 +19,17 @@
 #   - Per-level temporal aggregation captures level-specific patterns
 #
 # Lenia-specific notes:
-#   - 3-channel CA system (C=3), 64x64 grid, 256 timesteps
-#   - 16 Sobol params: 3 kernel radii + 3 growth_mu + 3 growth_sigma + dt + 6 coupling
+#   - 3-channel CA system (C=3), 128x128 grid, 256 timesteps
+#   - 34 Sobol dims: radii, mu, sigma, T, coupling, kernel_rank, beta, kernel/growth types
 #   - Uses LeniaReplayAdapter (auto-detected from generation_config_path)
 #     for fully batched on-the-fly trajectory generation during training.
 
-dataset_path: "datasets/lenia_500k.h5"
+dataset_path: "datasets/ds_lenia_v1.h5"
+checkpoint_dir: "checkpoints/lenia/vq/v1"
 
 # ── Feature source: learned CNN ──────────────────────────────
 feature_source: "learned"
-generation_config_path: "configs/lenia/lenia_500k.yaml"
+generation_config_path: "configs/lenia/datasets/ds_lenia_v1.yaml"
 generation_timesteps: 256
 replayer_cache_size: 16
 
@@ -53,7 +54,7 @@ encoder:
       # in_channels: auto-detected from ICs (3 for Lenia)
       d_cnn: 256              # CNN output dim per frame
       d_agg: 128              # per-level temporal aggregation dim
-      num_groups: 20           # 20 learned groups
+      num_groups: 30           # learned groups
       gated_groups: true       # per-group learnable gates for downstream adaptivity
       gate_init_bias: 5.0      # sigmoid(5.0) ≈ 0.993 → gates start nearly open
     level_dims: [6, 12, 20, 26]        # VQ hierarchy split (sum=64 = D_group)
@@ -73,7 +74,7 @@ encoder:
     variant: "direct"
     # param_dim: auto-detected from dataset (16 for 3-channel Lenia)
 
-  embedding_dim: 64                    # per-group VQ input dim (= D_group)
+  embedding_dim: 32                    # per-group VQ input dim (= D_group)
   hidden_dim: 128
   dropout: 0.6
   use_layer_norm: true

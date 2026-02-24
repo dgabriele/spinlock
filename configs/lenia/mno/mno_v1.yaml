@@ -1,4 +1,4 @@
-# Lenia V2 MNO — Quantization-Aware Training
+# Lenia V1 MNO — Quantization-Aware Training
 #
 # Goal: vqtokenize(mno_rollout) ≈ vqtokenize(gt_rollout)
 # The MNO learns to produce trajectories whose VQ token sets match ground truth.
@@ -53,18 +53,18 @@ loss:
     queue_size: 64
 
 data:
-  dataset_path: "datasets/lenia_500k.h5"
-  config: "configs/lenia/lenia_500k.yaml"   # operator_type: "lenia" → LeniaReplayAdapter
+  dataset_path: "datasets/ds_lenia_v1.h5"
+  config: "configs/lenia/datasets/ds_lenia_v1.yaml"   # operator_type: "lenia" → LeniaReplayAdapter
   val_split: 0.1
   num_workers: 4
 
 checkpointing:
-  save_dir: "checkpoints/lenia/mno/v2_quantization_aware"
+  save_dir: "checkpoints/lenia/mno/v1"
   save_every: 1
   keep_best: true
 
 quantization_aware: true
-tokenizer_checkpoint: "checkpoints/lenia/vq_tokenizer_best.pt"
+tokenizer_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_best.pt"
 token_dataset: "datasets/lenia_tokenized.h5"
 
 device: "cuda"
