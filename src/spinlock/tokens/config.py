@@ -495,6 +495,15 @@ class TokenizerConfig(BaseModel):
         ge=1,
         description="Number of timesteps for on-the-fly trajectory generation (auto-detected if None)"
     )
+    realization_mode: Literal["single", "mean"] = Field(
+        default="single",
+        description=(
+            "How to handle multiple IC realizations per operator. "
+            "'single': use one real IC (realization_idx=0). "
+            "'mean': average all realizations (produces non-physical composite IC). "
+            "Default 'single' ensures trajectories come from physically valid ICs."
+        ),
+    )
     checkpoint_dir: Optional[str] = Field(
         default=None,
         description="Output directory for training checkpoints. Overridden by --output CLI flag."

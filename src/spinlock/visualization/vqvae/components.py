@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
-from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap, BoundaryNorm, Normalize
 from matplotlib.cm import ScalarMappable
 
 
@@ -479,6 +479,101 @@ def plot_category_scatter(
     ax.grid(True, alpha=0.3, linestyle=":", linewidth=0.5)
 
 
+# ── Discrete colormap helpers for similarity heatmaps ────────────────────────
+
+
+# Base palette with high inter-stop contrast; subsampled/interpolated at runtime
+# to match the dendrogram's merge-level count.
+_SIMILARITY_PALETTE = [
+    "#08000a", "#1a0060", "#0058b8", "#008880",
+    "#00b060", "#60d000", "#d8d800", "#f0c000",
+    "#f08000", "#f03000", "#d00060", "#a000a0",
+    "#c060d0", "#e0a8c0", "#f0e0e0", "#fffff0",
+]
+
+
+def _dendrogram_tier_boundaries(
+    linkage_matrix: np.ndarray,
+    vmin: float,
+    vmax: float,
+    max_levels: int = 64,
+) -> np.ndarray:
+    """Extract non-uniform color boundaries from dendrogram merge heights.
+
+    Each merge in the linkage matrix has a distance (column 2).  We convert
+    these to similarity (1 - dist), keep those within [vmin, vmax], group
+    nearby values into tiers (tolerance = 0.5% of range), and return the
+    tier midpoints as boundaries.  This ensures each discrete color band
+    in the heatmap corresponds to a real merge level in the dendrogram.
+
+    Args:
+        linkage_matrix: scipy linkage matrix [n-1, 4].
+        vmin: Lower similarity bound (from percentile clipping).
+        vmax: Upper similarity bound.
+        max_levels: Ceiling on tier count.
+
+    Returns:
+        Sorted boundary array of length (n_tiers + 1), spanning [vmin, vmax].
+    """
+    merge_sims = np.sort(1.0 - linkage_matrix[:, 2])
+    visible = merge_sims[(merge_sims >= vmin) & (merge_sims <= vmax)]
+
+    if len(visible) < 2:
+        return np.linspace(vmin, vmax, 9)  # fallback: 8 uniform bands
+
+    # Group into tiers: merge sims within tolerance are the same level
+    span = vmax - vmin
+    tol = span * 0.005
+    tier_centers = [visible[0]]
+    for s in visible[1:]:
+        if s - tier_centers[-1] > tol:
+            tier_centers.append(s)
+
+    # Cap at max_levels by subsampling evenly
+    if len(tier_centers) > max_levels:
+        indices = np.linspace(0, len(tier_centers) - 1, max_levels).astype(int)
+        tier_centers = [tier_centers[i] for i in indices]
+
+    # Build boundaries: midpoints between consecutive tier centers,
+    # bookended by vmin and vmax.
+    centers = np.array(tier_centers)
+    midpoints = (centers[:-1] + centers[1:]) / 2.0
+    boundaries = np.concatenate([[vmin], midpoints, [vmax]])
+    return boundaries
+
+
+def _build_discrete_cmap(
+    boundaries: np.ndarray,
+) -> tuple:
+    """Build a discrete (step-function) ListedColormap + BoundaryNorm.
+
+    The number of colors = len(boundaries) - 1.  Colors are sampled from
+    ``_SIMILARITY_PALETTE`` (16 high-contrast base colors), interpolating
+    via a continuous colormap when more than 16 bands are needed.
+
+    Args:
+        boundaries: Non-uniform boundary array from _dendrogram_tier_boundaries.
+
+    Returns:
+        (ListedColormap, BoundaryNorm) ready for imshow.
+    """
+    n_colors = len(boundaries) - 1
+    base = _SIMILARITY_PALETTE
+
+    if n_colors <= len(base):
+        # Subsample from the 16-color base
+        indices = np.linspace(0, len(base) - 1, n_colors).astype(int)
+        colors = [base[i] for i in indices]
+    else:
+        # More tiers than base colors: interpolate via a continuous version
+        continuous = LinearSegmentedColormap.from_list("_sim_cont", base, N=256)
+        colors = [continuous(i / (n_colors - 1)) for i in range(n_colors)]
+
+    cmap = ListedColormap(colors)
+    norm = BoundaryNorm(boundaries, cmap.N)
+    return cmap, norm
+
+
 def plot_similarity_dendrogram_heatmap(
     ax_dendro: Axes,
     ax_heatmap: Axes,
@@ -532,18 +627,33 @@ def plot_similarity_dendrogram_heatmap(
     vmin = float(np.percentile(sim_reordered, 1))
     vmax = float(np.percentile(sim_reordered, 99))
 
+    # ── Dynamic discrete colormap from dendrogram merge heights ──
+    # Boundaries are placed at actual dendrogram tier transitions so each
+    # color band in the heatmap maps to a real merge level in the tree.
+    boundaries = _dendrogram_tier_boundaries(linkage_matrix, vmin, vmax)
+    n_colors = len(boundaries) - 1
+    cmap, norm = _build_discrete_cmap(boundaries)
+
     im = ax_heatmap.imshow(
         sim_reordered,
-        cmap="viridis",
+        cmap=cmap,
+        norm=norm,
         aspect="auto",
         interpolation="nearest",
-        vmin=vmin,
-        vmax=vmax,
     )
     ax_heatmap.set_xlabel("Bin Index (reordered by clustering)", fontsize=10)
     ax_heatmap.set_ylabel("Bin Index (reordered by clustering)", fontsize=10)
 
-    cbar = plt.colorbar(im, ax=ax_heatmap, fraction=0.046, pad=0.04)
+    # Show a subset of boundary ticks to avoid label overlap
+    max_ticks = 12
+    if len(boundaries) > max_ticks:
+        tick_idx = np.linspace(0, len(boundaries) - 1, max_ticks).astype(int)
+        tick_vals = boundaries[tick_idx]
+    else:
+        tick_vals = boundaries
+    cbar = plt.colorbar(im, ax=ax_heatmap, fraction=0.046, pad=0.04,
+                        spacing="proportional", ticks=tick_vals)
+    cbar.ax.set_yticklabels([f"{b:.3f}" for b in tick_vals], fontsize=8)
     label_map = {
         "Jaccard": "Jaccard Similarity",
         "JS": "JS Similarity (1 − JS distance)",
@@ -552,7 +662,8 @@ def plot_similarity_dendrogram_heatmap(
 
     avg = float(np.mean(similarity_matrix[np.triu_indices(n, k=1)]))
     ax_heatmap.set_title(
-        f"{metric_name} Similarity Heatmap  |  avg={avg:.3f}  |  range=[{vmin:.3f}, {vmax:.3f}]",
+        f"{metric_name} Similarity Heatmap  |  avg={avg:.3f}  |  "
+        f"range=[{vmin:.3f}, {vmax:.3f}]  |  {n_colors} dendrogram levels",
         fontsize=10,
         fontweight="bold",
         pad=10,

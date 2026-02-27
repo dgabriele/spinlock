@@ -93,8 +93,11 @@ class LeniaReplayAdapter:
         lenia_cfg = sim_cfg.get("lenia", {})
 
         grid_size = sim_cfg.get("grid_size", 64)
-        # Scale max_gpu_batch inversely with pixel count (baseline: 16 @ 64²)
-        max_gpu_batch = max(1, 16 * (64 * 64) // (grid_size * grid_size))
+        n_ch = sim_cfg.get("n_channels", 3)
+        # max_gpu_batch is computed dynamically in _effective_max_gpu_batch()
+        # based on actual free GPU memory at rollout time. The static value
+        # here serves as an upper bound (generous for large-VRAM GPUs).
+        max_gpu_batch = 128
 
         param_ranges = DEFAULT_RANGES
 
@@ -221,38 +224,47 @@ class LeniaReplayAdapter:
                 tensors.growth_mu, tensors.growth_sigma, tensors.dt, timesteps,
                 growth_type=tensors.growth_type,
             )
-        else:
-            sim_dt = tensors.dt / K
+            if return_all_steps:
+                return torch.cat([ics.unsqueeze(1), traj], dim=1)
+            return traj[:, -1]
 
-            # Per-sample dt safety clamp when K was capped
-            if tensors.growth_type is not None:
-                sigma_min = tensors.growth_sigma.min(dim=1).values.clamp(min=1e-8)
-                g_prime = torch.full_like(tensors.dt, 1.716)
-                g_prime[tensors.growth_type == 1] = 3.079
-                g_prime[tensors.growth_type == 2] = 5.0
-                dt_safe = sigma_min / g_prime
-                sim_dt = torch.minimum(sim_dt, dt_safe)
+        # ── Substep path (CFL-adaptive, the common case for Lenia v1) ──
+        sim_dt = tensors.dt / K
 
-            # Memory-efficient substep loop
-            B, C, H, W = ics.shape
-            state = ics.float()
-            mu = tensors.growth_mu[:, :, None, None]
-            sigma = tensors.growth_sigma[:, :, None, None]
-            dt_view = sim_dt[:, None, None, None]
+        # Per-sample dt safety clamp when K was capped
+        if tensors.growth_type is not None:
+            sigma_min = tensors.growth_sigma.min(dim=1).values.clamp(min=1e-8)
+            g_prime = torch.full_like(tensors.dt, 1.716)
+            g_prime[tensors.growth_type == 1] = 3.079
+            g_prime[tensors.growth_type == 2] = 5.0
+            dt_safe = sigma_min / g_prime
+            sim_dt = torch.minimum(sim_dt, dt_safe)
 
-            traj = torch.empty(B, timesteps, C, H, W,
+        B, C, H, W = ics.shape
+        state = ics.float()
+        mu = tensors.growth_mu[:, :, None, None]
+        sigma = tensors.growth_sigma[:, :, None, None]
+        dt_view = sim_dt[:, None, None, None]
+        step_fn = self.simulator._compiled_step
+
+        if return_all_steps:
+            # Pre-allocate with IC slot to avoid torch.cat memory spike
+            # (cat would momentarily require 2x trajectory memory).
+            traj = torch.empty(B, timesteps + 1, C, H, W,
                                device=self.device, dtype=torch.float32)
-            step_fn = self.simulator._compiled_step
-
+            traj[:, 0] = state
             for t in range(timesteps):
                 for _k in range(K):
                     state = step_fn(state, kernel_ffts, tensors.coupling,
                                     mu, sigma, dt_view, tensors.growth_type)
-                traj[:, t] = state
-
-        if return_all_steps:
-            return torch.cat([ics.unsqueeze(1), traj], dim=1)
-        return traj[:, -1]
+                traj[:, t + 1] = state
+            return traj
+        else:
+            for t in range(timesteps):
+                for _k in range(K):
+                    state = step_fn(state, kernel_ffts, tensors.coupling,
+                                    mu, sigma, dt_view, tensors.growth_type)
+            return state.unsqueeze(1)
 
     # ── Per-sample interface (CNOReplayer compat) ─────────────
 
@@ -289,6 +301,47 @@ class LeniaReplayAdapter:
 
     # ── Batched interface (throughput path) ───────────────────
 
+    def _effective_max_gpu_batch(self, timesteps: int) -> int:
+        """Compute sub-batch size from current free GPU memory.
+
+        Available memory = (PyTorch reserved − allocated) + CUDA free.
+        This avoids calling ``empty_cache()``, which inflates the free
+        count by releasing reserved blocks that PyTorch immediately
+        re-reserves on the next allocation.
+
+        Uses 40% of available memory for the trajectory tensor, leaving
+        60% for kernel FFTs, simulation intermediates (state, FFT
+        buffers), and allocator overhead.
+        """
+        per_sample_bytes = (timesteps + 1) * self.n_channels * self.grid_size * self.grid_size * 4
+        if self.device.type == "cuda":
+            reserved = torch.cuda.memory_reserved(self.device)
+            allocated = torch.cuda.memory_allocated(self.device)
+            pool_available = reserved - allocated
+            cuda_free = torch.cuda.mem_get_info(self.device)[0]
+            total_available = pool_available + cuda_free
+            budget = int(total_available * 0.4)
+        else:
+            budget = 2 * 1024 ** 3  # 2 GB fallback for CPU
+        dynamic = max(4, budget // per_sample_bytes)
+        return min(dynamic, self.max_gpu_batch)
+
+    def _run_sub_batch(
+        self,
+        params_np: np.ndarray,
+        ics: torch.Tensor,
+        timesteps: int,
+        return_all_steps: bool,
+    ) -> torch.Tensor:
+        """Simulate one sub-batch on GPU and return result on CPU."""
+        ics_dev = ics.to(self.device)
+        tensors = self._build_lenia_tensors(params_np)
+        kernel_ffts = self._build_kernel_ffts(tensors)
+        result = self._simulate(
+            ics_dev, tensors, kernel_ffts, timesteps, return_all_steps,
+        )
+        return result.cpu()
+
     def rollout_batch(
         self,
         params_batch: Union[np.ndarray, torch.Tensor],
@@ -296,10 +349,13 @@ class LeniaReplayAdapter:
         timesteps: int,
         return_all_steps: bool = True,
     ) -> torch.Tensor:
-        """Fully vectorized batch rollout with GPU memory management.
+        """Fully vectorized batch rollout with OOM-safe GPU memory management.
 
-        Processes in sub-batches of ``max_gpu_batch`` to avoid OOM on large
-        batches (128 samples × 256 timesteps × 3ch × 64² ≈ 12 GB).
+        Sub-batch size is computed dynamically from free GPU memory.
+        If an OOM occurs, the sub-batch is halved and retried (down to
+        a floor of 4 samples).  This handles memory fragmentation,
+        variable-length timesteps, and co-resident model/optimizer state
+        without manual tuning.
 
         Args:
             params_batch: [B, D] Sobol parameters.
@@ -312,29 +368,34 @@ class LeniaReplayAdapter:
         """
         params_np = self._to_numpy_batch(params_batch)
         B = params_np.shape[0]
+        eff_batch = self._effective_max_gpu_batch(timesteps)
 
-        if B <= self.max_gpu_batch:
-            # Single batch — no sub-batching needed
-            ics_dev = ics.to(self.device)
-            tensors = self._build_lenia_tensors(params_np)
-            kernel_ffts = self._build_kernel_ffts(tensors)
-            result = self._simulate(
-                ics_dev, tensors, kernel_ffts, timesteps, return_all_steps,
-            )
-            return result.cpu()
+        # Pre-allocate result on CPU to avoid O(num_chunks) intermediate
+        # tensors and the expensive torch.cat copy at the end.
+        C = ics.shape[1]
+        T_out = timesteps + 1 if return_all_steps else timesteps
+        result = torch.empty(B, T_out, C, self.grid_size, self.grid_size,
+                             dtype=torch.float32)
 
-        # Sub-batch to control GPU memory
-        if self.device.type == "cuda":
-            torch.cuda.empty_cache()
-        chunks = []
-        for start in range(0, B, self.max_gpu_batch):
-            end = min(start + self.max_gpu_batch, B)
-            sub_ics = ics[start:end].to(self.device)
-            sub_tensors = self._build_lenia_tensors(params_np[start:end])
-            sub_kfft = self._build_kernel_ffts(sub_tensors)
-            sub_result = self._simulate(
-                sub_ics, sub_tensors, sub_kfft, timesteps, return_all_steps,
-            )
-            chunks.append(sub_result.cpu())
+        start = 0
+        while start < B:
+            end = min(start + eff_batch, B)
+            try:
+                result[start:end] = self._run_sub_batch(
+                    params_np[start:end], ics[start:end],
+                    timesteps, return_all_steps,
+                )
+                start = end  # advance on success
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                old = eff_batch
+                eff_batch = max(4, eff_batch // 2)
+                logger.warning(
+                    "OOM in rollout_batch (sub-batch %d→%d at T=%d), "
+                    "halving to %d",
+                    start, end, timesteps, eff_batch,
+                )
+                if eff_batch == old:
+                    raise  # floor of 4, can't shrink further
 
-        return torch.cat(chunks, dim=0)
+        return result

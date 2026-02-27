@@ -32,6 +32,7 @@ feature_source: "learned"
 generation_config_path: "configs/lenia/datasets/ds_lenia_v1.yaml"
 generation_timesteps: 256
 replayer_cache_size: 16
+realization_mode: "single"         # use real ICs, not averaged composites
 
 # ── Temporal-only mode ───────────────────────────────────────
 temporal_only: true

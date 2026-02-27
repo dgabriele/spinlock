@@ -116,7 +116,7 @@ class SpatioTemporalPyramid(nn.Module):
 
         # Flatten spatial dims for temporal pooling: [B, T, C*H*W]
         flat = x.reshape(B, T, C * H * W)
-        flat_t = flat.transpose(1, 2)  # [B, C*H*W, T]
+        flat_t = flat.transpose(1, 2)  # [B, C*H*W, T] — lazy view, no copy
 
         levels = []
         level_masks = [] if mask is not None else None
@@ -326,9 +326,16 @@ class PyramidFirstEncoder(nn.Module):
         )
 
     def _get_chunk_size(self, H: int, W: int) -> int:
-        """Scale chunk size inversely with spatial area to keep per-chunk memory constant."""
+        """Scale chunk size inversely with spatial area to keep per-chunk memory constant.
+
+        During inference (eval mode), uses 16× larger chunks since there's no
+        gradient checkpointing overhead.  This dramatically improves GPU
+        utilization: at 128×128 the eval chunk is 512 vs 32 for training,
+        reducing the number of CNN forward passes by 16× for the same data.
+        """
         ref_area = 64 * 64  # reference resolution
-        return max(16, self.BASE_CHUNK_SIZE * ref_area // max(1, H * W))
+        base = self.BASE_CHUNK_SIZE if self.training else self.BASE_CHUNK_SIZE * 16
+        return max(16, base * ref_area // max(1, H * W))
 
     def _encode_frames_chunked(self, frames: torch.Tensor) -> torch.Tensor:
         """Encode flattened frames [N, C, H, W] → [N, D_cnn] with gradient checkpointing.

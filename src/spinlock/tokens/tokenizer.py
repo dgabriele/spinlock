@@ -616,15 +616,16 @@ class VQTokenizer:
         if max_override is not None:
             total = min(total, max_override)
             logger.info(f"Dataset capped to {total} samples (--max-samples override)")
+        real_mode = self.config.realization_mode
         learned_dataset = SpinlockDataset(
             str(dataset.file_path),
             max_samples=total,
-            realization_mode="mean",
+            realization_mode=real_mode,
             lazy_ics=True,
         )
         logger.info(
             f"Lazy dataset created: {learned_dataset.n_samples} samples, "
-            f"ICs read per-sample from HDF5 (realization_mode='mean')"
+            f"ICs read per-sample from HDF5 (realization_mode='{real_mode}')"
         )
 
         # ── Auto-detect dimensions from introspected metadata ──

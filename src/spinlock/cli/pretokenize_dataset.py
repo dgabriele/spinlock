@@ -23,10 +23,58 @@ from pathlib import Path
 from typing import Dict, Tuple, Optional
 import h5py
 import numpy as np
+import queue
+import threading
 import torch
 from tqdm import tqdm
 
 from .base import CLICommand
+
+
+class _AsyncHDF5Writer:
+    """Background thread for writing HDF5 token batches concurrently with GPU compute.
+
+    Accepts lists of (save_key, tokens_np, start, end, indices) tuples via a bounded
+    queue.  A single writer thread drains the queue, keeping HDF5 writes serialized
+    while allowing the main thread to proceed with GPU work.
+    """
+
+    def __init__(self, tokens_group: "h5py.Group", maxsize: int = 2):
+        self._queue: queue.Queue = queue.Queue(maxsize=maxsize)
+        self._tokens_group = tokens_group
+        self._error: Exception | None = None
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def _loop(self):
+        while True:
+            item = self._queue.get()
+            if item is None:  # sentinel → shut down
+                break
+            try:
+                for save_key, tokens_np, start, end, indices in item:
+                    if indices is not None:
+                        # HDF5 requires indices in increasing order
+                        order = np.argsort(indices)
+                        self._tokens_group[save_key][indices[order]] = tokens_np[order]
+                    else:
+                        self._tokens_group[save_key][start:end] = tokens_np
+            except Exception as e:
+                self._error = e
+            self._queue.task_done()
+
+    def submit(self, writes: list):
+        """Enqueue a batch of writes. Blocks if the queue is full (backpressure)."""
+        if self._error is not None:
+            raise self._error
+        self._queue.put(writes)
+
+    def close(self):
+        """Drain the queue, stop the writer thread, and re-raise any error."""
+        self._queue.put(None)
+        self._thread.join()
+        if self._error is not None:
+            raise self._error
 
 
 class PretokenizeDatasetCommand(CLICommand):
@@ -161,6 +209,7 @@ Examples:
         # Detect learned mode from tokenizer config
         self.is_learned_mode = tokenizer.config.feature_source == "learned"
         self.is_temporal_only = tokenizer.config.temporal_only
+        self._realization_mode = getattr(tokenizer.config, "realization_mode", "single")
         self.replayer = None
 
         # Setup replayer for learned mode (trajectory generation)
@@ -290,9 +339,9 @@ Examples:
                     str(dataset_path),
                     max_samples=int(1e9),  # Clamped to actual total
                     lazy_ics=True,
-                    realization_mode="mean",
+                    realization_mode=self._realization_mode,
                 )
-                print(f"✓ Streaming dataset: {streaming_ds.n_samples:,} samples (lazy ICs)")
+                print(f"✓ Streaming dataset: {streaming_ds.n_samples:,} samples (lazy ICs, realization_mode='{self._realization_mode}')")
                 print(f"  Mode: learned (temporal features from CNN, not dataset)")
                 return {
                     'dataset': streaming_ds,
@@ -416,6 +465,65 @@ Examples:
             return replayer
         except Exception as e:
             self.error(f"Failed to create replayer: {e}")
+            return None
+
+    def _build_cfl_sorted_sampler(self, dataset, batch_size: int):
+        """Build a sampler that groups samples by CFL substep count.
+
+        Lenia's CFL-adaptive substeps force the BATCH maximum K for all samples.
+        With uniform Sobol sampling, 52% of samples need K=1 but random batching
+        gives average batch-K=22.  Sorting by CFL groups low-K samples together,
+        dropping average batch-K to ~3 and speeding simulation by ~7×.
+
+        Returns:
+            A sequential sampler iterating in CFL-sorted order, or None if
+            CFL computation fails (falls back to sequential order).
+        """
+        import math as _math
+
+        try:
+            all_params = dataset.params  # [N, 34] tensor
+            if all_params is None or all_params.shape[0] == 0:
+                return None
+
+            n_channels = getattr(self.replayer, 'n_channels', 3)
+            param_ranges = getattr(self.replayer, 'param_ranges', None)
+
+            if param_ranges is None:
+                return None
+
+            from spinlock.lenia.params import sobol_batch_to_tensors
+
+            # Vectorized CFL computation on CPU (fast for 500K samples)
+            tensors = sobol_batch_to_tensors(
+                all_params.numpy() if isinstance(all_params, torch.Tensor) else all_params,
+                n_channels, 'cpu', ranges=param_ranges,
+            )
+            sigma_min = tensors.growth_sigma.min(dim=1).values.clamp(min=1e-8)
+            g_prime = torch.full_like(tensors.dt, 1.716)
+            if tensors.growth_type is not None:
+                g_prime[tensors.growth_type == 1] = 3.079
+                g_prime[tensors.growth_type == 2] = 5.0
+            cfl = tensors.dt * g_prime / sigma_min
+
+            sort_indices = torch.argsort(cfl).tolist()
+
+            # Estimate K distribution for logging
+            K_sorted = []
+            for i in range(0, len(sort_indices), batch_size):
+                batch_cfl = cfl[sort_indices[i:i + batch_size]]
+                K = min(32, max(1, _math.ceil(batch_cfl.max().item())))
+                K_sorted.append(K)
+            avg_K = sum(K_sorted) / len(K_sorted)
+            pct_32 = sum(1 for k in K_sorted if k == 32) / len(K_sorted) * 100
+
+            print(f"  CFL-sorted batching: avg batch K={avg_K:.1f} "
+                  f"(K=32: {pct_32:.0f}% of batches)")
+
+            return sort_indices
+
+        except Exception as e:
+            print(f"  Warning: CFL sorting failed ({e}), using sequential order")
             return None
 
     def _generate_trajectories(
@@ -785,8 +893,13 @@ Examples:
         """Tokenize dataset via DataLoader streaming and save to HDF5.
 
         Used for learned mode: ICs are read lazily per-batch from HDF5,
-        trajectories generated via replayer, then tokenized. Peak memory
-        is O(batch_size) instead of O(N).
+        trajectories generated via replayer, then tokenized.
+
+        Optimizations over naive approach:
+        - Generate trajectory ONCE at max truncation length, then truncate
+          for shorter lengths (eliminates redundant Lenia simulation)
+        - Async HDF5 writer overlaps disk I/O with GPU compute
+        - pin_memory for faster CPU→GPU transfers
 
         Args:
             tokenizer: Loaded VQTokenizer instance.
@@ -803,14 +916,16 @@ Examples:
         generation_timesteps = tokenizer.config.generation_timesteps or 64
 
         if truncation_lengths is not None:
-            lengths_to_process = truncation_lengths
+            lengths_to_process = sorted(truncation_lengths)
+            max_gen_timesteps = max(lengths_to_process)
             print(
                 f"\nTokenizing {dataset.n_samples:,} samples at "
                 f"{len(truncation_lengths)} truncation lengths "
-                f"[learned mode, streaming]..."
+                f"[learned mode, streaming, generate-once]..."
             )
         else:
             lengths_to_process = [None]
+            max_gen_timesteps = generation_timesteps
             print(
                 f"\nTokenizing {dataset.n_samples:,} samples "
                 f"(batch_size={batch_size}) [learned mode, streaming]..."
@@ -821,67 +936,105 @@ Examples:
         # Each worker will open its own handle via _ensure_h5_open().
         dataset.close_lazy()
 
+        # CFL-sorted batching: group samples with similar CFL substep counts
+        # to avoid the "one extreme sample forces K=32 for all 64" problem.
+        # With Sobol params, 52% of samples need K=1 but batch-max K averages
+        # 22 without sorting.  Sorting drops average batch K from 22 to ~3.
+        sampler = None
+        if self.is_learned_mode and hasattr(dataset, 'params') and self.replayer is not None:
+            sampler = self._build_cfl_sorted_sampler(dataset, batch_size)
+
+        use_pin_memory = device.type == "cuda"
         loader = DataLoader(
             dataset, batch_size=batch_size, num_workers=3,
             prefetch_factor=2, shuffle=False, persistent_workers=False,
+            pin_memory=use_pin_memory,
+            sampler=sampler,
         )
 
-        for trunc_idx, trunc_len in enumerate(lengths_to_process):
-            gen_timesteps = trunc_len if trunc_len is not None else generation_timesteps
+        # GPU trajectory optimization: when the truncated trajectory fits on
+        # GPU, the entire pipeline (pyramid pool1d, CNN, aggregation, VQ) runs
+        # ~40× faster because pool1d on GPU avoids the 3 GB strided CPU access
+        # and per-chunk CPU→GPU CNN transfers are eliminated.  We try-except
+        # OOM to adaptively use GPU when possible, falling back to CPU.
+        use_gpu_traj = device.type == "cuda"
+        if use_gpu_traj:
+            total_mem = torch.cuda.get_device_properties(device).total_memory
+            print(f"  GPU trajectory mode: enabled ({total_mem / 1e9:.1f} GB GPU, try-except OOM)")
 
-            if trunc_len is not None:
-                desc = f"  t={trunc_len} ({trunc_idx+1}/{len(lengths_to_process)})"
-            else:
-                desc = "Batches"
+        # Async writer: GPU compute on batch N+1 overlaps with HDF5 I/O for batch N
+        writer = _AsyncHDF5Writer(tokens_group)
 
+        try:
             with torch.no_grad():
-                for batch in tqdm(loader, desc=desc, unit="batch"):
+                for batch in tqdm(loader, desc="Batches", unit="batch"):
                     theta_batch = batch['params'].to(device)
                     ic_batch = batch['ic'].to(device)
                     sample_indices = batch['sample_idx']  # [B] original HDF5 indices
 
-                    # Generate trajectories via replayer
-                    temporal_raw_batch = self._generate_trajectories(
-                        theta_batch, ic_batch, gen_timesteps,
-                    )  # [B, T+1, C, H, W] on CPU
-
-                    # In temporal_only mode, don't pass theta/initial to tokenize
-                    tok_theta = None if self.is_temporal_only else theta_batch
-                    tok_init_raw = None if self.is_temporal_only else ic_batch
-
-                    # Tokenize
-                    batch_tokens = tokenizer.tokenize(
-                        temporal_features=None,
-                        initial_manual=None,
-                        initial_raw=tok_init_raw,
-                        theta_features=tok_theta,
-                        temporal_raw=temporal_raw_batch,
-                    )
-
-                    # Determine write indices — contiguous slice when possible
+                    # Determine write slice — contiguous slice when possible
                     si_start = int(sample_indices[0])
                     si_end = int(sample_indices[-1]) + 1
                     contiguous = (si_end - si_start == len(sample_indices))
+                    np_indices = None if contiguous else sample_indices.numpy()
 
-                    # Write tokens to HDF5
-                    for key, tokens in batch_tokens.items():
-                        tokens_cpu = tokens.cpu().numpy()
+                    # Generate trajectory ONCE at max length
+                    full_traj = self._generate_trajectories(
+                        theta_batch, ic_batch, max_gen_timesteps,
+                    )  # [B, max_T+1, C, H, W] on CPU
 
-                        if trunc_len is not None and "temporal" in key:
-                            base_key, level_suffix = key.rsplit("_L", 1)
-                            save_key = f"{base_key}_trunc_T{trunc_len:03d}_L{level_suffix}"
-                        elif trunc_len is not None:
-                            # Initial/theta: save only from final truncation
-                            if trunc_len != lengths_to_process[-1]:
-                                continue
-                            save_key = key
+                    # Tokenize at each truncation length from the same trajectory
+                    writes = []
+                    for trunc_len in lengths_to_process:
+                        # Truncate trajectory (view, no copy)
+                        if trunc_len is not None:
+                            traj = full_traj[:, : trunc_len + 1]
                         else:
-                            save_key = key
+                            traj = full_traj
 
-                        if contiguous:
-                            tokens_group[save_key][si_start:si_end] = tokens_cpu
-                        else:
-                            tokens_group[save_key][sample_indices.numpy()] = tokens_cpu
+                        # Move to GPU if it fits — pyramid + CNN run 40× faster
+                        # on GPU, and per-chunk CPU→GPU transfers are eliminated.
+                        if use_gpu_traj:
+                            try:
+                                traj = traj.to(device)
+                            except torch.cuda.OutOfMemoryError:
+                                torch.cuda.empty_cache()
+
+                        # In temporal_only mode, don't pass theta/initial to tokenize
+                        tok_theta = None if self.is_temporal_only else theta_batch
+                        tok_init_raw = None if self.is_temporal_only else ic_batch
+
+                        batch_tokens = tokenizer.tokenize(
+                            temporal_features=None,
+                            initial_manual=None,
+                            initial_raw=tok_init_raw,
+                            theta_features=tok_theta,
+                            temporal_raw=traj,
+                        )
+
+                        for key, tokens in batch_tokens.items():
+                            tokens_np = tokens.cpu().numpy()
+
+                            if trunc_len is not None and "temporal" in key:
+                                base_key, level_suffix = key.rsplit("_L", 1)
+                                save_key = f"{base_key}_trunc_T{trunc_len:03d}_L{level_suffix}"
+                            elif trunc_len is not None:
+                                # Initial/theta: save only from final truncation
+                                if trunc_len != lengths_to_process[-1]:
+                                    continue
+                                save_key = key
+                            else:
+                                save_key = key
+
+                            writes.append((
+                                save_key, tokens_np,
+                                si_start, si_end, np_indices,
+                            ))
+
+                    # Submit all writes for this batch asynchronously
+                    writer.submit(writes)
+        finally:
+            writer.close()
 
     def _batch_tokenize_and_save(
         self,
@@ -902,21 +1055,107 @@ Examples:
 
         if truncation_lengths is not None:
             # Temporal resolution mode: tokenize at each truncation length
+            # For learned mode: generate trajectory once at max length, then truncate
+            sorted_lengths = sorted(truncation_lengths)
+            max_trunc = max(sorted_lengths)
             mode_str = " [learned mode]" if self.is_learned_mode else ""
             print(f"\nTokenizing {num_samples:,} samples at {len(truncation_lengths)} truncation lengths{mode_str}...")
+            num_batches = (num_samples + batch_size - 1) // batch_size
 
-            for trunc_idx, trunc_len in enumerate(truncation_lengths):
-                print(f"\n  Truncation {trunc_idx+1}/{len(truncation_lengths)}: t={trunc_len}")
-                num_batches = (num_samples + batch_size - 1) // batch_size
-
+            writer = _AsyncHDF5Writer(tokens_group)
+            try:
                 with torch.no_grad():
-                    for batch_idx in tqdm(range(num_batches), desc=f"  t={trunc_len}", unit="batch"):
+                    for batch_idx in tqdm(range(num_batches), desc="Batches", unit="batch"):
                         start_idx = batch_idx * batch_size
                         end_idx = min(start_idx + batch_size, num_samples)
 
-                        # Extract batch (truncate temporal for manual mode)
+                        init_manual_batch = (
+                            torch.from_numpy(features['initial_manual'][start_idx:end_idx]).to(device)
+                            if features['initial_manual'] is not None
+                            else None
+                        )
+                        init_raw_batch = (
+                            torch.from_numpy(features['initial_raw'][start_idx:end_idx]).to(device)
+                            if features['initial_raw'] is not None
+                            else None
+                        )
+                        theta_batch = (
+                            torch.from_numpy(features['theta'][start_idx:end_idx]).to(device)
+                            if features['theta'] is not None
+                            else None
+                        )
+
+                        # Generate trajectory once at max length (learned mode)
+                        full_traj = None
+                        if self.is_learned_mode and theta_batch is not None and init_raw_batch is not None:
+                            full_traj = self._generate_trajectories(
+                                theta_batch, init_raw_batch, max_trunc,
+                            )  # [B, max_trunc+1, C, H, W] on CPU
+
+                        writes = []
+                        for trunc_len in sorted_lengths:
+                            # Temporal features: truncate from pre-extracted or trajectory
+                            temp_batch = (
+                                torch.from_numpy(features['temporal'][start_idx:end_idx, :trunc_len, :]).to(device)
+                                if features['temporal'] is not None
+                                else None
+                            )
+
+                            temporal_raw_batch = None
+                            if full_traj is not None:
+                                temporal_raw_batch = full_traj[:, : trunc_len + 1]
+                                # Move to GPU if it fits — avoids CPU pyramid bottleneck
+                                if device.type == "cuda":
+                                    try:
+                                        temporal_raw_batch = temporal_raw_batch.to(device)
+                                    except torch.cuda.OutOfMemoryError:
+                                        torch.cuda.empty_cache()
+
+                            # In temporal_only mode, don't pass theta/initial to tokenize
+                            tok_theta = None if self.is_temporal_only else theta_batch
+                            tok_init_manual = None if self.is_temporal_only else init_manual_batch
+                            tok_init_raw = None if self.is_temporal_only else init_raw_batch
+
+                            batch_tokens = tokenizer.tokenize(
+                                temporal_features=temp_batch,
+                                initial_manual=tok_init_manual,
+                                initial_raw=tok_init_raw,
+                                theta_features=tok_theta,
+                                temporal_raw=temporal_raw_batch,
+                            )
+
+                            for key, tokens in batch_tokens.items():
+                                tokens_np = tokens.cpu().numpy()
+                                if "temporal" in key:
+                                    base_key, level_suffix = key.rsplit("_L", 1)
+                                    save_key = f"{base_key}_trunc_T{trunc_len:03d}_L{level_suffix}"
+                                else:
+                                    if trunc_len != sorted_lengths[-1]:
+                                        continue
+                                    save_key = key
+                                writes.append((save_key, tokens_np, start_idx, end_idx, None))
+
+                        writer.submit(writes)
+            finally:
+                writer.close()
+
+        else:
+            # Standard mode: tokenize once at full length
+            mode_str = " [learned mode]" if self.is_learned_mode else ""
+            print(f"\nTokenizing {num_samples:,} samples (batch_size={batch_size}){mode_str}...")
+            num_batches = (num_samples + batch_size - 1) // batch_size
+            generation_timesteps = tokenizer.config.generation_timesteps or 64
+
+            writer = _AsyncHDF5Writer(tokens_group)
+            try:
+                with torch.no_grad():
+                    for batch_idx in tqdm(range(num_batches), desc="Batches", unit="batch"):
+                        start_idx = batch_idx * batch_size
+                        end_idx = min(start_idx + batch_size, num_samples)
+
+                        # Extract batch
                         temp_batch = (
-                            torch.from_numpy(features['temporal'][start_idx:end_idx, :trunc_len, :]).to(device)
+                            torch.from_numpy(features['temporal'][start_idx:end_idx]).to(device)
                             if features['temporal'] is not None
                             else None
                         )
@@ -936,12 +1175,12 @@ Examples:
                             else None
                         )
 
-                        # Generate trajectories for learned mode (truncated to trunc_len)
+                        # Generate trajectories for learned mode
                         temporal_raw_batch = None
                         if self.is_learned_mode and theta_batch is not None and init_raw_batch is not None:
                             temporal_raw_batch = self._generate_trajectories(
-                                theta_batch, init_raw_batch, trunc_len,
-                            )  # [B, trunc_len+1, C, H, W] on CPU
+                                theta_batch, init_raw_batch, generation_timesteps,
+                            )  # [B, T+1, C, H, W] on CPU
 
                         # In temporal_only mode, don't pass theta/initial to tokenize
                         tok_theta = None if self.is_temporal_only else theta_batch
@@ -957,80 +1196,14 @@ Examples:
                             temporal_raw=temporal_raw_batch,
                         )
 
-                        # Save tokens with truncation suffix
-                        for key, tokens in batch_tokens.items():
-                            if "temporal" in key:
-                                # Add truncation suffix
-                                base_key, level_suffix = key.rsplit("_L", 1)
-                                save_key = f"{base_key}_trunc_T{trunc_len:03d}_L{level_suffix}"
-                            else:
-                                # Initial/theta: save only from final truncation
-                                if trunc_len != truncation_lengths[-1]:
-                                    continue
-                                save_key = key
-
-                            tokens_cpu = tokens.cpu().numpy()
-                            tokens_group[save_key][start_idx:end_idx] = tokens_cpu
-
-        else:
-            # Standard mode: tokenize once at full length
-            mode_str = " [learned mode]" if self.is_learned_mode else ""
-            print(f"\nTokenizing {num_samples:,} samples (batch_size={batch_size}){mode_str}...")
-            num_batches = (num_samples + batch_size - 1) // batch_size
-            generation_timesteps = tokenizer.config.generation_timesteps or 64
-
-            with torch.no_grad():
-                for batch_idx in tqdm(range(num_batches), desc="Batches", unit="batch"):
-                    start_idx = batch_idx * batch_size
-                    end_idx = min(start_idx + batch_size, num_samples)
-
-                    # Extract batch
-                    temp_batch = (
-                        torch.from_numpy(features['temporal'][start_idx:end_idx]).to(device)
-                        if features['temporal'] is not None
-                        else None
-                    )
-                    init_manual_batch = (
-                        torch.from_numpy(features['initial_manual'][start_idx:end_idx]).to(device)
-                        if features['initial_manual'] is not None
-                        else None
-                    )
-                    init_raw_batch = (
-                        torch.from_numpy(features['initial_raw'][start_idx:end_idx]).to(device)
-                        if features['initial_raw'] is not None
-                        else None
-                    )
-                    theta_batch = (
-                        torch.from_numpy(features['theta'][start_idx:end_idx]).to(device)
-                        if features['theta'] is not None
-                        else None
-                    )
-
-                    # Generate trajectories for learned mode
-                    temporal_raw_batch = None
-                    if self.is_learned_mode and theta_batch is not None and init_raw_batch is not None:
-                        temporal_raw_batch = self._generate_trajectories(
-                            theta_batch, init_raw_batch, generation_timesteps,
-                        )  # [B, T+1, C, H, W] on CPU
-
-                    # In temporal_only mode, don't pass theta/initial to tokenize
-                    tok_theta = None if self.is_temporal_only else theta_batch
-                    tok_init_manual = None if self.is_temporal_only else init_manual_batch
-                    tok_init_raw = None if self.is_temporal_only else init_raw_batch
-
-                    # Tokenize
-                    batch_tokens = tokenizer.tokenize(
-                        temporal_features=temp_batch,
-                        initial_manual=tok_init_manual,
-                        initial_raw=tok_init_raw,
-                        theta_features=tok_theta,
-                        temporal_raw=temporal_raw_batch,
-                    )
-
-                    # Save tokens
-                    for key in category_levels:
-                        tokens_cpu = batch_tokens[key].cpu().numpy()
-                        tokens_group[key][start_idx:end_idx] = tokens_cpu
+                        # Async write
+                        writes = []
+                        for key in category_levels:
+                            tokens_np = batch_tokens[key].cpu().numpy()
+                            writes.append((key, tokens_np, start_idx, end_idx, None))
+                        writer.submit(writes)
+            finally:
+                writer.close()
 
     def _report_results(
         self,
