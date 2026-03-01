@@ -8,7 +8,7 @@ Reuses MNOModelConfig, DataConfig, CheckpointingConfig from v1 for consistency.
 
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from spinlock.mno.config import (
     CheckpointingConfig,
@@ -18,16 +18,26 @@ from spinlock.mno.config import (
 
 
 class V2ContrastiveConfig(BaseModel):
-    """InfoNCE contrastive loss hyperparameters.
+    """Soft token contrastive loss hyperparameters.
 
-    MoCo queue is essential for B=1 training: without it, InfoNCE has no
-    negatives and the loss is trivially zero.
+    Uses Jaccard similarity between GT token indicator vectors as soft
+    targets instead of identity-based InfoNCE. MoCo queue provides
+    additional negatives for small-batch training (B=1).
     """
 
-    temperature: float = 0.1
+    tau_pred: float = 0.07
+    tau_target: float = 0.1
     embed_dim: int = 128
     hidden_dim: int = 256
     queue_size: int = 64
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_temperature(cls, data: dict) -> dict:
+        """Accept legacy ``temperature`` key as alias for ``tau_pred``."""
+        if isinstance(data, dict) and "temperature" in data:
+            data.setdefault("tau_pred", data.pop("temperature"))
+        return data
 
 
 class V2LossConfig(BaseModel):
@@ -43,6 +53,8 @@ class V2LossConfig(BaseModel):
     lambda_contrastive: float = 0.3
     lambda_feat_mse: float = 0.0
     lambda_token_ce: float = 0.0
+    lambda_centroid_mse: float = 0.0
+    lambda_token_head: float = 0.0
     token_ce_temperature: float = 1.0
     gate_weight_token_ce: bool = False
     normalize_loss_scales: bool = False
@@ -58,16 +70,28 @@ class V2TrainingConfig(BaseModel):
     gradient_accumulation_steps: int = 8
     epochs: int
     learning_rate: float = 2e-4
-    warmup_steps: int = 500
+    warmup_optimizer_steps: int = Field(
+        default=500,
+        description="LR warmup in optimizer steps (not micro-batches or epochs)",
+    )
     weight_decay: float = 0.01
     clip_grad: float = 1.0
     timesteps: int
     bptt_window: Optional[int] = 32
     film_lr_multiplier: float = 5.0
+    token_head_lr_multiplier: float = 1.0
     replayer_cache_size: int = 16
     eval_every: int = 5
     eval_samples: int = 50
     use_torch_compile: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_warmup_steps(cls, data: dict) -> dict:
+        """Accept legacy ``warmup_steps`` key as alias."""
+        if isinstance(data, dict) and "warmup_steps" in data:
+            data.setdefault("warmup_optimizer_steps", data.pop("warmup_steps"))
+        return data
 
 
 class V2MNOConfig(BaseModel):
@@ -87,6 +111,7 @@ class V2MNOConfig(BaseModel):
     checkpointing: CheckpointingConfig
     tokenizer_checkpoint: Optional[str] = None
     token_dataset: Optional[str] = None
+    token_truncation_length: Optional[int] = None
     quantization_aware: bool = False
     resume_from: Optional[str] = None
     device: str = "cuda"

@@ -117,16 +117,14 @@ class RolloutFeatureExtractor(nn.Module):
         skewness = (centered ** 3).mean(dim=1) / (std ** 3 + 1e-8)  # [B]
         kurtosis = (centered ** 4).mean(dim=1) / (std ** 4 + 1e-8)  # [B]
 
-        # Linear trend (correlation with time)
-        # Compute correlation between temporal series and linear time for each batch element
+        # Linear trend (Pearson correlation with time)
+        # Vectorized and zero-variance safe — corrcoef returns NaN on constant series.
         time = torch.linspace(0, 1, T, device=rollout.device)  # [T]
-        trend_list = []
-        for b in range(B):
-            # Stack [2, T] and compute correlation
-            stacked = torch.stack([temporal_series[b], time])  # [2, T]
-            corr_matrix = torch.corrcoef(stacked)  # [2, 2]
-            trend_list.append(corr_matrix[0, 1])  # Correlation between series and time
-        trend = torch.stack(trend_list)  # [B]
+        time_centered = time - time.mean()
+        series_centered = temporal_series - temporal_series.mean(dim=1, keepdim=True)  # [B, T]
+        cov = (series_centered * time_centered).mean(dim=1)  # [B]
+        denom = temporal_series.std(dim=1) * time.std() + 1e-8  # [B]
+        trend = cov / denom  # [B]
 
         # Temporal energy
         energy = (temporal_series ** 2).mean(dim=1)  # [B]
@@ -165,7 +163,9 @@ class RolloutFeatureExtractor(nn.Module):
         # Align to common [H-1, W-1] region
         dx_aligned = dx[:, :, :-1, :]  # [B, C, H-1, W-1]
         dy_aligned = dy[:, :, :, :-1]  # [B, C, H-1, W-1]
-        grad_mag = (dx_aligned ** 2 + dy_aligned ** 2).sqrt().mean(dim=[1, 2, 3])  # [B]
+        # eps inside sqrt: gradient of sqrt(0) is inf → 0*inf=NaN in autograd.
+        # Adding eps ensures bounded gradient: d/dx sqrt(x+eps) = 1/(2*sqrt(eps)).
+        grad_mag = (dx_aligned ** 2 + dy_aligned ** 2 + 1e-8).sqrt().mean(dim=[1, 2, 3])  # [B]
 
         # Laplacian (curvature/smoothness)
         laplacian = (

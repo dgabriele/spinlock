@@ -45,7 +45,7 @@ Design Principles:
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, Dict, Any, Literal, List
+from typing import Optional, Dict, Any, Literal, List, Tuple
 
 
 class FiLMConfig(BaseModel):
@@ -62,6 +62,26 @@ class FiLMConfig(BaseModel):
     post_norm: bool = True
     modulate_encoder: bool = True
     modulate_decoder: bool = True
+
+
+class NCAConfig(BaseModel):
+    """Neural CA backbone hyperparameters.
+
+    These control the lightweight CA-matched architecture:
+    depthwise perception → channel mixing → growth MLP → Euler update.
+
+    When kernel_sizes is None, perception specs are auto-derived from
+    spatial_dim at model construction time (see nca_backbone._auto_perception_specs).
+    """
+
+    hidden_channels: int = Field(default=256, gt=0)
+    kernel_sizes: Optional[List[int]] = None  # None → auto from spatial_dim
+    dilations: Optional[List[int]] = None  # None → matched to kernel_sizes
+    growth_hidden: int = Field(default=256, gt=0)
+    residual_scale: float = Field(default=0.2, gt=0.0)
+    clamp_output: bool = True
+    clamp_leak: float = Field(default=0.01, ge=0.0)
+    padding_mode: str = "circular"  # toroidal BC for Lenia
 
 
 class MNOModelConfig(BaseModel):
@@ -82,6 +102,8 @@ class MNOModelConfig(BaseModel):
         - param_embed_dim: Dimension of parameter embeddings
         - conditioning_mode: How to condition ("concat", "film", "both")
         - film: FiLM configuration (if conditioning_mode includes "film")
+        - backbone_type: Architecture selection (None = auto-detect)
+        - nca: Neural CA backbone config (only used when backbone_type="neural_ca")
     """
 
     # ============================================================================
@@ -132,6 +154,12 @@ class MNOModelConfig(BaseModel):
     # Gradient checkpointing (memory optimization)
     use_checkpointing: bool = True
     checkpoint_every: int = Field(default=16, gt=0)
+
+    # Backbone selection (None = auto-detect from operator_type)
+    backbone_type: Optional[Literal["u_afno", "neural_ca"]] = None
+
+    # Neural CA backbone config (only used when backbone_type="neural_ca")
+    nca: Optional[NCAConfig] = None
 
     @field_validator("param_conditioning")
     @classmethod

@@ -3,17 +3,18 @@
 Metrics:
   - traj_rmse: Root mean squared error between predicted and GT trajectories
   - relative_l2: ||pred - gt|| / ||gt|| (scale-invariant error)
-  - contrastive_acc: Fraction where correct param is top-1 match
   - ic_rmse: RMSE at the first supervised timestep (warmup endpoint quality)
+
+Note: Contrastive quality (mean_jaccard, rank_corr) is a training-time concern
+measured via SoftTokenContrastiveLoss. Eval focuses on trajectory accuracy.
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Dict
 
 import torch
 from torch.utils.data import DataLoader
 
-from spinlock.mno.losses.components.contrastive import ContrastiveLoss
 from spinlock.mno.truncated_bptt import TruncatedBPTT
 
 logger = logging.getLogger(__name__)
@@ -25,11 +26,9 @@ class TrajectoryEvaluator:
     def __init__(
         self,
         replayer,
-        contrastive: ContrastiveLoss,
         bptt: TruncatedBPTT,
     ) -> None:
         self._replayer = replayer
-        self._contrastive = contrastive
         self._bptt = bptt
 
     @torch.no_grad()
@@ -56,7 +55,6 @@ class TrajectoryEvaluator:
         sum_traj_mse = 0.0
         sum_ic_mse = 0.0
         sum_relative_l2 = 0.0
-        sum_contrastive_acc = 0.0
 
         for batch in dataloader:
             if n_evaluated >= n_samples:
@@ -82,7 +80,6 @@ class TrajectoryEvaluator:
             gt_trajectory = torch.cat(gt_trajs, dim=0)  # [B, T+1, C, H, W]
 
             # MNO rollout via BPTT
-            conditioning = {"theta": params, "ic": ic}
             pred_trajectory = self._bptt.rollout(
                 ic, params=params,
             )  # [B, W+1, C, H, W]
@@ -105,10 +102,6 @@ class TrajectoryEvaluator:
             diff_norm = (pred_aligned - gt_aligned).pow(2).sum().sqrt()
             sum_relative_l2 += (diff_norm / gt_norm).item() * b
 
-            # Contrastive accuracy
-            contrastive_out = self._contrastive(pred_aligned, params)
-            sum_contrastive_acc += contrastive_out["accuracy"].item() * b
-
             n_evaluated += b
 
         metrics: Dict[str, float] = {"n_evaluated": float(n_evaluated)}
@@ -116,7 +109,6 @@ class TrajectoryEvaluator:
             metrics["traj_rmse"] = (sum_traj_mse / n_evaluated) ** 0.5
             metrics["ic_rmse"] = (sum_ic_mse / n_evaluated) ** 0.5
             metrics["relative_l2"] = sum_relative_l2 / n_evaluated
-            metrics["contrastive_acc"] = sum_contrastive_acc / n_evaluated
 
         model.train()
         return metrics

@@ -94,7 +94,7 @@ class TrainMNOV2Command(CLICommand):
         import torch
 
         from spinlock.data import SpinlockDataset
-        from spinlock.mno.losses.components.contrastive import ContrastiveLoss
+        from spinlock.mno.losses.components.contrastive import SoftTokenContrastiveLoss
         from spinlock.mno.truncated_bptt import TruncatedBPTT
         from spinlock.mno.v2.config import V2MNOConfig
         from spinlock.mno.v2.evaluation import TrajectoryEvaluator
@@ -132,7 +132,10 @@ class TrainMNOV2Command(CLICommand):
             config.loss.lambda_feat_mse > 0
             and config.tokenizer_checkpoint is not None
         )
+        has_contrastive = config.loss.lambda_contrastive > 0
         has_token_ce = config.loss.lambda_token_ce > 0
+        has_centroid_mse = config.loss.lambda_centroid_mse > 0
+        has_token_head = config.loss.lambda_token_head > 0
         dataset = SpinlockDataset(
             file_path=config.data.dataset_path,
             max_samples=tc.n_samples,
@@ -143,8 +146,17 @@ class TrainMNOV2Command(CLICommand):
         print(f"  Dataset: {len(dataset)} samples")
         print(f"  Dimensions: {dims}")
 
+        # --- Extract operator_type for backbone auto-detection ---
+        with open(config.data.config) as f:
+            gen_cfg = yaml.safe_load(f)
+        operator_type = gen_cfg.get("simulation", {}).get("operator_type")
+
         # --- Model ---
-        model = V2MNO.from_config(config, dims, device)
+        model = V2MNO.from_config(config, dims, device, operator_type=operator_type)
+        print(
+            f"  Backbone: {type(model.backbone).__name__} "
+            f"({model.backbone.num_trainable_parameters:,} params)"
+        )
 
         # --- Replayer (auto-detected from generation config) ---
         replayer = _create_replayer(
@@ -160,25 +172,18 @@ class TrainMNOV2Command(CLICommand):
         )
         print(f"  BPTT: {bptt}")
 
-        # --- ContrastiveLoss ---
-        cc = config.loss.contrastive
-        contrastive = ContrastiveLoss(
-            param_dim=dims.get("param_dim", 14),
-            embed_dim=cc.embed_dim,
-            hidden_dim=cc.hidden_dim,
-            temperature=cc.temperature,
-            queue_size=cc.queue_size,
-        ).to(device)
-        print(f"  Contrastive: {contrastive}")
-
-        # --- Optional VQ adapter (for feature MSE, token CE, and/or QA mode) ---
+        # --- VQ adapter (needed for contrastive, feature MSE, token CE, QA) ---
         vq_adapter = None
-        needs_vq = has_feat_mse or has_token_ce or config.quantization_aware
+        needs_vq = (
+            has_feat_mse or has_contrastive or has_token_ce
+            or has_centroid_mse or has_token_head or config.quantization_aware
+        )
         if needs_vq:
             if config.tokenizer_checkpoint is None:
                 return self.error(
                     "tokenizer_checkpoint required when "
-                    "lambda_feat_mse > 0 or quantization_aware is true"
+                    "lambda_contrastive > 0, lambda_feat_mse > 0, "
+                    "or quantization_aware is true"
                 )
             from spinlock.mno.vq_coherence import VQCoherenceAdapter
 
@@ -188,24 +193,64 @@ class TrainMNOV2Command(CLICommand):
             )
             print(f"  VQ adapter: {config.tokenizer_checkpoint}")
 
-        # --- Optional token store for quantization-aware mode ---
+        # --- Token store (needed for contrastive indicators, QA, token CE) ---
         token_store = None
-        if config.quantization_aware:
+        needs_token_store = (
+            config.quantization_aware or has_contrastive
+            or has_token_ce or has_centroid_mse or has_token_head
+        )
+        if needs_token_store:
             if config.token_dataset is None:
                 return self.error(
-                    "token_dataset required when quantization_aware is true"
+                    "token_dataset required when lambda_contrastive > 0, "
+                    "quantization_aware, lambda_token_ce > 0, "
+                    "or lambda_centroid_mse > 0"
                 )
             from spinlock.tokens.pretokenized_store import PretokenizedTokenStore
 
-            token_store = PretokenizedTokenStore(Path(config.token_dataset))
+            token_store = PretokenizedTokenStore(
+                Path(config.token_dataset),
+                truncation_length=config.token_truncation_length,
+            )
             print(f"  Token dataset: {config.token_dataset}")
-            print("  ** Quantization-aware mode enabled **")
-            print("     MNO will train on VQ-decoded θ̂/IC_hat")
+            if config.quantization_aware:
+                print("  ** Quantization-aware mode enabled **")
+                print("     MNO will train on VQ-decoded θ̂/IC_hat")
+
+        # --- Soft Token Contrastive Loss ---
+        cc = config.loss.contrastive
+        feature_dim = vq_adapter.feature_dim if vq_adapter is not None else 960
+        contrastive = SoftTokenContrastiveLoss(
+            feature_dim=feature_dim,
+            embed_dim=cc.embed_dim,
+            hidden_dim=cc.hidden_dim,
+            tau_pred=cc.tau_pred,
+            tau_target=cc.tau_target,
+            queue_size=cc.queue_size,
+        ).to(device)
+        print(f"  Contrastive: {contrastive}")
+
+        # --- Optional learned token prediction head ---
+        token_pred_head = None
+        if has_token_head:
+            from spinlock.mno.v2.token_head import TokenPredictionHead
+
+            token_pred_head = TokenPredictionHead.from_vq_adapter(
+                vq_adapter, in_channels=dims["in_channels"],
+            ).to(device)
+            n_head_params = sum(p.numel() for p in token_pred_head.parameters())
+            print(f"  Token head: {n_head_params:,} params")
 
         if has_feat_mse:
             print("  Feature MSE enabled")
+        if has_contrastive:
+            print("  Soft token contrastive enabled (Jaccard targets)")
         if has_token_ce:
             print("  Token CE enabled (soft VQ cross-entropy)")
+        if has_centroid_mse:
+            print("  Centroid MSE enabled (VQ centroid supervision)")
+        if has_token_head:
+            print("  Token head CE enabled (learned bypass of frozen VQ encoder)")
 
         # --- Loss ---
         loss_fn = TrajectoryLoss(
@@ -215,17 +260,19 @@ class TrainMNOV2Command(CLICommand):
             lambda_contrastive=config.loss.lambda_contrastive,
             lambda_feat_mse=config.loss.lambda_feat_mse,
             lambda_token_ce=config.loss.lambda_token_ce,
+            lambda_centroid_mse=config.loss.lambda_centroid_mse,
+            lambda_token_head=config.loss.lambda_token_head,
             token_ce_temperature=config.loss.token_ce_temperature,
             gate_weight_token_ce=config.loss.gate_weight_token_ce,
             normalize_loss_scales=config.loss.normalize_loss_scales,
             loss_scale_ema_momentum=config.loss.loss_scale_ema_momentum,
-            vq_adapter=vq_adapter if (has_feat_mse or has_token_ce) else None,
+            vq_adapter=vq_adapter if (has_feat_mse or has_token_ce or has_centroid_mse or has_contrastive) else None,
+            token_pred_head=token_pred_head,
         )
 
         # --- Evaluator ---
         evaluator = TrajectoryEvaluator(
             replayer=replayer,
-            contrastive=contrastive,
             bptt=bptt,
         )
 

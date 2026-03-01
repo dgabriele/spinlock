@@ -429,22 +429,39 @@ class VQCoherenceAdapter(nn.Module):
         self,
         trajectory: torch.Tensor,
     ) -> torch.Tensor:
-        """Extract cleaned temporal features WITH gradient to trajectory.
+        """Extract temporal features WITH gradient to trajectory.
 
         This is the first half of the extract_and_encode pipeline, split out
-        so contrastive loss can backprop through feature extraction → MNO
-        while VQ encoding runs separately without gradient.
+        so contrastive/feat_mse losses can backprop through feature extraction
+        → MNO while VQ encoding runs separately without gradient.
 
-        In learned CNN mode, the frozen CNN provides dense per-frame features
-        with spatially-specific gradients. In manual mode, the hand-crafted
-        MNOFeatureExtractor is used with gradient sanitization.
+        Three modes (auto-detected from tokenizer checkpoint):
+        - Pyramid-first: frozen spatio-temporal pyramid → per-group embeddings
+          [B, num_groups * D_group]. Primary path for Lenia VQ tokenizer.
+        - Learned CNN: frozen CNN → per-frame features [B, T, D_per_frame].
+        - Manual: hand-crafted statistical features [B, T, D_clean].
 
         Args:
             trajectory: MNO output [B, T, C, H, W] (should already be sanitized)
 
         Returns:
-            cleaned_features: [B, T, D_clean] with gradient to trajectory
+            features with gradient to trajectory. Shape depends on mode:
+            - Pyramid-first: [B, num_groups * D_group] (single vector per sample)
+            - Learned CNN: [B, T, D_per_frame]
+            - Manual: [B, T, D_clean]
         """
+        # Pyramid-first mode: frozen spatio-temporal pyramid encoder
+        if self._pyramid_first_mode:
+            nan_mask = torch.isnan(trajectory) | torch.isinf(trajectory)
+            if nan_mask.any():
+                trajectory = torch.nan_to_num(
+                    trajectory, nan=0.0, posinf=1e6, neginf=-1e6
+                )
+            # pyramid_first_encoder: [B, T, C, H, W] → ([B, G, D_group], multi_res)
+            per_group, _ = self.model.pyramid_first_encoder(trajectory)
+            # Flatten groups: [B, G, D_group] → [B, G * D_group]
+            return per_group.flatten(1)
+
         # Learned CNN mode: use frozen CNN directly
         if self._learned_mode:
             # Sanitize input
@@ -629,6 +646,7 @@ class VQCoherenceAdapter(nn.Module):
         # Per-quantizer: project → compute distances → soft logits + hard tokens
         soft_logits = {}
         hard_tokens = {}
+        projected_latents = {}
 
         for family_cat, indices in model.group_indices.items():
             family, _ = family_cat.split('_', 1)
@@ -647,6 +665,8 @@ class VQCoherenceAdapter(nn.Module):
                 quantizer = model.quantizers[quantizer_key]
                 codebook = quantizer.embedding.weight  # [K, D]
 
+                projected_latents[quantizer_key] = latent
+
                 # Squared L2 distances: [B, K]
                 distances = torch.cdist(
                     latent.unsqueeze(1), codebook.unsqueeze(0), p=2.0
@@ -658,6 +678,7 @@ class VQCoherenceAdapter(nn.Module):
         return {
             'soft_logits': soft_logits,
             'hard_tokens': hard_tokens,
+            'projected_latents': projected_latents,
         }
 
     def extract_soft_logits_from_trajectory(
@@ -693,6 +714,7 @@ class VQCoherenceAdapter(nn.Module):
             model = self.model
             soft_logits = {}
             hard_tokens = {}
+            projected_latents = {}
             group_idx = 0
 
             for family_cat in sorted(model.group_indices.keys()):
@@ -706,6 +728,7 @@ class VQCoherenceAdapter(nn.Module):
                 for level_idx, latent in enumerate(latents):
                     qkey = f"{family_cat}_L{level_idx}"
                     codebook = model.quantizers[qkey].embedding.weight  # [K, D]
+                    projected_latents[qkey] = latent
                     dists = torch.cdist(
                         latent.unsqueeze(1), codebook.unsqueeze(0), p=2.0
                     ).squeeze(1).pow(2)
@@ -713,13 +736,69 @@ class VQCoherenceAdapter(nn.Module):
                     hard_tokens[qkey] = dists.argmin(dim=1)
                 group_idx += 1
 
-            return {'soft_logits': soft_logits, 'hard_tokens': hard_tokens}
+            return {
+                'soft_logits': soft_logits,
+                'hard_tokens': hard_tokens,
+                'projected_latents': projected_latents,
+                'per_group': per_group,
+            }
         else:
             # Standard path: extract_features → extract_soft_logits_and_hard_tokens
             cleaned = self.extract_features(trajectory)
-            return self.extract_soft_logits_and_hard_tokens(
+            result = self.extract_soft_logits_and_hard_tokens(
                 cleaned, temperature=temperature,
             )
+            result['per_group'] = None
+            # projected_latents already set by extract_soft_logits_and_hard_tokens
+            return result
+
+    def extract_projected_latents(
+        self,
+        trajectory: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Extract per-quantizer projected latents from a trajectory.
+
+        Runs the encoder + projectors to obtain the latent vectors that VQ
+        quantization operates on. Used by centroid MSE when token CE is
+        disabled (no shared encoder pass to reuse).
+
+        Args:
+            trajectory: Raw trajectory [B, T, C, H, W].
+
+        Returns:
+            Dict mapping quantizer key → [B, D_l] projected latent tensors.
+        """
+        result = self.extract_soft_logits_from_trajectory(trajectory)
+        return result['projected_latents']
+
+    @torch.no_grad()
+    def lookup_gt_centroids(
+        self,
+        gt_tokens: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """Look up codebook centroids for GT token indices.
+
+        For each temporal quantizer key, returns the codebook embedding
+        vector corresponding to the GT token index. These are the Voronoi
+        cell centers — the targets for centroid MSE.
+
+        Args:
+            gt_tokens: {quantizer_key: [B]} hard GT token indices.
+
+        Returns:
+            Dict mapping quantizer key → [B, D_l] codebook centroid vectors
+            (detached, no gradient).
+        """
+        centroids = {}
+        model = self.model
+        for qkey, indices in gt_tokens.items():
+            if not qkey.startswith('temporal_'):
+                continue
+            if qkey not in model.quantizers:
+                continue
+            quantizer = model.quantizers[qkey]
+            centroids[qkey] = quantizer.embedding(indices.long())
+        return centroids
 
     def get_gate_values(self) -> Optional[torch.Tensor]:
         """Return per-group gate activations [num_groups] in [0,1], or None.
@@ -1079,6 +1158,22 @@ class VQCoherenceAdapter(nn.Module):
     def cleaned_feature_dim(self) -> int:
         """D_clean — dimension of cleaned temporal features."""
         return len(self._kept_feature_indices)
+
+    @property
+    def feature_dim(self) -> int:
+        """Output dimension of extract_features().
+
+        Auto-detected from the loaded checkpoint:
+        - Pyramid-first: n_groups * D_group (flattened per-group embeddings)
+        - Learned CNN / Manual: cleaned_feature_dim (temporal axis aggregated)
+        """
+        if self._pyramid_first_mode:
+            pf = self.model.pyramid_first_encoder
+            n_groups = sum(
+                1 for k in self.model.group_indices if k.startswith('temporal_')
+            )
+            return n_groups * pf.d_group
+        return self.cleaned_feature_dim
 
     def __repr__(self) -> str:
         return (

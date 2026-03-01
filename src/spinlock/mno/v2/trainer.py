@@ -83,14 +83,29 @@ class V2Trainer:
         self._device = device
 
         # Quantization-aware mode: decode VQ tokens → θ̂/IC_hat (cached)
-        self._qa_mode = token_store is not None and vq_adapter is not None
+        # For tokenizers that encode theta+initial families, predecoding maps
+        # VQ tokens → quantized params/IC. For temporal-only tokenizers (e.g.
+        # Lenia), predecoding is skipped and raw dataset params/IC are used.
+        # The token store is always kept for GT token CE loss.
         self._token_store = token_store  # kept for GT token lookup during training
         self._qa_theta: Optional[torch.Tensor] = None  # [N, param_dim]
         self._qa_ic: Optional[torch.Tensor] = None  # [N, C, H, W]
-        if self._qa_mode:
-            self._qa_theta, self._qa_ic = self._predecode_tokens(
-                token_store, vq_adapter,
-            )
+        self._qa_mode = False
+        if token_store is not None and vq_adapter is not None:
+            try:
+                self._qa_theta, self._qa_ic = self._predecode_tokens(
+                    token_store, vq_adapter,
+                )
+                self._qa_mode = True
+            except RuntimeError as e:
+                if "inverse heads" in str(e).lower():
+                    logger.warning(
+                        "VQ adapter has no inverse heads — skipping QA "
+                        "predecoding. Using raw dataset params/IC. "
+                        "Token store will still be used for token CE loss."
+                    )
+                else:
+                    raise
 
         tc = config.training
 
@@ -131,8 +146,17 @@ class V2Trainer:
             else:
                 other_params.append(param)
 
-        # Contrastive projector params (rollout + param embedders)
-        contrastive_params = list(loss_fn.parameters())
+        # Loss fn params: split token head (own LR) from contrastive projectors
+        token_head_param_ids: set = set()
+        token_head_params: list = []
+        if hasattr(loss_fn, '_token_pred_head') and loss_fn._token_pred_head is not None:
+            for p in loss_fn._token_pred_head.parameters():
+                token_head_param_ids.add(id(p))
+                token_head_params.append(p)
+        contrastive_params = [
+            p for p in loss_fn.parameters()
+            if id(p) not in token_head_param_ids
+        ]
 
         param_groups = [{"params": other_params, "lr": tc.learning_rate}]
         if film_params:
@@ -145,11 +169,18 @@ class V2Trainer:
                 "params": contrastive_params,
                 "lr": tc.learning_rate,
             })
+        if token_head_params:
+            param_groups.append({
+                "params": token_head_params,
+                "lr": tc.learning_rate * tc.token_head_lr_multiplier,
+            })
 
         logger.info(
-            "Optimizer: %d base, %d FiLM (%.1fx LR), %d contrastive",
+            "Optimizer: %d base, %d FiLM (%.1fx LR), %d contrastive, "
+            "%d token_head (%.1fx LR)",
             len(other_params), len(film_params), tc.film_lr_multiplier,
             len(contrastive_params),
+            len(token_head_params), tc.token_head_lr_multiplier,
         )
 
         self._optimizer = torch.optim.AdamW(
@@ -163,7 +194,7 @@ class V2Trainer:
         )
         total_steps = steps_per_epoch * tc.epochs
         self._scheduler = _create_scheduler(
-            self._optimizer, tc.warmup_steps, total_steps,
+            self._optimizer, tc.warmup_optimizer_steps, total_steps,
         )
 
         # torch.compile
@@ -254,10 +285,10 @@ class V2Trainer:
                 )
                 logger.info(
                     "Eval | traj_rmse=%.4f | relative_l2=%.4f | "
-                    "contrastive_acc=%.2f%%",
+                    "ic_rmse=%.4f",
                     eval_metrics.get("traj_rmse", 0),
                     eval_metrics.get("relative_l2", 0),
-                    eval_metrics.get("contrastive_acc", 0) * 100,
+                    eval_metrics.get("ic_rmse", 0),
                 )
                 all_metrics[f"eval_epoch_{epoch + 1}"] = eval_metrics
 
@@ -302,38 +333,62 @@ class V2Trainer:
                 params = self._qa_theta[sample_indices].to(self._device)
                 ic = self._qa_ic[sample_indices].to(self._device)
 
-            # Generate GT trajectories via replayer (no_grad, per-sample)
-            gt_trajs = []
-            with torch.no_grad():
-                for i in range(b):
-                    gt_traj = self._replayer.rollout(
-                        params_vector=params[i],
-                        ic=ic[i],
-                        timesteps=tc.timesteps,
-                    )  # [1, T+1, C, H, W]
-                    gt_trajs.append(gt_traj)
-            gt_trajectory = torch.cat(gt_trajs, dim=0)  # [B, T+1, C, H, W]
-
             # MNO rollout via BPTT
             pred_trajectory = self._bptt.rollout(
                 ic, params=params,
             )  # [B, W+1, C, H, W]
 
-            # Align for loss
-            pred_aligned, gt_aligned = self._bptt.align_for_loss(
-                pred_trajectory, gt_trajectory,
-            )  # [B, W, C, H, W] each
+            # GT trajectory: only generate if a loss component needs it
+            needs_gt = (
+                self._loss_fn._lambda_traj > 0
+                or self._loss_fn._lambda_ic > 0
+                or self._loss_fn._lambda_feat_mse > 0
+            )
+            if needs_gt:
+                with torch.no_grad():
+                    if hasattr(self._replayer, "rollout_batch"):
+                        gt_trajectory = self._replayer.rollout_batch(
+                            params_batch=params,
+                            ics=ic,
+                            timesteps=tc.timesteps,
+                            return_all_steps=True,
+                        )  # [B, T+1, C, H, W] on CPU
+                        gt_trajectory = gt_trajectory.to(self._device)
+                    else:
+                        gt_trajs = []
+                        for i in range(b):
+                            gt_traj = self._replayer.rollout(
+                                params_vector=params[i],
+                                ic=ic[i],
+                                timesteps=tc.timesteps,
+                            )  # [1, T+1, C, H, W]
+                            gt_trajs.append(gt_traj)
+                        gt_trajectory = torch.cat(gt_trajs, dim=0)
+
+                pred_aligned, gt_aligned = self._bptt.align_for_loss(
+                    pred_trajectory, gt_trajectory,
+                )  # [B, W, C, H, W] each
+            else:
+                # No GT needed: just slice pred (skip warmup final state)
+                pred_aligned = pred_trajectory[:, 1:]
+                gt_aligned = None
 
             # GT raw features for optional feature MSE
             gt_raw_features = batch.get("gt_raw_temporal")
             if gt_raw_features is not None:
                 gt_raw_features = gt_raw_features.to(self._device)
 
-            # GT tokens for optional token CE loss (QA mode)
+            # GT tokens for optional token CE loss (available with token store,
+            # regardless of whether full QA predecoding is active)
             gt_tokens = None
-            if self._qa_mode and self._token_store is not None:
+            gt_indicators = None
+            if self._token_store is not None:
+                sample_indices = batch["sample_idx"]
                 gt_tokens = self._token_store.get_batch(sample_indices)
                 gt_tokens = {k: v.to(self._device) for k, v in gt_tokens.items()}
+                # Binary indicator vectors for soft contrastive loss
+                if hasattr(self._token_store, 'get_indicators'):
+                    gt_indicators = self._token_store.get_indicators(sample_indices)
 
             # Loss
             loss_output = self._loss_fn.compute(
@@ -341,6 +396,7 @@ class V2Trainer:
                 params=params,
                 gt_raw_features=gt_raw_features,
                 gt_tokens=gt_tokens,
+                gt_indicators=gt_indicators,
             )
             scaled_loss = loss_output.total / tc.gradient_accumulation_steps
             scaled_loss.backward()
@@ -351,28 +407,35 @@ class V2Trainer:
             n_steps += 1
 
             # Per-step logging (running averages)
-            if True:
-                avg = running_loss / n_steps
+            # Only compute gnorm at accumulation boundaries — that's where
+            # the gradient is fully accumulated and meaningful. On intermediate
+            # micro-steps the gradient is partial (1/accum_steps scaled), so
+            # reporting it is misleading and wastes time iterating all params.
+            is_accum_step = (step + 1) % tc.gradient_accumulation_steps == 0
+            avg = running_loss / n_steps
+            if is_accum_step:
                 grad_norm = sum(
                     p.grad.norm().item() ** 2
                     for p in self._model.parameters()
                     if p.grad is not None
                 ) ** 0.5
-                lr_now = self._optimizer.param_groups[0]["lr"]
-                avg_components = {
-                    k: v / n_steps
-                    for k, v in sorted(running_components.items())
-                    if k != "total"
-                }
-                parts = " | ".join(
-                    f"{k}={v:.4f}" for k, v in sorted(avg_components.items())
-                )
-                logger.info(
-                    "  [%d/%d] step %d/%d | avg=%.4f | gnorm=%.4f | "
-                    "lr=%.2e | %s",
-                    epoch + 1, tc.epochs, step + 1, n_total, avg,
-                    grad_norm, lr_now, parts,
-                )
+            else:
+                grad_norm = float("nan")
+            lr_now = self._optimizer.param_groups[0]["lr"]
+            avg_components = {
+                k: v / n_steps
+                for k, v in sorted(running_components.items())
+                if k != "total"
+            }
+            parts = " | ".join(
+                f"{k}={v:.4f}" for k, v in sorted(avg_components.items())
+            )
+            logger.info(
+                "  [%d/%d] step %d/%d | avg=%.4f | gnorm=%.4f | "
+                "lr=%.2e | %s",
+                epoch + 1, tc.epochs, step + 1, n_total, avg,
+                grad_norm, lr_now, parts,
+            )
 
             # Optimizer step (after gradient accumulation)
             if (step + 1) % tc.gradient_accumulation_steps == 0:

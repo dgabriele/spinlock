@@ -1,15 +1,14 @@
-# Lenia V1 MNO — Quantization-Aware Training
+# Lenia V1 MNO — Hybrid Token Training
 #
 # Goal: vqtokenize(mno_rollout) ≈ vqtokenize(gt_rollout)
-# The MNO learns to produce trajectories whose VQ token sets match ground truth.
-# Token CE (soft VQ cross-entropy) is the PRIMARY loss signal.
 #
-# Key differences from CNO config:
-# - Replayer: auto-detected as LeniaReplayAdapter (shared simulator, no operator cache)
-# - replayer_cache_size: 0 (Lenia doesn't cache per-operator state)
-# - gate_weight_token_ce: true (pyramid-first encoder has gated groups)
+# Strategy: HYBRID — frozen-path CE gives the MNO a warm start (~68% token match
+# from the pre-trained VQ encoder's deterministic mapping), while the learned token
+# head provides an unfrozen gradient path to push past the frozen encoder's plateau.
+# Minimal warmup (3 steps) — clip_grad + normalize_loss_scales are sufficient.
 
 model:
+  backbone_type: "u_afno"          # pin to U-AFNO (auto-detect would pick neural_ca)
   base_channels: 32
   encoder_levels: 3
   modes: 16
@@ -23,28 +22,31 @@ model:
   use_checkpointing: true
 
 training:
-  n_samples: 10000           # Start small; scale after validation
+  n_samples: 10000
   batch_size: 1
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 32
   epochs: 30
   learning_rate: 2.0e-4
-  warmup_steps: 500
+  warmup_optimizer_steps: 3     # Minimal — clip_grad + cosine annealing suffice
   weight_decay: 0.01
   clip_grad: 1.0
   timesteps: 256             # Full Lenia trajectory length
   bptt_window: 32
   film_lr_multiplier: 5.0
+  token_head_lr_multiplier: 10.0   # Head needs fast bootstrap from random init
   replayer_cache_size: 0     # Lenia: shared simulator, no operator cache
   eval_every: 1
   eval_samples: 50
 
 loss:
-  lambda_traj: 0.1            # auxiliary — pixel regularization
-  lambda_ic: 0.0              # disabled in QA mode
-  lambda_contrastive: 0.3     # diversity
-  lambda_token_ce: 1.0        # PRIMARY — vqtokenize(mno) ≈ vqtokenize(gt)
+  lambda_traj: 0.0             # disabled — focus on token-level accuracy
+  lambda_ic: 0.0               # disabled in QA mode
+  lambda_contrastive: 0.3      # diversity
+  lambda_centroid_mse: 0.0     # not needed with hybrid CE
+  lambda_token_ce: 0.5         # frozen-path CE — warm start to ~68% baseline
+  lambda_token_head: 1.0       # PRIMARY — learned head CE (unfrozen gradient path)
   token_ce_temperature: 1.0
-  gate_weight_token_ce: true   # weight per-group CE by gate values
+  gate_weight_token_ce: true    # weight frozen-path CE by gate values
   normalize_loss_scales: true
   loss_scale_ema_momentum: 0.99
   contrastive:
@@ -65,7 +67,8 @@ checkpointing:
 
 quantization_aware: true
 tokenizer_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_best.pt"
-token_dataset: "datasets/lenia_tokenized.h5"
+token_dataset: "datasets/ds_lenia_v1_tokens.h5"
+token_truncation_length: 256
 
 device: "cuda"
 seed: 42

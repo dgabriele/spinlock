@@ -1,0 +1,66 @@
+# Lenia V1 MNO — U-AFNO Backbone (Phase 1: Trajectory Fidelity)
+#
+# U-AFNO: U-Net encoder → AFNO spectral bottleneck → U-Net decoder.
+# ~145M params. Global receptive field via FFT-based spectral mixing.
+# No weight-sharing across time → no recurrent gradient vanishing.
+#
+# Phase 1: Trajectory MSE only. No token losses until baseline established.
+
+model:
+  backbone_type: "u_afno"            # explicit — override Lenia auto-detect
+  base_channels: 32
+  encoder_levels: 3
+  modes: 16                          # Fourier modes in AFNO bottleneck
+  afno_blocks: 4
+  dropout: 0.1
+  param_conditioning: true
+  param_embed_dim: 128
+  conditioning_mode: "film"
+  film: {enabled: true, embed_dim: 128, hidden_dim: 256}
+  update_mode: "residual"
+  use_checkpointing: true
+
+training:
+  n_samples: 10000
+  batch_size: 4                      # reduced for 145M param model VRAM
+  gradient_accumulation_steps: 24    # effective batch = 4×24 = 96
+  epochs: 30
+  learning_rate: 5.0e-4
+  warmup_optimizer_steps: 50
+  weight_decay: 0.01
+  clip_grad: 1.0
+  timesteps: 256
+  bptt_window: 32
+  film_lr_multiplier: 5.0
+  replayer_cache_size: 0
+  eval_every: 1
+  eval_samples: 50
+
+loss:
+  lambda_traj: 1.0                    # primary: physical trajectory fidelity
+  lambda_ic: 0.3                      # warmup endpoint quality
+  lambda_contrastive: 0.0
+  lambda_feat_mse: 0.0
+  lambda_centroid_mse: 0.0
+  lambda_token_ce: 0.0
+  lambda_token_head: 0.0
+  normalize_loss_scales: false
+
+data:
+  dataset_path: "datasets/ds_lenia_v1.h5"
+  config: "configs/lenia/datasets/ds_lenia_v1.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/lenia/mno/v1_uafno"
+  save_every: 1
+  keep_best: true
+
+# Frozen VQ encoder — not loaded in Phase 1 (all token losses disabled)
+tokenizer_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_best.pt"
+token_dataset: "datasets/ds_lenia_v1_tokens.h5"
+quantization_aware: false
+
+device: "cuda"
+seed: 42
