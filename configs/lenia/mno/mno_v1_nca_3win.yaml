@@ -1,0 +1,71 @@
+# Lenia V1 MNO — U-AFNO Backbone + 3-Window BPTT (Phase 1: Trajectory Fidelity)
+#
+# Identical to mno_v1_nca.yaml except bptt_num_windows=3.
+# Three supervised windows at steps [0,32), [112,144), [224,256) provide
+# gradient signal at initial, mid-rollout, and final dynamics — testing
+# whether multi-window supervision breaks the traj_mse ~0.10 plateau
+# caused by gradient blindness in the warmup phase.
+#
+# Expected cost: ~1.4× wall-clock vs single-window (160 cheap + 96 expensive
+# steps per batch, vs 224 cheap + 32 expensive).
+
+model:
+  backbone_type: "u_afno"            # explicit — override Lenia auto-detect
+  base_channels: 32
+  encoder_levels: 3
+  modes: 16                          # Fourier modes in AFNO bottleneck
+  afno_blocks: 4
+  dropout: 0.1
+  param_conditioning: true
+  param_embed_dim: 128
+  conditioning_mode: "film"
+  film: {enabled: true, embed_dim: 128, hidden_dim: 256}
+  update_mode: "residual"
+  use_checkpointing: true
+
+training:
+  n_samples: 10000
+  batch_size: 2                      # halved for 3-window BPTT memory
+  gradient_accumulation_steps: 48    # effective batch = 2×48 = 96 (same)
+  epochs: 30
+  learning_rate: 5.0e-4
+  warmup_optimizer_steps: 50
+  weight_decay: 0.01
+  clip_grad: 1.0
+  timesteps: 256
+  bptt_window: 32
+  bptt_num_windows: 3               # initial + mid + final supervision
+  film_lr_multiplier: 5.0
+  replayer_cache_size: 0
+  eval_every: 1
+  eval_samples: 50
+
+loss:
+  lambda_traj: 1.0                    # primary: physical trajectory fidelity
+  lambda_ic: 0.3                      # warmup endpoint quality
+  lambda_contrastive: 0.0
+  lambda_feat_mse: 0.0
+  lambda_centroid_mse: 0.0
+  lambda_token_ce: 0.0
+  lambda_token_head: 0.0
+  normalize_loss_scales: false
+
+data:
+  dataset_path: "datasets/ds_lenia_v1.h5"
+  config: "configs/lenia/datasets/ds_lenia_v1.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/lenia/mno/v1_uafno_3win"
+  save_every: 1
+  keep_best: true
+
+# Frozen VQ encoder — not loaded in Phase 1 (all token losses disabled)
+tokenizer_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_best.pt"
+token_dataset: "datasets/ds_lenia_v1_tokens.h5"
+quantization_aware: false
+resume_from: "checkpoints/lenia/mno/v1_uafno/best.pt"
+
+device: "cuda"
+seed: 42

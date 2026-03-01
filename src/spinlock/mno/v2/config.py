@@ -80,6 +80,16 @@ class V2TrainingConfig(BaseModel):
     bptt_window: Optional[int] = 32
     film_lr_multiplier: float = 5.0
     token_head_lr_multiplier: float = 1.0
+    bptt_num_windows: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Number of evenly-spaced BPTT supervision windows. "
+            "1 = current behavior (final window only). "
+            "3 = recommended (initial + mid + final). "
+            "T//W = full coverage (most expensive)."
+        ),
+    )
     replayer_cache_size: int = 16
     eval_every: int = 5
     eval_samples: int = 50

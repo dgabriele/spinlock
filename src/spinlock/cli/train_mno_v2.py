@@ -169,6 +169,7 @@ class TrainMNOV2Command(CLICommand):
         # --- TruncatedBPTT ---
         bptt = TruncatedBPTT(
             model.backbone, tc.timesteps, tc.bptt_window or tc.timesteps,
+            num_windows=tc.bptt_num_windows,
         )
         print(f"  BPTT: {bptt}")
 
@@ -269,6 +270,23 @@ class TrainMNOV2Command(CLICommand):
             vq_adapter=vq_adapter if (has_feat_mse or has_token_ce or has_centroid_mse or has_contrastive) else None,
             token_pred_head=token_pred_head,
         )
+
+        # --- Resume from checkpoint (warm-start model + loss weights) ---
+        if config.resume_from is not None:
+            ckpt_path = Path(config.resume_from)
+            if not ckpt_path.exists():
+                return self.error(f"Resume checkpoint not found: {ckpt_path}")
+            ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+            model.load_state_dict(ckpt["model_state_dict"])
+            if "loss_fn_state_dict" in ckpt:
+                loss_fn.load_state_dict(ckpt["loss_fn_state_dict"], strict=False)
+            resumed_epoch = ckpt.get("epoch", "?")
+            resumed_loss = ckpt.get("loss", float("nan"))
+            print(
+                f"  Resumed from: {ckpt_path} "
+                f"(epoch {resumed_epoch}, loss {resumed_loss:.4f})"
+            )
+            print("  Optimizer/scheduler reset (warm-start, not full resume)")
 
         # --- Evaluator ---
         evaluator = TrajectoryEvaluator(

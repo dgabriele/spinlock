@@ -333,17 +333,14 @@ class V2Trainer:
                 params = self._qa_theta[sample_indices].to(self._device)
                 ic = self._qa_ic[sample_indices].to(self._device)
 
-            # MNO rollout via BPTT
-            pred_trajectory = self._bptt.rollout(
-                ic, params=params,
-            )  # [B, W+1, C, H, W]
-
-            # GT trajectory: only generate if a loss component needs it
+            # GT trajectory: generate before forward pass (needed by both
+            # single-window and multi-window paths for alignment)
             needs_gt = (
                 self._loss_fn._lambda_traj > 0
                 or self._loss_fn._lambda_ic > 0
                 or self._loss_fn._lambda_feat_mse > 0
             )
+            gt_trajectory = None
             if needs_gt:
                 with torch.no_grad():
                     if hasattr(self._replayer, "rollout_batch"):
@@ -365,14 +362,6 @@ class V2Trainer:
                             gt_trajs.append(gt_traj)
                         gt_trajectory = torch.cat(gt_trajs, dim=0)
 
-                pred_aligned, gt_aligned = self._bptt.align_for_loss(
-                    pred_trajectory, gt_trajectory,
-                )  # [B, W, C, H, W] each
-            else:
-                # No GT needed: just slice pred (skip warmup final state)
-                pred_aligned = pred_trajectory[:, 1:]
-                gt_aligned = None
-
             # GT raw features for optional feature MSE
             gt_raw_features = batch.get("gt_raw_temporal")
             if gt_raw_features is not None:
@@ -390,20 +379,81 @@ class V2Trainer:
                 if hasattr(self._token_store, 'get_indicators'):
                     gt_indicators = self._token_store.get_indicators(sample_indices)
 
-            # Loss
-            loss_output = self._loss_fn.compute(
-                pred_aligned, gt_aligned,
-                params=params,
-                gt_raw_features=gt_raw_features,
-                gt_tokens=gt_tokens,
-                gt_indicators=gt_indicators,
-            )
-            scaled_loss = loss_output.total / tc.gradient_accumulation_steps
-            scaled_loss.backward()
+            # Forward + Loss + Backward
+            # Branches on multi-window vs single-window BPTT
+            if self._bptt.num_windows > 1:
+                # Multi-window: per-window forward + backward.
+                # Each window's backward() frees its computation graph,
+                # keeping peak activation memory = O(W) regardless of N.
+                segments = self._bptt.multi_window_rollout(
+                    ic, params=params,
+                )
+                window_loss_total = 0.0
+                window_components: Dict[str, float] = {}
 
-            running_loss += loss_output.total.item()
-            for k, v in loss_output.metrics.items():
-                running_components[k] = running_components.get(k, 0.0) + v
+                for pred_seg, win_start in segments:
+                    if needs_gt:
+                        pred_w, gt_w = self._bptt.align_window_for_loss(
+                            pred_seg, gt_trajectory, win_start,
+                        )
+                    else:
+                        pred_w = pred_seg[:, 1:]
+                        gt_w = None
+
+                    loss_out = self._loss_fn.compute(
+                        pred_w, gt_w,
+                        params=params,
+                        gt_raw_features=gt_raw_features,
+                        gt_tokens=gt_tokens,
+                        gt_indicators=gt_indicators,
+                    )
+                    # Scale by both num_windows and grad accumulation so the
+                    # effective gradient magnitude matches single-window
+                    scale = (
+                        tc.gradient_accumulation_steps * self._bptt.num_windows
+                    )
+                    (loss_out.total / scale).backward()
+                    window_loss_total += loss_out.total.item()
+                    for k, v in loss_out.metrics.items():
+                        window_components[k] = (
+                            window_components.get(k, 0.0) + v
+                        )
+
+                # Average across windows for running metrics
+                n_win = self._bptt.num_windows
+                running_loss += window_loss_total / n_win
+                for k, v in window_components.items():
+                    running_components[k] = (
+                        running_components.get(k, 0.0) + v / n_win
+                    )
+            else:
+                # Single-window (legacy path, unchanged)
+                pred_trajectory = self._bptt.rollout(
+                    ic, params=params,
+                )  # [B, W+1, C, H, W]
+
+                if needs_gt:
+                    pred_aligned, gt_aligned = self._bptt.align_for_loss(
+                        pred_trajectory, gt_trajectory,
+                    )  # [B, W, C, H, W] each
+                else:
+                    pred_aligned = pred_trajectory[:, 1:]
+                    gt_aligned = None
+
+                loss_output = self._loss_fn.compute(
+                    pred_aligned, gt_aligned,
+                    params=params,
+                    gt_raw_features=gt_raw_features,
+                    gt_tokens=gt_tokens,
+                    gt_indicators=gt_indicators,
+                )
+                scaled_loss = loss_output.total / tc.gradient_accumulation_steps
+                scaled_loss.backward()
+
+                running_loss += loss_output.total.item()
+                for k, v in loss_output.metrics.items():
+                    running_components[k] = running_components.get(k, 0.0) + v
+
             n_steps += 1
 
             # Per-step logging (running averages)
@@ -439,6 +489,11 @@ class V2Trainer:
 
             # Optimizer step (after gradient accumulation)
             if (step + 1) % tc.gradient_accumulation_steps == 0:
+                # Multi-window BPTT: 3× backward passes per micro-batch
+                # fragments the CUDA allocator cache. Flush before
+                # optimizer.step() allocates Adam state tensors.
+                if self._bptt.num_windows > 1:
+                    torch.cuda.empty_cache()
                 if tc.clip_grad:
                     clip_grad_norm_(self._model.parameters(), tc.clip_grad)
                 self._optimizer.step()
