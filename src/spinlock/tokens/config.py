@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Literal, Union
 from pathlib import Path
 
 from spinlock.features.grouping.models import GroupingConfig
+from spinlock.tokens.schedules import ScheduleConfig
 
 
 class QuantizerConfig(BaseModel):
@@ -252,6 +253,18 @@ class AuxHeadConfig(BaseModel):
     initial_probe_enabled: bool = Field(default=False, description="Enable pre-VQ IC probe")
     initial_probe_weight: float = Field(default=1.0, ge=0.0, description="Weight for IC probe loss")
 
+    # Trajectory prototype decoder: generates K keyframe images from quantized
+    # temporal latents, representing the behavioral class average trajectory.
+    # Supervised by T-subsampled ground truth frames from the replayer.
+    trajectory_enabled: bool = Field(default=False, description="Enable trajectory prototype head")
+    trajectory_num_keyframes: int = Field(default=16, ge=4, le=64, description="Number of keyframes to decode")
+    trajectory_weight: float = Field(default=1.0, gt=0.0, description="Weight for trajectory MSE loss")
+    trajectory_spatial_size: int = Field(default=128, description="Spatial resolution of decoded keyframes")
+    trajectory_latent_dim: int = Field(default=512, gt=0,
+        description="Compressed latent dim for trajectory decoder (v2: 512, v1 was 256)")
+    trajectory_base_channels: int = Field(default=128, gt=0,
+        description="Base channel width for trajectory spatial decoder (v2: 128, v1 was 64)")
+
 
 class InverseHeadConfig(BaseModel):
     """Configuration for inverse decoder heads.
@@ -360,6 +373,10 @@ class TrainingConfig(BaseModel):
     optimizer: Literal["adam", "adamw"] = "adam"
     weight_decay: float = Field(default=0.0, ge=0.0)
     gradient_clip_norm: Optional[float] = None
+    gradient_accumulation_steps: int = Field(
+        default=1, ge=1,
+        description="Accumulate gradients over N micro-batches before stepping. Effective batch = batch_size × N."
+    )
 
     use_scheduler: bool = False
     scheduler_type: Literal["cosine", "step", "exponential"] = "cosine"
@@ -391,6 +408,20 @@ class TrainingConfig(BaseModel):
     )
     opq_n_codes: int = Field(
         default=32, ge=2, description="Proxy codebook size per subspace",
+    )
+
+    # Parameter schedules — anneal hyperparameters over training progress
+    dropout_schedule: Optional[ScheduleConfig] = Field(
+        default=None,
+        description="Anneal dropout rate over training. Applied to all nn.Dropout modules.",
+    )
+    weight_schedules: Optional[Dict[str, ScheduleConfig]] = Field(
+        default=None,
+        description=(
+            "Dynamic weight schedules. Keys are weight field names from LossConfig "
+            "or AuxHeadConfig (e.g. 'gate_sparsity_weight', 'trajectory_weight'). "
+            "Values override the static config value at each epoch."
+        ),
     )
 
 
@@ -495,12 +526,13 @@ class TokenizerConfig(BaseModel):
         ge=1,
         description="Number of timesteps for on-the-fly trajectory generation (auto-detected if None)"
     )
-    realization_mode: Literal["single", "mean"] = Field(
+    realization_mode: Literal["single", "mean", "all"] = Field(
         default="single",
         description=(
             "How to handle multiple IC realizations per operator. "
             "'single': use one real IC (realization_idx=0). "
             "'mean': average all realizations (produces non-physical composite IC). "
+            "'all': expand dataset to N×M samples (one per realization). "
             "Default 'single' ensures trajectories come from physically valid ICs."
         ),
     )

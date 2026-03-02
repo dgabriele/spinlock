@@ -19,7 +19,7 @@
 #   - Per-level temporal aggregation captures level-specific patterns
 #
 # Lenia-specific notes:
-#   - 3-channel CA system (C=3), 128x128 grid, 256 timesteps
+#   - 3-channel CA system (C=3), 128x128 grid, 512 timesteps
 #   - 34 Sobol dims: radii, mu, sigma, T, coupling, kernel_rank, beta, kernel/growth types
 #   - Uses LeniaReplayAdapter (auto-detected from generation_config_path)
 #     for fully batched on-the-fly trajectory generation during training.
@@ -30,9 +30,9 @@ checkpoint_dir: "checkpoints/lenia/vq/v1"
 # ── Feature source: learned CNN ──────────────────────────────
 feature_source: "learned"
 generation_config_path: "configs/lenia/datasets/ds_lenia_v1.yaml"
-generation_timesteps: 256
+generation_timesteps: 512
 replayer_cache_size: 16
-realization_mode: "single"         # use real ICs, not averaged composites
+realization_mode: "single"         # single realization for trajectory prototype training
 
 # ── Temporal-only mode ───────────────────────────────────────
 temporal_only: true
@@ -59,12 +59,12 @@ encoder:
       gated_groups: true       # per-group learnable gates for downstream adaptivity
       gate_init_bias: 5.0      # sigmoid(5.0) ≈ 0.993 → gates start nearly open
     level_dims: [6, 12, 20, 26]        # VQ hierarchy split (sum=64 = D_group)
-    downsample_factors: [1, 2, 4, 8]   # Trajectory pyramid factors
+    downsample_factors: [2, 4, 8, 16]   # Trajectory pyramid factors (512T → 256/128/64/32 frames)
     variable_length:
       enabled: true
-      min_timesteps: 16
-      max_timesteps: 256
-      length_bins: [16, 32, 64, 128, 256]
+      min_timesteps: 32
+      max_timesteps: 512
+      length_bins: [32, 64, 128, 256, 512]
       sampling_strategy: "fixed_bins"
       adaptive_pyramid: true
       min_pyramid_length: 1
@@ -103,6 +103,16 @@ aux_heads:
   initial_probe_enabled: false
   initial_probe_weight: 1.0
 
+  # Trajectory prototype decoder: generates K keyframe images from temporal tokens.
+  # Produces behavioral class average trajectories that downstream systems
+  # (D3PM diffusion, MNO, LLM agent) can use for navigation and sampling.
+  trajectory_enabled: true
+  trajectory_num_keyframes: 16
+  trajectory_weight: 1.0
+  trajectory_spatial_size: 128
+  trajectory_latent_dim: 512
+  trajectory_base_channels: 128
+
 # ═══════════════════════════════════════════════════════════════
 # Quantizer
 # ═══════════════════════════════════════════════════════════════
@@ -130,7 +140,7 @@ hierarchy:
 
 training:
   num_epochs: 3
-  batch_size: 128
+  batch_size: 12
   learning_rate: 0.001
   val_split: 0.1
   val_every_n_epochs: 1
@@ -138,6 +148,7 @@ training:
   optimizer: "adamw"
   weight_decay: 0.05
   gradient_clip_norm: 1.0
+  gradient_accumulation_steps: 4   # 12 × 4 = 48 effective batch size
 
   use_scheduler: true
   scheduler_type: "cosine"
@@ -151,6 +162,19 @@ training:
 
   device: "auto"
   compile_model: false
+
+  # Dropout annealing: high early (codebook protection) → low late (aux head precision)
+  dropout_schedule:
+    type: cosine
+    start: 0.6
+    end: 0.1
+
+  # Weight schedules (commented — available for future use):
+  # weight_schedules:
+  #   gate_sparsity_weight:
+  #     type: linear
+  #     start: 0.0
+  #     end: 1.0
 
 
 # ═══════════════════════════════════════════════════════════════

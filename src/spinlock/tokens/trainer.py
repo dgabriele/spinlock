@@ -22,6 +22,7 @@ from .model import JointHierarchicalVQVAE
 from .losses import VQVAELoss
 from .config import TokenizerConfig
 from .checkpoint import save_checkpoint
+from .schedules import ParameterSchedule
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,24 @@ class VQTokenizerTrainer:
                         f"bins={vl_dict.get('length_bins', 'N/A')}"
                     )
 
+        # Parameter schedules (dropout annealing, weight scheduling)
+        self._dropout_schedule = (
+            ParameterSchedule(config.training.dropout_schedule)
+            if config.training.dropout_schedule else None
+        )
+        self._weight_schedules: Dict[str, tuple] = {}
+        if config.training.weight_schedules:
+            for name, sched_cfg in config.training.weight_schedules.items():
+                if hasattr(config.loss, name):
+                    target = "loss"
+                elif config.aux_heads and hasattr(config.aux_heads, name):
+                    target = "aux"
+                else:
+                    raise ValueError(
+                        f"weight_schedules key '{name}' not found in LossConfig or AuxHeadConfig"
+                    )
+                self._weight_schedules[name] = (ParameterSchedule(sched_cfg), target)
+
         # Batch unpacking mode: False = TensorDataset (index-based), True = dict batches
         self._dict_batch_mode = False
 
@@ -213,6 +232,9 @@ class VQTokenizerTrainer:
             logger.info(f"  Resuming from epoch: {start_epoch}")
         logger.info(f"  Epochs: {self.config.training.num_epochs}")
         logger.info(f"  Batch size: {self.config.training.batch_size}")
+        if self.config.training.gradient_accumulation_steps > 1:
+            eff = self.config.training.batch_size * self.config.training.gradient_accumulation_steps
+            logger.info(f"  Gradient accumulation: {self.config.training.gradient_accumulation_steps} steps (effective batch size: {eff})")
         logger.info(f"  Learning rate: {self.config.training.learning_rate}")
         logger.info(f"  Train batches: {len(train_loader)}")
         logger.info(f"  Val batches: {len(val_loader)}")
@@ -234,9 +256,18 @@ class VQTokenizerTrainer:
         ):
             self._calibrate_opq(train_loader)
 
+        # Log active schedules
+        if self._dropout_schedule:
+            logger.info(f"  Dropout schedule: {self._dropout_schedule}")
+        if self._weight_schedules:
+            for name, (sched, _) in self._weight_schedules.items():
+                logger.info(f"  Weight schedule [{name}]: {sched}")
+
         # Training loop
         val_loss = None  # Initialize for final checkpoint saving
         for epoch in range(start_epoch, self.config.training.num_epochs):
+            self._apply_schedules(epoch)
+
             # Train
             train_metrics = self._train_epoch(train_loader, epoch)
             self.training_history['train_losses'].append(train_metrics['loss'])
@@ -631,6 +662,36 @@ class VQTokenizerTrainer:
                 trajectories.append(traj.squeeze(0).cpu())
         return torch.stack(trajectories, dim=0)  # [B, T+1, C, H, W]
 
+    def _compute_trajectory_targets(
+        self, temporal_raw: Optional[torch.Tensor]
+    ) -> Optional[torch.Tensor]:
+        """Subsample K keyframes from raw trajectories for trajectory prototype loss.
+
+        Picks num_keyframes evenly-spaced frames from the T+1 trajectory.
+        Returns None if the trajectory prototype head is not active or no
+        trajectory data is available.
+
+        Args:
+            temporal_raw: [B, T+1, C, H, W] raw trajectory from replayer (may be CPU).
+
+        Returns:
+            [B, K, C, H, W] keyframe targets on self.device, or None.
+        """
+        if (
+            temporal_raw is None
+            or not hasattr(self.model, 'traj_prototype_head')
+            or self.model.traj_prototype_head is None
+        ):
+            return None
+
+        T_plus_1 = temporal_raw.shape[1]  # T+1 frames (T timesteps + initial)
+        K = self.model.traj_prototype_head.num_keyframes
+
+        # Evenly-spaced indices across the full trajectory
+        keyframe_indices = torch.linspace(0, T_plus_1 - 1, K).long()
+        targets = temporal_raw[:, keyframe_indices]  # [B, K, C, H, W]
+        return targets.to(self.device)
+
     def _calibrate_opq(self, train_loader: DataLoader) -> None:
         """Compute OPQ rotation from CNN features and register on the model.
 
@@ -732,6 +793,30 @@ class VQTokenizerTrainer:
         transform = LinearTransform(mean=mean, components=R)
         self.model.set_temporal_rotation(transform)
 
+    def _apply_schedules(self, epoch: int) -> None:
+        """Apply parameter schedules at epoch start.
+
+        Computes training progress as epoch / max(num_epochs - 1, 1) so that
+        the schedule reaches its ``end`` value at the final epoch.  Updates
+        nn.Dropout.p for dropout annealing and mutates LossConfig / AuxHeadConfig
+        fields for weight scheduling.
+        """
+        num_epochs = self.config.training.num_epochs
+        progress = epoch / max(num_epochs - 1, 1)
+
+        if self._dropout_schedule is not None:
+            new_p = self._dropout_schedule(progress)
+            for m in self.model.modules():
+                if isinstance(m, nn.Dropout):
+                    m.p = new_p
+            logger.info(f"  [Schedule] dropout={new_p:.4f} (progress={progress:.3f})")
+
+        for name, (sched, target) in self._weight_schedules.items():
+            new_val = sched(progress)
+            cfg_obj = self.config.loss if target == "loss" else self.config.aux_heads
+            setattr(cfg_obj, name, new_val)
+            logger.info(f"  [Schedule] {name}={new_val:.4f} (progress={progress:.3f})")
+
     def _train_epoch(self, loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Run one training epoch.
 
@@ -754,6 +839,8 @@ class VQTokenizerTrainer:
         interval = self.config.training.dead_code_reset_interval
         do_reset = interval > 0 and (epoch + 1) % interval == 0
         num_batches_total = len(loader)
+        accum_steps = self.config.training.gradient_accumulation_steps
+        self.optimizer.zero_grad()
 
         for batch_idx, batch in enumerate(loader):
             unpacked = self._unpack_batch(batch)
@@ -766,6 +853,9 @@ class VQTokenizerTrainer:
 
             # On-the-fly trajectory generation for learned mode
             temporal_raw = self._generate_trajectories(theta_feats, initial_r)
+
+            # Subsample trajectory keyframes for trajectory prototype head
+            trajectory_targets = self._compute_trajectory_targets(temporal_raw)
 
             # Random length sampling for variable-length training (manual mode only)
             if self.length_sampler is not None and temporal_feats is not None:
@@ -869,6 +959,7 @@ class VQTokenizerTrainer:
                 cnn_features=outputs.get('cnn_features'),
                 num_groups=_num_groups,
                 gate_values=outputs.get('gate_values'),
+                trajectory_targets=trajectory_targets,
             )
 
             loss = losses['total']
@@ -879,9 +970,9 @@ class VQTokenizerTrainer:
                     f"peak={torch.cuda.max_memory_allocated()/1024**2:.0f}MB"
                 )
 
-            # Backward pass
-            self.optimizer.zero_grad()
-            loss.backward()
+            # Backward pass (gradient accumulation: scale loss by 1/N)
+            scaled_loss = loss / accum_steps
+            scaled_loss.backward()
 
             if _do_mem_log and self.device.type == "cuda":
                 logger.info(
@@ -889,14 +980,18 @@ class VQTokenizerTrainer:
                     f"peak={torch.cuda.max_memory_allocated()/1024**2:.0f}MB"
                 )
 
-            # Gradient clipping (optional)
-            if self.config.training.gradient_clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.config.training.gradient_clip_norm
-                )
-
-            self.optimizer.step()
+            # Step optimizer every accum_steps micro-batches (or at last batch)
+            is_accum_step = (batch_idx + 1) % accum_steps == 0
+            is_last_batch = batch_idx == num_batches_total - 1
+            if is_accum_step or is_last_batch:
+                # Gradient clipping (optional)
+                if self.config.training.gradient_clip_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.config.training.gradient_clip_norm
+                    )
+                self.optimizer.step()
+                self.optimizer.zero_grad()
 
             # Dead code reset: fires on the last batch of reset epochs so we
             # have fresh latents (actual pre-quantization vectors) for reseeding.
@@ -949,6 +1044,8 @@ class VQTokenizerTrainer:
                     parts.append(f"probe_θ={losses['aux/theta_probe']:.4f}")
                 if 'aux/initial_probe' in losses:
                     parts.append(f"probe_ic={losses['aux/initial_probe']:.4f}")
+                if 'aux/trajectory' in losses:
+                    parts.append(f"aux_traj={losses['aux/trajectory']:.4f}")
                 parts.extend([
                     f"vq={losses['vq'].item():.4f}",
                     f"ortho={losses['orthogonality'].item():.4f}",
@@ -981,6 +1078,15 @@ class VQTokenizerTrainer:
                     g_open = (gate_vals > 0.5).sum().item()
                     g_total = gate_vals.numel()
                     parts.append(f"gates={g_open:.0f}/{g_total}({g_mean:.3f})")
+                # Codebook utilization: unique codes used / codebook size, mean across quantizers
+                token_indices = outputs.get('token_indices')
+                if token_indices:
+                    utils = []
+                    for qname, tidx in token_indices.items():
+                        n_unique = tidx.flatten().unique().numel()
+                        n_codes = self.model.quantizers[qname].num_embeddings
+                        utils.append(n_unique / n_codes)
+                    parts.append(f"cb_util={sum(utils)/len(utils):.3f}")
                 logger.info(" ".join(parts))
 
         metrics = {
@@ -1042,6 +1148,9 @@ class VQTokenizerTrainer:
 
                 # On-the-fly trajectory generation for learned mode
                 temporal_raw = self._generate_trajectories(theta_feats, initial_r)
+
+                # Subsample trajectory keyframes for trajectory prototype head
+                trajectory_targets = self._compute_trajectory_targets(temporal_raw)
 
                 # Random length sampling for variable-length training (manual mode only)
                 if self.length_sampler is not None and temporal_feats is not None:
@@ -1115,6 +1224,7 @@ class VQTokenizerTrainer:
                     cnn_features=outputs.get('cnn_features'),
                     num_groups=_num_groups,
                     gate_values=outputs.get('gate_values'),
+                    trajectory_targets=trajectory_targets,
                 )
 
                 # Accumulate metrics
