@@ -65,6 +65,16 @@ class VariableLengthConfig(BaseModel):
     min_pyramid_length: int = Field(default=1, ge=1)
     mask_downsample_method: Literal["ceil", "floor"] = "ceil"
 
+    # Length curriculum: start with longer trajectories, gradually allow shorter ones
+    curriculum_start_min: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Initial min_timesteps at training start (must be > min_timesteps). "
+            "Decays to min_timesteps over training via the schedule. None = no curriculum."
+        ),
+    )
+
 
 class LearnedTemporalConfig(BaseModel):
     """Config for learned CNN temporal feature extraction.
@@ -209,16 +219,27 @@ class EncoderConfig(BaseModel):
 class HierarchyConfig(BaseModel):
     """Hierarchical quantization configuration."""
     num_levels: int = Field(default=3, ge=1, le=5)
-    compression_ratios: str = "0.5:1.0:1.5"
+    level_ratios: Optional[List[float]] = Field(
+        default=None,
+        description="Latent dim as fraction of input dim per level [L0, L1, ...]. "
+                    "E.g. [1.5, 0.75, 0.4] → L0=1.5×input, L1=0.75×input, L2=0.4×input. "
+                    "When None, uses adaptive formula."
+    )
     min_latent_dim: int = Field(default=4, ge=2)
     max_latent_dim: int = Field(default=64, ge=2)
 
-    @field_validator('compression_ratios')
+    @field_validator('level_ratios')
     @classmethod
-    def validate_ratios(cls, v: str) -> str:
-        ratios = [float(r) for r in v.split(':')]
-        if any(r <= 0 for r in ratios):
-            raise ValueError("All ratios must be positive")
+    def validate_level_ratios(cls, v: Optional[List[float]]) -> Optional[List[float]]:
+        if v is not None:
+            if any(r <= 0 for r in v):
+                raise ValueError("All level_ratios must be positive")
+            for i in range(1, len(v)):
+                if v[i] > v[i - 1]:
+                    raise ValueError(
+                        f"level_ratios must be non-increasing (L0 >= L1 >= ...), "
+                        f"got {v}"
+                    )
         return v
 
 
@@ -369,6 +390,13 @@ class TrainingConfig(BaseModel):
     learning_rate: float = Field(default=1e-3, gt=0.0)
     val_split: float = Field(default=0.2, ge=0.0, le=0.5)
     val_every_n_epochs: int = Field(default=5, ge=1)
+    shuffle: bool = Field(
+        default=False,
+        description=(
+            "Shuffle training data. Default False preserves Sobol quasi-random "
+            "ordering for low-discrepancy parameter space coverage per batch."
+        ),
+    )
 
     optimizer: Literal["adam", "adamw"] = "adam"
     weight_decay: float = Field(default=0.0, ge=0.0)
@@ -384,6 +412,34 @@ class TrainingConfig(BaseModel):
 
     early_stopping_patience: int = Field(default=20, ge=1)
     early_stopping_min_delta: float = Field(default=1e-4, ge=0.0)
+
+    # Intra-epoch convergence stopping: stop mid-epoch when component losses
+    # plateau below thresholds over a rolling window.  All enabled thresholds
+    # must be met simultaneously.  Set a threshold to None to ignore it.
+    convergence_stop_enabled: bool = Field(
+        default=False,
+        description="Enable intra-epoch convergence-based early stopping",
+    )
+    convergence_stop_vq: Optional[float] = Field(
+        default=None, description="VQ commitment loss threshold (e.g. 0.01)",
+    )
+    convergence_stop_recon: Optional[float] = Field(
+        default=None, description="Reconstruction loss threshold (e.g. 0.0001)",
+    )
+    convergence_stop_info: Optional[float] = Field(
+        default=None, description="Informativeness loss threshold (e.g. 0.001)",
+    )
+    convergence_stop_topo_post: Optional[float] = Field(
+        default=None, description="Post-VQ correlation threshold (e.g. 0.999)",
+    )
+    convergence_stop_window: int = Field(
+        default=100, ge=10,
+        description="Rolling window size (batches) for convergence check",
+    )
+    convergence_stop_min_batches: int = Field(
+        default=500, ge=100,
+        description="Minimum batches before convergence stopping can trigger",
+    )
 
     dead_code_reset_interval: int = Field(default=10, ge=0, description="0 = disabled")
     dead_code_threshold: float = Field(default=0.01, ge=0.0, le=1.0)

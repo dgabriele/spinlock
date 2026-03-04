@@ -94,6 +94,7 @@ def compute_aux_head_losses(
     theta_gt: Optional[torch.Tensor],
     ic_gt: Optional[torch.Tensor],
     aux_config: AuxHeadConfig,
+    trajectory_targets: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, Dict[str, float]]:
     """Compute auxiliary head losses for temporal-only mode.
 
@@ -105,8 +106,10 @@ def compute_aux_head_losses(
         decoded: Dict with aux head outputs:
             - "theta": [B, param_dim] predicted parameters (Sigmoid → [0,1])
             - "initial": [B, C, H, W] predicted initial conditions
+            - "trajectory_prototype": [B, K, C, H, W] predicted keyframes
         theta_gt: [B, param_dim] ground-truth parameters in [0,1]
         ic_gt: [B, C, H, W] ground-truth initial conditions
+        trajectory_targets: [B, K, C, H, W] ground-truth keyframe images
         aux_config: Auxiliary head configuration with per-family weights
 
     Returns:
@@ -136,6 +139,37 @@ def compute_aux_head_losses(
         ic_probe_loss = F.mse_loss(decoded["initial_probe"], ic_gt)
         losses.append(aux_config.initial_probe_weight * ic_probe_loss)
         metrics["aux/initial_probe"] = ic_probe_loss.item()
+
+    # Trajectory prototype: K keyframe images decoded from quantized latents
+    # Multi-scale MSE: penalize structure at multiple resolutions for sharper prototypes.
+    # Scales are derived dynamically from the actual spatial size (H) to stay
+    # adaptive to any grid resolution rather than hardcoding 32/64/128.
+    if "trajectory_prototype" in decoded and trajectory_targets is not None:
+        pred = decoded["trajectory_prototype"]   # [B, K, C, H, W]
+        tgt = trajectory_targets                 # [B, K, C, H, W]
+
+        B_t, K_t, C_t, H_t, W_t = pred.shape
+        mse_full = F.mse_loss(pred, tgt)
+        metrics["aux/traj_full"] = mse_full.item()
+
+        # Build downsample scales: repeatedly halve until size < 16
+        scale_losses = [mse_full]
+        pred_flat = pred.reshape(B_t * K_t, C_t, H_t, W_t)
+        tgt_flat = tgt.reshape(B_t * K_t, C_t, H_t, W_t)
+        ds_size = H_t // 2
+        scale_idx = 0
+        while ds_size >= 16:
+            pred_ds = F.interpolate(pred_flat, size=ds_size, mode='bilinear', align_corners=False)
+            tgt_ds = F.interpolate(tgt_flat, size=ds_size, mode='bilinear', align_corners=False)
+            mse_ds = F.mse_loss(pred_ds, tgt_ds)
+            scale_losses.append(mse_ds)
+            metrics[f"aux/traj_{ds_size}"] = mse_ds.item()
+            ds_size //= 2
+            scale_idx += 1
+
+        traj_loss = sum(scale_losses) / len(scale_losses)
+        losses.append(aux_config.trajectory_weight * traj_loss)
+        metrics["aux/trajectory"] = traj_loss.item()
 
     if losses:
         total = sum(losses)
@@ -665,6 +699,7 @@ class VQVAELoss:
         cnn_features: Optional[torch.Tensor] = None,
         num_groups: Optional[int] = None,
         gate_values: Optional[torch.Tensor] = None,
+        trajectory_targets: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Compute total VQ-VAE loss.
 
@@ -685,6 +720,7 @@ class VQVAELoss:
             original_initial: Optional original ICs [B, C, H, W] for inverse recon
             cnn_features: Optional CNN output [B, T, D] for group balance loss
             num_groups: Number of groups for group balance loss
+            trajectory_targets: Optional [B, K, C, H, W] keyframe targets for trajectory head
 
         Returns:
             Dict with loss components and metrics
@@ -705,6 +741,7 @@ class VQVAELoss:
                 theta_gt=original_theta,
                 ic_gt=original_initial,
                 aux_config=self.aux_config,
+                trajectory_targets=trajectory_targets,
             )
         elif decoded is not None and (original_theta is not None or original_initial is not None):
             # Standard mode: inverse head outputs vs actual physical inputs

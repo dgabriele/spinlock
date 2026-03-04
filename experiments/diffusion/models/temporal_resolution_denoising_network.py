@@ -2,17 +2,18 @@
 
 Extends DenoisingNetwork with truncation-aware components:
 - Truncation time embeddings (T032, T064, T128, T256)
-- Causal temporal attention bias (early → late information flow)
+- Causal temporal attention bias (late → early information flow)
 - Enforced causality (blocks non-causal attention)
 
 Architecture insight:
     The temporal resolution approach diffuses tokenizations at multiple
     truncation lengths [32, 64, 128, 256]. This network learns causal
-    dependencies: early truncations guide later truncations, mirroring
-    how understanding of a trajectory "resolves" over time.
+    dependencies: later truncations (which have observed more dynamics)
+    can attend to earlier truncations (subsets of what they've seen),
+    but not vice versa.
 
-    Causal attention ensures: T032 can guide T256, but T256 cannot
-    influence T032 (non-physical backward flow).
+    Causal attention ensures: T256 can see {T032, T064, T128, T256},
+    but T032 can only see {T032} (it cannot access future information).
 """
 
 import logging
@@ -33,7 +34,7 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
     Extends base DenoisingNetwork with:
     1. Truncation embeddings: Embed which truncation level each token came from
     2. Causal temporal bias: Learnable [N_trunc, N_trunc] attention bias matrix
-    3. Causal masking: Enforce that future cannot attend to past
+    3. Causal masking: Enforce that past cannot attend to future
 
     Token key format:
         - Temporal: "temporal_group_1_trunc_T064_L0" (with truncation suffix)
@@ -136,7 +137,7 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         """Initialize temporal attention bias matrix.
 
         Args:
-            init_type: "causal" (early → late), "uniform" (0), or "zero"
+            init_type: "causal" (late → early), "uniform" (0), or "zero"
             strength: Bias strength for causal init
 
         Returns:
@@ -145,16 +146,17 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         bias = torch.zeros(self.num_truncations, self.num_truncations)
 
         if init_type == "causal":
-            # Encourage early → late information flow
+            # Encourage late → early information flow (late truncations
+            # have seen more dynamics and can attend to earlier ones)
             for i in range(self.num_truncations):
                 for j in range(self.num_truncations):
-                    if i < j:
-                        # Early guides late: positive bias proportional to gap
-                        bias[i, j] = strength * (j - i)
+                    if i > j:
+                        # Late attends to early: positive bias proportional to gap
+                        bias[i, j] = strength * (i - j)
                     elif i == j:
                         # Self-attention: neutral
                         bias[i, j] = 0.0
-                    # else: i > j (non-causal): will be masked to -inf
+                    # else: i < j (non-causal): will be masked to -inf
 
         elif init_type == "uniform":
             # Small uniform bias
@@ -191,7 +193,7 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
     def _get_causal_attention_mask(
         self, device: torch.device
     ) -> torch.Tensor:
-        """Build causal attention mask: allow early → late, block late → early.
+        """Build causal attention mask: allow late → early, block early → late.
 
         Returns:
             Boolean mask [N_total, N_total] where True = allowed attention
@@ -199,9 +201,10 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         # Get truncation indices for each token
         trunc_indices = self.key_truncation_indices.to(device)  # [N_total]
 
-        # Causal mask: trunc_i <= trunc_j (early can attend to late)
-        # Broadcasting: [N_total, 1] <= [1, N_total] → [N_total, N_total]
-        causal_mask = trunc_indices[:, None] <= trunc_indices[None, :]
+        # Causal mask: trunc_i >= trunc_j (late can attend to early)
+        # T256 sees {T032, T064, T128, T256}; T032 sees only {T032}.
+        # Broadcasting: [N_total, 1] >= [1, N_total] → [N_total, N_total]
+        causal_mask = trunc_indices[:, None] >= trunc_indices[None, :]
 
         return causal_mask
 
@@ -275,7 +278,7 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         Extends base forward with:
         1. Truncation embeddings added to token embeddings
         2. Temporal attention bias applied in transformer
-        3. Causal masking enforced (early → late only)
+        3. Causal masking enforced (late sees early, not vice versa)
 
         Args:
             tokens_dict: Dict mapping key → noisy token indices [B]

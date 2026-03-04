@@ -1,0 +1,75 @@
+# Lenia D3PM — Temporal Resolution Diffusion
+#
+# Learns joint distribution over multi-truncation tokenizations [16,32,64,128,256]
+# with causal temporal attention: later truncations attend to earlier ones.
+#
+# Dataset: 500K Lenia samples, 450 token keys (30 groups x 3 levels x 5 truncations)
+# Tokenizer: Lenia VQ v1 (pyramid temporal encoder, temporal-only)
+
+dataset:
+  tokenized_path: "datasets/ds_lenia_v1_tokens.h5"
+  tokenizer_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_best.pt"
+  use_pretokenized: true
+
+masking:
+  strategy: "temporal_causal"
+  mask_probability: 0.5    # unused by temporal_causal (split is structural)
+  seed: 42
+  temporal_causal_warmup_epochs: 5      # ramp difficulty over first 5 epochs
+  temporal_causal_max_difficulty: 2.0   # 0=uniform, 1=linear, 2=quadratic favor harder cutoffs
+
+diffusion:
+  num_timesteps: 50
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule_type: "cosine"
+  transition_type: "uniform"
+  beta_scaling: "uniform"
+
+model:
+  hidden_dim: 256
+  num_layers: 6
+  num_heads: 8
+  dropout: 0.1
+  use_hierarchical_guidance: true
+  hierarchical_guidance_weight: 0.1
+  hierarchical_guidance_mode: "per_category"
+
+  temporal_resolution:
+    enabled: true
+    use_temporal_bias: true
+    temporal_bias_init: "causal"       # late truncations attend to earlier
+    temporal_bias_strength: 0.1
+    enforce_causality: true            # T016 sees only itself, T256 sees all
+
+training:
+  batch_size: 64
+  num_epochs: 30
+  num_workers: 0
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  gradient_clip_norm: 1.0
+  use_snr_weighting: true
+  use_vocab_size_weighting: true
+
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 2
+    min_lr: 1.0e-6
+
+  val_batch_size: 64
+  val_split: 0.1
+  val_frequency: 1
+  val_samples: 5
+
+  checkpoint_frequency: 5
+  save_best: true
+  log_frequency: 50
+  use_wandb: false
+
+output:
+  dir: "experiments/diffusion/results/lenia_temporal_resolution"
+  checkpoint_prefix: "lenia_d3pm_temporal_res"
+
+device: "cuda"
+seed: 42

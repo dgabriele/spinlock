@@ -2,7 +2,7 @@
 #
 # Variable-length diffusion: each sample is tokenized at 4 truncation lengths
 # [T=32, T=64, T=128, T=256], and the diffusion model jointly denoises all
-# truncations with causal temporal attention (early truncations guide later ones).
+# truncations with causal temporal attention (later truncations see earlier ones).
 #
 # Incorporates all safe D3PM improvements from improved_safe_changes.yaml:
 #   - SNR weighting (1/beta_t per timestep)
@@ -43,7 +43,7 @@ model:
   temporal_resolution:
     enabled: true
     use_temporal_bias: true          # learnable [N_trunc, N_trunc] attention bias
-    temporal_bias_init: "causal"     # initialize with early → late prior
+    temporal_bias_init: "causal"     # initialize with late → early prior
     temporal_bias_strength: 0.1
     enforce_causality: true          # hard-mask non-causal attention
 

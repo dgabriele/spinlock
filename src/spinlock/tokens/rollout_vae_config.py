@@ -7,7 +7,7 @@ following spinlock's config pattern with type-safe validation.
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class EncoderConfig(BaseModel):
@@ -137,8 +137,7 @@ class TokenToRolloutVAEConfig(BaseModel):
     device: str = Field(default="cuda", description="Device for training (cuda or cpu)")
     seed: int = Field(default=42, description="Random seed for reproducibility")
 
-    class Config:
-        extra = "forbid"  # Raise error on unknown fields
+    model_config = ConfigDict(extra="forbid")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "TokenToRolloutVAEConfig":

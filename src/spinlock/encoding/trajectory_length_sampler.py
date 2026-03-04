@@ -160,9 +160,13 @@ class TrajectoryLengthSampler:
         return lengths.long().clamp(self.min_T, self.max_T)
 
     def _sample_fixed_bins(self, batch_size: int) -> torch.Tensor:
-        """Sample uniformly from predefined bins."""
-        indices = torch.randint(0, len(self.bins), (batch_size,))
-        return torch.tensor([self.bins[i] for i in indices], dtype=torch.long)
+        """Sample uniformly from predefined bins that are >= min_T."""
+        valid_bins = [b for b in self.bins if b >= self.min_T]
+        if not valid_bins:
+            # All bins below min_T — fall back to min_T itself
+            return torch.full((batch_size,), self.min_T, dtype=torch.long)
+        indices = torch.randint(0, len(valid_bins), (batch_size,))
+        return torch.tensor([valid_bins[i] for i in indices], dtype=torch.long)
 
     def create_mask(
         self,

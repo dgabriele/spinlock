@@ -6,13 +6,18 @@ import sys
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset, random_split
 
 from spinlock.tokens.tokenizer import VQTokenizer
 from spinlock.tokens.schema import TokenSchema
 from spinlock.experimental.common.config.loader import load_experiment_config
 from spinlock.experimental.diffusion.config import DiffusionExperimentConfig
-from spinlock.experimental.diffusion.models import DiscreteD3PM, DiffusionSchedule, DenoisingNetwork
+from spinlock.experimental.diffusion.models import (
+    DiscreteD3PM,
+    DiffusionSchedule,
+    DenoisingNetwork,
+    TemporalResolutionDenoisingNetwork,
+)
 from spinlock.experimental.diffusion.data import (
     HierarchicalMaskGenerator,
     MixedMaskGenerator,
@@ -66,7 +71,40 @@ def extract_vocab_sizes_from_pretokenized(tokenized_path: Path) -> tuple[dict, d
     return schema.vocab_sizes_dict(), schema.category_level_info_dict()
 
 
-def create_datasets(config: DiffusionExperimentConfig, mask_generator: HierarchicalMaskGenerator):
+def load_truncation_lengths_from_dataset(dataset_path: Path) -> list[int] | None:
+    """Load truncation lengths from temporal resolution dataset.
+
+    Args:
+        dataset_path: Path to pre-tokenized HDF5 with temporal resolution
+
+    Returns:
+        Sorted list of truncation lengths or None if not a temporal resolution dataset
+    """
+    import h5py
+
+    try:
+        with h5py.File(dataset_path, 'r') as f:
+            if "temporal_resolution_mode" not in f.attrs or not f.attrs["temporal_resolution_mode"]:
+                logger.warning(
+                    f"Dataset {dataset_path} is not in temporal resolution format. "
+                    f"Did you forget --temporal-resolution flag during pretokenization?"
+                )
+                return None
+
+            truncation_lengths = list(f.attrs["truncation_lengths"])
+            logger.info(f"Loaded truncation lengths from dataset: {truncation_lengths}")
+            return truncation_lengths
+
+    except Exception as e:
+        logger.error(f"Failed to load truncation lengths from dataset: {e}")
+        return None
+
+
+def create_datasets(
+    config: DiffusionExperimentConfig,
+    mask_generator: HierarchicalMaskGenerator,
+    max_samples: int = None,
+):
     """Create train and validation datasets."""
     # Check if using pre-tokenized data
     if config.dataset.use_pretokenized:
@@ -85,6 +123,11 @@ def create_datasets(config: DiffusionExperimentConfig, mask_generator: Hierarchi
             max_cache_size=config.dataset.max_cache_size,
             device=config.dataset.device,
         )
+
+    # Truncate dataset if max_samples specified
+    if max_samples is not None and max_samples < len(full_dataset):
+        logger.info(f"Limiting dataset to {max_samples}/{len(full_dataset)} samples")
+        full_dataset = Subset(full_dataset, list(range(max_samples)))
 
     # Split into train/val
     val_size = int(len(full_dataset) * config.training.val_split)
@@ -200,7 +243,8 @@ def main(args):
 
     # Create datasets
     logger.info("Creating datasets")
-    train_dataset, val_dataset = create_datasets(config, mask_generator)
+    max_samples = getattr(args, 'max_samples', None)
+    train_dataset, val_dataset = create_datasets(config, mask_generator, max_samples=max_samples)
 
     # Create dataloaders
     logger.info("Creating dataloaders")
@@ -223,19 +267,55 @@ def main(args):
     )
 
     # Create denoising network
-    logger.info("Creating denoising network")
-    denoiser = DenoisingNetwork(
-        vocab_sizes=vocab_sizes,
-        category_level_info=category_level_info,
-        hidden_dim=config.model.hidden_dim,
-        num_layers=config.model.num_layers,
-        num_heads=config.model.num_heads,
-        dropout=config.model.dropout,
-        use_hierarchical_guidance=config.model.use_hierarchical_guidance,
-        hierarchical_guidance_weight=config.model.hierarchical_guidance_weight,
-        guidance_mode=config.model.hierarchical_guidance_mode,
-        transition_type=config.diffusion.transition_type,
-    )
+    if temporal_res_mode and config.model.temporal_resolution.enabled:
+        # Load truncation lengths from dataset
+        truncation_lengths = load_truncation_lengths_from_dataset(
+            config.dataset.tokenized_path
+        )
+        if truncation_lengths is None:
+            logger.error("Failed to load truncation lengths")
+            return
+
+        # Create temporal resolution denoising network
+        logger.info("Creating temporal resolution denoising network")
+        tr_config = config.model.temporal_resolution
+        denoiser = TemporalResolutionDenoisingNetwork(
+            vocab_sizes=vocab_sizes,
+            category_level_info=category_level_info,
+            truncation_lengths=truncation_lengths,
+            hidden_dim=config.model.hidden_dim,
+            num_layers=config.model.num_layers,
+            num_heads=config.model.num_heads,
+            dropout=config.model.dropout,
+            use_hierarchical_guidance=config.model.use_hierarchical_guidance,
+            hierarchical_guidance_weight=config.model.hierarchical_guidance_weight,
+            guidance_mode=config.model.hierarchical_guidance_mode,
+            transition_type=config.diffusion.transition_type,
+            use_temporal_bias=tr_config.use_temporal_bias,
+            temporal_bias_init=tr_config.temporal_bias_init,
+            temporal_bias_strength=tr_config.temporal_bias_strength,
+            enforce_causality=tr_config.enforce_causality,
+        )
+        if tr_config.use_temporal_bias:
+            bias_matrix = denoiser.get_temporal_bias_matrix()
+            logger.info(
+                f"Temporal attention bias [{bias_matrix.shape[0]}x{bias_matrix.shape[1]}]:\n"
+                f"{bias_matrix}"
+            )
+    else:
+        logger.info("Creating denoising network")
+        denoiser = DenoisingNetwork(
+            vocab_sizes=vocab_sizes,
+            category_level_info=category_level_info,
+            hidden_dim=config.model.hidden_dim,
+            num_layers=config.model.num_layers,
+            num_heads=config.model.num_heads,
+            dropout=config.model.dropout,
+            use_hierarchical_guidance=config.model.use_hierarchical_guidance,
+            hierarchical_guidance_weight=config.model.hierarchical_guidance_weight,
+            guidance_mode=config.model.hierarchical_guidance_mode,
+            transition_type=config.diffusion.transition_type,
+        )
 
     # Log model size
     num_params = sum(p.numel() for p in denoiser.parameters())
@@ -284,6 +364,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Path to checkpoint to resume from",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Limit dataset to first N samples (for smoke tests)",
     )
 
     args = parser.parse_args()

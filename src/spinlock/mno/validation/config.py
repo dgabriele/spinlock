@@ -1,6 +1,6 @@
 """Configuration schemas for MNO-VQ-VAE validation."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ValidationConfig(BaseModel):
@@ -31,6 +31,4 @@ class ValidationConfig(BaseModel):
         description="Number of timesteps to generate in MNO rollouts"
     )
 
-    class Config:
-        """Pydantic config."""
-        frozen = True
+    model_config = ConfigDict(frozen=True)

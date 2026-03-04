@@ -1,28 +1,10 @@
-# VQ Tokenizer — Lenia Pyramid-First (Behavioral Focus)
+# VQ Tokenizer — Lenia Pyramid-First (Behavioral Tokenization)
 #
-# Produces 60 BEHAVIORAL tokens (20 groups × 3 levels) from Lenia trajectory
-# dynamics. Tokens are grounded symbols representing what the CA system DOES,
-# not what parameters generated it.
+# Produces behavioral tokens from Lenia trajectory dynamics.
+# Tokens are discrete identifiers for behavioral equivalence classes.
 #
-# Architecture (pyramid-first):
-#   Raw trajectory [B,T,C,H,W]
-#     → SpatioTemporalPyramid (downsample raw trajectory along T)
-#     → shared FrameCNNEncoder (gradient-checkpointed)
-#     → per-level TemporalAggregator (Conv1d+BN+ReLU+GAP)
-#     → LearnedGroupProjection (Linear + LayerNorm)
-#     → 20 per-group VQ hierarchy → 60 tokens
-#   Quantized latents → ic_aux_head → [B, C, H, W] ICs (behavioral consistency)
-#
-# Key improvements over per_frame mode:
-#   - CNN sees multi-resolution SPATIAL data (real time-averaged fields)
-#   - Learned group projection eliminates 92x variance imbalance
-#   - Per-level temporal aggregation captures level-specific patterns
-#
-# Lenia-specific notes:
-#   - 3-channel CA system (C=3), 128x128 grid, 512 timesteps
-#   - 34 Sobol dims: radii, mu, sigma, T, coupling, kernel_rank, beta, kernel/growth types
-#   - Uses LeniaReplayAdapter (auto-detected from generation_config_path)
-#     for fully batched on-the-fly trajectory generation during training.
+# Core losses only: VQ commitment, reconstruction, topographic, balance.
+# No pixel-space aux heads — token→rollout decoding handled by MNO.
 
 dataset_path: "datasets/ds_lenia_v1.h5"
 checkpoint_dir: "checkpoints/lenia/vq/v1"
@@ -32,7 +14,7 @@ feature_source: "learned"
 generation_config_path: "configs/lenia/datasets/ds_lenia_v1.yaml"
 generation_timesteps: 512
 replayer_cache_size: 16
-realization_mode: "single"         # single realization for trajectory prototype training
+realization_mode: "all"            # each realization tokenized independently (500K × 3 = 1.5M samples)
 
 # ── Temporal-only mode ───────────────────────────────────────
 temporal_only: true
@@ -69,6 +51,7 @@ encoder:
       adaptive_pyramid: true
       min_pyramid_length: 1
       mask_downsample_method: "ceil"
+      # curriculum_start_min removed — VQ converges without it
 
   # Theta config kept for param_dim auto-detection (dimensions only)
   theta:
@@ -77,7 +60,7 @@ encoder:
 
   embedding_dim: 32                    # per-group VQ input dim (= D_group)
   hidden_dim: 128
-  dropout: 0.6
+  dropout: 0.1
   use_layer_norm: true
 
 # ═══════════════════════════════════════════════════════════════
@@ -85,33 +68,19 @@ encoder:
 # ═══════════════════════════════════════════════════════════════
 
 aux_heads:
-  # Theta: predict Lenia params from temporal tokens.
-  # Some params (kernel radii, growth_mu/sigma) have strong behavioral signatures;
-  # others (coupling, dt) are subtler. The aux head provides a useful gradient
-  # signal even if prediction is imperfect — it encourages temporal tokens to
-  # capture param-dependent dynamics.
   theta_enabled: false
   theta_probe_enabled: false
 
-  # IC: ENABLED — the initial condition IS observable behavior (t=0 state).
-  # Predicting IC from temporal tokens is a valid behavioral consistency check.
-  initial_enabled: true
-  initial_base_channels: 256
-  initial_weight: 1.0            # primary behavioral grounding signal
-
-  # Pre-VQ IC probe: DISABLED — marginal benefit, VQ discretization is the bottleneck.
+  initial_enabled: false          # disabled — MNO handles token→rollout decoding
   initial_probe_enabled: false
-  initial_probe_weight: 1.0
 
-  # Trajectory prototype decoder: generates K keyframe images from temporal tokens.
-  # Produces behavioral class average trajectories that downstream systems
-  # (D3PM diffusion, MNO, LLM agent) can use for navigation and sampling.
-  trajectory_enabled: true
-  trajectory_num_keyframes: 16
-  trajectory_weight: 1.0
-  trajectory_spatial_size: 128
-  trajectory_latent_dim: 512
-  trajectory_base_channels: 128
+  trajectory_enabled: false       # disabled — MNO handles token→rollout decoding
+  # Trajectory prototype decoder (disabled — MNO handles token→rollout decoding):
+  # trajectory_num_keyframes: 16
+  # trajectory_weight: 1.0
+  # trajectory_spatial_size: 128
+  # trajectory_latent_dim: 1024
+  # trajectory_base_channels: 128
 
 # ═══════════════════════════════════════════════════════════════
 # Quantizer
@@ -130,7 +99,7 @@ quantizer:
 
 hierarchy:
   num_levels: 3
-  compression_ratios: "0.5:1.0:1.5"
+  # level_ratios: [1.5, 0.75, 0.4]   # explicit per-level ratios (uses adaptive formula when unset)
   min_latent_dim: 4
   max_latent_dim: 192
 
@@ -140,7 +109,7 @@ hierarchy:
 
 training:
   num_epochs: 3
-  batch_size: 12
+  batch_size: 96
   learning_rate: 0.001
   val_split: 0.1
   val_every_n_epochs: 1
@@ -148,7 +117,7 @@ training:
   optimizer: "adamw"
   weight_decay: 0.05
   gradient_clip_norm: 1.0
-  gradient_accumulation_steps: 4   # 12 × 4 = 48 effective batch size
+  gradient_accumulation_steps: 2   # 96 × 2 = 192 effective batch size
 
   use_scheduler: true
   scheduler_type: "cosine"
@@ -157,17 +126,28 @@ training:
   early_stopping_patience: 30
   early_stopping_min_delta: 0.001
 
-  dead_code_reset_interval: 0
+  # Intra-epoch convergence stopping: stop mid-epoch when component losses
+  # plateau below thresholds over a rolling window of batches.
+  convergence_stop_enabled: true
+  convergence_stop_vq: 0.001
+  convergence_stop_recon: 0.0001
+  convergence_stop_info: 0.001
+  convergence_stop_topo_post: 0.999
+  convergence_stop_window: 100
+  convergence_stop_min_batches: 500
+
+  dead_code_reset_interval: 500
   dead_code_threshold: 0.01
 
   device: "auto"
   compile_model: false
 
-  # Dropout annealing: high early (codebook protection) → low late (aux head precision)
-  dropout_schedule:
-    type: cosine
-    start: 0.6
-    end: 0.1
+  # Flat dropout — no schedule needed with intra-epoch convergence stopping
+  # (each sample seen ~once, so annealing has no effect)
+  # dropout_schedule:
+  #   type: cosine
+  #   start: 0.3
+  #   end: 0.1
 
   # Weight schedules (commented — available for future use):
   # weight_schedules:
@@ -187,7 +167,7 @@ loss:
   informativeness_weight: 0.1    # prevent group collapse
   informativeness_mode: "log_barrier"
   topographic_weight: 0.5        # KEY: distance preservation = behavioral discriminability
-  topographic_n_samples: 128
+  topographic_n_samples: 192
   group_balance_weight: 2.0      # equalize per-group variance (learned projection mode)
   gate_sparsity_weight: 0.0      # 0 during pretraining; increase during joint fine-tuning
   normalize_reconstruction: true

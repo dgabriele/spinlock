@@ -20,7 +20,12 @@ from torch import Tensor
 from spinlock.mno.backbone import MNOBackbone
 from spinlock.mno.base_backbone import BaseMNOBackbone
 from spinlock.mno.config import NCAConfig
-from spinlock.mno.v2.conditioning import ConditioningAdapter, ThetaICAdapter
+from spinlock.mno.v2.conditioning import (
+    ConditioningAdapter,
+    ThetaICAdapter,
+    TokenEmbeddingProjector,
+    TokenThetaICAdapter,
+)
 from spinlock.mno.v2.config import V2MNOConfig
 
 logger = logging.getLogger(__name__)
@@ -99,6 +104,26 @@ class V2MNO(nn.Module):
         if backbone_type is None:
             backbone_type = _infer_backbone_type(operator_type)
 
+        # Token conditioning: widen param_dim to accommodate projected token embeddings
+        base_param_dim = dims.get("param_dim", 14)
+        effective_param_dim = base_param_dim
+        token_projector = None
+
+        if config.token_conditioning:
+            if config.tokenizer_checkpoint is None:
+                raise ValueError(
+                    "token_conditioning=True requires tokenizer_checkpoint"
+                )
+            token_projector = TokenEmbeddingProjector(
+                vq_checkpoint_path=config.tokenizer_checkpoint,
+                token_embed_dim=config.token_embed_dim,
+            )
+            effective_param_dim = base_param_dim + config.token_embed_dim
+            logger.info(
+                "Token conditioning: param_dim %d + token_embed_dim %d = %d",
+                base_param_dim, config.token_embed_dim, effective_param_dim,
+            )
+
         if backbone_type == "neural_ca":
             from spinlock.mno.nca_backbone import NeuralCABackbone, _auto_perception_specs
 
@@ -129,7 +154,7 @@ class V2MNO(nn.Module):
                 clamp_leak=nca_cfg.clamp_leak,
                 padding_mode=nca_cfg.padding_mode,
                 param_conditioning=mc.param_conditioning,
-                param_dim=dims.get("param_dim", 14),
+                param_dim=effective_param_dim,
                 param_embed_dim=mc.param_embed_dim,
                 conditioning_mode=mc.conditioning_mode,
                 film_config=mc.film.model_dump() if mc.film else None,
@@ -146,7 +171,7 @@ class V2MNO(nn.Module):
                 afno_blocks=mc.afno_blocks,
                 dropout=mc.dropout,
                 param_conditioning=mc.param_conditioning,
-                param_dim=dims.get("param_dim", 14),
+                param_dim=effective_param_dim,
                 param_embed_dim=mc.param_embed_dim,
                 conditioning_mode=mc.conditioning_mode,
                 film_config=mc.film.model_dump() if mc.film else None,
@@ -156,12 +181,22 @@ class V2MNO(nn.Module):
             )
 
         backbone = backbone.to(device)
-        model = cls(backbone=backbone, adapter=ThetaICAdapter())
+
+        # Build adapter: token-conditioned or standard theta+IC
+        if token_projector is not None:
+            adapter: ConditioningAdapter = TokenThetaICAdapter(token_projector)
+            adapter = adapter.to(device)  # type: ignore[union-attr]
+        else:
+            adapter = ThetaICAdapter()
+
+        model = cls(backbone=backbone, adapter=adapter)
         logger.info(
-            "V2MNO: %s (%s trainable params), in_ch=%d, param_dim=%s",
+            "V2MNO: %s (%s trainable params), in_ch=%d, param_dim=%d%s",
             type(backbone).__name__,
             f"{backbone.num_trainable_parameters:,}",
             dims["in_channels"],
-            dims.get("param_dim"),
+            effective_param_dim,
+            f" (token_cond: {base_param_dim}+{config.token_embed_dim})"
+            if config.token_conditioning else "",
         )
         return model

@@ -78,8 +78,11 @@ class PretokenizedTokenStore:
                     if trunc_tag not in key:
                         continue
 
-                # Remap truncation-suffixed keys to base form
-                base_key = strip_trunc_suffix(key)
+                # Remap truncation-suffixed keys to base form only when
+                # filtering to a single truncation length.  When loading all
+                # truncations (truncation_length=None), keep the full key so
+                # the TemporalResolutionDenoisingNetwork sees all 450 keys.
+                base_key = strip_trunc_suffix(key) if trunc_tag is not None else key
                 self.tokens[base_key] = torch.from_numpy(
                     tokens_group[key][:]
                 ).long()

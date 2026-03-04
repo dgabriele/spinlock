@@ -282,9 +282,20 @@ class SpinlockDataset:
                     print(f"  Trimmed to {num_populated} non-zero samples (checked via params)")
 
                 self.ics = None  # ICs will be read per-sample in __getitem__
-                self.params = torch.from_numpy(params).float()
-                self.indices = indices
-                self.n_samples = len(indices)
+
+                if self._realization_mode == "all":
+                    # Expand: each sample appears M times (one per realization)
+                    M = f["inputs/fields"].shape[1]
+                    self._realization_map = np.tile(np.arange(M), len(indices))
+                    self.indices = np.repeat(indices, M)
+                    self.params = torch.from_numpy(np.repeat(params, M, axis=0)).float()
+                    self.n_samples = len(self.indices)
+                else:
+                    self._realization_map = None
+                    self.params = torch.from_numpy(params).float()
+                    self.indices = indices
+                    self.n_samples = len(indices)
+
                 ic_bytes = total * np.prod(f["inputs/fields"].shape[1:]) * 4
                 print(
                     f"  Lazy IC mode: skipped {ic_bytes / 1e9:.1f} GB IC load, "
@@ -361,6 +372,9 @@ class SpinlockDataset:
             if self._realization_mode == "mean":
                 # Read all M realizations and average → [C, H, W]
                 ic_np = fields[orig_idx].mean(axis=0)  # [M,C,H,W] → [C,H,W]
+            elif self._realization_mode == "all":
+                real_idx = int(self._realization_map[idx])
+                ic_np = fields[orig_idx, real_idx]  # [C, H, W]
             else:
                 ic_np = fields[orig_idx, self._realization_idx]  # [C, H, W]
             ic = self._torch.from_numpy(ic_np.astype(np.float32))

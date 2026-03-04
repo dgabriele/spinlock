@@ -28,7 +28,7 @@ from .encoders.temporal_cnn_feature import TemporalCNNFeatureEncoder
 from .encoders.pyramid_first import PyramidFirstEncoder
 from .config import TokenizerConfig, HierarchyConfig, AuxHeadConfig
 from .projector import HierarchicalProjector
-from .inverse_models import ThetaInverseMLP, InitialInverseCNN, TemporalInverseMLP
+from .inverse_models import ThetaInverseMLP, InitialInverseCNN, TemporalInverseMLP, TrajectoryPrototypeHead
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +192,7 @@ class JointHierarchicalVQVAE(nn.Module):
         self.ic_aux_head: Optional[nn.Module] = None
         self.theta_probe: Optional[nn.Module] = None  # Pre-VQ theta probe
         self.ic_probe: Optional[nn.Module] = None     # Pre-VQ IC probe
+        self.traj_prototype_head: Optional[TrajectoryPrototypeHead] = None
 
         if config.temporal_only and config.aux_heads is not None:
             # Compute total quantized latent dimension across all temporal groups
@@ -271,6 +272,31 @@ class JointHierarchicalVQVAE(nn.Module):
                     f"[{probe_channels}, {probe_spatial}, {probe_spatial}]"
                 )
 
+            # Trajectory prototype head: decodes quantized temporal latents
+            # → K keyframe images representing the behavioral class average.
+            # Unlike the IC head (single frame at t=0), this produces a full
+            # prototype trajectory that downstream systems can use for
+            # behavioral adjacency sampling and navigation.
+            if config.aux_heads.trajectory_enabled:
+                traj_channels = (
+                    config.encoder.initial.in_channels
+                    if config.encoder.initial.in_channels is not None
+                    else 3
+                )
+                self.traj_prototype_head = TrajectoryPrototypeHead(
+                    encoded_dim=total_quantized_dim,
+                    channels=traj_channels,
+                    spatial_size=config.aux_heads.trajectory_spatial_size,
+                    num_keyframes=config.aux_heads.trajectory_num_keyframes,
+                    latent_dim=config.aux_heads.trajectory_latent_dim,
+                    base_ch=config.aux_heads.trajectory_base_channels,
+                )
+                logger.info(
+                    f"Created trajectory prototype head: {total_quantized_dim}D → "
+                    f"[{config.aux_heads.trajectory_num_keyframes}, {traj_channels}, "
+                    f"{config.aux_heads.trajectory_spatial_size}, {config.aux_heads.trajectory_spatial_size}]"
+                )
+
         # Compute total encoded dimension
         total_encoded_dim = self.temporal_dim + self.initial_dim + self.theta_dim
 
@@ -323,6 +349,36 @@ class JointHierarchicalVQVAE(nn.Module):
                     decay=config.quantizer.ema_decay,
                     epsilon=config.quantizer.epsilon,
                 )
+
+        # Log hierarchy dimensions (once, for first group)
+        if self.group_indices:
+            first_fc = sorted(self.group_indices.keys())[0]
+            num_levels = config.hierarchy.num_levels
+            level_dims = [self._get_latent_dim(first_fc, l) for l in range(num_levels)]
+            level_codes = [self._get_num_embeddings(first_fc, l) for l in range(num_levels)]
+            # Show the projector's input dim, not the raw feature count
+            family = first_fc.split("_", 1)[0]
+            if family == "temporal" and self.pyramid_first_encoder is not None:
+                input_dim = config.encoder.embedding_dim
+            else:
+                input_dim = len(self.group_indices[first_fc])
+            logger.info(
+                "Hierarchy (example %s): input_dim=%d → %s",
+                first_fc,
+                input_dim,
+                ", ".join(
+                    f"L{l}={level_dims[l]}D/{level_codes[l]}codes"
+                    for l in range(num_levels)
+                ),
+            )
+            total_per_group = sum(level_dims)
+            total_all = total_per_group * len(self.group_indices)
+            logger.info(
+                "  Total quantized dim: %dD/group × %d groups = %dD",
+                total_per_group,
+                len(self.group_indices),
+                total_all,
+            )
 
         # Shared decoder
         total_latent_dim = sum(
@@ -750,6 +806,9 @@ class JointHierarchicalVQVAE(nn.Module):
 
         Formula: latent_dim = category_size × base_expansion × level_multiplier × token_factor
 
+        When ``config.hierarchy.level_ratios`` is set, uses explicit ratios instead:
+            latent_dim = ceil(input_dim × ratio / 4) × 4
+
         Args:
             family_cat: Family-category key
             level_idx: Hierarchy level index
@@ -759,6 +818,19 @@ class JointHierarchicalVQVAE(nn.Module):
             Latent dimension for this level
         """
         import numpy as np
+
+        # Explicit override: level_ratios from config
+        if self.config.hierarchy.level_ratios is not None:
+            ratios = self.config.hierarchy.level_ratios
+            if level_idx >= len(ratios):
+                raise ValueError(
+                    f"level_idx {level_idx} >= len(level_ratios) {len(ratios)}"
+                )
+            input_dim = len(self.group_indices[family_cat])
+            latent_dim = int(np.ceil(input_dim * ratios[level_idx] / 4.0)) * 4
+            latent_dim = max(self.config.hierarchy.min_latent_dim, latent_dim)
+            latent_dim = min(self.config.hierarchy.max_latent_dim, latent_dim)
+            return latent_dim
 
         category_feature_count = len(self.group_indices[family_cat])
 
@@ -1133,6 +1205,8 @@ class JointHierarchicalVQVAE(nn.Module):
                 decoded["theta"] = self.theta_aux_head(all_quantized_cat)
             if self.ic_aux_head is not None:
                 decoded["initial"] = self.ic_aux_head(all_quantized_cat)
+            if self.traj_prototype_head is not None:
+                decoded["trajectory_prototype"] = self.traj_prototype_head(all_quantized_cat)
             # Pre-VQ probes: direct CNN → gradient (no VQ bottleneck)
             if self.theta_probe is not None:
                 decoded["theta_probe"] = self.theta_probe(encoded["temporal"])

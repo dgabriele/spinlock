@@ -26,7 +26,7 @@ training:
   batch_size: 1
   gradient_accumulation_steps: 32
   epochs: 30
-  learning_rate: 2.0e-4
+  learning_rate: 5.0e-5
   warmup_optimizer_steps: 3     # Minimal — clip_grad + cosine annealing suffice
   weight_decay: 0.01
   clip_grad: 1.0
@@ -41,7 +41,7 @@ training:
 loss:
   lambda_traj: 0.0             # disabled — focus on token-level accuracy
   lambda_ic: 0.0               # disabled in QA mode
-  lambda_contrastive: 0.3      # diversity
+  lambda_contrastive: 0.0      # disabled — gt_indicators have 256-vs-32 temporal mismatch
   lambda_centroid_mse: 0.0     # not needed with hybrid CE
   lambda_token_ce: 0.5         # frozen-path CE — warm start to ~68% baseline
   lambda_token_head: 1.0       # PRIMARY — learned head CE (unfrozen gradient path)
@@ -65,6 +65,7 @@ checkpointing:
   save_every: 1
   keep_best: true
 
+resume_from: "checkpoints/lenia/mno/v1_uafno/best.pt"
 quantization_aware: true
 tokenizer_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_best.pt"
 token_dataset: "datasets/ds_lenia_v1_tokens.h5"

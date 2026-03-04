@@ -33,6 +33,7 @@ class StorageBackend(ABC):
         evolution_policies: Optional[Any] = None,
         grid_sizes: Optional[Any] = None,
         noise_regimes: Optional[Any] = None,
+        **kwargs,
     ) -> None:
         """
         Write a batch of data.
@@ -45,6 +46,7 @@ class StorageBackend(ABC):
             evolution_policies: List of evolution policy strings (optional)
             grid_sizes: List of grid sizes (optional)
             noise_regimes: List of noise regime strings (optional)
+            **kwargs: Additional metadata (dynamics_classes, activity_metrics, etc.)
         """
         pass
 
@@ -118,6 +120,7 @@ class LocalHDF5Backend(StorageBackend):
         evolution_policies: Optional[Any] = None,
         grid_sizes: Optional[Any] = None,
         noise_regimes: Optional[Any] = None,
+        **kwargs,
     ) -> None:
         if self._writer is None:
             raise RuntimeError("Storage backend not initialized. Call initialize() first.")
@@ -129,6 +132,7 @@ class LocalHDF5Backend(StorageBackend):
             evolution_policies=evolution_policies,
             grid_sizes=grid_sizes,
             noise_regimes=noise_regimes,
+            **kwargs,
         )
 
     def write_metadata(self, metadata: Dict[str, Any]) -> None:
@@ -176,6 +180,7 @@ class S3Backend(StorageBackend):
         evolution_policies: Optional[Any] = None,
         grid_sizes: Optional[Any] = None,
         noise_regimes: Optional[Any] = None,
+        **kwargs,
     ) -> None:
         # Delegate to local buffer
         if self._local_backend is None:
@@ -188,6 +193,7 @@ class S3Backend(StorageBackend):
             evolution_policies=evolution_policies,
             grid_sizes=grid_sizes,
             noise_regimes=noise_regimes,
+            **kwargs,
         )
 
     def write_metadata(self, metadata: Dict[str, Any]) -> None:

@@ -419,9 +419,30 @@ class LeniaSimulator:
         traj = torch.empty(B, num_timesteps, C, H, W, device=self.device, dtype=torch.float32)
 
         step_fn = self._compiled_step
+        dt_local = dt_view.clone()  # clone: we may zero converged samples
+
+        # Early-exit tracking: zero dt for converged samples, break when all dead
+        alive = torch.ones(B, dtype=torch.bool, device=state.device)
+        prev_check = state.clone()
+        _CHECK_EVERY = 16
+        _CONVERGE_EPS = 1e-6
+
         for t in range(num_timesteps):
-            state = step_fn(state, kernel_ffts, coupling, mu, sigma, dt_view, growth_type)
+            state = step_fn(state, kernel_ffts, coupling, mu, sigma, dt_local, growth_type)
             traj[:, t] = state
+
+            # Periodic convergence check
+            if t > 0 and (t + 1) % _CHECK_EVERY == 0:
+                delta = (state - prev_check).abs().amax(dim=(1, 2, 3))
+                newly_dead = alive & (delta < _CONVERGE_EPS)
+                if newly_dead.any():
+                    dt_local[newly_dead] = 0.0
+                    alive &= ~newly_dead
+                if not alive.any():
+                    if t + 1 < num_timesteps:
+                        traj[:, t + 1:] = state.unsqueeze(1)
+                    break
+                prev_check = state.clone()
 
         return traj
 

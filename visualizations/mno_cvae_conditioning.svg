@@ -1,0 +1,2229 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 800 1800"
+   width="800"
+   height="1800"
+   font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+   version="1.1"
+   id="svg137"
+   sodipodi:docname="mno_cvae_conditioning.svg"
+   inkscape:version="1.4.3 (0d15f75042, 2025-12-25)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview137"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="1"
+     inkscape:cx="-633.5"
+     inkscape:cy="513"
+     inkscape:window-width="3840"
+     inkscape:window-height="2124"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg137" />
+  <defs
+     id="defs6">
+    <pattern
+       inkscape:collect="always"
+       xlink:href="#frozen-grid"
+       id="pattern137"
+       patternTransform="matrix(0.99992734,0,0,1.1504478,0.02791497,-206.041)" />
+    <marker
+       id="arrow"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto">
+      <polygon
+         points="0 0.5, 9 3.5, 0 6.5"
+         fill="#2C3E50"
+         id="polygon1" />
+    </marker>
+    <marker
+       id="arrow-sm"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="0 0.4, 7 3, 0 5.6"
+         fill="#2C3E50"
+         id="polygon2" />
+    </marker>
+    <marker
+       id="arrow-red"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="0 0.4, 7 3, 0 5.6"
+         fill="#C0392B"
+         id="polygon3" />
+    </marker>
+    <marker
+       id="arrow-orange"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="0 0.4, 7 3, 0 5.6"
+         fill="#D35400"
+         id="polygon4" />
+    </marker>
+    <marker
+       id="arrow-green"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="0 0.4, 7 3, 0 5.6"
+         fill="#1E8449"
+         id="polygon5" />
+    </marker>
+    <!-- Subtle grid pattern for frozen VQ area -->
+    <pattern
+       id="frozen-grid"
+       width="6"
+       height="6"
+       patternUnits="userSpaceOnUse">
+      <path
+         d="M 6 0 L 0 0 0 6"
+         fill="none"
+         stroke="#2980B9"
+         stroke-width="0.15"
+         opacity="0.3"
+         id="path5" />
+    </pattern>
+    <!-- Checkpoint pattern -->
+    <pattern
+       id="ckpt-grid"
+       width="10"
+       height="10"
+       patternUnits="userSpaceOnUse">
+      <path
+         d="M 10 0 L 0 0 0 10"
+         fill="none"
+         stroke="#1E8449"
+         stroke-width="0.2"
+         opacity="0.25"
+         id="path6" />
+    </pattern>
+    <marker
+       id="arrow-orange-3"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="7,3 0,5.6 0,0.4 "
+         fill="#d35400"
+         id="polygon4-6" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect
+     width="800"
+     height="1800"
+     fill="#FDFDFD"
+     rx="0"
+     id="rect6" />
+  <line
+     x1="374"
+     y1="1336"
+     x2="374"
+     y2="1368"
+     stroke="#C0392B"
+     stroke-width="1.1"
+     marker-end="url(#arrow-red)"
+     id="line101"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="300"
+     y1="1336"
+     x2="150"
+     y2="1368"
+     stroke="#C0392B"
+     stroke-width="1.1"
+     marker-end="url(#arrow-red)"
+     id="line100"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <!-- ================================================================ -->
+  <!-- TITLE                                                            -->
+  <!-- ================================================================ -->
+  <text
+     x="400"
+     y="30"
+     text-anchor="middle"
+     font-size="14px"
+     font-weight="bold"
+     fill="#2c3e50"
+     letter-spacing="0.3"
+     id="text6">MNO Architecture: Token-Conditioned Meta-Neural Operator</text>
+  <line
+     x1="160"
+     y1="38"
+     x2="640"
+     y2="38"
+     stroke="#BDC3C7"
+     stroke-width="0.7"
+     id="line6" />
+  <text
+     x="400"
+     y="54"
+     text-anchor="middle"
+     font-size="9px"
+     fill="#7F8C8D"
+     id="text7">
+    MNO(theta, IC, tokens) -- per-group shared MLP projection + FiLM-conditioned U-AFNO backbone</text>
+  <!-- ================================================================ -->
+  <!-- THREE INPUT SOURCES (top row)                                    -->
+  <!-- y: 72-104                                                        -->
+  <!-- ================================================================ -->
+  <!-- IC input (left — short path to passthrough rail) -->
+  <polygon
+     points="68,72 208,72 198,104 58,104"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     id="polygon7" />
+  <text
+     x="133"
+     y="85"
+     text-anchor="middle"
+     font-size="10px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text8">Initial Condition (IC)</text>
+  <text
+     x="133"
+     y="97"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text9">[B, 3, 128, 128]</text>
+  <!-- Theta input (center — near-vertical drop to concat) -->
+  <polygon
+     points="268,72 448,72 438,104 258,104"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     id="polygon9" />
+  <text
+     x="353"
+     y="85"
+     text-anchor="middle"
+     font-size="10px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text10">Physics Params (theta)</text>
+  <text
+     x="353"
+     y="97"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text11">[B, 34] Sobol-sampled</text>
+  <!-- Token indices input -->
+  <polygon
+     points="508,72 728,72 718,104 498,104"
+     fill="#E8DAEF"
+     stroke="#6C3483"
+     stroke-width="1.4"
+     id="polygon11" />
+  <text
+     x="613"
+     y="85"
+     text-anchor="middle"
+     font-size="10px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text12">VQ Token Indices</text>
+  <text
+     x="613"
+     y="97"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#6c3483"
+     id="text13">90 quantizer indices (30 group x 3 level)</text>
+  <!-- ================================================================ -->
+  <!-- TOKEN EMBEDDING PROJECTOR (right branch)                         -->
+  <!-- y: 120-340                                                       -->
+  <!-- ================================================================ -->
+  <!-- Arrow: tokens -> projector -->
+  <line
+     x1="613"
+     y1="104"
+     x2="613"
+     y2="128"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     marker-end="url(#arrow)"
+     id="line13"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <!-- Projector outer box -->
+  <rect
+     x="468"
+     y="130"
+     width="290"
+     height="214"
+     rx="8"
+     fill="#D4E6F1"
+     stroke="#2980B9"
+     stroke-width="1.4"
+     id="rect13" />
+  <rect
+     x="469"
+     y="131"
+     width="288"
+     height="212"
+     rx="8"
+     fill="url(#frozen-grid)"
+     opacity="0.5"
+     id="rect14" />
+  <text
+     x="613"
+     y="148"
+     text-anchor="middle"
+     font-size="10px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text14">Token Embedding Projector</text>
+  <!-- Snowflake for frozen embeddings -->
+  <!-- Step 1: Frozen codebook lookup -->
+  <rect
+     x="488"
+     y="158"
+     width="250"
+     height="28"
+     rx="4"
+     fill="#AED6F1"
+     stroke="#2980B9"
+     stroke-width="0.8"
+     id="rect16" />
+  <text
+     x="613"
+     y="170"
+     text-anchor="middle"
+     font-size="8px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text17">Step 1: Frozen Codebook Lookup</text>
+  <text
+     x="613"
+     y="180"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#2c3e50"
+     id="text18">Per group: cat(L0[64D], L1[24D], L2[12D]) = [B, 100D]</text>
+  <!-- Arrow internal -->
+  <line
+     x1="613"
+     y1="186"
+     x2="613"
+     y2="196"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line18" />
+  <!-- Step 2: Shared group MLP -->
+  <rect
+     x="488"
+     y="198"
+     width="250"
+     height="38"
+     rx="4"
+     fill="#D5F5E3"
+     stroke="#1E8449"
+     stroke-width="0.8"
+     id="rect18" />
+  <text
+     x="613"
+     y="212"
+     text-anchor="middle"
+     font-size="8px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text19">Step 2: Shared Group MLP (x30 groups)</text>
+  <text
+     x="613"
+     y="222"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#1e8449"
+     id="text20">Linear(100, 64) + LN + GELU + Linear(64, 64)</text>
+  <text
+     x="613"
+     y="230"
+     text-anchor="middle"
+     font-size="6.5px"
+     fill="#7f8c8d"
+     id="text21">weight-tied (DeepSets principle)</text>
+  <!-- Arrow internal -->
+  <line
+     x1="613"
+     y1="236"
+     x2="613"
+     y2="246"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line21" />
+  <!-- Step 3: Mean pooling -->
+  <rect
+     x="528"
+     y="248"
+     width="170"
+     height="22"
+     rx="4"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="0.8"
+     id="rect21" />
+  <text
+     x="613"
+     y="261.65735"
+     text-anchor="middle"
+     font-size="8px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text22">Step 3: Mean Pool (30 groups)</text>
+  <!-- Arrow internal -->
+  <line
+     x1="613"
+     y1="270"
+     x2="613"
+     y2="280"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line22" />
+  <!-- Dimension annotation -->
+  <text
+     x="613"
+     y="290"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#2980B9"
+     id="text23">[B, 30, 64] --&gt; [B, 64]</text>
+  <!-- Arrow internal -->
+  <line
+     x1="613"
+     y1="294"
+     x2="613"
+     y2="304"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line23" />
+  <!-- Step 4: Refinement MLP -->
+  <rect
+     x="518"
+     y="306"
+     width="190"
+     height="28"
+     rx="4"
+     fill="#D5F5E3"
+     stroke="#1E8449"
+     stroke-width="0.8"
+     id="rect23" />
+  <text
+     x="613"
+     y="318"
+     text-anchor="middle"
+     font-size="8px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text24">Step 4: Refine MLP</text>
+  <text
+     x="613"
+     y="328"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#1e8449"
+     id="text25">Linear(64, 128) + LN + GELU</text>
+  <!-- Arrow: projector output -->
+  <line
+     x1="613"
+     y1="344"
+     x2="613"
+     y2="368"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line25"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <!-- Token embedding output -->
+  <text
+     x="613"
+     y="380"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#1E8449"
+     font-weight="bold"
+     id="text26">[B, 128] token_emb</text>
+  <text
+     x="613"
+     y="392"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#7F8C8D"
+     id="text27">~19K learnable params</text>
+  <!-- ================================================================ -->
+  <!-- CONCATENATION: theta + token_emb                                 -->
+  <!-- y: 400-430                                                       -->
+  <!-- ================================================================ -->
+  <!-- Concat circle (drawn first so arrows render on top) -->
+  <circle
+     cx="340"
+     cy="408"
+     r="14"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1.5"
+     id="circle27" />
+  <text
+     x="340"
+     y="412"
+     text-anchor="middle"
+     font-size="13"
+     font-weight="bold"
+     fill="#D35400"
+     id="text28">C</text>
+  <!-- Arrow: theta down to concat (vertical into circle top) -->
+  <line
+     x1="340"
+     y1="104"
+     x2="340"
+     y2="392"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line28"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <!-- Arrow: token_emb to concat (horizontal into circle right) -->
+  <line
+     x1="613"
+     y1="396"
+     x2="613"
+     y2="408"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     id="line29"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="613"
+     y1="408"
+     x2="356"
+     y2="408"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line30"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <!-- Augmented params annotation -->
+  <text
+     x="340"
+     y="436"
+     text-anchor="middle"
+     font-size="9px"
+     fill="#D35400"
+     font-weight="bold"
+     id="text30">
+    [B, 162] augmented_params</text>
+  <text
+     x="340"
+     y="448"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#7F8C8D"
+     id="text31">
+    34 (physics) + 128 (behavioral tokens) = 162D</text>
+  <!-- ================================================================ -->
+  <!-- PARAMETER EMBEDDING MLP                                          -->
+  <!-- y: 458-508                                                       -->
+  <!-- ================================================================ -->
+  <line
+     x1="340"
+     y1="452"
+     x2="340"
+     y2="466"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     marker-end="url(#arrow)"
+     id="line31"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <rect
+     x="220"
+     y="468"
+     width="240"
+     height="46"
+     rx="8"
+     fill="#D5F5E3"
+     stroke="#1E8449"
+     stroke-width="1.4"
+     id="rect31" />
+  <text
+     x="340"
+     y="486"
+     text-anchor="middle"
+     font-size="10px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text32">Parameter Embedding MLP</text>
+  <text
+     x="340"
+     y="500"
+     text-anchor="middle"
+     font-size="8.5px"
+     fill="#2c3e50"
+     id="text33">
+    Linear(162, 128) + LN + ReLU + DO + Linear(128, 128) + LN</text>
+  <text
+     x="340"
+     y="510"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#1e8449"
+     id="text34">[B, 162] ➡ [B, 128]</text>
+  <!-- Arrow: param embed -> FiLM -->
+  <line
+     x1="340"
+     y1="514"
+     x2="340"
+     y2="536"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     marker-end="url(#arrow)"
+     id="line34"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <!-- ================================================================ -->
+  <!-- FiLM CONDITIONING                                                -->
+  <!-- y: 538-600                                                       -->
+  <!-- ================================================================ -->
+  <rect
+     x="175"
+     y="538"
+     width="330"
+     height="60"
+     rx="8"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1.3"
+     id="rect34" />
+  <text
+     x="340"
+     y="556"
+     text-anchor="middle"
+     font-size="10px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text35">FiLM Modulation</text>
+  <text
+     x="340"
+     y="570"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text36">Per-level affine transform: gamma, beta = fc(param_emb)</text>
+  <text
+     x="340"
+     y="580.23242"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#d35400"
+     id="text37">y = gamma * norm(x) + beta</text>
+  <text
+     x="340"
+     y="590.23242"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#7f8c8d"
+     id="text38">Applied at every encoder/decoder level</text>
+  <!-- ================================================================ -->
+  <!-- IC PASSTHROUGH                                                   -->
+  <!-- y: 104 -> 640                                                    -->
+  <!-- ================================================================ -->
+  <line
+     x1="133"
+     y1="104"
+     x2="133"
+     y2="130"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     id="line38"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="133"
+     y1="130"
+     x2="48"
+     y2="130"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     id="line39"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="48"
+     y1="130"
+     x2="48"
+     y2="650"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     id="line40"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="48"
+     y1="650"
+     x2="90"
+     y2="650"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line41"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <text
+     x="38"
+     y="400"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#7F8C8D"
+     transform="rotate(-90, 38, 400)"
+     id="text41">IC passthrough</text>
+  <!-- ================================================================ -->
+  <!-- U-AFNO BACKBONE                                                  -->
+  <!-- y: 620-940                                                       -->
+  <!-- ================================================================ -->
+  <!-- Conditioning arrows into backbone -->
+  <line
+     x1="340"
+     y1="598"
+     x2="340"
+     y2="616"
+     stroke="#D35400"
+     stroke-width="1.1"
+     marker-end="url(#arrow-orange)"
+     id="line42" />
+  <rect
+     x="80.006973"
+     y="618.00696"
+     width="559.98602"
+     height="329.68225"
+     rx="9.9997511"
+     fill="#d5f5e3"
+     stroke="#1e8449"
+     stroke-width="1.6"
+     id="rect42" />
+  <text
+     x="360"
+     y="640"
+     text-anchor="middle"
+     font-size="12px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text42">
+    U-AFNO Backbone (FiLM-Conditioned)</text>
+  <text
+     x="360"
+     y="654"
+     text-anchor="middle"
+     font-size="8.5px"
+     fill="#7F8C8D"
+     id="text43">
+    U-Net encoder/decoder with AFNO blocks at each resolution level</text>
+  <!-- FiLM injection line on the right side -->
+  <line
+     x1="505.0679"
+     y1="566.95569"
+     x2="690"
+     y2="566.95569"
+     stroke="#d35400"
+     stroke-width="1.53855"
+     id="line43"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="690"
+     y1="566.55487"
+     x2="690"
+     y2="928.38824"
+     stroke="#d35400"
+     stroke-width="0.743881"
+     id="line44"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <!-- FiLM arrows into each encoder/decoder level -->
+  <line
+     x1="690.00226"
+     y1="690"
+     x2="642.13605"
+     y2="690"
+     stroke="#d35400"
+     stroke-width="0.8"
+     marker-end="url(#arrow-orange)"
+     id="line45"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="690.00226"
+     y1="731"
+     x2="642.13605"
+     y2="731"
+     stroke="#d35400"
+     stroke-width="0.782743"
+     marker-end="url(#arrow-orange)"
+     id="line46"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="690.05249"
+     y1="771.4361"
+     x2="642.18634"
+     y2="771.4361"
+     stroke="#d35400"
+     stroke-width="0.782743"
+     marker-end="url(#arrow-orange-3)"
+     id="line46-5"
+     style="marker-end:url(#arrow-orange-3);stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="690.00226"
+     y1="856"
+     x2="642.13605"
+     y2="856"
+     stroke="#d35400"
+     stroke-width="0.782743"
+     marker-end="url(#arrow-orange)"
+     id="line47"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="690.00226"
+     y1="892"
+     x2="642.13605"
+     y2="892"
+     stroke="#d35400"
+     stroke-width="0.782743"
+     marker-end="url(#arrow-orange)"
+     id="line48"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="690.00226"
+     y1="928"
+     x2="642.13605"
+     y2="928"
+     stroke="#d35400"
+     stroke-width="0.782743"
+     marker-end="url(#arrow-orange)"
+     id="line49"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <text
+     x="-807.73212"
+     y="702.28003"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#d35400"
+     transform="rotate(-90)"
+     id="text49">FiLM at every level</text>
+  <!-- ENCODER label -->
+  <text
+     x="110"
+     y="674"
+     text-anchor="start"
+     font-size="9px"
+     font-weight="bold"
+     fill="#1E8449"
+     id="text50">ENCODER</text>
+  <!-- Encoder Level 0: 128x128 -->
+  <rect
+     x="100"
+     y="680"
+     width="530"
+     height="24"
+     rx="4"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.8"
+     id="rect50" />
+  <text
+     x="365"
+     y="696"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text51">L0: 128x128 | Conv2d(3, 32) + AFNO(modes=16) + ResNet x2 ➡ [B, 32, 128, 128]</text>
+  <!-- Skip S label -->
+  <rect
+     x="86"
+     y="684"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#ABEBC6"
+     stroke="#1E8449"
+     stroke-width="0.6"
+     id="rect51" />
+  <text
+     x="92"
+     y="692.33569"
+     text-anchor="middle"
+     font-size="6px"
+     font-weight="bold"
+     fill="#1e8449"
+     id="text52">S</text>
+  <!-- Downsample arrow -->
+  <line
+     x1="365"
+     y1="704"
+     x2="365"
+     y2="718"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line52" />
+  <text
+     x="385"
+     y="714"
+     text-anchor="start"
+     font-size="6px"
+     fill="#7F8C8D"
+     id="text53">2x down</text>
+  <!-- Encoder Level 1: 64x64 -->
+  <rect
+     x="120"
+     y="720"
+     width="510"
+     height="24"
+     rx="4"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.8"
+     id="rect53" />
+  <text
+     x="375"
+     y="736"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text54">L1: 64x64 | Conv2d(32, 64, s=2) + AFNO(modes=16) + ResNet x2 ➡ [B, 64, 64, 64]</text>
+  <rect
+     x="106"
+     y="724"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#ABEBC6"
+     stroke="#1E8449"
+     stroke-width="0.6"
+     id="rect54" />
+  <text
+     x="112"
+     y="732.33569"
+     text-anchor="middle"
+     font-size="6px"
+     font-weight="bold"
+     fill="#1e8449"
+     id="text55">S</text>
+  <!-- Downsample arrow -->
+  <line
+     x1="375"
+     y1="744"
+     x2="375"
+     y2="758"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line55" />
+  <text
+     x="395"
+     y="754"
+     text-anchor="start"
+     font-size="6px"
+     fill="#7F8C8D"
+     id="text56">2x down</text>
+  <!-- Encoder Level 2: 32x32 -->
+  <rect
+     x="140"
+     y="760"
+     width="490"
+     height="24"
+     rx="4"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.8"
+     id="rect56" />
+  <text
+     x="385"
+     y="776"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text57">L2: 32x32 | Conv2d(64, 128, s=2) + AFNO(modes=16) + ResNet x2 ➡ [B, 128, 32, 32]</text>
+  <rect
+     x="126"
+     y="764"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#ABEBC6"
+     stroke="#1E8449"
+     stroke-width="0.6"
+     id="rect57" />
+  <text
+     x="132"
+     y="772.33569"
+     text-anchor="middle"
+     font-size="6px"
+     font-weight="bold"
+     fill="#1e8449"
+     id="text58">S</text>
+  <!-- Downsample to bottleneck -->
+  <line
+     x1="385"
+     y1="784"
+     x2="385"
+     y2="794"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line58" />
+  <!-- BOTTLENECK -->
+  <rect
+     x="160"
+     y="796"
+     width="470"
+     height="28"
+     rx="6"
+     fill="#D2B4DE"
+     stroke="#6C3483"
+     stroke-width="1.0"
+     id="rect58" />
+  <text
+     x="395"
+     y="814"
+     text-anchor="middle"
+     font-size="8px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text59">Bottleneck: 16x16 | Conv2d(128, 256, s=2) + AFNO x4 ➡ [B, 256, 16, 16]</text>
+  <!-- DECODER label -->
+  <text
+     x="134.5865"
+     y="840.41956"
+     text-anchor="start"
+     font-size="9px"
+     font-weight="bold"
+     fill="#1e8449"
+     id="text60">DECODER</text>
+  <!-- Upsample from bottleneck -->
+  <line
+     x1="395"
+     y1="824"
+     x2="395"
+     y2="838"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line60" />
+  <text
+     x="415"
+     y="836"
+     text-anchor="start"
+     font-size="6px"
+     fill="#7F8C8D"
+     id="text61">2x up + skip</text>
+  <!-- Decoder Level 2: 32x32 -->
+  <rect
+     x="140"
+     y="844"
+     width="490"
+     height="24"
+     rx="4"
+     fill="#FADBD8"
+     stroke="#C0392B"
+     stroke-width="0.8"
+     id="rect61" />
+  <text
+     x="385"
+     y="860"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text62">
+    L2: 32x32 | Upsample + cat(skip) + Conv2d(256, 128) + AFNO + ResNet x2</text>
+  <!-- Skip connection line L2 -->
+  <line
+     x1="132"
+     y1="776"
+     x2="132"
+     y2="856"
+     stroke="#1E8449"
+     stroke-width="0.7"
+     stroke-dasharray="3,2"
+     id="line62" />
+  <line
+     x1="132"
+     y1="856"
+     x2="140"
+     y2="856"
+     stroke="#1E8449"
+     stroke-width="0.7"
+     marker-end="url(#arrow-green)"
+     stroke-dasharray="3,2"
+     id="line63" />
+  <!-- Upsample -->
+  <line
+     x1="385"
+     y1="868"
+     x2="385"
+     y2="878"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line64" />
+  <!-- Decoder Level 1: 64x64 -->
+  <rect
+     x="120"
+     y="880"
+     width="510"
+     height="24"
+     rx="4"
+     fill="#FADBD8"
+     stroke="#C0392B"
+     stroke-width="0.8"
+     id="rect64" />
+  <text
+     x="375"
+     y="896"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text64">
+    L1: 64x64 | Upsample + cat(skip) + Conv2d(128, 64) + AFNO + ResNet x2</text>
+  <line
+     x1="112"
+     y1="736"
+     x2="112"
+     y2="892"
+     stroke="#1E8449"
+     stroke-width="0.7"
+     stroke-dasharray="3,2"
+     id="line65" />
+  <line
+     x1="112"
+     y1="892"
+     x2="120"
+     y2="892"
+     stroke="#1E8449"
+     stroke-width="0.7"
+     marker-end="url(#arrow-green)"
+     stroke-dasharray="3,2"
+     id="line66" />
+  <!-- Upsample -->
+  <line
+     x1="365"
+     y1="904"
+     x2="365"
+     y2="914"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line67" />
+  <!-- Decoder Level 0: 128x128 + output conv -->
+  <rect
+     x="100"
+     y="916"
+     width="530"
+     height="24"
+     rx="4"
+     fill="#FADBD8"
+     stroke="#C0392B"
+     stroke-width="0.8"
+     id="rect67" />
+  <text
+     x="365"
+     y="932"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text67">
+    L0: 128x128 | Upsample + cat(skip) + Conv2d(64, 32) + AFNO + Output Conv2d(32, 3, k=1)</text>
+  <line
+     x1="92"
+     y1="696"
+     x2="92"
+     y2="928"
+     stroke="#1E8449"
+     stroke-width="0.7"
+     stroke-dasharray="3,2"
+     id="line68" />
+  <line
+     x1="92"
+     y1="928"
+     x2="100"
+     y2="928"
+     stroke="#1E8449"
+     stroke-width="0.7"
+     marker-end="url(#arrow-green)"
+     stroke-dasharray="3,2"
+     id="line69" />
+  <!-- Output: delta -->
+  <text
+     x="427.96942"
+     y="964.46045"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#c0392b"
+     id="text69">[B, 3, 128, 128] = delta</text>
+  <!-- ================================================================ -->
+  <!-- RESIDUAL UPDATE                                                  -->
+  <!-- y: 960-1010                                                      -->
+  <!-- ================================================================ -->
+  <line
+     x1="379.43304"
+     y1="948.40509"
+     x2="379.43304"
+     y2="972.55859"
+     stroke="#2c3e50"
+     stroke-width="1.53852"
+     marker-end="url(#arrow)"
+     id="line70"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <!-- Residual connection from IC/u_t -->
+  <line
+     x1="48"
+     y1="650"
+     x2="48"
+     y2="990"
+     stroke="#2C3E50"
+     stroke-width="1.0"
+     id="line71"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="48"
+     y1="990"
+     x2="258"
+     y2="990"
+     stroke="#2C3E50"
+     stroke-width="1.0"
+     marker-end="url(#arrow-sm)"
+     id="line72"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <rect
+     x="260"
+     y="976"
+     width="240"
+     height="30"
+     rx="8"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="rect72" />
+  <text
+     x="380"
+     y="994"
+     text-anchor="middle"
+     font-size="10px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text72">u<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan162">t+1</tspan> = u<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan163">t</tspan> + 0.1*delta</text>
+  <!-- Arrow: residual -> output -->
+  <line
+     x1="380"
+     y1="1006"
+     x2="380"
+     y2="1030"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     marker-end="url(#arrow)"
+     id="line73"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <!-- Output state -->
+  <polygon
+     points="268,1032 500,1032 490,1060 258,1060"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     id="polygon73" />
+  <text
+     x="379"
+     y="1043"
+     text-anchor="middle"
+     font-size="10px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text73">State u<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan164">t+1</tspan></text>
+  <text
+     x="379"
+     y="1056"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text74">[B, 3, 128, 128]</text>
+  <!-- ================================================================ -->
+  <!-- AUTOREGRESSIVE ROLLOUT LOOP                                      -->
+  <!-- y: 1074-1190                                                     -->
+  <!-- ================================================================ -->
+  <line
+     x1="380.125"
+     y1="1060"
+     x2="380.125"
+     y2="1082"
+     stroke="#2c3e50"
+     stroke-width="1.4"
+     marker-end="url(#arrow)"
+     id="line74"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <rect
+     x="110"
+     y="1084"
+     width="580"
+     height="110"
+     rx="10"
+     fill="#FFFFFF"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     stroke-dasharray="6,3"
+     id="rect74" />
+  <rect
+     x="111"
+     y="1085"
+     width="578"
+     height="108"
+     rx="10"
+     fill="url(#ckpt-grid)"
+     opacity="0.3"
+     id="rect75" />
+  <text
+     x="400"
+     y="1104"
+     text-anchor="middle"
+     font-size="11px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text75">
+    Autoregressive Rollout (256 steps)</text>
+  <!-- Rollout timeline -->
+  <text
+     x="140"
+     y="1126"
+     text-anchor="start"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text76">u<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan155">0</tspan></text>
+  <rect
+     x="158"
+     y="1116"
+     width="26"
+     height="18"
+     rx="3"
+     fill="#D5F5E3"
+     stroke="#1E8449"
+     stroke-width="0.8"
+     id="rect76" />
+  <text
+     x="171"
+     y="1128"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#1E8449"
+     id="text77">f</text>
+  <line
+     x1="184"
+     y1="1125"
+     x2="198"
+     y2="1125"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line77" />
+  <text
+     x="207"
+     y="1126"
+     text-anchor="start"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text78"
+     style="white-space:pre;inline-size:9.95399;display:inline"
+     xml:space="preserve"><tspan
+       x="207"
+       y="1126"
+       id="tspan2">u<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan1">1</tspan></tspan></text>
+  <rect
+     x="225"
+     y="1116"
+     width="26"
+     height="18"
+     rx="3"
+     fill="#D5F5E3"
+     stroke="#1E8449"
+     stroke-width="0.8"
+     id="rect78" />
+  <text
+     x="238"
+     y="1128"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#1E8449"
+     id="text79">f</text>
+  <line
+     x1="251"
+     y1="1125"
+     x2="265"
+     y2="1125"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line79" />
+  <text
+     x="274"
+     y="1126"
+     text-anchor="start"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text80">u<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan157">2</tspan></text>
+  <text
+     x="310"
+     y="1126"
+     text-anchor="middle"
+     font-size="10px"
+     fill="#7F8C8D"
+     id="text81">...</text>
+  <text
+     x="336"
+     y="1126"
+     text-anchor="start"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text82">u<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan158">15</tspan></text>
+  <rect
+     x="360"
+     y="1116"
+     width="26"
+     height="18"
+     rx="3"
+     fill="#D5F5E3"
+     stroke="#1E8449"
+     stroke-width="0.8"
+     id="rect82" />
+  <text
+     x="373"
+     y="1128"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#1E8449"
+     id="text83">f</text>
+  <!-- Checkpoint boundary -->
+  <line
+     x1="395"
+     y1="1112"
+     x2="395"
+     y2="1138"
+     stroke="#1E8449"
+     stroke-width="1.2"
+     stroke-dasharray="3,2"
+     id="line83" />
+  <text
+     x="393.54764"
+     y="1143.9341"
+     text-anchor="start"
+     font-size="6.5px"
+     fill="#1e8449"
+     id="text84">checkpoint</text>
+  <line
+     x1="386"
+     y1="1125"
+     x2="408"
+     y2="1125"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line84" />
+  <text
+     x="418"
+     y="1126"
+     text-anchor="start"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text85">u<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan159">16</tspan></text>
+  <rect
+     x="440"
+     y="1116"
+     width="26"
+     height="18"
+     rx="3"
+     fill="#D5F5E3"
+     stroke="#1E8449"
+     stroke-width="0.8"
+     id="rect85" />
+  <text
+     x="453"
+     y="1128"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#1E8449"
+     id="text86">f</text>
+  <line
+     x1="466"
+     y1="1125"
+     x2="480"
+     y2="1125"
+     stroke="#2C3E50"
+     stroke-width="0.8"
+     marker-end="url(#arrow-sm)"
+     id="line86" />
+  <text
+     x="489"
+     y="1126"
+     text-anchor="start"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text87">u<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan160">17</tspan></text>
+  <text
+     x="528"
+     y="1126"
+     text-anchor="middle"
+     font-size="10px"
+     fill="#7F8C8D"
+     id="text88">...</text>
+  <text
+     x="550"
+     y="1126"
+     text-anchor="start"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text89">u<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan161">256</tspan></text>
+  <!-- Checkpoint explanation -->
+  <text
+     x="400"
+     y="1168"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text90">Gradient checkpointing every N (Ex: 16) steps: recompute forward during backward to save memory</text>
+  <text
+     x="400"
+     y="1182"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#7F8C8D"
+     id="text91">
+    Peak memory: O(B * 16 * C * H * W) instead of O(B * 256 * C * H * W)</text>
+  <!-- ================================================================ -->
+  <!-- BPTT WINDOWS                                                     -->
+  <!-- y: 1204-1280                                                     -->
+  <!-- ================================================================ -->
+  <line
+     x1="379"
+     y1="1194"
+     x2="379"
+     y2="1212"
+     stroke="#2C3E50"
+     stroke-width="1.0"
+     marker-end="url(#arrow-sm)"
+     id="line91"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <rect
+     x="110"
+     y="1214"
+     width="580"
+     height="70"
+     rx="8"
+     fill="#E8DAEF"
+     stroke="#6C3483"
+     stroke-width="1.3"
+     id="rect91" />
+  <text
+     x="400"
+     y="1232"
+     text-anchor="middle"
+     font-size="10px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text92">
+    Truncated BPTT (Multi-Window)</text>
+  <!-- Full trajectory bar -->
+  <rect
+     x="140"
+     y="1244"
+     width="520"
+     height="12"
+     rx="2"
+     fill="#EBDEF0"
+     stroke="#6C3483"
+     stroke-width="0.5"
+     id="rect92" />
+  <!-- Window 1 -->
+  <rect
+     x="140"
+     y="1244"
+     width="70"
+     height="12"
+     rx="2"
+     fill="#D2B4DE"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect93" />
+  <text
+     x="175"
+     y="1253"
+     text-anchor="middle"
+     font-size="6px"
+     fill="#2c3e50"
+     id="text93">W1</text>
+  <!-- Window 2 -->
+  <rect
+     x="345"
+     y="1244"
+     width="70"
+     height="12"
+     rx="2"
+     fill="#D2B4DE"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect94" />
+  <text
+     x="380"
+     y="1253"
+     text-anchor="middle"
+     font-size="6px"
+     fill="#2c3e50"
+     id="text94">W2</text>
+  <!-- Window 3 -->
+  <rect
+     x="548"
+     y="1244"
+     width="70"
+     height="12"
+     rx="2"
+     fill="#D2B4DE"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect95" />
+  <text
+     x="583"
+     y="1253"
+     text-anchor="middle"
+     font-size="6px"
+     fill="#2c3e50"
+     id="text95">W3</text>
+  <!-- Labels -->
+  <text
+     x="140"
+     y="1238"
+     text-anchor="middle"
+     font-size="6.5px"
+     fill="#7f8c8d"
+     id="text96">t = 0</text>
+  <text
+     x="660"
+     y="1238"
+     text-anchor="middle"
+     font-size="6.5px"
+     fill="#7f8c8d"
+     id="text97">t = 256</text>
+  <text
+     x="400"
+     y="1274"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#6c3483"
+     id="text98"><tspan
+   style="font-weight:bold"
+   id="tspan165">bptt_window</tspan>=32, <tspan
+   style="font-weight:bold"
+   id="tspan166">bptt_num_windows</tspan>=3: gradients at N evenly-spaced windows across trajectory</text>
+  <!-- ================================================================ -->
+  <!-- PREDICTED TRAJECTORY OUTPUT                                      -->
+  <!-- y: 1296-1328                                                     -->
+  <!-- ================================================================ -->
+  <line
+     x1="379"
+     y1="1284"
+     x2="379"
+     y2="1302"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     marker-end="url(#arrow)"
+     id="line98"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="448"
+     y1="1336"
+     x2="600"
+     y2="1368"
+     stroke="#C0392B"
+     stroke-width="1.1"
+     marker-end="url(#arrow-red)"
+     id="line102"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <polygon
+     points="230,1304 530,1304 518,1336 218,1336"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     id="polygon98" />
+  <text
+     x="374"
+     y="1317"
+     text-anchor="middle"
+     font-size="10px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text99">Predicted Trajectory</text>
+  <text
+     x="374"
+     y="1330"
+     text-anchor="middle"
+     font-size="8.5px"
+     fill="#2c3e50"
+     id="text100">[B, 257, 3, 128, 128] (IC + 256 steps)</text>
+  <!-- ================================================================ -->
+  <!-- LOSS COMPUTATION                                                 -->
+  <!-- y: 1348-1520                                                     -->
+  <!-- ================================================================ -->
+  <!-- Fan-out arrows to loss paths -->
+  <!-- Loss path 1: Trajectory MSE -->
+  <rect
+     x="60.023556"
+     y="1370.0725"
+     width="175.98721"
+     height="48.318806"
+     rx="5.9995642"
+     fill="#fadbd8"
+     stroke="#c0392b"
+     stroke-width="1.3"
+     id="rect102" />
+  <text
+     x="148"
+     y="1386"
+     text-anchor="middle"
+     font-size="9px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text102">Trajectory MSE</text>
+  <text
+     x="148"
+     y="1400"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#2c3e50"
+     id="text103">
+    BPTT-aligned [B, W, C, H, W]</text>
+  <text
+     x="148"
+     y="1410"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#C0392B"
+     id="text104">lambda_traj = 1.0</text>
+  <!-- Loss path 2: Token prediction head -->
+  <rect
+     x="272.00815"
+     y="1370.0725"
+     width="203.98518"
+     height="48.318806"
+     rx="5.9995642"
+     fill="#fadbd8"
+     stroke="#c0392b"
+     stroke-width="1.3"
+     id="rect104" />
+  <text
+     x="374"
+     y="1386"
+     text-anchor="middle"
+     font-size="9px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text105">Token Prediction Head</text>
+  <text
+     x="374"
+     y="1400"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#2c3e50"
+     id="text106">Conv2D ➡ Conv1D ➡ per-quantizer Linear</text>
+  <text
+     x="374"
+     y="1410"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#C0392B"
+     id="text107">lambda_token_head = 0.5</text>
+  <!-- Loss path 3: Frozen VQ path -->
+  <rect
+     x="510.04242"
+     y="1370.0425"
+     width="199.91515"
+     height="59.035393"
+     rx="5.9974542"
+     fill="#fadbd8"
+     stroke="#c0392b"
+     stroke-width="1.3"
+     id="rect107" />
+  <rect
+     x="510.99078"
+     y="1371.2229"
+     width="197.98561"
+     height="57.522388"
+     rx="5.9995642"
+     fill="url(#frozen-grid)"
+     opacity="0.3"
+     id="rect108"
+     style="fill:url(#pattern137);stroke-width:1.073;stroke-dasharray:none;opacity:1" />
+  <text
+     x="610"
+     y="1386"
+     text-anchor="middle"
+     font-size="9px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text108">Frozen VQ Encoder</text>
+  <text
+     x="610"
+     y="1398"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#2c3e50"
+     id="text109">
+    extract_features(pred_traj)</text>
+  <text
+     x="610"
+     y="1410"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#2c3e50"
+     id="text110">
+    soft_logits vs GT tokens</text>
+  <text
+     x="610"
+     y="1420"
+     text-anchor="middle"
+     font-size="7px"
+     fill="#C0392B"
+     id="text111">lambda_token_ce = 0.5</text>
+  <!-- Total loss aggregation -->
+  <line
+     x1="148"
+     y1="1418.6456"
+     x2="148"
+     y2="1450"
+     stroke="#c0392b"
+     stroke-width="0.8"
+     id="line111"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="148"
+     y1="1450"
+     x2="358.51266"
+     y2="1450"
+     stroke="#c0392b"
+     stroke-width="0.8"
+     marker-end="url(#arrow-red)"
+     id="line112"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="374"
+     y1="1418.6456"
+     x2="374"
+     y2="1435.8782"
+     stroke="#c0392b"
+     stroke-width="0.593083"
+     marker-end="url(#arrow-red)"
+     id="line113"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="610"
+     y1="1429.3424"
+     x2="610"
+     y2="1450.3986"
+     stroke="#c0392b"
+     stroke-width="0.807681"
+     id="line114"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <line
+     x1="610"
+     y1="1450"
+     x2="389.84335"
+     y2="1450"
+     stroke="#c0392b"
+     stroke-width="0.8"
+     marker-end="url(#arrow-red)"
+     id="line115"
+     style="stroke-width:1;stroke-dasharray:none" />
+  <!-- Sum circle -->
+  <circle
+     cx="374"
+     cy="1450"
+     r="12"
+     fill="#FADBD8"
+     stroke="#C0392B"
+     stroke-width="1.5"
+     id="circle115" />
+  <text
+     x="374"
+     y="1454"
+     text-anchor="middle"
+     font-size="14"
+     font-weight="bold"
+     fill="#C0392B"
+     id="text115">+</text>
+  <text
+     x="374"
+     y="1480"
+     text-anchor="middle"
+     font-size="9px"
+     font-weight="bold"
+     fill="#c0392b"
+     id="text116">L<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan144">total</tspan> <tspan
+   style="font-weight:normal;fill:#333333"
+   id="tspan147">=</tspan> λ<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan138">traj</tspan>L<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan143">traj</tspan> <tspan
+   style="font-weight:normal;fill:#333333"
+   id="tspan145">+</tspan> λ<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan139">token_ce</tspan>L<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan142">ce</tspan> <tspan
+   style="font-weight:normal;fill:#333333"
+   id="tspan146">+</tspan> λ<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan140">token_head</tspan>L<tspan
+   style="font-size:65%;baseline-shift:sub"
+   id="tspan141">head</tspan></text>
+  <text
+     x="374"
+     y="1494"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#7F8C8D"
+     id="text117">
+    Optional: + lambda_feat_mse * L_feat + lambda_centroid * L_centroid + lambda_ic * L_ic</text>
+  <!-- ================================================================ -->
+  <!-- NCA BACKBONE ALTERNATIVE (compact)                               -->
+  <!-- y: 1514-1560                                                     -->
+  <!-- ================================================================ -->
+  <rect
+     x="110"
+     y="1514"
+     width="580"
+     height="50"
+     rx="8"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1.0"
+     stroke-dasharray="5,3"
+     id="rect117" />
+  <text
+     x="400"
+     y="1530"
+     text-anchor="middle"
+     font-size="9px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text118">Alternative: NeuralCA Backbone (~60K params vs U-AFNO ~145M)</text>
+  <text
+     x="400"
+     y="1544"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#2c3e50"
+     id="text119">Depthwise conv (perception) ➡ 1x1 conv (channel mix) ➡ MLP + softsign (growth) ➡ Euler update</text>
+  <text
+     x="400"
+     y="1556"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#d35400"
+     id="text120">Multi-scale perception: k=[3,7,7,7] d=[1,1,3,9] ➡ RF=[3,7,19,55] ➡ 128px coverage in 2 steps</text>
+  <!-- ================================================================ -->
+  <!-- LEGEND                                                           -->
+  <!-- y: 1580-1780                                                     -->
+  <!-- ================================================================ -->
+  <rect
+     x="50"
+     y="1580"
+     width="700"
+     height="200"
+     rx="8"
+     fill="#FFFFFF"
+     stroke="#BDC3C7"
+     stroke-width="1"
+     id="rect120" />
+  <text
+     x="400"
+     y="1602"
+     text-anchor="middle"
+     font-size="11"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text121">Legend</text>
+  <line
+     x1="100"
+     y1="1610"
+     x2="700"
+     y2="1610"
+     stroke="#E5E7E9"
+     stroke-width="0.6"
+     id="line121" />
+  <!-- Row 1 -->
+  <polygon
+     points="80,1622 128,1622 123,1638 75,1638"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1"
+     id="polygon121" />
+  <text
+     x="140"
+     y="1634"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text122">Data tensor</text>
+  <rect
+     x="290"
+     y="1622"
+     width="48"
+     height="16"
+     rx="5"
+     fill="#D5F5E3"
+     stroke="#1E8449"
+     stroke-width="1"
+     id="rect122" />
+  <text
+     x="348"
+     y="1634"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text123">Learnable module</text>
+  <rect
+     x="520"
+     y="1622"
+     width="48"
+     height="16"
+     rx="5"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1"
+     id="rect123" />
+  <text
+     x="578"
+     y="1634"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text124">Conditioning</text>
+  <!-- Row 2 -->
+  <rect
+     x="80"
+     y="1650"
+     width="48"
+     height="16"
+     rx="5"
+     fill="#FADBD8"
+     stroke="#C0392B"
+     stroke-width="1"
+     id="rect124" />
+  <text
+     x="140"
+     y="1662"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text125">Decoder / Loss</text>
+  <rect
+     x="290"
+     y="1650"
+     width="48"
+     height="16"
+     rx="5"
+     fill="#D4E6F1"
+     stroke="#2980B9"
+     stroke-width="1"
+     id="rect125" />
+  <rect
+     x="291"
+     y="1651"
+     width="46"
+     height="14"
+     rx="5"
+     fill="url(#frozen-grid)"
+     opacity="0.5"
+     id="rect126" />
+  <text
+     x="348"
+     y="1662"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text126">Frozen (no gradient)</text>
+  <rect
+     x="520"
+     y="1650"
+     width="48"
+     height="16"
+     rx="5"
+     fill="#D2B4DE"
+     stroke="#6C3483"
+     stroke-width="1"
+     id="rect127" />
+  <text
+     x="578"
+     y="1662"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text127">Bottleneck / BPTT</text>
+  <!-- Row 3 -->
+  <circle
+     cx="104"
+     cy="1688"
+     r="8"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1"
+     id="circle127" />
+  <text
+     x="104"
+     y="1692"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="#D35400"
+     id="text128">C</text>
+  <text
+     x="122"
+     y="1692"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text129">Concatenation</text>
+  <rect
+     x="290"
+     y="1682"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#ABEBC6"
+     stroke="#1E8449"
+     stroke-width="0.7"
+     id="rect129" />
+  <text
+     x="296"
+     y="1690.1677"
+     text-anchor="middle"
+     font-size="6px"
+     font-weight="bold"
+     fill="#1e8449"
+     id="text130">S</text>
+  <text
+     x="310"
+     y="1692"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text131">Skip connection</text>
+  <rect
+     x="520"
+     y="1682"
+     width="48"
+     height="16"
+     rx="5"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="1"
+     id="rect131" />
+  <text
+     x="578"
+     y="1692"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text132">Encoder layer</text>
+  <!-- Separator -->
+  <line
+     x1="100"
+     y1="1710"
+     x2="700"
+     y2="1710"
+     stroke="#E5E7E9"
+     stroke-width="0.6"
+     id="line132" />
+  <!-- Key dimensions -->
+  <text
+     x="400"
+     y="1726"
+     text-anchor="middle"
+     font-size="9"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text133">Key Dimensions</text>
+  <text
+     x="400"
+     y="1742"
+     text-anchor="middle"
+     font-size="8.5"
+     fill="#2C3E50"
+     id="text134">
+    theta: 34D | token_emb: 128D | augmented_params: 162D | param_embed: 128D | trajectory: [B, 257, 3, 128, 128]</text>
+  <text
+     x="400"
+     y="1756"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#6c3483"
+     id="text135">Token codebook: 90 quantizers (30 grp x 3 lvl) | Per-group: 100D (64+24+12) ➡ shared MLP 64D ➡ mean pool ➡ refine 128D</text>
+  <text
+     x="400"
+     y="1770"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text136">Backbone channels: 32 ➡ 64 ➡ 128 ➡ 256 (bottleneck) | AFNO modes: 16 | Residual scale: 0.1</text>
+  <!-- Footer -->
+  <text
+     x="400"
+     y="1792"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#ABB2B9"
+     id="text137">
+    TokenEmbeddingProjector + TokenThetaICAdapter + V2MNO (U-AFNO) | src/spinlock/mno/v2/{conditioning,model,backbone}.py</text>
+</svg>

@@ -10,7 +10,7 @@
 # - ~4x training time vs baseline (larger token count)
 #
 # Key innovation:
-# - Causal temporal attention bias: early truncations guide later ones
+# - Causal temporal attention bias: later truncations see earlier ones
 # - Meta-diffusion: diffusion process mirrors representational evolution
 
 # Dataset
@@ -48,7 +48,7 @@ model:
   temporal_resolution:
     enabled: true  # Enable temporal resolution mode
     use_temporal_bias: true  # Learnable [N_trunc, N_trunc] bias matrix
-    temporal_bias_init: "causal"  # Initialize with early → late prior
+    temporal_bias_init: "causal"  # Initialize with late → early prior
     temporal_bias_strength: 0.1  # Initial bias magnitude
     enforce_causality: true  # Hard-mask non-causal attention
 

@@ -508,6 +508,46 @@ class LeniaSimulationConfig(BaseModel):
         description="Deprecated — single range version now. Kept for config compat."
     )
 
+    # ── Dimension 1: Temporal convergence ──
+    min_temporal_activity: float = Field(
+        default=0.0, ge=0.0,
+        description="Min late-half evolution rate. 0=disabled. Rec: 1e-5."
+    )
+    min_early_late_mse: float = Field(
+        default=0.0, ge=0.0,
+        description="Min MSE(frame[T//8], frame[-1]). 0=disabled. Rec: 1e-5."
+    )
+
+    # ── Dimension 2: Spatial+temporal complexity ──
+    spatial_var_threshold: float = Field(
+        default=0.0, ge=0.0,
+        description="Min late-half spatial variance. Rejects homogeneous grids. Rec: 0.001."
+    )
+    gradient_energy_threshold: float = Field(
+        default=0.0, ge=0.0,
+        description="Min |nabla u|^2 on sampled late frames. Rejects structureless grids. Rec: 1e-5."
+    )
+    spectral_flatness_threshold: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description="Min spectral flatness of spatial-mean signal. Rejects periodic orbits. Rec: 0.1."
+    )
+
+    # ── Dimension 3: Behavioral deduplication ──
+    dedup_enabled: bool = Field(
+        default=False,
+        description="Enable cross-batch behavioral fingerprint deduplication."
+    )
+    dedup_threshold: float = Field(
+        default=0.5, gt=0.0,
+        description="Min normalized L2 distance for acceptance. Lower=stricter."
+    )
+
+    # ── Dynamics classification (informational, never triggers rejection) ──
+    classify_dynamics: bool = Field(
+        default=False,
+        description="Store per-sample dynamics class in HDF5 metadata."
+    )
+
 
 class SimulationConfig(BaseModel):
     """Complete simulation configuration."""

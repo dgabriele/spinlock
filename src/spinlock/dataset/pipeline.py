@@ -15,6 +15,7 @@ Design principles:
 - Resource management: Clean cleanup
 """
 
+import logging
 import torch
 import torch.nn as nn
 import numpy as np
@@ -28,6 +29,8 @@ import gc
 import queue
 import threading
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 from .generators import InputFieldGenerator
 from .storage import HDF5DatasetWriter
@@ -1440,6 +1443,18 @@ class DatasetGenerationPipeline:
             ic_generator=ic_generator,
             substeps=lenia_cfg.substeps,
             param_ranges=param_ranges,
+            # Behavioral filter — Dimension 1: temporal convergence
+            min_temporal_activity=lenia_cfg.min_temporal_activity,
+            min_early_late_mse=lenia_cfg.min_early_late_mse,
+            # Behavioral filter — Dimension 2: spatial+temporal complexity
+            spatial_var_threshold=lenia_cfg.spatial_var_threshold,
+            gradient_energy_threshold=lenia_cfg.gradient_energy_threshold,
+            spectral_flatness_threshold=lenia_cfg.spectral_flatness_threshold,
+            # Behavioral filter — Dimension 3: behavioral deduplication
+            dedup_enabled=lenia_cfg.dedup_enabled,
+            dedup_threshold=lenia_cfg.dedup_threshold,
+            # Dynamics classification
+            classify_dynamics=lenia_cfg.classify_dynamics,
         )
 
     def _needs_rollout(self) -> bool:
@@ -1447,6 +1462,11 @@ class DatasetGenerationPipeline:
 
         Returns False when trajectories aren't stored AND no feature
         pipeline needs trajectory data. Applies to any operator type.
+
+        Note: Behavioral filters (temporal activity, spatial complexity,
+        dedup, classify_dynamics) only activate when rollouts are already
+        happening for another reason. They do NOT force rollout on their
+        own — that would turn a cheap IC-only job into a full simulation.
         """
         store_traj = getattr(self.config.dataset.storage, 'store_trajectories', False)
         if store_traj:
@@ -1482,6 +1502,21 @@ class DatasetGenerationPipeline:
             num_realizations=self.config.simulation.num_realizations,
             num_timesteps=self.config.simulation.num_timesteps,
         )
+
+        # Dimension 3: post-rollout behavioral deduplication
+        if self._lenia_replayer.dedup_enabled:
+            dup_mask = self._lenia_replayer.filter_duplicates(outputs)
+            keep = ~dup_mask
+            if not keep.all():
+                n_dup = dup_mask.sum().item()
+                logger.debug(f"Lenia dedup: removed {n_dup}/{inputs.shape[0]} duplicates")
+                inputs = inputs[keep]
+                outputs = outputs[keep]
+                # Also trim param_batch for consistent downstream indexing
+                param_batch_trimmed = param_batch[keep.numpy()]
+                # Store trimmed param_batch for caller to pick up
+                self._last_dedup_param_batch = param_batch_trimmed
+
         return inputs, outputs
 
     def _generate_quantum_ics(self, batch_size: int, num_realizations: int) -> torch.Tensor:
@@ -1922,6 +1957,18 @@ class DatasetGenerationPipeline:
             "noise_regimes": noise_regimes,
         }
 
+        # Attach Lenia dynamics metadata (if classify_dynamics enabled)
+        if (self.config.simulation.operator_type == "lenia"
+                and hasattr(self, '_lenia_replayer')
+                and self._lenia_replayer.classify_dynamics):
+            if self._lenia_replayer._last_dynamics_classes is not None:
+                metadata["dynamics_classes"] = self._lenia_replayer._last_dynamics_classes
+            if self._lenia_replayer._last_activity_metrics is not None:
+                m = self._lenia_replayer._last_activity_metrics
+                metadata["activity_early_late_mse"] = m.early_late_mse.cpu().numpy()
+                metadata["activity_late_half_mean_var"] = m.late_half_mean_var.cpu().numpy()
+                metadata["activity_late_evolution_rate"] = m.late_evolution_rate.cpu().numpy()
+
         return inputs, outputs, metadata, operators
 
     def _process_batch_variable_size_with_tracking(
@@ -1955,12 +2002,13 @@ class DatasetGenerationPipeline:
             return inputs, outputs, ic_types_used, None
         if operator_type == "lenia":
             inputs, outputs = self._process_batch_lenia(param_batch, batch_size)
+            actual_size = inputs.shape[0]  # may be < batch_size after dedup
             # Read IC types from diverse generator if available
             ic_gen = getattr(self._lenia_replayer, 'ic_generator', None)
             if ic_gen is not None and getattr(ic_gen, 'last_types', None) is not None:
-                ic_types_used = list(ic_gen.last_types)
+                ic_types_used = list(ic_gen.last_types)[:actual_size]
             else:
-                ic_types_used = ["lenia_gaussian_blobs"] * batch_size
+                ic_types_used = ["lenia_gaussian_blobs"] * actual_size
             return inputs, outputs, ic_types_used, None
 
         # Build operators with this grid size (or use pre-built from async builder)
@@ -2425,6 +2473,10 @@ class DatasetGenerationPipeline:
             evolution_policies=metadata["evolution_policies"],
             grid_sizes=metadata["grid_sizes"],
             noise_regimes=metadata["noise_regimes"],
+            dynamics_classes=metadata.get("dynamics_classes"),
+            activity_early_late_mse=metadata.get("activity_early_late_mse"),
+            activity_late_half_mean_var=metadata.get("activity_late_half_mean_var"),
+            activity_late_evolution_rate=metadata.get("activity_late_evolution_rate"),
         )
 
     def _extract_initial_features(self) -> None:

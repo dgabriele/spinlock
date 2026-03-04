@@ -100,6 +100,18 @@ Examples:
             "--substeps", type=int, default=1,
             help="Euler sub-steps per visible frame for stability (default: 1)",
         )
+        parser.add_argument(
+            "--alive", action="store_true",
+            help="Filter: keep only CAs with living cells at the checkpoint frame",
+        )
+        parser.add_argument(
+            "--alive-at", type=float, default=1.0, metavar="FRAC",
+            help="Fraction of rollout at which to check aliveness (default: 1.0 = final frame)",
+        )
+        parser.add_argument(
+            "--alive-threshold", type=float, default=1e-3,
+            help="Min max-pixel value to count as alive (default: 1e-3)",
+        )
 
     def execute(self, args: Namespace) -> int:
         import logging
@@ -150,7 +162,23 @@ Examples:
             f"{n_channels}ch, {grid_size}x{grid_size} grid"
         )
 
-        # ── Select samples ───────────────────────────────────────────
+        # ── Auto-detect timesteps ────────────────────────────────────
+        if args.timesteps is not None:
+            timesteps = args.timesteps
+        else:
+            timesteps = _detect_timesteps(args.dataset)
+            logger.info(f"Auto-detected timesteps: {timesteps}")
+
+        # ── Build adapter ─────────────────────────────────────────────
+        adapter = LeniaReplayAdapter(
+            n_channels=n_channels,
+            grid_size=grid_size,
+            device=str(device),
+            max_gpu_batch=args.batch_size,
+            substeps=args.substeps,
+        )
+
+        # ── Select samples + simulate ─────────────────────────────────
         if args.sample_index is not None:
             if args.sample_index >= total_samples:
                 return self.error(
@@ -158,6 +186,26 @@ Examples:
                     f"(dataset has {total_samples} samples)"
                 )
             indices = np.array([args.sample_index])
+            trajectories = _simulate_indices(
+                args.dataset, indices, adapter, timesteps, logger,
+            )
+        elif args.alive:
+            trajectories = _sample_alive(
+                dataset_path=args.dataset,
+                n_needed=args.n_samples,
+                total_samples=total_samples,
+                adapter=adapter,
+                timesteps=timesteps,
+                threshold=args.alive_threshold,
+                alive_at=args.alive_at,
+                batch_size=args.batch_size,
+                seed=args.seed,
+                logger=logger,
+            )
+            if trajectories is None:
+                return self.error(
+                    f"Could not find {args.n_samples} alive CAs in the dataset"
+                )
         else:
             if total_samples < args.n_samples:
                 return self.error(
@@ -167,43 +215,11 @@ Examples:
             rng = np.random.RandomState(args.seed)
             indices = rng.choice(total_samples, size=args.n_samples, replace=False)
             indices.sort()
+            trajectories = _simulate_indices(
+                args.dataset, indices, adapter, timesteps, logger,
+            )
 
-        N = len(indices)
-
-        # Load ICs and params directly from HDF5 for selected indices
-        import h5py
-
-        with h5py.File(args.dataset, "r") as f:
-            ics = torch.from_numpy(f["inputs/fields"][indices, 0, :, :, :]).float()
-            params = torch.from_numpy(f["parameters/params"][indices]).float()
-
-        logger.info(f"Selected {N} samples: indices {list(indices[:8])}{'...' if N > 8 else ''}")
-
-        # ── Auto-detect timesteps ────────────────────────────────────
-        if args.timesteps is not None:
-            timesteps = args.timesteps
-        else:
-            timesteps = _detect_timesteps(args.dataset)
-            logger.info(f"Auto-detected timesteps: {timesteps}")
-
-        # ── Simulate ─────────────────────────────────────────────────
-        logger.info(
-            f"Simulating {N} CAs for {timesteps} timesteps on {device} "
-            f"(batch_size={args.batch_size})"
-        )
-        adapter = LeniaReplayAdapter(
-            n_channels=n_channels,
-            grid_size=grid_size,
-            device=str(device),
-            max_gpu_batch=args.batch_size,
-            substeps=args.substeps,
-        )
-        trajectories = adapter.rollout_batch(
-            params_batch=params,
-            ics=ics,
-            timesteps=timesteps,
-            return_all_steps=True,
-        )  # [N, T+1, C, H, W] on CPU
+        N = trajectories.shape[0]
         T = trajectories.shape[1]
         logger.info(f"Trajectories: {list(trajectories.shape)}")
 
@@ -298,6 +314,121 @@ Examples:
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _simulate_indices(dataset_path, indices, adapter, timesteps, logger):
+    """Load ICs/params for given indices, simulate, return trajectories."""
+    import h5py
+    import torch
+
+    with h5py.File(dataset_path, "r") as f:
+        ics = torch.from_numpy(f["inputs/fields"][indices, 0, :, :, :]).float()
+        params = torch.from_numpy(f["parameters/params"][indices]).float()
+
+    N = len(indices)
+    logger.info(
+        f"Simulating {N} CAs for {timesteps} timesteps "
+        f"(indices {list(indices[:8])}{'...' if N > 8 else ''})"
+    )
+    return adapter.rollout_batch(
+        params_batch=params, ics=ics,
+        timesteps=timesteps, return_all_steps=True,
+    )  # [N, T+1, C, H, W] on CPU
+
+
+def _sample_alive(
+    dataset_path, n_needed, total_samples, adapter,
+    timesteps, threshold, alive_at, batch_size, seed, logger,
+):
+    """Repeatedly sample and simulate batches until n_needed alive CAs are found.
+
+    A CA is "alive" if max pixel at the checkpoint frame exceeds threshold.
+    The checkpoint frame is ``floor(alive_at * T)`` where T is the number of
+    simulation frames (T+1 total including IC).  ``alive_at=1.0`` checks the
+    final frame; ``alive_at=0.9`` checks at 90% completion.
+
+    Returns [n_needed, T+1, C, H, W] trajectory tensor, or None if the
+    entire dataset is exhausted without finding enough alive CAs.
+    """
+    import h5py
+    import numpy as np
+    import torch
+
+    rng = np.random.RandomState(seed)
+    remaining_pool = np.arange(total_samples)
+    rng.shuffle(remaining_pool)
+    pool_cursor = 0
+
+    alive_trajectories = []
+    n_alive_total = 0
+    total_tested = 0
+    total_dead = 0
+
+    # Compute the checkpoint frame index once we know T
+    # (deferred to first batch since T = timesteps, but trajectory has T+1 frames)
+    checkpoint_idx = None
+
+    frac_str = f"{alive_at:.0%}" if alive_at == int(alive_at) else f"{alive_at:.0%}"
+    logger.info(
+        f"Alive-filtering: seeking {n_needed} alive CAs "
+        f"(threshold={threshold}, check at {frac_str} of rollout, pool={total_samples})"
+    )
+
+    while n_alive_total < n_needed:
+        # Draw next batch of candidates from the shuffled pool
+        candidates_needed = n_needed - n_alive_total
+        # Over-sample to account for expected mortality
+        draw_size = min(max(candidates_needed * 2, batch_size), total_samples - pool_cursor)
+
+        if draw_size <= 0:
+            logger.warning(
+                f"Exhausted sample pool ({total_tested} tested, "
+                f"{total_dead} dead, {n_alive_total} alive)"
+            )
+            return None
+
+        indices = remaining_pool[pool_cursor:pool_cursor + draw_size]
+        pool_cursor += draw_size
+        indices.sort()
+
+        # Simulate this batch
+        trajs = _simulate_indices(
+            dataset_path, indices, adapter, timesteps, logger,
+        )  # [B, T+1, C, H, W]
+
+        # Compute checkpoint frame index on first batch
+        if checkpoint_idx is None:
+            T_plus_1 = trajs.shape[1]
+            checkpoint_idx = min(int(alive_at * (T_plus_1 - 1)), T_plus_1 - 1)
+            logger.info(f"  Alive checkpoint: frame {checkpoint_idx}/{T_plus_1 - 1}")
+
+        # Check alive: max pixel value at the checkpoint frame per sample
+        check_frames = trajs[:, checkpoint_idx]  # [B, C, H, W]
+        max_vals = check_frames.flatten(1).max(dim=1).values  # [B]
+        alive_mask = max_vals > threshold
+
+        n_alive = alive_mask.sum().item()
+        n_dead = len(indices) - n_alive
+        total_tested += len(indices)
+        total_dead += n_dead
+
+        if n_alive > 0:
+            alive_trajectories.append(trajs[alive_mask])
+            n_alive_total += n_alive
+
+        logger.info(
+            f"  Batch: {n_alive}/{len(indices)} alive "
+            f"(cumulative: {n_alive_total}/{n_needed}, "
+            f"tested={total_tested}, dead={total_dead})"
+        )
+
+    # Concatenate and trim to exactly n_needed
+    all_alive = torch.cat(alive_trajectories, dim=0)[:n_needed]
+    logger.info(
+        f"Alive-filtering complete: {n_needed} alive from {total_tested} tested "
+        f"({total_dead} dead, {total_dead/max(total_tested,1)*100:.1f}% mortality)"
+    )
+    return all_alive
 
 
 def _detect_timesteps(dataset_path: Path) -> int:

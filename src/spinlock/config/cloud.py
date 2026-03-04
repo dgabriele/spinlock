@@ -7,7 +7,7 @@ Provides Pydantic models for configuring cloud providers:
 - AWS S3 Storage
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, Literal
 
 
@@ -138,7 +138,4 @@ class CloudConfig(BaseModel):
         description="AWS S3 storage configuration"
     )
 
-    class Config:
-        """Pydantic config."""
-        extra = "forbid"  # Reject unknown fields
-        validate_assignment = True
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)

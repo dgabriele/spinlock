@@ -58,7 +58,7 @@ sampling:
     seed: 42
     backend: "torch"
   total_samples: 500000
-  batch_size: 500
+  batch_size: 50
 
 simulation:
   operator_type: "lenia"
@@ -73,6 +73,18 @@ simulation:
     saturation_threshold: 0.95
     max_retries: 5
     substeps: 2       # base substeps; CFL-adaptive at runtime
+    # Temporal convergence filter
+    min_temporal_activity: 1.0e-5
+    min_early_late_mse: 1.0e-5
+    # Spatial complexity filter
+    spatial_var_threshold: 0.001
+    gradient_energy_threshold: 1.0e-5
+    spectral_flatness_threshold: 0.1
+    # Behavioral deduplication
+    dedup_enabled: true
+    dedup_threshold: 0.5
+    # Dynamics classification (informational)
+    classify_dynamics: true
 
   # Diverse IC generation — same as v2
   input_generation:

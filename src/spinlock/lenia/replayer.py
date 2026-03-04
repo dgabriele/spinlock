@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import dataclass
+from enum import Enum
 from typing import Optional, Tuple
 
 import numpy as np
@@ -30,6 +32,117 @@ from .simulator import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TemporalActivityMetrics:
+    """Per-sample temporal activity metrics computed from trajectory late half."""
+    early_late_mse: torch.Tensor       # [B] MSE(frame[T//8], frame[-1])
+    quarter_late_mse: torch.Tensor     # [B] MSE(frame[T//4], frame[-1])
+    late_half_mean_var: torch.Tensor   # [B] var of spatial-mean over late half
+    late_evolution_rate: torch.Tensor  # [B] mean |frame[t+1] - frame[t]| over late half
+
+
+class DynamicsClass(str, Enum):
+    """Classification of trajectory dynamics (informational, never triggers rejection)."""
+    FIXED_POINT = "fixed_point"
+    PERIODIC = "periodic"
+    APERIODIC = "aperiodic"
+    TRANSIENT = "transient"
+
+
+class _WelfordNormalizer:
+    """Online mean/std estimator using Welford's algorithm.
+
+    Tracks running mean and variance without storing all samples,
+    enabling normalization of fingerprint vectors in the dedup buffer.
+    """
+
+    def __init__(self, dim: int):
+        self.dim = dim
+        self.count = 0
+        self.mean = torch.zeros(dim)
+        self.M2 = torch.zeros(dim)
+
+    def update(self, batch: torch.Tensor) -> None:
+        """Update stats with a batch of vectors [N, D] (CPU)."""
+        for x in batch:
+            self.count += 1
+            delta = x - self.mean
+            self.mean += delta / self.count
+            delta2 = x - self.mean
+            self.M2 += delta * delta2
+
+    def std(self) -> torch.Tensor:
+        """Return current std estimate, clamped to avoid div-by-zero."""
+        if self.count < 2:
+            return torch.ones(self.dim)
+        return (self.M2 / (self.count - 1)).sqrt().clamp(min=1e-8)
+
+    def normalize(self, x: torch.Tensor) -> torch.Tensor:
+        """Normalize [N, D] tensor to unit variance using running stats."""
+        return (x - self.mean) / self.std()
+
+
+class BehavioralDedupBuffer:
+    """Cross-batch behavioral fingerprint deduplication buffer.
+
+    Maintains a CPU buffer of normalized fingerprints and checks new
+    samples against it using chunked GPU cdist. Accepts samples whose
+    minimum L2 distance to all existing fingerprints exceeds threshold.
+    """
+
+    FINGERPRINT_DIM = 8  # 3 channel means + spatial_var + temporal_var + grad_energy + spectral_centroid + inter_channel_corr
+
+    def __init__(self, threshold: float = 0.5, chunk_size: int = 10_000, device: str = "cuda"):
+        self._buffer = torch.empty(0, self.FINGERPRINT_DIM)  # CPU
+        self._normalizer = _WelfordNormalizer(self.FINGERPRINT_DIM)
+        self.threshold = threshold
+        self.chunk_size = chunk_size
+        self.device = torch.device(device)
+
+    def check_and_add(self, fingerprints: torch.Tensor) -> torch.Tensor:
+        """Check fingerprints against buffer and add non-duplicates.
+
+        Args:
+            fingerprints: [B, D] raw fingerprint vectors (GPU or CPU).
+
+        Returns:
+            [B] bool tensor — True = duplicate (should reject).
+        """
+        fp_cpu = fingerprints.detach().cpu()
+        B = fp_cpu.shape[0]
+
+        # Update normalizer with new batch
+        self._normalizer.update(fp_cpu)
+
+        # Normalize all (buffer + new) with current stats
+        fp_norm = self._normalizer.normalize(fp_cpu)
+
+        if self._buffer.shape[0] == 0:
+            # First batch: accept all, seed buffer
+            self._buffer = fp_cpu
+            return torch.zeros(B, dtype=torch.bool)
+
+        buf_norm = self._normalizer.normalize(self._buffer)
+
+        # Chunked cdist on GPU for speed
+        dup_mask = torch.zeros(B, dtype=torch.bool)
+        fp_gpu = fp_norm.to(self.device)
+
+        for start in range(0, buf_norm.shape[0], self.chunk_size):
+            end = min(start + self.chunk_size, buf_norm.shape[0])
+            chunk_gpu = buf_norm[start:end].to(self.device)
+            dists = torch.cdist(fp_gpu, chunk_gpu)  # [B, chunk]
+            min_dists = dists.min(dim=1).values      # [B]
+            dup_mask |= (min_dists < self.threshold).cpu()
+
+        # Add non-duplicates to buffer
+        keep = ~dup_mask
+        if keep.any():
+            self._buffer = torch.cat([self._buffer, fp_cpu[keep]], dim=0)
+
+        return dup_mask
 
 
 class LeniaReplayer:
@@ -57,6 +170,18 @@ class LeniaReplayer:
         ic_generator=None,
         substeps: int = 1,
         param_ranges: Optional[LeniaParamRanges] = None,
+        # Dimension 1: temporal convergence
+        min_temporal_activity: float = 0.0,
+        min_early_late_mse: float = 0.0,
+        # Dimension 2: spatial+temporal complexity
+        spatial_var_threshold: float = 0.0,
+        gradient_energy_threshold: float = 0.0,
+        spectral_flatness_threshold: float = 0.0,
+        # Dimension 3: behavioral deduplication
+        dedup_enabled: bool = False,
+        dedup_threshold: float = 0.5,
+        # Dynamics classification
+        classify_dynamics: bool = False,
     ):
         self.n_channels = n_channels
         self.grid_size = grid_size
@@ -67,6 +192,25 @@ class LeniaReplayer:
         self.max_retries = max_retries
         self.substeps = substeps
         self.param_ranges = param_ranges  # None → DEFAULT_RANGES in sobol functions
+
+        # Dimension 1: temporal convergence thresholds
+        self.min_temporal_activity = min_temporal_activity
+        self.min_early_late_mse = min_early_late_mse
+        # Dimension 2: spatial+temporal complexity thresholds
+        self.spatial_var_threshold = spatial_var_threshold
+        self.gradient_energy_threshold = gradient_energy_threshold
+        self.spectral_flatness_threshold = spectral_flatness_threshold
+        # Dimension 3: behavioral deduplication
+        self.dedup_enabled = dedup_enabled
+        self.dedup_buffer: Optional[BehavioralDedupBuffer] = None
+        if dedup_enabled:
+            self.dedup_buffer = BehavioralDedupBuffer(
+                threshold=dedup_threshold, device=device,
+            )
+        # Dynamics classification
+        self.classify_dynamics = classify_dynamics
+        self._last_dynamics_classes: Optional[list[str]] = None
+        self._last_activity_metrics: Optional[TemporalActivityMetrics] = None
 
         self.simulator = LeniaSimulator(grid_size=grid_size, device=device)
         self.ic_generator = ic_generator if ic_generator is not None else LeniaICGenerator()
@@ -205,6 +349,10 @@ class LeniaReplayer:
                 self.ic_generator.last_types = list(types)
                 self.ic_generator.unlock_types()
 
+        # Classify dynamics on realization 0 (informational, never rejects)
+        if self.classify_dynamics:
+            self._classify_dynamics(all_outputs[:, 0])
+
         return all_inputs, all_outputs
 
     def _compute_adaptive_substeps(
@@ -312,17 +460,36 @@ class LeniaReplayer:
         state = ics.to(self.simulator.device).float()
         mu = growth_mu[:, :, None, None]
         sigma = growth_sigma[:, :, None, None]
-        dt_view = sim_dt[:, None, None, None]
+        dt_view = sim_dt[:, None, None, None].clone()  # clone: we may zero dead samples
 
         traj = torch.empty(B, num_timesteps, C, H, W,
                            device=self.simulator.device, dtype=torch.float32)
         step_fn = self.simulator._compiled_step
+
+        # Early-exit tracking: zero dt for converged samples, break when all dead
+        alive = torch.ones(B, dtype=torch.bool, device=state.device)
+        prev_check = state.clone()
+        _CHECK_EVERY = 16
+        _CONVERGE_EPS = 1e-6
 
         for t in range(num_timesteps):
             for _k in range(K):
                 state = step_fn(state, kernel_ffts, coupling, mu, sigma,
                                 dt_view, growth_type)
             traj[:, t] = state
+
+            # Periodic convergence check
+            if t > 0 and (t + 1) % _CHECK_EVERY == 0:
+                delta = (state - prev_check).abs().amax(dim=(1, 2, 3))
+                newly_dead = alive & (delta < _CONVERGE_EPS)
+                if newly_dead.any():
+                    dt_view[newly_dead] = 0.0
+                    alive &= ~newly_dead
+                if not alive.any():
+                    if t + 1 < num_timesteps:
+                        traj[:, t + 1:] = state.unsqueeze(1)
+                    break
+                prev_check = state.clone()
 
         return traj
 
@@ -404,18 +571,130 @@ class LeniaReplayer:
 
         return ic, traj
 
+    # ── Dimension 1: Temporal convergence metrics ──
+
+    def _compute_temporal_activity(self, traj: torch.Tensor) -> TemporalActivityMetrics:
+        """Compute temporal activity metrics from trajectory.
+
+        Memory-efficient: loops over frame pairs for evolution rate instead
+        of materializing a full [B, T//2, C, H, W] diff tensor.
+
+        Args:
+            traj: [B, T, C, H, W]
+        Returns:
+            TemporalActivityMetrics with all per-sample [B] tensors.
+        """
+        B, T, C, H, W = traj.shape
+        final = traj[:, -1]
+
+        # MSE between early frames and final frame
+        early_idx = max(T // 8, 0)
+        quarter_idx = max(T // 4, 0)
+        early_late_mse = ((traj[:, early_idx] - final) ** 2).mean(dim=(1, 2, 3))
+        quarter_late_mse = ((traj[:, quarter_idx] - final) ** 2).mean(dim=(1, 2, 3))
+
+        # Variance of spatial-mean over late half
+        half_T = T // 2
+        late_means = traj[:, half_T:].mean(dim=(2, 3, 4))  # [B, T//2]
+        late_half_mean_var = late_means.var(dim=1)           # [B]
+
+        # Frame-diff loop (memory-efficient: O(B·C·H·W) temp per step)
+        late = traj[:, half_T:]
+        accum = torch.zeros(B, device=traj.device)
+        num_diffs = late.shape[1] - 1
+        for t in range(num_diffs):
+            accum += (late[:, t + 1] - late[:, t]).abs().mean(dim=(1, 2, 3))
+        late_evolution_rate = accum / max(num_diffs, 1)
+
+        return TemporalActivityMetrics(
+            early_late_mse=early_late_mse,
+            quarter_late_mse=quarter_late_mse,
+            late_half_mean_var=late_half_mean_var,
+            late_evolution_rate=late_evolution_rate,
+        )
+
+    # ── Dimension 2: Spatial+temporal complexity metrics ──
+
+    def _compute_late_spatial_variance(self, traj: torch.Tensor) -> torch.Tensor:
+        """Mean spatial variance over late half. Catches uniform-pulsing grids.
+
+        Args:
+            traj: [B, T, C, H, W]
+        Returns:
+            [B] mean spatial variance.
+        """
+        T = traj.shape[1]
+        late = traj[:, T // 2:]                  # [B, T//2, C, H, W]
+        spatial_var = late.var(dim=(-2, -1))      # [B, T//2, C]
+        return spatial_var.mean(dim=(1, 2))        # [B]
+
+    def _compute_gradient_energy(self, traj: torch.Tensor, num_frames: int = 4) -> torch.Tensor:
+        """Mean |nabla u|^2 on sampled late frames.
+
+        Uses central differences with circular padding (toroidal grid).
+
+        Args:
+            traj: [B, T, C, H, W]
+            num_frames: number of late frames to sample.
+        Returns:
+            [B] mean gradient energy.
+        """
+        B, T, C, H, W = traj.shape
+        indices = torch.linspace(T // 2, T - 1, num_frames, dtype=torch.long, device=traj.device)
+        frames = traj[:, indices]  # [B, num_frames, C, H, W]
+
+        # Central differences with circular boundary (toroidal grid)
+        grad_x = (frames.roll(-1, dims=-1) - frames.roll(1, dims=-1)) * 0.5
+        grad_y = (frames.roll(-1, dims=-2) - frames.roll(1, dims=-2)) * 0.5
+        return (grad_x.pow(2) + grad_y.pow(2)).mean(dim=(1, 2, 3, 4))  # [B]
+
+    def _compute_spectral_flatness(self, traj: torch.Tensor) -> torch.Tensor:
+        """Spectral flatness of spatial-mean temporal signal.
+
+        Generalizes period-2 detection to any periodicity. A flat spectrum
+        (flatness ~ 1.0) indicates aperiodic dynamics; a peaked spectrum
+        (flatness ~ 0.0) indicates strong periodic orbits.
+
+        Args:
+            traj: [B, T, C, H, W]
+        Returns:
+            [B] spectral flatness in [0, 1].
+        """
+        B, T, C, H, W = traj.shape
+        half_T = T // 2
+        signal = traj[:, half_T:].mean(dim=(-2, -1))           # [B, T//2, C]
+        signal = signal - signal.mean(dim=1, keepdim=True)       # remove DC
+
+        # Power spectrum (skip DC bin at index 0)
+        power = torch.fft.rfft(signal, dim=1).abs().pow(2)[:, 1:]  # [B, F, C]
+        log_power = torch.log(power.clamp(min=1e-20))
+
+        # Geometric mean / arithmetic mean per channel
+        geom = torch.exp(log_power.mean(dim=1))                   # [B, C]
+        arith = power.mean(dim=1)                                  # [B, C]
+        flatness = geom / arith.clamp(min=1e-20)                   # [B, C]
+        return flatness.mean(dim=1)                                 # [B]
+
+    # ── Core rejection logic ──
+
     def _find_bad_samples(self, traj: torch.Tensor) -> list[int]:
-        """Identify dead, saturated, or period-2 oscillating samples.
+        """Identify dead, saturated, oscillating, or trivially-converged samples.
 
-        Checks:
-            1. Dead: final-frame mean activation ≤ alive_threshold
-            2. Saturated: final-frame mean activation ≥ saturation_threshold
-            3. Period-2 oscillation: last 10 frames show alternating-sign
-               consecutive differences (Euler instability artifact from
-               large dt × sharp growth functions)
+        Checks (original):
+            1. Dead: final-frame mean activation <= alive_threshold
+            2. Saturated: final-frame mean activation >= saturation_threshold
+            3. Period-2 oscillation: alternating-sign diffs in last 10 frames
 
-        Uses vectorized comparison instead of per-sample .item() calls
-        to avoid CUDA synchronization overhead.
+        Checks (Dimension 1 — temporal convergence, when thresholds > 0):
+            4. Fast convergence: late evolution rate < min_temporal_activity
+            5. Static final state: MSE(frame[T//8], frame[-1]) < min_early_late_mse
+
+        Checks (Dimension 2 — spatial+temporal complexity, when thresholds > 0):
+            6. Spatial homogeneity: late spatial variance < spatial_var_threshold
+            7. Structureless: gradient energy < gradient_energy_threshold
+            8. Periodic orbit: spectral flatness < spectral_flatness_threshold
+
+        All new checks are zero-overhead when threshold = 0.0 (default).
 
         Args:
             traj: [B, T, C, H, W]
@@ -437,4 +716,157 @@ class LeniaReplayer:
             amplitude = means.max(dim=1).values - means.min(dim=1).values
             bad_mask = bad_mask | (oscillating & (amplitude > 0.01))
 
+        # Dimension 1: temporal convergence
+        if self.min_temporal_activity > 0 or self.min_early_late_mse > 0:
+            metrics = self._compute_temporal_activity(traj)
+            if self.min_temporal_activity > 0:
+                bad_mask = bad_mask | (metrics.late_evolution_rate < self.min_temporal_activity)
+            if self.min_early_late_mse > 0:
+                bad_mask = bad_mask | (metrics.early_late_mse < self.min_early_late_mse)
+
+        # Dimension 2: spatial+temporal complexity
+        if self.spatial_var_threshold > 0:
+            bad_mask = bad_mask | (self._compute_late_spatial_variance(traj) < self.spatial_var_threshold)
+        if self.gradient_energy_threshold > 0:
+            bad_mask = bad_mask | (self._compute_gradient_energy(traj) < self.gradient_energy_threshold)
+        if self.spectral_flatness_threshold > 0:
+            bad_mask = bad_mask | (self._compute_spectral_flatness(traj) < self.spectral_flatness_threshold)
+
         return bad_mask.nonzero(as_tuple=False).squeeze(-1).tolist()
+
+    # ── Dimension 3: Behavioral deduplication ──
+
+    def _compute_fingerprint(self, traj: torch.Tensor) -> torch.Tensor:
+        """Compute 8-dim behavioral fingerprint from trajectory late half.
+
+        Components:
+            [0:C] per-channel late-half means
+            [C]   spatial variance
+            [C+1] temporal variance (of spatial mean)
+            [C+2] gradient energy
+            [C+3] spectral centroid (weighted mean frequency)
+            [C+4] inter-channel correlation (mean pairwise)
+
+        For C=3 this yields exactly 8 dimensions.
+
+        Args:
+            traj: [B, T, C, H, W]
+        Returns:
+            [B, 8] fingerprint tensor.
+        """
+        B, T, C, H, W = traj.shape
+        half_T = T // 2
+        late = traj[:, half_T:]
+
+        # Per-channel late means
+        ch_means = late.mean(dim=(1, 3, 4))  # [B, C]
+
+        # Spatial variance (scalar)
+        spatial_var = self._compute_late_spatial_variance(traj).unsqueeze(1)  # [B, 1]
+
+        # Temporal variance of spatial mean
+        temporal_signal = late.mean(dim=(2, 3, 4))  # [B, T//2]
+        temporal_var = temporal_signal.var(dim=1, keepdim=True)  # [B, 1]
+
+        # Gradient energy (scalar)
+        grad_energy = self._compute_gradient_energy(traj).unsqueeze(1)  # [B, 1]
+
+        # Spectral centroid of spatial-mean signal
+        signal = late.mean(dim=(-2, -1))  # [B, T//2, C]
+        signal = signal - signal.mean(dim=1, keepdim=True)
+        power = torch.fft.rfft(signal, dim=1).abs().pow(2)[:, 1:]  # [B, F, C]
+        freqs = torch.arange(1, power.shape[1] + 1, device=traj.device, dtype=torch.float32)
+        freqs = freqs.unsqueeze(0).unsqueeze(-1)  # [1, F, 1]
+        power_sum = power.sum(dim=1).clamp(min=1e-20)  # [B, C]
+        spectral_centroid = ((power * freqs).sum(dim=1) / power_sum).mean(dim=1, keepdim=True)  # [B, 1]
+
+        # Inter-channel correlation (mean pairwise correlation of late spatial means)
+        if C >= 2:
+            ch_signals = late.mean(dim=(-2, -1))  # [B, T//2, C]
+            ch_signals = ch_signals - ch_signals.mean(dim=1, keepdim=True)
+            # Pairwise correlations
+            norms = ch_signals.norm(dim=1).clamp(min=1e-8)  # [B, C]
+            corr_sum = torch.zeros(B, device=traj.device)
+            n_pairs = 0
+            for i in range(C):
+                for j in range(i + 1, C):
+                    dot = (ch_signals[:, :, i] * ch_signals[:, :, j]).sum(dim=1)
+                    corr = dot / (norms[:, i] * norms[:, j])
+                    corr_sum += corr
+                    n_pairs += 1
+            inter_ch_corr = (corr_sum / max(n_pairs, 1)).unsqueeze(1)  # [B, 1]
+        else:
+            inter_ch_corr = torch.zeros(B, 1, device=traj.device)
+
+        # Concatenate: [B, C + 5] = [B, 8] for C=3
+        fp = torch.cat([ch_means, spatial_var, temporal_var, grad_energy,
+                         spectral_centroid, inter_ch_corr], dim=1)
+        return fp
+
+    def filter_duplicates(self, outputs: torch.Tensor) -> torch.Tensor:
+        """Check batch for behavioral near-duplicates against accumulated buffer.
+
+        Uses realization 0 for fingerprinting. NOT called inside _find_bad_samples
+        because dedup is cross-batch stateful.
+
+        Args:
+            outputs: [B, M, T, C, H, W] trajectory tensor.
+        Returns:
+            [B] bool tensor — True = duplicate (should reject).
+        """
+        if self.dedup_buffer is None:
+            return torch.zeros(outputs.shape[0], dtype=torch.bool)
+        traj = outputs[:, 0]  # realization 0: [B, T, C, H, W]
+        fp = self._compute_fingerprint(traj)
+        return self.dedup_buffer.check_and_add(fp)
+
+    # ── Dynamics classification (informational) ──
+
+    def _classify_dynamics(self, traj: torch.Tensor) -> list[str]:
+        """Classify each sample's dynamics from trajectory metrics.
+
+        Priority: FIXED_POINT > PERIODIC > TRANSIENT > APERIODIC (default).
+        Stores result in self._last_dynamics_classes for pipeline retrieval.
+
+        Args:
+            traj: [B, T, C, H, W]
+        Returns:
+            List of dynamics class strings, length B.
+        """
+        metrics = self._compute_temporal_activity(traj)
+        self._last_activity_metrics = metrics
+
+        B = traj.shape[0]
+        classes = [DynamicsClass.APERIODIC] * B
+
+        # Thresholds for classification (internal, not config-exposed)
+        fixed_thresh = 1e-6
+        periodic_flatness_thresh = 0.05
+        transient_quarter_thresh = 1e-4
+
+        # Fixed point: essentially no evolution in late half
+        is_fixed = metrics.late_evolution_rate < fixed_thresh
+
+        # Periodic: low spectral flatness (strong periodic component)
+        flatness = self._compute_spectral_flatness(traj)
+        is_periodic = (flatness < periodic_flatness_thresh) & ~is_fixed
+
+        # Transient: significant early-late MSE but low late evolution
+        is_transient = (
+            (metrics.early_late_mse > transient_quarter_thresh)
+            & (metrics.late_evolution_rate < fixed_thresh * 100)
+            & ~is_fixed & ~is_periodic
+        )
+
+        # Assign by priority
+        for i in range(B):
+            if is_fixed[i]:
+                classes[i] = DynamicsClass.FIXED_POINT
+            elif is_periodic[i]:
+                classes[i] = DynamicsClass.PERIODIC
+            elif is_transient[i]:
+                classes[i] = DynamicsClass.TRANSIENT
+            # else: APERIODIC (default)
+
+        self._last_dynamics_classes = [c.value for c in classes]
+        return self._last_dynamics_classes

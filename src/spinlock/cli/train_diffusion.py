@@ -44,6 +44,13 @@ Examples:
             metavar="PATH",
             help="Path to checkpoint to resume training from",
         )
+        parser.add_argument(
+            "--max-samples",
+            type=int,
+            default=None,
+            metavar="N",
+            help="Limit dataset to first N samples (for smoke tests)",
+        )
 
     def execute(self, args: Namespace) -> int:
         import importlib.util

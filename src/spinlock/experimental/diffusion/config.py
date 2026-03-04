@@ -16,6 +16,7 @@ class MaskingStrategy(str, Enum):
     TRUNCATION_ROW = "truncation_row"
     GROUP_COLUMN = "group_column"
     SUBMATRIX = "submatrix"
+    TEMPORAL_CAUSAL = "temporal_causal"
 
 
 class DatasetConfig(BaseModel):
@@ -98,6 +99,16 @@ class MaskingConfig(BaseModel):
     mask_probability: float = Field(default=0.5, ge=0.0, le=1.0)
     seed: int = 42
     strategies: Optional[List[MixedStrategyEntry]] = None  # only used when strategy="mixed"
+
+    # Temporal causal curriculum: ramp difficulty from 0 → max over warmup_epochs
+    temporal_causal_warmup_epochs: int = Field(
+        default=5, ge=1,
+        description="Epochs over which to ramp temporal causal difficulty from 0 to max"
+    )
+    temporal_causal_max_difficulty: float = Field(
+        default=2.0, ge=0.0,
+        description="Max difficulty exponent. 0=uniform, 1=linear, 2=quadratic preference for harder cutoffs"
+    )
 
 
 class DiffusionConfig(BaseModel):

@@ -32,6 +32,7 @@ from spinlock.mno.truncated_bptt import TruncatedBPTT
 from spinlock.mno.v2.config import V2MNOConfig
 from spinlock.mno.v2.evaluation import TrajectoryEvaluator
 from spinlock.mno.v2.loss import TrajectoryLoss
+from spinlock.mno.v2.conditioning import TokenThetaICAdapter
 from spinlock.mno.v2.model import V2MNO
 
 logger = logging.getLogger(__name__)
@@ -334,11 +335,16 @@ class V2Trainer:
                 ic = self._qa_ic[sample_indices].to(self._device)
 
             # GT trajectory: generate before forward pass (needed by both
-            # single-window and multi-window paths for alignment)
+            # single-window and multi-window paths for alignment).
+            # Also needed when token_ce or token_head are active: we must
+            # re-tokenize the GT BPTT window so pred and GT tokens come from
+            # the same temporal scope (32 steps, not full 256).
             needs_gt = (
                 self._loss_fn._lambda_traj > 0
                 or self._loss_fn._lambda_ic > 0
                 or self._loss_fn._lambda_feat_mse > 0
+                or self._loss_fn._lambda_token_ce > 0
+                or self._loss_fn._lambda_token_head > 0
             )
             gt_trajectory = None
             if needs_gt:
@@ -379,6 +385,18 @@ class V2Trainer:
                 if hasattr(self._token_store, 'get_indicators'):
                     gt_indicators = self._token_store.get_indicators(sample_indices)
 
+            # Token conditioning: augment params with projected token embeddings.
+            # This happens AFTER replayer GT generation (which uses raw theta)
+            # but BEFORE BPTT forward (which sees the wider param vector).
+            # Gradients flow through the projection layer (frozen codebook
+            # lookups contribute no gradients).
+            if (
+                gt_tokens is not None
+                and isinstance(self._model.adapter, TokenThetaICAdapter)
+            ):
+                token_emb = self._model.adapter.projector(gt_tokens)
+                params = torch.cat([params, token_emb], dim=1)
+
             # Forward + Loss + Backward
             # Branches on multi-window vs single-window BPTT
             if self._bptt.num_windows > 1:
@@ -400,11 +418,27 @@ class V2Trainer:
                         pred_w = pred_seg[:, 1:]
                         gt_w = None
 
+                    # Re-tokenize GT window for this specific BPTT segment
+                    win_gt_tokens = gt_tokens
+                    if (
+                        gt_tokens is not None
+                        and gt_w is not None
+                        and self._loss_fn._vq_adapter is not None
+                    ):
+                        with torch.no_grad():
+                            gt_win_result = (
+                                self._loss_fn._vq_adapter
+                                .extract_soft_logits_from_trajectory(
+                                    gt_w, temperature=1.0,
+                                )
+                            )
+                            win_gt_tokens = gt_win_result["hard_tokens"]
+
                     loss_out = self._loss_fn.compute(
                         pred_w, gt_w,
                         params=params,
                         gt_raw_features=gt_raw_features,
-                        gt_tokens=gt_tokens,
+                        gt_tokens=win_gt_tokens,
                         gt_indicators=gt_indicators,
                     )
                     # Scale by both num_windows and grad accumulation so the
@@ -439,6 +473,25 @@ class V2Trainer:
                 else:
                     pred_aligned = pred_trajectory[:, 1:]
                     gt_aligned = None
+
+                # Re-tokenize GT BPTT window so pred/GT tokens share the same
+                # temporal scope. Pretokenized gt_tokens were computed from the
+                # full 256-step trajectory; temporal summary statistics (mean,
+                # std) over 32 steps differ from 256 steps, creating a ~0.6
+                # accuracy ceiling if not re-aligned.
+                if (
+                    gt_tokens is not None
+                    and gt_aligned is not None
+                    and self._loss_fn._vq_adapter is not None
+                ):
+                    with torch.no_grad():
+                        gt_win_result = (
+                            self._loss_fn._vq_adapter
+                            .extract_soft_logits_from_trajectory(
+                                gt_aligned, temperature=1.0,
+                            )
+                        )
+                        gt_tokens = gt_win_result["hard_tokens"]
 
                 loss_output = self._loss_fn.compute(
                     pred_aligned, gt_aligned,

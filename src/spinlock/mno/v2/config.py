@@ -123,6 +123,8 @@ class V2MNOConfig(BaseModel):
     token_dataset: Optional[str] = None
     token_truncation_length: Optional[int] = None
     quantization_aware: bool = False
+    token_conditioning: bool = False
+    token_embed_dim: int = 128
     resume_from: Optional[str] = None
     device: str = "cuda"
     seed: int = 42

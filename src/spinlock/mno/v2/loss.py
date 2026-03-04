@@ -306,7 +306,10 @@ class TrajectoryLoss(BaseNOALoss):
             and self._lambda_token_head > 0
             and gt_tokens is not None
         ):
-            head_logits = self._token_pred_head(pred_trajectory)
+            # Detach: head learns the backbone's representation without
+            # corrupting it.  Backbone gradients come from token_ce (soft
+            # logits through frozen VQ encoder) which is already differentiable.
+            head_logits = self._token_pred_head(pred_trajectory.detach())
             token_head_loss = self._temporal_token_ce(head_logits, gt_tokens)
             with torch.no_grad():
                 head_hard = {k: v.argmax(dim=1) for k, v in head_logits.items()}

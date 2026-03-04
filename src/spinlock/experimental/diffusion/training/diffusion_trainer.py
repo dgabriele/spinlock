@@ -1,6 +1,7 @@
 """Training loop for discrete diffusion on hierarchical dict tokens."""
 
 import logging
+import signal
 import time
 from pathlib import Path
 from typing import Dict, Optional
@@ -8,13 +9,14 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 import math
 
 from spinlock.experimental.diffusion.models import DiscreteD3PM, DenoisingNetwork
-from spinlock.experimental.diffusion.config import DiffusionExperimentConfig
+from spinlock.experimental.diffusion.config import DiffusionExperimentConfig, MaskingStrategy
+from spinlock.experimental.diffusion.data.hierarchical_masking import _parse_trunc_key
 from spinlock.experimental.diffusion.training.physics_loss import (
     PhysicsDecodeHead,
     PhysicsAwareLoss,
@@ -185,6 +187,36 @@ class DiffusionTrainer:
         logger.info(f"LR scheduler created: warmup={warmup_epochs}ep, min_lr={min_lr}")
         return scheduler
 
+    def _get_dataset_mask_generator(self):
+        """Get the mask generator from the train dataloader's dataset.
+
+        Handles nested Subset wrappers (from --max-samples + train/val split).
+        """
+        dataset = self.train_loader.dataset
+        while isinstance(dataset, Subset):
+            dataset = dataset.dataset
+        return getattr(dataset, 'mask_generator', None)
+
+    def _update_temporal_causal_difficulty(self, epoch: int, num_epochs: int):
+        """Update temporal causal curriculum difficulty for the current epoch.
+
+        Linearly ramps difficulty from 0 to max_difficulty over warmup_epochs.
+        """
+        mask_gen = self._get_dataset_mask_generator()
+        if mask_gen is None:
+            return
+        if not hasattr(mask_gen, 'set_difficulty'):
+            return
+
+        warmup = self.config.masking.temporal_causal_warmup_epochs
+        max_diff = self.config.masking.temporal_causal_max_difficulty
+        difficulty = max_diff * min(1.0, epoch / warmup)
+        mask_gen.set_difficulty(difficulty)
+        logger.info(
+            f"Temporal causal difficulty: {difficulty:.2f} "
+            f"(epoch {epoch}/{warmup} warmup, max={max_diff})"
+        )
+
     def train(self, num_epochs: int) -> Dict[str, list]:
         """Run full training loop.
 
@@ -197,59 +229,114 @@ class DiffusionTrainer:
         start_epoch = self.current_epoch  # >0 when resuming from checkpoint
         logger.info(f"Starting training for {num_epochs} epochs (from epoch {start_epoch + 1})")
 
-        for epoch in range(start_epoch, num_epochs):
-            self.current_epoch = epoch + 1
+        # Ctrl+C graceful shutdown: prompt user for validate+save
+        self._interrupt_requested = False
+        original_sigint = signal.getsignal(signal.SIGINT)
 
-            # Train epoch
-            train_metrics = self.train_epoch()
+        def _sigint_handler(signum, frame):
+            if self._interrupt_requested:
+                # Second Ctrl+C: hard exit
+                logger.info("Second interrupt — exiting immediately")
+                signal.signal(signal.SIGINT, original_sigint)
+                raise KeyboardInterrupt
+            self._interrupt_requested = True
+            logger.info(
+                "\nInterrupt received. Will stop after current batch. "
+                "Press Ctrl+C again to force quit."
+            )
 
-            # Validate
-            if epoch % self.config.training.val_frequency == 0:
-                val_metrics = self.validate()
+        signal.signal(signal.SIGINT, _sigint_handler)
 
-                # Log
-                val_log = (
-                    f"Epoch {self.current_epoch}/{num_epochs}: "
-                    f"train_loss={train_metrics['loss']:.4f}, "
-                    f"val_loss={val_metrics['loss']:.4f}, "
-                    f"val_acc={val_metrics['accuracy']:.4f}"
-                )
-                if 'physics_loss' in val_metrics:
-                    val_log += f", val_phys={val_metrics['physics_loss']:.6f}"
-                logger.info(val_log)
+        try:
+            for epoch in range(start_epoch, num_epochs):
+                self.current_epoch = epoch + 1
 
-                # Track history
-                self.history['train_loss'].append(train_metrics['loss'])
-                self.history['val_loss'].append(val_metrics['loss'])
-                self.history['learning_rate'].append(
-                    self.optimizer.param_groups[0]['lr']
-                )
+                # Update temporal causal curriculum difficulty
+                self._update_temporal_causal_difficulty(epoch, num_epochs)
 
-                # Wandb logging
-                if self.use_wandb:
-                    wandb_metrics = {
-                        'epoch': self.current_epoch,
-                        'train_loss': train_metrics['loss'],
-                        'val_loss': val_metrics['loss'],
-                        'val_accuracy': val_metrics['accuracy'],
-                        'learning_rate': self.optimizer.param_groups[0]['lr'],
-                    }
+                # Train epoch
+                train_metrics = self.train_epoch()
+
+                # Check for interrupt after epoch
+                if self._interrupt_requested:
+                    self._handle_interrupt(num_epochs)
+                    break
+
+                # Validate
+                if epoch % self.config.training.val_frequency == 0:
+                    val_metrics = self.validate()
+
+                    # Log
+                    val_log = (
+                        f"Epoch {self.current_epoch}/{num_epochs}: "
+                        f"train_loss={train_metrics['loss']:.4f}, "
+                        f"val_loss={val_metrics['loss']:.4f}, "
+                        f"val_acc={val_metrics['accuracy']:.4f}"
+                    )
                     if 'physics_loss' in val_metrics:
-                        wandb_metrics['val_physics_loss'] = val_metrics['physics_loss']
-                    self.wandb.log(wandb_metrics)
+                        val_log += f", val_phys={val_metrics['physics_loss']:.6f}"
+                    logger.info(val_log)
 
-                # Save best model
-                if self.config.training.save_best and val_metrics['loss'] < self.best_val_loss:
-                    self.best_val_loss = val_metrics['loss']
-                    self.save_checkpoint(is_best=True)
-                    logger.info(f"New best model saved (val_loss={self.best_val_loss:.4f})")
+                    # Track history
+                    self.history['train_loss'].append(train_metrics['loss'])
+                    self.history['val_loss'].append(val_metrics['loss'])
+                    self.history['learning_rate'].append(
+                        self.optimizer.param_groups[0]['lr']
+                    )
 
-            # Periodic checkpoint
-            if epoch % self.config.training.checkpoint_frequency == 0:
-                self.save_checkpoint(is_best=False)
+                    # Wandb logging
+                    if self.use_wandb:
+                        wandb_metrics = {
+                            'epoch': self.current_epoch,
+                            'train_loss': train_metrics['loss'],
+                            'val_loss': val_metrics['loss'],
+                            'val_accuracy': val_metrics['accuracy'],
+                            'learning_rate': self.optimizer.param_groups[0]['lr'],
+                        }
+                        if 'physics_loss' in val_metrics:
+                            wandb_metrics['val_physics_loss'] = val_metrics['physics_loss']
+                        self.wandb.log(wandb_metrics)
 
-        logger.info("Training complete")
+                    # Save best model
+                    if self.config.training.save_best and val_metrics['loss'] < self.best_val_loss:
+                        self.best_val_loss = val_metrics['loss']
+                        self.save_checkpoint(is_best=True)
+                        logger.info(f"New best model saved (val_loss={self.best_val_loss:.4f})")
+
+                # Periodic checkpoint
+                if epoch % self.config.training.checkpoint_frequency == 0:
+                    self.save_checkpoint(is_best=False)
+
+            logger.info("Training complete")
+        finally:
+            # Restore original signal handler
+            signal.signal(signal.SIGINT, original_sigint)
+
         return self.history
+
+    def _handle_interrupt(self, num_epochs: int):
+        """Handle graceful interruption: prompt user for validate+save."""
+        logger.info(f"\nTraining interrupted at epoch {self.current_epoch}/{num_epochs}")
+        try:
+            response = input("Run validation and save checkpoint? [Y/n] ").strip().lower()
+        except EOFError:
+            response = "y"
+
+        if response in ("", "y", "yes"):
+            logger.info("Running validation...")
+            val_metrics = self.validate()
+            logger.info(
+                f"Interrupt checkpoint — val_loss={val_metrics['loss']:.4f}, "
+                f"val_acc={val_metrics['accuracy']:.4f}"
+            )
+            self.save_checkpoint(is_best=False)
+            if self.config.training.save_best and val_metrics['loss'] < self.best_val_loss:
+                self.best_val_loss = val_metrics['loss']
+                self.save_checkpoint(is_best=True)
+                logger.info(f"New best model saved (val_loss={self.best_val_loss:.4f})")
+            logger.info("Checkpoint saved. Exiting.")
+        else:
+            logger.info("Skipping validation. Exiting.")
 
     def train_epoch(self) -> Dict[str, float]:
         """Train for one epoch.
@@ -327,9 +414,38 @@ class DiffusionTrainer:
                 )
                 if physics_loss_val > 0:
                     log_msg += f", phys={physics_loss_val:.6f}"
+
+                # Per-cutoff breakdown (no extra compute, just re-slice existing tensors)
+                cutoffs = self._infer_cutoffs_from_mask(target)
+                if cutoffs is not None:
+                    with torch.no_grad():
+                        parts = []
+                        for c in sorted(cutoffs.unique().tolist()):
+                            c = int(c)
+                            smask = (cutoffs == c)
+                            corr = 0
+                            tot = 0
+                            for key in predicted_logits:
+                                tmask = target[key]
+                                active = smask & tmask
+                                n = active.sum().item()
+                                if n == 0:
+                                    continue
+                                preds = torch.argmax(predicted_logits[key], dim=-1)
+                                corr += ((preds == tokens[key]) & active).sum().item()
+                                tot += n
+                            acc = corr / tot if tot > 0 else 0.0
+                            parts.append(f"T{c:03d}={acc:.2f}")
+                        log_msg += f" | acc[{'/'.join(parts)}]"
+
                 logger.info(log_msg)
 
-        avg_loss = epoch_loss / num_batches
+            # Check for graceful interrupt
+            if getattr(self, '_interrupt_requested', False):
+                logger.info(f"Stopping epoch early at batch {batch_idx}/{len(self.train_loader)}")
+                break
+
+        avg_loss = epoch_loss / max(num_batches, 1)
         return {'loss': avg_loss}
 
     def _compute_loss(
@@ -386,13 +502,20 @@ class DiffusionTrainer:
         """Run validation.
 
         Returns:
-            Dict with validation metrics (loss, accuracy, and optionally physics_loss)
+            Dict with validation metrics (loss, accuracy, and optionally physics_loss).
+            When using temporal_causal masking, also includes per-cutoff breakdowns.
         """
         self.denoiser.eval()
         val_loss = 0.0
         val_physics_loss = 0.0
         val_accuracy = 0.0
         num_batches = 0
+
+        # Per-cutoff accumulators (temporal causal only)
+        cutoff_correct: Dict[int, int] = {}
+        cutoff_count: Dict[int, int] = {}
+        cutoff_loss_sum: Dict[int, float] = {}
+        cutoff_loss_count: Dict[int, int] = {}
 
         physics_active = (
             self.physics_loss is not None
@@ -433,6 +556,14 @@ class DiffusionTrainer:
             accuracy = self._compute_accuracy(predicted_logits, tokens, target)
             val_accuracy += accuracy
 
+            # Per-cutoff metrics
+            cutoffs = self._infer_cutoffs_from_mask(target)
+            if cutoffs is not None:
+                self._accumulate_per_cutoff_metrics(
+                    predicted_logits, tokens, target, cutoffs,
+                    cutoff_correct, cutoff_count, cutoff_loss_sum, cutoff_loss_count,
+                )
+
             num_batches += 1
 
         avg_loss = val_loss / num_batches
@@ -441,6 +572,18 @@ class DiffusionTrainer:
         metrics = {'loss': avg_loss, 'accuracy': avg_accuracy}
         if physics_active:
             metrics['physics_loss'] = val_physics_loss / num_batches
+
+        # Log per-cutoff breakdown
+        if cutoff_count:
+            cutoff_strs = []
+            for c in sorted(cutoff_count.keys()):
+                acc = cutoff_correct[c] / cutoff_count[c] if cutoff_count[c] > 0 else 0.0
+                avg_l = cutoff_loss_sum[c] / cutoff_loss_count[c] if cutoff_loss_count[c] > 0 else 0.0
+                n_predict = cutoff_loss_count[c] // max(cutoff_count.get(c, 1) // batch_size, 1)
+                cutoff_strs.append(f"T{c:03d}: acc={acc:.3f} loss={avg_l:.4f} (n={cutoff_count[c]})")
+                metrics[f'acc_cutoff_{c}'] = acc
+                metrics[f'loss_cutoff_{c}'] = avg_l
+            logger.info("Per-cutoff val metrics: " + " | ".join(cutoff_strs))
 
         return metrics
 
@@ -478,6 +621,102 @@ class DiffusionTrainer:
 
         accuracy = total_correct / total_count if total_count > 0 else 0.0
         return accuracy
+
+    def _accumulate_per_cutoff_metrics(
+        self,
+        predicted_logits: Dict[str, torch.Tensor],
+        target_tokens: Dict[str, torch.Tensor],
+        target_mask: Dict[str, torch.BoolTensor],
+        cutoffs: torch.Tensor,
+        cutoff_correct: Dict[int, int],
+        cutoff_count: Dict[int, int],
+        cutoff_loss_sum: Dict[int, float],
+        cutoff_loss_count: Dict[int, int],
+    ):
+        """Accumulate accuracy and loss per cutoff level.
+
+        For each unique cutoff in the batch, computes accuracy and loss
+        on just the samples with that cutoff.
+        """
+        unique_cutoffs = cutoffs.unique().tolist()
+        for c in unique_cutoffs:
+            c = int(c)
+            sample_mask = (cutoffs == c)  # [B]
+            n_samples = sample_mask.sum().item()
+
+            correct = 0
+            count = 0
+            loss_sum = 0.0
+            loss_keys = 0
+
+            for key in predicted_logits:
+                logits = predicted_logits[key]  # [B, V]
+                targets = target_tokens[key]  # [B]
+                tmask = target_mask[key]  # [B]
+
+                # Only samples with this cutoff AND this key is a target
+                active = sample_mask & tmask  # [B]
+                n_active = active.sum().item()
+                if n_active == 0:
+                    continue
+
+                preds = torch.argmax(logits, dim=-1)  # [B]
+                correct += ((preds == targets) & active).sum().item()
+                count += n_active
+
+                # Per-key loss for these samples
+                loss_per = F.cross_entropy(logits, targets, reduction='none')  # [B]
+                loss_sum += (loss_per * active.float()).sum().item()
+                loss_keys += n_active
+
+            cutoff_correct[c] = cutoff_correct.get(c, 0) + correct
+            cutoff_count[c] = cutoff_count.get(c, 0) + count
+            cutoff_loss_sum[c] = cutoff_loss_sum.get(c, 0.0) + loss_sum
+            cutoff_loss_count[c] = cutoff_loss_count.get(c, 0) + loss_keys
+
+    def _infer_cutoffs_from_mask(
+        self,
+        target_mask: Dict[str, torch.BoolTensor],
+    ) -> Optional[torch.Tensor]:
+        """Infer the temporal causal cutoff for each sample from the target mask.
+
+        For temporal causal masking, keys with trunc_len <= cutoff are observed
+        (target=False) and keys with trunc_len > cutoff are targets (target=True).
+        The cutoff is the max truncation length where the sample is observed.
+
+        Args:
+            target_mask: Dict mapping key → bool tensor [B]
+
+        Returns:
+            Tensor [B] of cutoff values per sample, or None if not temporal causal.
+        """
+        if self.config.masking.strategy != MaskingStrategy.TEMPORAL_CAUSAL:
+            return None
+
+        # Build a mapping: truncation_length → one representative key
+        trunc_to_key = {}
+        for key in target_mask:
+            parsed = _parse_trunc_key(key)
+            if parsed is not None:
+                _, trunc_len, _ = parsed
+                if trunc_len not in trunc_to_key:
+                    trunc_to_key[trunc_len] = key
+
+        if not trunc_to_key:
+            return None
+
+        trunc_lengths = sorted(trunc_to_key.keys())
+        B = next(iter(target_mask.values())).shape[0]
+        device = next(iter(target_mask.values())).device
+
+        # For each sample, find the max truncation length that is observed (not target)
+        cutoffs = torch.zeros(B, dtype=torch.long, device=device)
+        for tl in trunc_lengths:
+            key = trunc_to_key[tl]
+            is_observed = ~target_mask[key]  # [B]
+            cutoffs[is_observed] = tl
+
+        return cutoffs
 
     def save_checkpoint(self, is_best: bool = False):
         """Save model checkpoint.

@@ -194,18 +194,19 @@ class TrainMNOV2Command(CLICommand):
             )
             print(f"  VQ adapter: {config.tokenizer_checkpoint}")
 
-        # --- Token store (needed for contrastive indicators, QA, token CE) ---
+        # --- Token store (needed for contrastive indicators, QA, token CE, token cond) ---
         token_store = None
         needs_token_store = (
             config.quantization_aware or has_contrastive
             or has_token_ce or has_centroid_mse or has_token_head
+            or config.token_conditioning
         )
         if needs_token_store:
             if config.token_dataset is None:
                 return self.error(
                     "token_dataset required when lambda_contrastive > 0, "
                     "quantization_aware, lambda_token_ce > 0, "
-                    "or lambda_centroid_mse > 0"
+                    "lambda_centroid_mse > 0, or token_conditioning"
                 )
             from spinlock.tokens.pretokenized_store import PretokenizedTokenStore
 
@@ -252,6 +253,11 @@ class TrainMNOV2Command(CLICommand):
             print("  Centroid MSE enabled (VQ centroid supervision)")
         if has_token_head:
             print("  Token head CE enabled (learned bypass of frozen VQ encoder)")
+        if config.token_conditioning:
+            print(
+                f"  Token conditioning enabled "
+                f"(embed_dim={config.token_embed_dim})"
+            )
 
         # --- Loss ---
         loss_fn = TrajectoryLoss(
@@ -277,7 +283,29 @@ class TrainMNOV2Command(CLICommand):
             if not ckpt_path.exists():
                 return self.error(f"Resume checkpoint not found: {ckpt_path}")
             ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-            model.load_state_dict(ckpt["model_state_dict"])
+
+            # When token_conditioning is newly enabled, the old checkpoint has
+            # param_embedding with shape [embed, 34] while the new model has
+            # [embed, 34 + token_embed_dim]. Use strict=False and log skips.
+            if config.token_conditioning:
+                missing, unexpected = model.load_state_dict(
+                    ckpt["model_state_dict"], strict=False,
+                )
+                if missing:
+                    logger.info(
+                        "Partial resume (token_conditioning): %d missing keys "
+                        "(new token projector + widened param_embedding)",
+                        len(missing),
+                    )
+                    for k in missing:
+                        logger.debug("  missing: %s", k)
+                if unexpected:
+                    logger.warning(
+                        "Partial resume: %d unexpected keys", len(unexpected),
+                    )
+            else:
+                model.load_state_dict(ckpt["model_state_dict"])
+
             if "loss_fn_state_dict" in ckpt:
                 loss_fn.load_state_dict(ckpt["loss_fn_state_dict"], strict=False)
             resumed_epoch = ckpt.get("epoch", "?")

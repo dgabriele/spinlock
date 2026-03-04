@@ -12,16 +12,14 @@ from spinlock.tokens import (
 
 @pytest.fixture
 def simple_config():
-    """Create simple config for testing."""
+    """Create simple config for testing with mean encoder (no temporal_input_dim issue)."""
+    from spinlock.tokens.config import TemporalEncoderConfig, EncoderConfig
     return TokenizerConfig(
-        encoder__embedding_dim=32,
-        encoder__hidden_dim=64,
-        quantizer__num_embeddings=64,
-        quantizer__embedding_dim=32,
-        hierarchy__num_levels=2,
-        hierarchy__compression_ratios="0.5:1.0",
-        training__num_epochs=2,
-        training__batch_size=4,
+        encoder=EncoderConfig(
+            temporal=TemporalEncoderConfig(variant="mean"),
+            embedding_dim=32,
+            hidden_dim=64,
+        ),
     )
 
 
@@ -36,11 +34,12 @@ def group_indices():
 
 def test_joint_vqvae_creation(simple_config, group_indices):
     """Test JointHierarchicalVQVAE can be created."""
-    model = JointHierarchicalVQVAE(simple_config, group_indices)
+    model = JointHierarchicalVQVAE(
+        simple_config, group_indices, temporal_input_dim=5,
+    )
 
     assert model is not None
     assert len(model.projectors) == 2
-    # 2 categories × num_levels (default=3 unless simple_config specifies otherwise)
     expected_quantizers = 2 * simple_config.hierarchy.num_levels
     assert len(model.quantizers) == expected_quantizers
 
@@ -51,17 +50,16 @@ def test_joint_vqvae_forward_temporal_only(simple_config):
         "temporal_group_1": [0, 1, 2],
     }
 
-    model = JointHierarchicalVQVAE(simple_config, group_indices)
+    model = JointHierarchicalVQVAE(
+        simple_config, group_indices, temporal_input_dim=3,
+    )
 
-    # Create fake temporal features
-    # Note: We need to set the actual input_dim for the encoder
-    # This is a limitation - in practice, input_dim is inferred from data
-    temporal = torch.randn(4, 64, 10)  # [B, T, D_t] - small D_t for testing
+    temporal = torch.randn(4, 64, 3)  # [B, T, D_t]
+    outputs = model(temporal_features=temporal)
 
-    # This test may fail due to input_dim mismatch
-    # In real usage, the input_dim is set correctly during initialization
-    # For now, skip the actual forward pass
-    pytest.skip("Forward pass test requires proper input_dim configuration")
+    assert "reconstructed" in outputs
+    assert "vq_loss" in outputs
+    assert outputs["reconstructed"].shape[0] == 4
 
 
 def test_vq_tokenizer_initialization(simple_config, group_indices):

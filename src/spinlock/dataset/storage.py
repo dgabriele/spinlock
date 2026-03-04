@@ -132,6 +132,10 @@ class HDF5DatasetWriter:
             "evolution_policies": [],
             "grid_sizes": [],
             "noise_regimes": [],
+            "dynamics_classes": [],
+            "activity_early_late_mse": [],
+            "activity_late_half_mean_var": [],
+            "activity_late_evolution_rate": [],
         }
         self._buffer_size = 0
 
@@ -185,6 +189,25 @@ class HDF5DatasetWriter:
                 dtype=h5py.string_dtype(encoding='utf-8'),
                 chunks=(self.chunk_size,),
             )
+            # Dynamics classification (optional, populated by behavioral filter)
+            meta.create_dataset(
+                "dynamics_classes",
+                shape=(self.num_parameter_sets,),
+                dtype=h5py.string_dtype(encoding='utf-8'),
+                chunks=(self.chunk_size,),
+                fillvalue="unclassified",
+            )
+            # Per-sample activity metrics (optional, populated by behavioral filter)
+            for metric_name in ("activity_early_late_mse",
+                                "activity_late_half_mean_var",
+                                "activity_late_evolution_rate"):
+                meta.create_dataset(
+                    metric_name,
+                    shape=(self.num_parameter_sets,),
+                    dtype=np.float32,
+                    chunks=(self.chunk_size,),
+                    fillvalue=np.nan,
+                )
 
         # Parameters group (created dynamically when we know dimensions)
         self.file.create_group("parameters")
@@ -264,6 +287,10 @@ class HDF5DatasetWriter:
         evolution_policies: Optional[List[str]] = None,
         grid_sizes: Optional[List[int]] = None,
         noise_regimes: Optional[List[str]] = None,
+        dynamics_classes: Optional[List[str]] = None,
+        activity_early_late_mse: Optional[np.ndarray] = None,
+        activity_late_half_mean_var: Optional[np.ndarray] = None,
+        activity_late_evolution_rate: Optional[np.ndarray] = None,
     ) -> None:
         """
         Write a batch of data to HDF5 with buffering for performance.
@@ -358,6 +385,19 @@ class HDF5DatasetWriter:
                 raise ValueError(f"noise_regimes length {len(noise_regimes)} != batch_size {batch_size}")
             self._write_buffer["noise_regimes"].extend(noise_regimes)
 
+        if dynamics_classes is not None:
+            if len(dynamics_classes) != batch_size:
+                raise ValueError(f"dynamics_classes length {len(dynamics_classes)} != batch_size {batch_size}")
+            self._write_buffer["dynamics_classes"].extend(dynamics_classes)
+
+        for metric_key, metric_val in (
+            ("activity_early_late_mse", activity_early_late_mse),
+            ("activity_late_half_mean_var", activity_late_half_mean_var),
+            ("activity_late_evolution_rate", activity_late_evolution_rate),
+        ):
+            if metric_val is not None:
+                self._write_buffer[metric_key].append(metric_val)
+
         self._buffer_size += batch_size
 
         # Flush when buffer reaches chunk_size
@@ -415,6 +455,17 @@ class HDF5DatasetWriter:
             if self._write_buffer["noise_regimes"]:
                 noise_regimes = np.array(self._write_buffer["noise_regimes"], dtype=h5py.string_dtype())
                 cast(h5py.Dataset, meta_group["noise_regimes"])[self.current_idx : end_idx] = noise_regimes
+
+            if self._write_buffer["dynamics_classes"]:
+                dynamics = np.array(self._write_buffer["dynamics_classes"], dtype=h5py.string_dtype())
+                cast(h5py.Dataset, meta_group["dynamics_classes"])[self.current_idx : end_idx] = dynamics
+
+            for metric_key in ("activity_early_late_mse",
+                               "activity_late_half_mean_var",
+                               "activity_late_evolution_rate"):
+                if self._write_buffer[metric_key]:
+                    metric_arr = np.concatenate(self._write_buffer[metric_key], axis=0).astype(np.float32)
+                    cast(h5py.Dataset, meta_group[metric_key])[self.current_idx : end_idx] = metric_arr
 
         self.current_idx = end_idx
 

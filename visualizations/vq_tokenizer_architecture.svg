@@ -1,0 +1,1681 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 800 1300"
+   width="800"
+   height="1300"
+   font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+   version="1.1"
+   id="svg118"
+   sodipodi:docname="vq_tokenizer_architecture.svg"
+   inkscape:version="1.4.3 (0d15f75042, 2025-12-25)"
+   inkscape:export-filename="vq_tokenizer_architecture.png"
+   inkscape:export-xdpi="110.76923"
+   inkscape:export-ydpi="110.76923"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview118"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="1.9929533"
+     inkscape:cx="166.58694"
+     inkscape:cy="134.97557"
+     inkscape:window-width="3840"
+     inkscape:window-height="2124"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg118" />
+  <defs
+     id="defs2">
+    <marker
+       id="arrow"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto">
+      <polygon
+         points="0 0.5, 9 3.5, 0 6.5"
+         fill="#2C3E50"
+         id="polygon1" />
+    </marker>
+    <marker
+       id="arrow-sm"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="0 0.4, 7 3, 0 5.6"
+         fill="#2C3E50"
+         id="polygon2" />
+    </marker>
+    <!-- Subtle grid pattern for VQ area -->
+    <pattern
+       id="vq-grid"
+       width="8"
+       height="8"
+       patternUnits="userSpaceOnUse">
+      <path
+         d="M 8 0 L 0 0 0 8"
+         fill="none"
+         stroke="#6C3483"
+         stroke-width="0.15"
+         opacity="0.3"
+         id="path2" />
+    </pattern>
+  </defs>
+  <!-- Background -->
+  <rect
+     width="800"
+     height="1300"
+     fill="#FDFDFD"
+     rx="0"
+     id="rect2" />
+  <!-- ================================================================ -->
+  <!-- TITLE                                                            -->
+  <!-- ================================================================ -->
+  <text
+     x="400"
+     y="30"
+     text-anchor="middle"
+     font-size="14px"
+     font-weight="bold"
+     fill="#2c3e50"
+     letter-spacing="0.3"
+     id="text2">&quot;VQTokenizer&quot; Architecture: Multiscale Behavioral Dynamics Tokenization</text>
+  <line
+     x1="180"
+     y1="38"
+     x2="620"
+     y2="38"
+     stroke="#BDC3C7"
+     stroke-width="0.7"
+     id="line2" />
+  <!-- ================================================================ -->
+  <!-- INPUT TENSOR                                                     -->
+  <!-- y: 54-86                                                         -->
+  <!-- ================================================================ -->
+  <polygon
+     points="305,54 505,54 490,86 290,86 "
+     fill="#d4e6f1"
+     stroke="#2c3e50"
+     stroke-width="1.4"
+     id="polygon3"
+     transform="matrix(1.1600845,0,0,1.1600845,-63.63359,-13.205915)" />
+  <text
+     x="395"
+     y="67"
+     text-anchor="middle"
+     font-size="11px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text3">Raw Trajectory (Ex: 3 in/out channels)</text>
+  <text
+     x="395"
+     y="80"
+     text-anchor="middle"
+     font-size="9"
+     fill="#2C3E50"
+     id="text4">[B, 512, 3, 128, 128]</text>
+  <!-- Arrow: input -> pyramid -->
+  <line
+     x1="395"
+     y1="86"
+     x2="395"
+     y2="108"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     marker-end="url(#arrow)"
+     id="line4" />
+  <!-- ================================================================ -->
+  <!-- SPATIO-TEMPORAL PYRAMID                                          -->
+  <!-- y: 110-152                                                       -->
+  <!-- ================================================================ -->
+  <rect
+     x="195"
+     y="110"
+     width="400"
+     height="42"
+     rx="8"
+     fill="#D5F5E3"
+     stroke="#1E8449"
+     stroke-width="1.4"
+     id="rect4" />
+  <text
+     x="395"
+     y="128"
+     text-anchor="middle"
+     font-size="11px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text5">Temporal Pyramid Encoder</text>
+  <text
+     x="395"
+     y="144"
+     text-anchor="middle"
+     font-size="9px"
+     fill="#2c3e50"
+     id="text6">Temporal avg-pool ↓[2,4,8,16] downsampling| Variable-length bins [32, 64, 128, 256, 512]</text>
+  <!-- Fan-out arrows: pyramid -> 4 parallel levels -->
+  <!-- Level centers: 130, 300, 490, 660 -->
+  <line
+     x1="290"
+     y1="152"
+     x2="138"
+     y2="180"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line6" />
+  <line
+     x1="345"
+     y1="152"
+     x2="300"
+     y2="180"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line7" />
+  <line
+     x1="450"
+     y1="152"
+     x2="490"
+     y2="180"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line8" />
+  <line
+     x1="505"
+     y1="152"
+     x2="652"
+     y2="180"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line9" />
+  <!-- ================================================================ -->
+  <!-- 4 PYRAMID LEVEL TENSORS                                          -->
+  <!-- y: 182-210                                                       -->
+  <!-- ================================================================ -->
+  <!-- Level 0 (x center = 138) -->
+  <polygon
+     points="80,182 200,182 192,210 72,210"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     id="polygon9" />
+  <text
+     x="134"
+     y="193"
+     text-anchor="middle"
+     font-size="9"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text9">Level 0</text>
+  <text
+     x="134"
+     y="205"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#2c3e50"
+     id="text10">[B, <tspan
+   style="font-weight:bold"
+   id="tspan121">256</tspan>, 3, 128, 128]</text>
+  <!-- Level 1 (x center = 300) -->
+  <polygon
+     points="242,182 362,182 354,210 234,210"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     id="polygon10" />
+  <text
+     x="296"
+     y="193"
+     text-anchor="middle"
+     font-size="9"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text11">Level 1</text>
+  <text
+     x="296"
+     y="205"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#2c3e50"
+     id="text12">[B, <tspan
+   style="font-weight:bold"
+   id="tspan122">128</tspan>, 3, 128, 128]</text>
+  <!-- Level 2 (x center = 490) -->
+  <polygon
+     points="432,182 552,182 544,210 424,210"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     id="polygon12" />
+  <text
+     x="486"
+     y="193"
+     text-anchor="middle"
+     font-size="9"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text13">Level 2</text>
+  <text
+     x="486"
+     y="205"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#2c3e50"
+     id="text14">[B, <tspan
+   style="font-weight:bold"
+   id="tspan123">64</tspan>, 3, 128, 128]</text>
+  <!-- Level 3 (x center = 660) -->
+  <polygon
+     points="600,182 720,182 712,210 592,210"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     id="polygon14" />
+  <text
+     x="654"
+     y="193"
+     text-anchor="middle"
+     font-size="9"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text15">Level 3</text>
+  <text
+     x="654"
+     y="205"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#2c3e50"
+     id="text16">[B, <tspan
+   style="font-weight:bold"
+   id="tspan124">32</tspan>, 3, 128, 128]</text>
+  <!-- Arrows: level tensors -> CNN -->
+  <line
+     x1="134"
+     y1="210"
+     x2="134"
+     y2="236"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line16" />
+  <line
+     x1="296"
+     y1="210"
+     x2="296"
+     y2="236"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line17" />
+  <line
+     x1="486"
+     y1="210"
+     x2="486"
+     y2="236"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line18" />
+  <line
+     x1="654"
+     y1="210"
+     x2="654"
+     y2="236"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line19" />
+  <!-- ================================================================ -->
+  <!-- SHARED FRAME CNN ENCODER                                         -->
+  <!-- y: 238-286                                                       -->
+  <!-- ================================================================ -->
+  <!-- Dashed shared-weights boundary -->
+  <rect
+     x="55"
+     y="234"
+     width="690"
+     height="56"
+     rx="10"
+     fill="none"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     stroke-dasharray="5,3"
+     id="rect19" />
+  <text
+     x="748"
+     y="252"
+     text-anchor="end"
+     font-size="7.5"
+     fill="#1E8449"
+     font-style="italic"
+     id="text19">shared weights</text>
+  <rect
+     x="60"
+     y="238"
+     width="680"
+     height="48"
+     rx="8"
+     fill="#D5F5E3"
+     stroke="#1E8449"
+     stroke-width="1.4"
+     id="rect20" />
+  <text
+     x="395"
+     y="257"
+     text-anchor="middle"
+     font-size="11px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text20">Shared Frame CNN Encoder (ResNet-3)</text>
+  <text
+     x="395"
+     y="274"
+     text-anchor="middle"
+     font-size="9px"
+     fill="#2c3e50"
+     id="text21">[<tspan
+   style="font-weight:bold"
+   id="tspan125">B*T_i</tspan>, 3, 128, 128] --&gt; [<tspan
+   style="font-weight:bold"
+   id="tspan126">B*T_i</tspan>, 256] per-frame spatial encoding</text>
+  <!-- Arrows: CNN -> CNN output tensors -->
+  <line
+     x1="134"
+     y1="286"
+     x2="134"
+     y2="308"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line21" />
+  <line
+     x1="296"
+     y1="286"
+     x2="296"
+     y2="308"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line22" />
+  <line
+     x1="486"
+     y1="286"
+     x2="486"
+     y2="308"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line23" />
+  <line
+     x1="654"
+     y1="286"
+     x2="654"
+     y2="308"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line24" />
+  <!-- ================================================================ -->
+  <!-- CNN OUTPUT TENSORS                                               -->
+  <!-- y: 310-334                                                       -->
+  <!-- ================================================================ -->
+  <polygon
+     points="86,310 186,310 179,334 79,334"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1"
+     id="polygon24" />
+  <text
+     x="131"
+     y="326"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text24">[B, <tspan
+   style="font-weight:bold"
+   id="tspan127">256</tspan>, 256]</text>
+  <polygon
+     points="248,310 348,310 341,334 241,334"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1"
+     id="polygon25" />
+  <text
+     x="293"
+     y="326"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text25">[B, <tspan
+   style="font-weight:bold"
+   id="tspan118">128</tspan>, 256]</text>
+  <polygon
+     points="438,310 538,310 531,334 431,334"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1"
+     id="polygon26" />
+  <text
+     x="483"
+     y="326"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text26">[B, <tspan
+   style="font-weight:bold"
+   id="tspan119">64</tspan>, 256]</text>
+  <polygon
+     points="606,310 706,310 699,334 599,334"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1"
+     id="polygon27" />
+  <text
+     x="651"
+     y="326"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#2c3e50"
+     id="text27">[B, <tspan
+   style="font-weight:bold"
+   id="tspan120">32</tspan>, 256]</text>
+  <!-- Arrows: CNN outputs -> aggregators -->
+  <line
+     x1="134"
+     y1="334"
+     x2="134"
+     y2="356"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line27" />
+  <line
+     x1="296"
+     y1="334"
+     x2="296"
+     y2="356"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line28" />
+  <line
+     x1="486"
+     y1="334"
+     x2="486"
+     y2="356"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line29" />
+  <line
+     x1="654"
+     y1="334"
+     x2="654"
+     y2="356"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line30" />
+  <!-- ================================================================ -->
+  <!-- PER-LEVEL TEMPORAL AGGREGATORS                                   -->
+  <!-- y: 358-406                                                       -->
+  <!-- ================================================================ -->
+  <rect
+     x="72"
+     y="358"
+     width="124"
+     height="48"
+     rx="6"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1.3"
+     id="rect30" />
+  <text
+     x="134"
+     y="374"
+     text-anchor="middle"
+     font-size="9px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text30">Temporal Agg 0</text>
+  <text
+     x="134"
+     y="387"
+     text-anchor="middle"
+     font-size="7.5"
+     fill="#2C3E50"
+     id="text31">Conv1d(256,128,k=3)</text>
+  <text
+     x="134"
+     y="399"
+     text-anchor="middle"
+     font-size="7.5"
+     fill="#2C3E50"
+     id="text32">BN + ReLU + GAP</text>
+  <rect
+     x="234"
+     y="358"
+     width="124"
+     height="48"
+     rx="6"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1.3"
+     id="rect32" />
+  <text
+     x="296"
+     y="374"
+     text-anchor="middle"
+     font-size="9px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text33">Temporal Agg 1</text>
+  <text
+     x="296"
+     y="387"
+     text-anchor="middle"
+     font-size="7.5"
+     fill="#2C3E50"
+     id="text34">Conv1d(256,128,k=3)</text>
+  <text
+     x="296"
+     y="399"
+     text-anchor="middle"
+     font-size="7.5"
+     fill="#2C3E50"
+     id="text35">BN + ReLU + GAP</text>
+  <rect
+     x="424"
+     y="358"
+     width="124"
+     height="48"
+     rx="6"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1.3"
+     id="rect35" />
+  <text
+     x="486"
+     y="374"
+     text-anchor="middle"
+     font-size="9px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text36">Temporal Agg 2</text>
+  <text
+     x="486"
+     y="387"
+     text-anchor="middle"
+     font-size="7.5"
+     fill="#2C3E50"
+     id="text37">Conv1d(256,128,k=3)</text>
+  <text
+     x="486"
+     y="399"
+     text-anchor="middle"
+     font-size="7.5"
+     fill="#2C3E50"
+     id="text38">BN + ReLU + GAP</text>
+  <rect
+     x="592"
+     y="358"
+     width="124"
+     height="48"
+     rx="6"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1.3"
+     id="rect38" />
+  <text
+     x="654"
+     y="374"
+     text-anchor="middle"
+     font-size="9px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text39">Temporal Agg 3</text>
+  <text
+     x="654"
+     y="387"
+     text-anchor="middle"
+     font-size="7.5"
+     fill="#2C3E50"
+     id="text40">Conv1d(256,128,k=3)</text>
+  <text
+     x="654"
+     y="399"
+     text-anchor="middle"
+     font-size="7.5"
+     fill="#2C3E50"
+     id="text41">BN + ReLU + GAP</text>
+  <!-- Dimension annotations below aggregators -->
+  <text
+     x="134"
+     y="422"
+     text-anchor="middle"
+     font-size="8"
+     fill="#D35400"
+     id="text42">[B, 128]</text>
+  <text
+     x="296"
+     y="422"
+     text-anchor="middle"
+     font-size="8"
+     fill="#D35400"
+     id="text43">[B, 128]</text>
+  <text
+     x="486"
+     y="422"
+     text-anchor="middle"
+     font-size="8"
+     fill="#D35400"
+     id="text44">[B, 128]</text>
+  <text
+     x="654"
+     y="422"
+     text-anchor="middle"
+     font-size="8"
+     fill="#D35400"
+     id="text45">[B, 128]</text>
+  <!-- Arrows: aggregators -> concatenation circle (top of circle at y~458) -->
+  <line
+     x1="134"
+     y1="428"
+     x2="345"
+     y2="462"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line45" />
+  <line
+     x1="296"
+     y1="428"
+     x2="375"
+     y2="462"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line46" />
+  <line
+     x1="486"
+     y1="428"
+     x2="415"
+     y2="462"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line47" />
+  <line
+     x1="654"
+     y1="428"
+     x2="445"
+     y2="462"
+     stroke="#2C3E50"
+     stroke-width="1.1"
+     marker-end="url(#arrow-sm)"
+     id="line48" />
+  <!-- ================================================================ -->
+  <!-- CONCATENATION NODE                                               -->
+  <!-- y center: 472                                                    -->
+  <!-- ================================================================ -->
+  <circle
+     cx="395"
+     cy="472"
+     r="14"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1.5"
+     id="circle48" />
+  <text
+     x="395"
+     y="476"
+     text-anchor="middle"
+     font-size="13"
+     font-weight="bold"
+     fill="#D35400"
+     id="text48">C</text>
+  <text
+     x="420"
+     y="476"
+     text-anchor="start"
+     font-size="9px"
+     fill="#2c3e50"
+     id="text49">4 x 128 = [B, <tspan
+   style="font-weight:bold"
+   id="tspan132">512</tspan>]</text>
+  <!-- Arrow: concat -> group projection -->
+  <line
+     x1="395"
+     y1="486"
+     x2="395"
+     y2="510"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     marker-end="url(#arrow)"
+     id="line49" />
+  <!-- ================================================================ -->
+  <!-- LEARNED GROUP PROJECTION                                         -->
+  <!-- y: 512-564                                                       -->
+  <!-- ================================================================ -->
+  <rect
+     x="195"
+     y="512"
+     width="400"
+     height="52"
+     rx="8"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1.4"
+     id="rect49" />
+  <text
+     x="395"
+     y="530"
+     text-anchor="middle"
+     font-size="11px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text50">Learned Group Projection (Ex: 30 groups)</text>
+  <text
+     x="395"
+     y="544"
+     text-anchor="middle"
+     font-size="9"
+     fill="#2C3E50"
+     id="text51">Linear(512, 960) + reshape(30, 32) + LayerNorm(32) + σ-gates (bias=5.0)</text>
+  <text
+     x="395"
+     y="558"
+     text-anchor="middle"
+     font-size="9px"
+     fill="#d35400"
+     id="text52">[B, <tspan
+   style="font-weight:bold"
+   id="tspan133">512</tspan>] --&gt; [B, 30, <tspan
+   style="font-weight:bold"
+   id="tspan134">32</tspan>]</text>
+  <!-- Arrow: projection -> VQ -->
+  <line
+     x1="395"
+     y1="564"
+     x2="395"
+     y2="594"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     marker-end="url(#arrow)"
+     id="line52" />
+  <!-- ================================================================ -->
+  <!-- HIERARCHICAL VQ SECTION                                          -->
+  <!-- y: 596-824                                                       -->
+  <!-- ================================================================ -->
+  <rect
+     x="70"
+     y="596"
+     width="660"
+     height="228"
+     rx="10"
+     fill="#E8DAEF"
+     stroke="#6C3483"
+     stroke-width="1.5"
+     id="rect52" />
+  <!-- Subtle grid fill inside VQ box -->
+  <rect
+     x="71"
+     y="597"
+     width="658"
+     height="226"
+     rx="10"
+     fill="url(#vq-grid)"
+     opacity="0.4"
+     id="rect53" />
+  <text
+     x="400"
+     y="618"
+     text-anchor="middle"
+     font-size="12"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text53">Per-Group Hierarchical Vector Quantization</text>
+  <text
+     x="400"
+     y="634"
+     text-anchor="middle"
+     font-size="9px"
+     fill="#6c3483"
+     id="text54"><tspan
+   style="font-weight:bold"
+   id="tspan128">30</tspan> groups x <tspan
+   style="font-weight:bold"
+   id="tspan129">3</tspan> hierarchy levels = <tspan
+   style="font-weight:bold"
+   id="tspan130">90</tspan> independent quantizers</text>
+  <!-- Projector annotation -->
+  <text
+     x="400"
+     y="652"
+     text-anchor="middle"
+     font-size="8.5px"
+     fill="#2c3e50"
+     id="text55">Each group: HierarchicalProjector(<tspan
+   style="font-weight:bold"
+   id="tspan135">32D</tspan>) --&gt; L0, L1, L2 latent vectors</text>
+  <!-- VQ Grid headers -->
+  <text
+     x="175"
+     y="676"
+     text-anchor="middle"
+     font-size="8"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text56">Grp 1</text>
+  <text
+     x="255"
+     y="676"
+     text-anchor="middle"
+     font-size="8"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text57">Grp 2</text>
+  <text
+     x="335"
+     y="676"
+     text-anchor="middle"
+     font-size="8"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text58">Grp 3</text>
+  <text
+     x="415"
+     y="676"
+     text-anchor="middle"
+     font-size="8"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text59">Grp 4</text>
+  <text
+     x="495"
+     y="676"
+     text-anchor="middle"
+     font-size="11"
+     fill="#6C3483"
+     id="text60">...</text>
+  <text
+     x="565"
+     y="676"
+     text-anchor="middle"
+     font-size="8"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text61">Grp 29</text>
+  <text
+     x="650"
+     y="676"
+     text-anchor="middle"
+     font-size="8"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text62">Grp 30</text>
+  <!-- Row labels and latent dims -->
+  <text
+     x="105"
+     y="702"
+     text-anchor="middle"
+     font-size="8"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text63">L0</text>
+  <text
+     x="105"
+     y="713"
+     text-anchor="middle"
+     font-size="7"
+     fill="#6C3483"
+     id="text64">~60D</text>
+  <text
+     x="105"
+     y="740"
+     text-anchor="middle"
+     font-size="8"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text65">L1</text>
+  <text
+     x="105"
+     y="751"
+     text-anchor="middle"
+     font-size="7"
+     fill="#6C3483"
+     id="text66">~28D</text>
+  <text
+     x="105"
+     y="778"
+     text-anchor="middle"
+     font-size="8"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text67">L2</text>
+  <text
+     x="105"
+     y="789"
+     text-anchor="middle"
+     font-size="7"
+     fill="#6C3483"
+     id="text68">~16D</text>
+  <!-- L0 row cells -->
+  <rect
+     x="143"
+     y="690"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#D2B4DE"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect68" />
+  <text
+     x="175"
+     y="705"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text69">~28 codes</text>
+  <rect
+     x="223"
+     y="690"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#D2B4DE"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect69" />
+  <text
+     x="255"
+     y="705"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text70">~28 codes</text>
+  <rect
+     x="303"
+     y="690"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#D2B4DE"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect70" />
+  <text
+     x="335"
+     y="705"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text71">~28 codes</text>
+  <rect
+     x="383"
+     y="690"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#D2B4DE"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect71" />
+  <text
+     x="415"
+     y="705"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text72">~28 codes</text>
+  <text
+     x="495"
+     y="705"
+     text-anchor="middle"
+     font-size="11"
+     fill="#6C3483"
+     id="text73">...</text>
+  <rect
+     x="533"
+     y="690"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#D2B4DE"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect73" />
+  <text
+     x="565"
+     y="705"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text74">~28 codes</text>
+  <rect
+     x="618"
+     y="690"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#D2B4DE"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect74" />
+  <text
+     x="650"
+     y="705"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text75">~28 codes</text>
+  <!-- L1 row cells -->
+  <rect
+     x="143"
+     y="728"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#D7BDE2"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect75" />
+  <text
+     x="175"
+     y="743"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text76">~13 codes</text>
+  <rect
+     x="223"
+     y="728"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#D7BDE2"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect76" />
+  <text
+     x="255"
+     y="743"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text77">~13 codes</text>
+  <rect
+     x="303"
+     y="728"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#D7BDE2"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect77" />
+  <text
+     x="335"
+     y="743"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text78">~13 codes</text>
+  <rect
+     x="383"
+     y="728"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#D7BDE2"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect78" />
+  <text
+     x="415"
+     y="743"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text79">~13 codes</text>
+  <text
+     x="495"
+     y="743"
+     text-anchor="middle"
+     font-size="11"
+     fill="#6C3483"
+     id="text80">...</text>
+  <rect
+     x="533"
+     y="728"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#D7BDE2"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect80" />
+  <text
+     x="565"
+     y="743"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text81">~13 codes</text>
+  <rect
+     x="618"
+     y="728"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#D7BDE2"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect81" />
+  <text
+     x="650"
+     y="743"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text82">~13 codes</text>
+  <!-- L2 row cells -->
+  <rect
+     x="143"
+     y="766"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#EBDEF0"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect82" />
+  <text
+     x="175"
+     y="781"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text83">~6 codes</text>
+  <rect
+     x="223"
+     y="766"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#EBDEF0"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect83" />
+  <text
+     x="255"
+     y="781"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text84">~6 codes</text>
+  <rect
+     x="303"
+     y="766"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#EBDEF0"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect84" />
+  <text
+     x="335"
+     y="781"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text85">~6 codes</text>
+  <rect
+     x="383"
+     y="766"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#EBDEF0"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect85" />
+  <text
+     x="415"
+     y="781"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text86">~6 codes</text>
+  <text
+     x="495"
+     y="781"
+     text-anchor="middle"
+     font-size="11"
+     fill="#6C3483"
+     id="text87">...</text>
+  <rect
+     x="533"
+     y="766"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#EBDEF0"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect87" />
+  <text
+     x="565"
+     y="781"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text88">~6 codes</text>
+  <rect
+     x="618"
+     y="766"
+     width="64"
+     height="22"
+     rx="3"
+     fill="#EBDEF0"
+     stroke="#6C3483"
+     stroke-width="0.8"
+     id="rect88" />
+  <text
+     x="650"
+     y="781"
+     text-anchor="middle"
+     font-size="7"
+     fill="#2C3E50"
+     id="text89">~6 codes</text>
+  <!-- VQ summary line -->
+  <text
+     x="400"
+     y="808"
+     text-anchor="middle"
+     font-size="8.5"
+     fill="#2C3E50"
+     id="text90">Codebook sizes (adaptive): L0 ~28 codes x ~60D | L1 ~13 codes x ~28D | L2 ~6 codes x ~16D</text>
+  <!-- Arrow: VQ -> quantized latents -->
+  <line
+     x1="395"
+     y1="824"
+     x2="395"
+     y2="854"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     marker-end="url(#arrow)"
+     id="line90" />
+  <!-- ================================================================ -->
+  <!-- CONCATENATED QUANTIZED LATENTS                                   -->
+  <!-- y: 856-888                                                       -->
+  <!-- ================================================================ -->
+  <polygon
+     points="268,856 528,856 514,888 254,888"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     id="polygon90" />
+  <text
+     x="388"
+     y="869"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text91">All Quantized Latents</text>
+  <text
+     x="388"
+     y="882"
+     text-anchor="middle"
+     font-size="9px"
+     fill="#2c3e50"
+     id="text92">[B, <tspan
+   style="font-weight:bold"
+   id="tspan1">2880D</tspan>] (90 quantizers concatenated)</text>
+  <!-- Arrow: quantized latents -> decoder (centered, no aux heads) -->
+  <line
+     x1="395"
+     y1="888"
+     x2="395"
+     y2="930"
+     stroke="#2C3E50"
+     stroke-width="1.4"
+     marker-end="url(#arrow)"
+     id="line92" />
+  <!-- ================================================================ -->
+  <!-- DECODER (centered — no auxiliary heads)                          -->
+  <!-- y: 932-978                                                       -->
+  <!-- ================================================================ -->
+  <rect
+     x="275"
+     y="932"
+     width="240"
+     height="46"
+     rx="8"
+     fill="#FADBD8"
+     stroke="#C0392B"
+     stroke-width="1.4"
+     id="rect93" />
+  <text
+     x="395"
+     y="950"
+     text-anchor="middle"
+     font-size="10px"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text93">Multilayer Residual Decoder</text>
+  <text
+     x="395"
+     y="966"
+     text-anchor="middle"
+     font-size="9px"
+     fill="#2c3e50"
+     id="text94"><tspan
+   style="font-weight:bold"
+   id="tspan2">2880D</tspan> --&gt; <tspan
+   style="font-weight:bold"
+   id="tspan3">960D</tspan> (skip connections)</text>
+  <!-- Arrow: decoder -> reconstruction output -->
+  <line
+     x1="395"
+     y1="978"
+     x2="395"
+     y2="1006"
+     stroke="#2C3E50"
+     stroke-width="1.3"
+     marker-end="url(#arrow)"
+     id="line94" />
+  <!-- Reconstruction output -->
+  <polygon
+     points="318,1008 478,1008 468,1038 308,1038"
+     fill="#FADBD8"
+     stroke="#C0392B"
+     stroke-width="1.2"
+     id="polygon94" />
+  <text
+     x="395"
+     y="1020"
+     text-anchor="middle"
+     font-size="9"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text95">Reconstruction Target</text>
+  <text
+     x="395"
+     y="1033"
+     text-anchor="middle"
+     font-size="8.5px"
+     fill="#2c3e50"
+     id="text96">[B, <tspan
+   style="font-weight:bold"
+   id="tspan4">960D</tspan>] (pre-VQ encoded features)</text>
+  <!-- (Auxiliary heads disabled — MNO handles token→rollout decoding) -->
+  <!-- ================================================================ -->
+  <!-- LEGEND                                                           -->
+  <!-- y: 1070-1220                                                     -->
+  <!-- ================================================================ -->
+  <rect
+     x="50"
+     y="1070"
+     width="700"
+     height="210"
+     rx="8"
+     fill="#FFFFFF"
+     stroke="#BDC3C7"
+     stroke-width="1"
+     id="rect100" />
+  <text
+     x="400"
+     y="1092"
+     text-anchor="middle"
+     font-size="11"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text101">Legend</text>
+  <line
+     x1="100"
+     y1="1100"
+     x2="700"
+     y2="1100"
+     stroke="#E5E7E9"
+     stroke-width="0.6"
+     id="line101" />
+  <!-- Legend row 1: shape types -->
+  <polygon
+     points="80,1112 128,1112 123,1128 75,1128"
+     fill="#D4E6F1"
+     stroke="#2C3E50"
+     stroke-width="1"
+     id="polygon101" />
+  <text
+     x="140"
+     y="1124"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text102">Data tensor (with dimensions)</text>
+  <rect
+     x="340"
+     y="1112"
+     width="48"
+     height="16"
+     rx="5"
+     fill="#D5F5E3"
+     stroke="#1E8449"
+     stroke-width="1"
+     id="rect102" />
+  <text
+     x="398"
+     y="1124"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text103">Spatial / CNN encoder</text>
+  <rect
+     x="570"
+     y="1112"
+     width="48"
+     height="16"
+     rx="5"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1"
+     id="rect103" />
+  <text
+     x="628"
+     y="1124"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text104">Aggregation</text>
+  <!-- Legend row 2 -->
+  <rect
+     x="80"
+     y="1142"
+     width="48"
+     height="16"
+     rx="5"
+     fill="#E8DAEF"
+     stroke="#6C3483"
+     stroke-width="1"
+     id="rect104" />
+  <text
+     x="140"
+     y="1154"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text105">Vector quantization</text>
+  <rect
+     x="340"
+     y="1142"
+     width="48"
+     height="16"
+     rx="5"
+     fill="#FADBD8"
+     stroke="#C0392B"
+     stroke-width="1"
+     id="rect105" />
+  <text
+     x="398"
+     y="1154"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text106">Decoder</text>
+  <circle
+     cx="594"
+     cy="1150"
+     r="8"
+     fill="#FAE5D3"
+     stroke="#D35400"
+     stroke-width="1"
+     id="circle106" />
+  <text
+     x="594"
+     y="1154"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="#D35400"
+     id="text107">C</text>
+  <text
+     x="612"
+     y="1154"
+     text-anchor="start"
+     font-size="9"
+     fill="#2C3E50"
+     id="text108">Concatenation</text>
+  <!-- Legend row 3: separator -->
+  <line
+     x1="100"
+     y1="1170"
+     x2="700"
+     y2="1170"
+     stroke="#E5E7E9"
+     stroke-width="0.6"
+     id="line108" />
+  <!-- Key dimensions summary -->
+  <text
+     x="400"
+     y="1188"
+     text-anchor="middle"
+     font-size="9"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text109">Key Dimensions</text>
+  <text
+     x="400"
+     y="1204"
+     text-anchor="middle"
+     font-size="8.5"
+     fill="#2C3E50"
+     id="text110">512D multi-resolution bottleneck  |  30 groups x 32D per group  |  90 quantizers  |  2880D total quantized</text>
+  <!-- VQ detail -->
+  <text
+     x="400"
+     y="1220"
+     text-anchor="middle"
+     font-size="8.5"
+     fill="#6C3483"
+     id="text111">Adaptive codebooks: L0 ~28 codes x ~60D  |  L1 ~13 codes x ~28D  |  L2 ~6 codes x ~16D</text>
+  <!-- Training detail -->
+  <text
+     x="400"
+     y="1240"
+     text-anchor="middle"
+     font-size="8"
+     fill="#7F8C8D"
+     id="text112">Losses: VQ (0.25) | Recon (0.1) | Topographic (0.5) | Ortho (0.1) | Info (0.1, log-barrier) | Balance (2.0)</text>
+  <text
+     x="400"
+     y="1254"
+     text-anchor="middle"
+     font-size="8"
+     fill="#7F8C8D"
+     id="text112b">Training: EMA codebook, dropout 0.1, convergence stop (vq&lt;0.01, recon&lt;0.0001, topo&gt;0.999)</text>
+  <!-- Temporal resolution annotation (left side, rotated) -->
+  <text
+     x="30"
+     y="196"
+     text-anchor="middle"
+     font-size="7"
+     fill="#7F8C8D"
+     transform="rotate(-90, 30, 196)"
+     id="text113">decreasing temporal resolution</text>
+  <line
+     x1="48"
+     y1="176"
+     x2="48"
+     y2="216"
+     stroke="#BDC3C7"
+     stroke-width="0.6"
+     marker-end="url(#arrow-sm)"
+     id="line113" />
+  <!-- Annotation: "256 / 128 / 64 / 32 frames" labels to the right of level boxes -->
+  <text
+     x="208"
+     y="200"
+     text-anchor="start"
+     font-size="6.5"
+     fill="#7F8C8D"
+     id="text114">256f</text>
+  <text
+     x="368"
+     y="200"
+     text-anchor="start"
+     font-size="6.5"
+     fill="#7F8C8D"
+     id="text115">128f</text>
+  <text
+     x="556"
+     y="200"
+     text-anchor="start"
+     font-size="6.5"
+     fill="#7F8C8D"
+     id="text116">64f</text>
+  <text
+     x="724"
+     y="200"
+     text-anchor="start"
+     font-size="6.5"
+     fill="#7F8C8D"
+     id="text117">32f</text>
+  <!-- Footer -->
+  <text
+     x="400"
+     y="1270"
+     text-anchor="middle"
+     font-size="7.5px"
+     fill="#abb2b9"
+     id="text118">PyramidFirstEncoder + JointHierarchicalVQVAE | Temporal-only mode | src/spinlock/tokens/</text>
+  <text
+     xml:space="preserve"
+     style="font-size:66.6667px;font-family:Bungee;-inkscape-font-specification:Bungee;text-align:center;letter-spacing:-1px;writing-mode:lr-tb;direction:ltr;text-anchor:middle;fill:#ff5623;stroke:#ffffff;stroke-width:7.55906;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:7.55906, 15.1181;stroke-opacity:0.206351;paint-order:fill markers stroke"
+     x="475.79147"
+     y="80.895195"
+     id="text131"><tspan
+       sodipodi:role="line"
+       id="tspan131"
+       x="475.79147"
+       y="80.895195" /></text>
+</svg>

@@ -16,7 +16,7 @@ from typing import Dict, Optional, Tuple, Any
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset, TensorDataset, random_split
+from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset, random_split
 
 from .model import JointHierarchicalVQVAE
 from .losses import VQVAELoss
@@ -160,8 +160,28 @@ class VQTokenizerTrainer:
                     )
                 self._weight_schedules[name] = (ParameterSchedule(sched_cfg), target)
 
+        # Length curriculum: start with longer trajectories, decay min_T over training
+        self._curriculum_start_min: Optional[int] = None
+        self._curriculum_end_min: Optional[int] = None
+        if (
+            self.length_sampler is not None
+            and hasattr(vl_config, 'curriculum_start_min')
+            and vl_config.curriculum_start_min is not None
+        ):
+            self._curriculum_start_min = vl_config.curriculum_start_min
+            self._curriculum_end_min = vl_config.min_timesteps
+            # Set initial min_T to curriculum start
+            self.length_sampler.min_T = self._curriculum_start_min
+            logger.info(
+                f"Length curriculum: min_T {self._curriculum_start_min} → "
+                f"{self._curriculum_end_min} (cosine schedule)"
+            )
+
         # Batch unpacking mode: False = TensorDataset (index-based), True = dict batches
         self._dict_batch_mode = False
+
+        # Intra-epoch convergence stopping state
+        self._convergence_stopped = False
 
         # Tracking
         self.best_val_loss = float('inf')       # Best-model saving (no min_delta)
@@ -213,6 +233,10 @@ class VQTokenizerTrainer:
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Store for periodic checkpoint saves in _train_epoch
+        self._output_dir = output_dir
+        self._checkpoint_prefix = checkpoint_prefix
 
         # Create train/val split — dataset path or tensor path
         if dataset is not None:
@@ -272,6 +296,19 @@ class VQTokenizerTrainer:
             train_metrics = self._train_epoch(train_loader, epoch)
             self.training_history['train_losses'].append(train_metrics['loss'])
             self.training_history['train_metrics'].append(train_metrics)
+
+            # Intra-epoch convergence stopping triggered — save and exit
+            # Skip validation: the convergence criteria already measured quality
+            # over a 100-batch rolling window. Full validation with on-the-fly
+            # replay can take hours and provides redundant quality assurance.
+            if self._convergence_stopped:
+                best_path = output_dir / f"{checkpoint_prefix}_best.pt"
+                self._save_checkpoint(best_path, epoch, val_loss=None)
+                logger.info(
+                    "Convergence checkpoint saved to %s (validation skipped)",
+                    best_path,
+                )
+                break
 
             # Deferred OPQ calibration (after warmup epochs)
             # Skip in pyramid_first mode — learned projection subsumes OPQ
@@ -505,19 +542,15 @@ class VQTokenizerTrainer:
         val_size = int(len(dataset) * self.config.training.val_split)
         train_size = len(dataset) - val_size
 
-        train_dataset, val_dataset = random_split(
-            dataset,
-            [train_size, val_size],
-            generator=torch.Generator().manual_seed(
-                self.config.random_seed if self.config.random_seed else 42
-            ),
-        )
+        # Sequential split preserving Sobol ordering
+        train_dataset = Subset(dataset, range(train_size))
+        val_dataset = Subset(dataset, range(train_size, len(dataset)))
 
-        # Create dataloaders
+        # Create dataloaders (shuffle from config, default False to preserve Sobol ordering)
         train_loader = DataLoader(
             train_dataset,
             batch_size=self.config.training.batch_size,
-            shuffle=True,
+            shuffle=self.config.training.shuffle,
             num_workers=0,
             pin_memory=True if self.device.type == "cuda" else False,
         )
@@ -541,6 +574,11 @@ class VQTokenizerTrainer:
         Used by learned-mode with lazy HDF5 IC loading. Batches are dicts
         (collated by default dict collation) rather than indexed tuples.
 
+        Preserves Sobol ordering: train = first (1-val_split) samples,
+        val = last val_split samples. No shuffling — Sobol sequences are
+        quasi-random by construction, so sequential access already provides
+        uniform parameter space coverage per batch.
+
         Args:
             dataset: PyTorch Dataset returning dicts with 'ic', 'params', etc.
 
@@ -550,21 +588,19 @@ class VQTokenizerTrainer:
         self._dict_batch_mode = True
         self.tensor_map = {}  # Not used in dict mode, but avoids AttributeError
 
-        val_size = int(len(dataset) * self.config.training.val_split)
-        train_size = len(dataset) - val_size
+        n = len(dataset)
+        val_size = int(n * self.config.training.val_split)
+        train_size = n - val_size
 
-        train_dataset, val_dataset = random_split(
-            dataset,
-            [train_size, val_size],
-            generator=torch.Generator().manual_seed(
-                self.config.random_seed if self.config.random_seed else 42
-            ),
-        )
+        # Sequential split: train = indices [0, train_size), val = [train_size, n)
+        # Preserves Sobol quasi-random ordering in both splits.
+        train_dataset = Subset(dataset, range(train_size))
+        val_dataset = Subset(dataset, range(train_size, n))
 
         train_loader = DataLoader(
             train_dataset,
             batch_size=self.config.training.batch_size,
-            shuffle=True,
+            shuffle=self.config.training.shuffle,
             num_workers=0,
             pin_memory=True if self.device.type == "cuda" else False,
         )
@@ -817,6 +853,22 @@ class VQTokenizerTrainer:
             setattr(cfg_obj, name, new_val)
             logger.info(f"  [Schedule] {name}={new_val:.4f} (progress={progress:.3f})")
 
+        # Length curriculum: cosine decay of min_T from start_min → end_min
+        if self._curriculum_start_min is not None and self.length_sampler is not None:
+            import math
+            s, e = self._curriculum_start_min, self._curriculum_end_min
+            new_min = int(e + (s - e) * 0.5 * (1.0 + math.cos(math.pi * progress)))
+            self.length_sampler.min_T = new_min
+            # Log which bins are active
+            if hasattr(self.length_sampler, 'bins'):
+                active = [b for b in self.length_sampler.bins if b >= new_min]
+                logger.info(
+                    f"  [Schedule] min_T={new_min} (progress={progress:.3f}), "
+                    f"active bins={active}"
+                )
+            else:
+                logger.info(f"  [Schedule] min_T={new_min} (progress={progress:.3f})")
+
     def _train_epoch(self, loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Run one training epoch.
 
@@ -836,8 +888,16 @@ class VQTokenizerTrainer:
         total_info = 0.0
         num_batches = 0
 
-        interval = self.config.training.dead_code_reset_interval
-        do_reset = interval > 0 and (epoch + 1) % interval == 0
+        # Convergence stopping rolling buffers
+        tc = self.config.training
+        _conv_enabled = tc.convergence_stop_enabled
+        _conv_window = tc.convergence_stop_window if _conv_enabled else 0
+        _conv_vq_buf: list = []
+        _conv_recon_buf: list = []
+        _conv_info_buf: list = []
+        _conv_topo_post_buf: list = []
+
+        dead_code_interval = self.config.training.dead_code_reset_interval
         num_batches_total = len(loader)
         accum_steps = self.config.training.gradient_accumulation_steps
         self.optimizer.zero_grad()
@@ -993,9 +1053,9 @@ class VQTokenizerTrainer:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
-            # Dead code reset: fires on the last batch of reset epochs so we
-            # have fresh latents (actual pre-quantization vectors) for reseeding.
-            if do_reset and batch_idx == num_batches_total - 1:
+            # Dead code reset: fires every N batches (not epochs) so that
+            # underused codebook entries get reseeded from fresh latents.
+            if dead_code_interval > 0 and (batch_idx + 1) % dead_code_interval == 0:
                 latents_dict = outputs.get("latents", {})
                 total_reset = 0
                 for qkey, quantizer in self.model.quantizers.items():
@@ -1008,9 +1068,21 @@ class VQTokenizerTrainer:
                         total_reset += n
                 if total_reset > 0:
                     logger.info(
-                        f"Dead code reset (epoch {epoch+1}): "
-                        f"{total_reset} codes reset across {len(self.model.quantizers)} quantizers"
+                        "Dead code reset (epoch %d, batch %d): "
+                        "%d codes reset across %d quantizers",
+                        epoch + 1, batch_idx + 1,
+                        total_reset, len(self.model.quantizers),
                     )
+
+            # Periodic checkpoint: save latest every 500 batches so we never
+            # lose more than ~500 batches of work on crash or kill.
+            if (batch_idx + 1) % 500 == 0:
+                latest_path = self._output_dir / f"{self._checkpoint_prefix}_latest.pt"
+                self._save_checkpoint(latest_path, epoch, val_loss=None)
+                logger.info(
+                    "Periodic checkpoint saved (E%d B%d) → %s",
+                    epoch + 1, batch_idx + 1, latest_path,
+                )
 
             # Accumulate metrics
             batch_loss = loss.item()
@@ -1078,16 +1150,85 @@ class VQTokenizerTrainer:
                     g_open = (gate_vals > 0.5).sum().item()
                     g_total = gate_vals.numel()
                     parts.append(f"gates={g_open:.0f}/{g_total}({g_mean:.3f})")
-                # Codebook utilization: unique codes used / codebook size, mean across quantizers
+                # Codebook utilization: unique codes used / codebook size, per-level and overall
                 token_indices = outputs.get('token_indices')
                 if token_indices:
-                    utils = []
+                    level_utils: dict = {}  # level_idx -> list of utilizations
                     for qname, tidx in token_indices.items():
                         n_unique = tidx.flatten().unique().numel()
                         n_codes = self.model.quantizers[qname].num_embeddings
-                        utils.append(n_unique / n_codes)
-                    parts.append(f"cb_util={sum(utils)/len(utils):.3f}")
+                        util = n_unique / n_codes
+                        # Parse level from key like "temporal_group_0_L0"
+                        level_str = qname.rsplit('_', 1)[-1]  # "L0", "L1", "L2"
+                        if level_str.startswith('L') and level_str[1:].isdigit():
+                            lvl = int(level_str[1:])
+                            level_utils.setdefault(lvl, []).append(util)
+                    # Log per-level mean utilization
+                    for lvl in sorted(level_utils.keys()):
+                        lvl_mean = sum(level_utils[lvl]) / len(level_utils[lvl])
+                        parts.append(f"util_L{lvl}={lvl_mean:.3f}")
+                    # Overall mean
+                    all_utils = [u for us in level_utils.values() for u in us]
+                    if all_utils:
+                        parts.append(f"cb_util={sum(all_utils)/len(all_utils):.3f}")
                 logger.info(" ".join(parts))
+
+            # ── Intra-epoch convergence stopping ──────────────────────
+            if _conv_enabled and num_batches >= tc.convergence_stop_min_batches:
+                # Append to rolling buffers
+                _conv_vq_buf.append(losses['vq'].item())
+                _conv_recon_buf.append(losses['reconstruction'].item())
+                _conv_info_buf.append(losses['informativeness'].item())
+                topo_post_val = losses.get('topo_post')
+                if topo_post_val is not None:
+                    _p = topo_post_val.item() if hasattr(topo_post_val, 'item') else topo_post_val
+                    _conv_topo_post_buf.append(_p)
+
+                # Trim to window size
+                if len(_conv_vq_buf) > _conv_window:
+                    _conv_vq_buf = _conv_vq_buf[-_conv_window:]
+                    _conv_recon_buf = _conv_recon_buf[-_conv_window:]
+                    _conv_info_buf = _conv_info_buf[-_conv_window:]
+                    if _conv_topo_post_buf:
+                        _conv_topo_post_buf = _conv_topo_post_buf[-_conv_window:]
+
+                # Check once buffer is full
+                if len(_conv_vq_buf) >= _conv_window:
+                    all_met = True
+                    details = []
+
+                    if tc.convergence_stop_vq is not None:
+                        mean_vq = sum(_conv_vq_buf) / len(_conv_vq_buf)
+                        met = mean_vq < tc.convergence_stop_vq
+                        all_met &= met
+                        details.append(f"vq={mean_vq:.5f}<{tc.convergence_stop_vq}")
+
+                    if tc.convergence_stop_recon is not None:
+                        mean_recon = sum(_conv_recon_buf) / len(_conv_recon_buf)
+                        met = mean_recon < tc.convergence_stop_recon
+                        all_met &= met
+                        details.append(f"recon={mean_recon:.5f}<{tc.convergence_stop_recon}")
+
+                    if tc.convergence_stop_info is not None:
+                        mean_info = sum(_conv_info_buf) / len(_conv_info_buf)
+                        met = mean_info < tc.convergence_stop_info
+                        all_met &= met
+                        details.append(f"info={mean_info:.5f}<{tc.convergence_stop_info}")
+
+                    if tc.convergence_stop_topo_post is not None and _conv_topo_post_buf:
+                        mean_topo = sum(_conv_topo_post_buf) / len(_conv_topo_post_buf)
+                        met = mean_topo >= tc.convergence_stop_topo_post
+                        all_met &= met
+                        details.append(f"topo_post={mean_topo:.5f}>={tc.convergence_stop_topo_post}")
+
+                    if all_met:
+                        logger.info(
+                            f"  Convergence stopping triggered at E{epoch+1} "
+                            f"B{batch_idx+1}/{num_batches_total} "
+                            f"(window={_conv_window}): {', '.join(details)}"
+                        )
+                        self._convergence_stopped = True
+                        break
 
         metrics = {
             'loss': total_loss / num_batches,

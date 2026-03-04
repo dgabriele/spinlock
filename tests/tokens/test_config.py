@@ -88,22 +88,33 @@ def test_hierarchy_config():
     """Test HierarchyConfig."""
     config = HierarchyConfig(
         num_levels=3,
-        compression_ratios="0.5:1.0:1.5",
+        level_ratios=[1.5, 0.75, 0.4],
     )
 
     assert config.num_levels == 3
-    assert config.compression_ratios == "0.5:1.0:1.5"
+    assert config.level_ratios == [1.5, 0.75, 0.4]
+
+
+def test_hierarchy_config_defaults():
+    """Test HierarchyConfig defaults (adaptive formula)."""
+    config = HierarchyConfig()
+    assert config.level_ratios is None
+    assert config.num_levels == 3
 
 
 def test_hierarchy_config_validation():
-    """Test HierarchyConfig validates ratios."""
-    # Valid ratios
-    config = HierarchyConfig(compression_ratios="0.5:1.0:1.5")
-    assert config.compression_ratios == "0.5:1.0:1.5"
+    """Test HierarchyConfig validates level_ratios."""
+    # Valid ratios (non-increasing)
+    config = HierarchyConfig(level_ratios=[1.5, 0.75, 0.4])
+    assert config.level_ratios == [1.5, 0.75, 0.4]
 
-    # Invalid ratios (negative)
+    # Invalid: negative ratio
     with pytest.raises(ValueError, match="must be positive"):
-        HierarchyConfig(compression_ratios="-0.5:1.0:1.5")
+        HierarchyConfig(level_ratios=[-0.5, 0.75, 0.4])
+
+    # Invalid: non-decreasing (L1 > L0)
+    with pytest.raises(ValueError, match="non-increasing"):
+        HierarchyConfig(level_ratios=[0.5, 1.0, 0.4])
 
 
 def test_loss_config():

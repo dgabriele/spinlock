@@ -1,0 +1,83 @@
+# Lenia V1 MNO — Token-Conditioned Training
+#
+# Goal: Use VQ token embeddings as an additional MNO input conditioning signal.
+# Token embeddings encode behavioral context (temporal dynamics) from the VQ
+# tokenizer, giving the MNO richer conditioning beyond just physics parameters θ.
+#
+# Architecture: θ [B,34] || token_emb [B,128] → param_embedding MLP → FiLM
+# The backbone's param_embedding MLP sees [B, 162] instead of [B, 34].
+# Token embeddings come from frozen VQ codebook lookup + per-group shared MLP
+# with mean pooling (DeepSets/PointNet principle over symmetric VQ groups).
+#
+# Train from scratch (param_dim changed from 34 → 162).
+
+model:
+  backbone_type: "u_afno"
+  base_channels: 32
+  encoder_levels: 3
+  modes: 16
+  afno_blocks: 4
+  dropout: 0.1
+  param_conditioning: true
+  param_embed_dim: 128
+  conditioning_mode: "film"
+  film: {enabled: true, embed_dim: 128, hidden_dim: 256}
+  update_mode: "residual"
+  use_checkpointing: true
+
+training:
+  n_samples: 100000
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  epochs: 30
+  learning_rate: 5.0e-5
+  warmup_optimizer_steps: 500
+  weight_decay: 0.01
+  clip_grad: 1.0
+  timesteps: 256
+  bptt_window: 32
+  bptt_num_windows: 3
+  film_lr_multiplier: 5.0
+  token_head_lr_multiplier: 1.0
+  replayer_cache_size: 0
+  eval_every: 5
+  eval_samples: 50
+
+loss:
+  lambda_traj: 1.0
+  lambda_ic: 0.0
+  lambda_contrastive: 0.0
+  lambda_centroid_mse: 0.0
+  lambda_token_ce: 0.5
+  lambda_token_head: 0.5
+  token_ce_temperature: 1.0
+  gate_weight_token_ce: true
+  normalize_loss_scales: true
+  loss_scale_ema_momentum: 0.99
+  contrastive:
+    temperature: 0.1
+    embed_dim: 128
+    queue_size: 64
+
+data:
+  dataset_path: "datasets/ds_lenia_v1.h5"
+  config: "configs/lenia/datasets/ds_lenia_v1.yaml"
+  val_split: 0.1
+  num_workers: 4
+
+checkpointing:
+  save_dir: "checkpoints/lenia/mno/v1_token_cond"
+  save_every: 5
+  keep_best: true
+
+# Token conditioning (new)
+token_conditioning: true
+token_embed_dim: 128
+
+# Token dataset + tokenizer (reused from VQ step 1)
+tokenizer_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_best.pt"
+token_dataset: "datasets/ds_lenia_v1_tokens.h5"
+token_truncation_length: 256
+
+device: "cuda"
+seed: 42
