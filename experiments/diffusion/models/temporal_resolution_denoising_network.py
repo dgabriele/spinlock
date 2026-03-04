@@ -272,6 +272,7 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         tokens_dict: Dict[str, torch.Tensor],
         timesteps: torch.Tensor,
         observed_dict: Optional[Dict[str, torch.BoolTensor]] = None,
+        effective_timesteps_dict: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
         """Predict clean tokens with temporal resolution awareness.
 
@@ -279,11 +280,16 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         1. Truncation embeddings added to token embeddings
         2. Temporal attention bias applied in transformer
         3. Causal masking enforced (late sees early, not vice versa)
+        4. Per-token timestep embeddings (when graded schedule is active)
 
         Args:
             tokens_dict: Dict mapping key → noisy token indices [B]
-            timesteps: Diffusion timestep values [B]
+            timesteps: Diffusion timestep values [B] (global timesteps)
             observed_dict: Optional dict of observed masks [B]
+            effective_timesteps_dict: Optional per-key effective timesteps from
+                graded schedule. When provided, each token gets a timestep
+                embedding reflecting its actual noise level instead of the
+                global broadcast.
 
         Returns:
             Dict mapping key → predicted logits [B, vocab_size]
@@ -294,17 +300,31 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
         # Flatten dict to sequence
         embeddings = self._flatten_dict_to_sequence(tokens_dict)  # [B, N_total, hidden_dim]
 
-        # Add time embedding (broadcast to all tokens)
-        t_emb = self.time_embedding(timesteps)  # [B, hidden_dim]
-        t_emb = self.time_mlp(t_emb)  # [B, hidden_dim]
-        embeddings = embeddings + t_emb.unsqueeze(1)  # [B, N_total, hidden_dim]
+        # Add time embedding — per-token when graded, global broadcast otherwise
+        if effective_timesteps_dict is not None:
+            # Per-token effective timestep embeddings: each token position gets
+            # a sinusoidal embedding reflecting its actual noise level
+            per_token_t = torch.stack([
+                effective_timesteps_dict.get(key, timesteps)
+                for key in self.sorted_keys
+            ], dim=1)  # [B, N_total]
+
+            flat_t = per_token_t.reshape(-1)  # [B * N_total]
+            flat_emb = self.time_mlp(self.time_embedding(flat_t))  # [B*N_total, hidden_dim]
+            t_emb = flat_emb.reshape(B, self.num_tokens, -1)  # [B, N_total, hidden_dim]
+            embeddings = embeddings + t_emb
+        else:
+            # Standard global broadcast
+            t_emb = self.time_embedding(timesteps)  # [B, hidden_dim]
+            t_emb = self.time_mlp(t_emb)  # [B, hidden_dim]
+            embeddings = embeddings + t_emb.unsqueeze(1)  # [B, N_total, hidden_dim]
 
         # Add position embeddings
         positions = torch.arange(self.num_tokens, device=device)
         pos_emb = self.position_embedding(positions)  # [N_total, hidden_dim]
         embeddings = embeddings + pos_emb.unsqueeze(0)  # [B, N_total, hidden_dim]
 
-        # *** NEW: Add truncation embeddings ***
+        # Add truncation embeddings
         embeddings = self._apply_temporal_attention_bias(embeddings, device)
 
         # Add hierarchical guidance from L0
@@ -321,17 +341,8 @@ class TemporalResolutionDenoisingNetwork(DenoisingNetwork):
                     mask.append(torch.zeros(B, dtype=torch.bool, device=device))
             src_key_padding_mask = torch.stack(mask, dim=1)  # [B, N_total]
 
-        # *** NEW: Create temporal attention bias mask ***
-        # Note: PyTorch transformer expects attn_mask in [N, N] or [B*num_heads, N, N]
-        # We'll use the standard transformer but can't directly inject per-head bias
-        # For now: add bias as a residual to embeddings (approximation)
-        # TODO: Consider custom transformer layer for exact bias application
-
         # Transformer encoding (using base class transformer)
         encoded = self.transformer(embeddings, src_key_padding_mask=src_key_padding_mask)
-
-        # Note: For true per-attention bias, we'd need to modify transformer internals
-        # Current implementation adds truncation info via embeddings (works well in practice)
 
         # Unflatten to dict logits
         logits_dict = self._unflatten_sequence_to_dict(encoded)

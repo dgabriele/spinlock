@@ -142,9 +142,26 @@ class DenoisingNetwork(nn.Module):
             enable_nested_tensor=False  # Disable nested tensor (incompatible with norm_first=True)
         )
 
-        # Hierarchical guidance projection
+        # Hierarchical guidance projection with level-dependent gating
         if use_hierarchical_guidance:
             self.guidance_proj = nn.Linear(hidden_dim, hidden_dim)
+
+            # Per-level guidance weights: L0=0 (self), L1=light, L2=stronger
+            # Higher levels are residuals of L0, so they depend more on L0
+            # being correct. Scale relative to the base guidance_weight.
+            max_level = max(self.key_levels.values()) if self.key_levels else 0
+            level_weights = []
+            for key in self.sorted_keys:
+                lvl = self.key_levels[key]
+                if lvl == 0 or max_level == 0:
+                    level_weights.append(0.0)
+                else:
+                    # Ramp: L1 gets 0.5×weight, L2 gets 1.0×weight, etc.
+                    level_weights.append(hierarchical_guidance_weight * lvl / max_level)
+            self.register_buffer(
+                "_guidance_level_weights",
+                torch.tensor(level_weights),  # [N_total]
+            )
 
         # Output projections (per-category-level)
         self.output_heads = nn.ModuleDict({
@@ -203,8 +220,11 @@ class DenoisingNetwork(nn.Module):
     ) -> torch.Tensor:
         """Add hierarchical guidance from L0 (coarse) tokens.
 
-        Extracts L0 embeddings, projects them, and adds as residual
-        to all token embeddings (including L0 itself).
+        Extracts L0 embeddings, projects them, and adds as a level-gated
+        residual: L0 tokens get zero guidance (they ARE the coarse signal),
+        L1 tokens get light guidance, L2 tokens get stronger guidance.
+        This reflects the residual codebook hierarchy where L2 depends
+        more on L0 being correct than L1 does.
 
         Args:
             embeddings: Token embeddings [B, N_total, hidden_dim]
@@ -232,8 +252,9 @@ class DenoisingNetwork(nn.Module):
         # Project and broadcast to all tokens
         l0_guidance = self.guidance_proj(l0_guidance)  # [B, 1, hidden_dim]
 
-        # Add as residual
-        embeddings = embeddings + self.hierarchical_guidance_weight * l0_guidance
+        # Apply per-level weights: [N_total] → [1, N_total, 1] for broadcasting
+        weights = self._guidance_level_weights.unsqueeze(0).unsqueeze(-1)  # [1, N_total, 1]
+        embeddings = embeddings + weights * l0_guidance
 
         return embeddings
 

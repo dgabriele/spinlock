@@ -30,6 +30,11 @@ diffusion:
   schedule_type: "cosine"
   transition_type: "uniform"
   beta_scaling: "uniform"
+  graded_schedule:
+    enabled: true
+    # scale_factors omitted → auto-computed ramp [min_scale, ..., 1.0]
+    min_scale: 0.7              # 4 truncations → [0.7, 0.8, 0.9, 1.0]
+    non_temporal_scale: 0.3     # resolve theta/IC first (shared causal origin)
 
 model:
   hidden_dim: 256

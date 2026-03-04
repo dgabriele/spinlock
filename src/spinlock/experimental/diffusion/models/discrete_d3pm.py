@@ -9,6 +9,7 @@ Implements discrete diffusion with:
 
 import logging
 import math
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Optional, Union
@@ -18,6 +19,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
+
+# Pattern to extract truncation label from vocab key
+# e.g. "temporal_group_1_trunc_T064_L0" → "T064"
+_TRUNC_PATTERN = re.compile(r"_trunc_(T\d+)_")
 
 
 class ScheduleType(str, Enum):
@@ -91,6 +96,10 @@ class DiscreteD3PM(nn.Module):
         category_level_info: Optional[Dict[str, Dict[str, any]]] = None,
         transition_type: str = "uniform",
         beta_scaling: str = "uniform",
+        graded_schedule_enabled: bool = False,
+        graded_scale_factors: Optional[Dict[str, float]] = None,
+        graded_min_scale: float = 0.7,
+        non_temporal_scale: float = 0.3,
     ):
         super().__init__()
 
@@ -122,11 +131,19 @@ class DiscreteD3PM(nn.Module):
         # Build per-category-level transition matrices
         self._build_transition_matrices()
 
+        # Build truncation-graded scale factors
+        self._key_scale_factors: Dict[str, float] = {}
+        if graded_schedule_enabled:
+            self._key_scale_factors = self._build_graded_scale_factors(
+                graded_scale_factors, graded_min_scale, non_temporal_scale
+            )
+
         logger.info(
             f"DiscreteD3PM initialized: T={schedule.num_timesteps}, "
             f"schedule={schedule.schedule_type}, "
             f"transition={transition_type}, beta_scaling={beta_scaling}, "
-            f"categories={len(vocab_sizes)}"
+            f"categories={len(vocab_sizes)}, "
+            f"graded_schedule={'ON' if self._key_scale_factors else 'OFF'}"
         )
 
     def _build_schedule(self) -> torch.Tensor:
@@ -237,11 +254,138 @@ class DiscreteD3PM(nn.Module):
 
             self.transition_matrices[key] = nn.Parameter(Q_t, requires_grad=False)
 
+    def _build_graded_scale_factors(
+        self,
+        explicit_factors: Optional[Dict[str, float]],
+        min_scale: float,
+        non_temporal_scale: float,
+    ) -> Dict[str, float]:
+        """Build per-key scale factors for truncation-graded forward process.
+
+        Auto-detects truncation levels from vocab key names by parsing
+        ``_trunc_T{NNN}_`` patterns. When ``explicit_factors`` is None,
+        computes a ramp from ``min_scale`` to 1.0:
+            scale = min_scale + (1 - min_scale) * rank / (N - 1)
+        E.g. 4 truncations with min_scale=0.7 → [0.7, 0.8, 0.9, 1.0].
+
+        Args:
+            explicit_factors: Optional dict mapping truncation label (e.g. "T032")
+                to scale factor. None triggers auto-computation.
+            min_scale: Floor of the auto-computed ramp (ignored when explicit).
+            non_temporal_scale: Scale factor for non-temporal keys.
+
+        Returns:
+            Dict mapping each vocab key to its resolved scale factor.
+            Empty dict if no truncation keys are found (graceful fallback).
+        """
+        # Discover truncation labels from vocab keys
+        key_to_trunc: Dict[str, str] = {}  # vocab_key → trunc label (e.g. "T064")
+        trunc_labels: set[str] = set()
+
+        for key in self.vocab_sizes:
+            m = _TRUNC_PATTERN.search(key)
+            if m:
+                label = m.group(1)
+                key_to_trunc[key] = label
+                trunc_labels.add(label)
+
+        if not trunc_labels:
+            logger.warning(
+                "graded_schedule_enabled=True but no _trunc_T*_ keys found in vocab. "
+                "Disabling graded schedule (all keys get uniform timesteps)."
+            )
+            return {}
+
+        # Sort labels numerically: T032 < T064 < T128 < T256
+        sorted_labels = sorted(trunc_labels, key=lambda s: int(s[1:]))
+        N = len(sorted_labels)
+
+        # Resolve scale factors
+        if explicit_factors is not None:
+            label_to_scale = dict(explicit_factors)
+            # Validate all discovered labels have a factor
+            missing = set(sorted_labels) - set(label_to_scale.keys())
+            if missing:
+                logger.warning(
+                    f"Explicit graded_scale_factors missing labels {missing}. "
+                    f"Assigning scale=1.0 for missing labels."
+                )
+                for m in missing:
+                    label_to_scale[m] = 1.0
+        else:
+            # Auto-compute ramp: [min_scale, ..., 1.0]
+            if N == 1:
+                label_to_scale = {sorted_labels[0]: 1.0}
+            else:
+                label_to_scale = {
+                    label: min_scale + (1.0 - min_scale) * rank / (N - 1)
+                    for rank, label in enumerate(sorted_labels)
+                }
+
+        # Build per-key mapping
+        result: Dict[str, float] = {}
+        for key in self.vocab_sizes:
+            if key in key_to_trunc:
+                result[key] = label_to_scale[key_to_trunc[key]]
+            else:
+                result[key] = non_temporal_scale
+
+        logger.info(
+            f"Graded schedule scale factors ({N} truncation levels): "
+            + ", ".join(f"{l}={label_to_scale[l]:.3f}" for l in sorted_labels)
+            + f", non_temporal={non_temporal_scale:.3f}"
+        )
+        return result
+
+    def compute_effective_timesteps(
+        self,
+        t: Union[int, torch.Tensor],
+        batch_size: int,
+    ) -> Dict[str, torch.Tensor]:
+        """Compute per-key effective timesteps for graded forward process.
+
+        Maps global diffusion timestep(s) to per-key effective timesteps using
+        the scale factors built during init. When no scale factors are set
+        (graded schedule disabled), returns uniform ``t`` for all keys.
+
+        Args:
+            t: Global timestep — scalar int or Tensor[B].
+            batch_size: Batch size (used when t is scalar).
+
+        Returns:
+            Dict mapping each vocab key to a Tensor[B] of effective timesteps.
+        """
+        T_max = self.schedule.num_timesteps - 1
+
+        if isinstance(t, int):
+            t_tensor = torch.tensor(t, dtype=torch.long)
+        else:
+            t_tensor = t
+
+        if not self._key_scale_factors:
+            # No grading: uniform t for all keys
+            if t_tensor.dim() == 0:
+                t_broadcast = t_tensor.expand(batch_size)
+            else:
+                t_broadcast = t_tensor
+            return {key: t_broadcast for key in self.vocab_sizes}
+
+        result: Dict[str, torch.Tensor] = {}
+        for key in self.vocab_sizes:
+            scale = self._key_scale_factors.get(key, 1.0)
+            eff = (t_tensor.float() * scale).round().long().clamp(0, T_max)
+            if eff.dim() == 0:
+                eff = eff.expand(batch_size)
+            result[key] = eff
+
+        return result
+
     def forward_process(
         self,
         tokens_dict: Dict[str, torch.Tensor],
         t: Union[int, torch.Tensor],
         mask_dict: Optional[Dict[str, torch.BoolTensor]] = None,
+        effective_timesteps_dict: Optional[Dict[str, torch.Tensor]] = None,
     ) -> tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         """Add noise to tokens via forward diffusion.
 
@@ -252,21 +396,23 @@ class DiscreteD3PM(nn.Module):
             t: Timestep (0 to T-1). Either a scalar int for uniform noise
                across the batch, or a Tensor[B] for per-sample timesteps.
             mask_dict: Optional dict of masks [B] (True = apply noise, False = keep)
+            effective_timesteps_dict: Optional per-key effective timesteps from
+                graded schedule. When provided, overrides ``t`` for Q_t indexing
+                on a per-key basis. Each value is Tensor[B].
 
         Returns:
             Tuple of (noisy_tokens_dict, log_probs_dict):
             - noisy_tokens_dict: Dict mapping key → noisy token indices [B]
             - log_probs_dict: Dict mapping key → log P(x_t | x_0) [B, V]
         """
-        # Validate timestep bounds
+        # Validate timestep bounds (global t only — effective timesteps are
+        # already clamped by compute_effective_timesteps)
         if isinstance(t, int):
             if t < 0 or t >= self.schedule.num_timesteps:
                 raise ValueError(f"Invalid timestep t={t} (must be 0 to {self.schedule.num_timesteps - 1})")
         else:
             if (t < 0).any() or (t >= self.schedule.num_timesteps).any():
                 raise ValueError(f"Invalid timesteps in tensor (must be 0 to {self.schedule.num_timesteps - 1})")
-
-        batched = not isinstance(t, int)
 
         noisy_dict = {}
         log_probs_dict = {}
@@ -281,19 +427,20 @@ class DiscreteD3PM(nn.Module):
             # Convert tokens to one-hot [B, V_eff]
             x_0_onehot = F.one_hot(tokens.long(), num_classes=V_eff).float()
 
-            if batched:
-                # Batched path: per-sample timesteps
-                # Q_all: [T, V_eff, V_eff], t: [B] → Q_t: [B, V_eff, V_eff]
-                Q_t = self.transition_matrices[key][t]
-
-                # Apply transition: q(x_t | x_0) = x_0 @ Q_t (batched)
+            # Determine which timestep(s) to use for this key
+            if effective_timesteps_dict is not None and key in effective_timesteps_dict:
+                key_t = effective_timesteps_dict[key]  # always Tensor[B]
+                # Always use batched path when graded
+                Q_t = self.transition_matrices[key][key_t]  # [B, V_eff, V_eff]
                 probs = torch.bmm(x_0_onehot.unsqueeze(1), Q_t).squeeze(1)
-            else:
+            elif isinstance(t, int):
                 # Scalar path: uniform timestep across batch
                 Q_t = self.transition_matrices[key][t]  # [V_eff, V_eff]
-
-                # Apply transition: q(x_t | x_0) = x_0 @ Q_t
                 probs = torch.matmul(x_0_onehot, Q_t)  # [B, V_eff]
+            else:
+                # Batched path: per-sample timesteps
+                Q_t = self.transition_matrices[key][t]  # [B, V_eff, V_eff]
+                probs = torch.bmm(x_0_onehot.unsqueeze(1), Q_t).squeeze(1)
 
             # Sample noisy tokens
             noisy_tokens = torch.multinomial(probs, num_samples=1).squeeze(-1)  # [B]
@@ -354,11 +501,18 @@ class DiscreteD3PM(nn.Module):
                 observed_mask = observed_dict[key]  # [B]
                 x_0 = x_0_dict[key]  # [B]
 
+                # Compute graded effective timestep for t-1 (if graded schedule active)
+                eff_t_prev = None
+                if self._key_scale_factors:
+                    eff_dict = self.compute_effective_timesteps(t - 1, B)
+                    eff_t_prev = {key: eff_dict[key]}
+
                 # Re-noise observed tokens to t-1
                 noisy_observed, _ = self.forward_process(
                     {key: x_0},
                     t=t - 1,
-                    mask_dict={key: torch.ones_like(observed_mask)}  # Always noise
+                    mask_dict={key: torch.ones_like(observed_mask)},  # Always noise
+                    effective_timesteps_dict=eff_t_prev,
                 )
                 x_0_at_t_minus_1 = noisy_observed[key]
 
@@ -418,7 +572,16 @@ class DiscreteD3PM(nn.Module):
                 k: torch.ones(batch_size, dtype=torch.bool, device=device)
                 for k in x_0_on_device
             }
-            x_t, _ = self.forward_process(x_0_on_device, actual_start - 1, all_mask)
+            # Use graded timesteps for partial start if active
+            eff_t_start = None
+            if self._key_scale_factors:
+                eff_t_start = self.compute_effective_timesteps(actual_start - 1, batch_size)
+                # Move to device
+                eff_t_start = {k: v.to(device) for k, v in eff_t_start.items()}
+            x_t, _ = self.forward_process(
+                x_0_on_device, actual_start - 1, all_mask,
+                effective_timesteps_dict=eff_t_start,
+            )
         else:
             # Full start: initialize with noise
             x_t = {}
@@ -437,15 +600,22 @@ class DiscreteD3PM(nn.Module):
 
         # Iterative denoising actual_start → 0
         for t in reversed(range(actual_start)):
-            # Predict clean tokens
+            # Compute graded effective timesteps for denoiser conditioning
             t_tensor = torch.full((batch_size,), t, device=device, dtype=torch.long)
+            eff_t_dict = None
+            if self._key_scale_factors:
+                eff_t_dict = self.compute_effective_timesteps(t, batch_size)
+                eff_t_dict = {k: v.to(device) for k, v in eff_t_dict.items()}
+
+            # Predict clean tokens (pass effective timesteps to denoiser)
             predicted_logits = denoising_network(
                 x_t,
                 t_tensor,
-                observed_dict=observed_dict
+                observed_dict=observed_dict,
+                **({"effective_timesteps_dict": eff_t_dict} if eff_t_dict is not None else {}),
             )
 
-            # Reverse step with RePaint
+            # Reverse step with RePaint (uses graded timesteps internally)
             x_t = self.reverse_step(
                 x_t,
                 predicted_logits,

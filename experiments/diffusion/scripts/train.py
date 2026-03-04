@@ -258,12 +258,17 @@ def main(args):
         beta_end=config.diffusion.beta_end,
         schedule_type=config.diffusion.schedule_type,
     )
+    graded_cfg = config.diffusion.graded_schedule
     diffusion = DiscreteD3PM(
         vocab_sizes,
         diffusion_schedule,
         category_level_info,
         transition_type=config.diffusion.transition_type,
         beta_scaling=config.diffusion.beta_scaling,
+        graded_schedule_enabled=graded_cfg.enabled,
+        graded_scale_factors=graded_cfg.scale_factors,
+        graded_min_scale=graded_cfg.min_scale,
+        non_temporal_scale=graded_cfg.non_temporal_scale,
     )
 
     # Create denoising network

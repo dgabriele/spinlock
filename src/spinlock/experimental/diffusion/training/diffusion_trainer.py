@@ -106,6 +106,9 @@ class DiffusionTrainer:
             for key, v in self.diffusion.vocab_sizes.items():
                 self.vocab_loss_weights[key] = math.log(v) / log_v_max
 
+        # Cache graded schedule flag
+        self._graded_enabled = bool(self.diffusion._key_scale_factors)
+
         # Optional wandb logging
         self.use_wandb = config.training.use_wandb
         if self.use_wandb:
@@ -362,14 +365,29 @@ class DiffusionTrainer:
                 0, self.diffusion.schedule.num_timesteps, (batch_size,), device=self.device
             )
 
+            # Compute per-key effective timesteps (graded schedule)
+            eff_t_dict = (
+                self.diffusion.compute_effective_timesteps(t, batch_size)
+                if self._graded_enabled else None
+            )
+
             # Forward diffusion: add noise to tokens (per-sample timesteps)
-            noisy_tokens, _ = self.diffusion.forward_process(tokens, t, mask_dict=target)
+            noisy_tokens, _ = self.diffusion.forward_process(
+                tokens, t, mask_dict=target,
+                effective_timesteps_dict=eff_t_dict,
+            )
 
             # Predict clean tokens
-            predicted_logits = self.denoiser(noisy_tokens, t, observed_dict=observed)
+            predicted_logits = self.denoiser(
+                noisy_tokens, t, observed_dict=observed,
+                **({"effective_timesteps_dict": eff_t_dict} if eff_t_dict is not None else {}),
+            )
 
             # Compute loss on target positions only (with optional SNR/vocab weighting)
-            loss = self._compute_loss(predicted_logits, tokens, target, t=t)
+            loss = self._compute_loss(
+                predicted_logits, tokens, target, t=t,
+                effective_timesteps_dict=eff_t_dict,
+            )
 
             # Physics-aware auxiliary loss (after warmup)
             physics_loss_val = 0.0
@@ -454,16 +472,23 @@ class DiffusionTrainer:
         target_tokens: Dict[str, torch.Tensor],
         target_mask: Dict[str, torch.BoolTensor],
         t: Optional[torch.Tensor] = None,
+        effective_timesteps_dict: Optional[Dict[str, torch.Tensor]] = None,
     ) -> torch.Tensor:
         """Compute per-category-level cross-entropy on target positions.
 
         Supports optional SNR timestep weighting and vocab-size normalization.
+        When graded schedule is active, SNR weighting uses per-key effective
+        timesteps so the loss reflects each key's actual noise level.
 
         Args:
             predicted_logits: Dict mapping key → logits [B, V]
             target_tokens: Dict mapping key → true tokens [B]
             target_mask: Dict mapping key → mask [B] (True = predict this position)
             t: Optional timestep tensor [B] for SNR weighting
+            effective_timesteps_dict: Optional per-key effective timesteps
+                from graded schedule. When provided and SNR weighting is
+                enabled, each key's loss is weighted by 1/β_{eff_t(key)}
+                instead of 1/β_{global_t}.
 
         Returns:
             Scalar loss tensor
@@ -472,6 +497,13 @@ class DiffusionTrainer:
         device = next(iter(predicted_logits.values())).device
         per_sample_loss = torch.zeros(B, device=device)
         per_sample_count = torch.zeros(B, device=device)
+
+        # Per-key SNR weighting when graded schedule is active
+        use_per_key_snr = (
+            self.snr_weights is not None
+            and t is not None
+            and effective_timesteps_dict is not None
+        )
 
         for key in predicted_logits.keys():
             logits = predicted_logits[key]  # [B, V]
@@ -484,6 +516,11 @@ class DiffusionTrainer:
             # Apply vocab-size weighting
             w_v = self.vocab_loss_weights.get(key, 1.0)
 
+            # Apply per-key SNR weighting (graded: each key at its effective t)
+            if use_per_key_snr:
+                key_t = effective_timesteps_dict[key]  # [B]
+                loss = loss * self.snr_weights[key_t]  # [B]
+
             # Accumulate per-sample weighted loss
             per_sample_loss = per_sample_loss + loss * mask.float() * w_v
             per_sample_count = per_sample_count + mask.float() * w_v
@@ -491,8 +528,8 @@ class DiffusionTrainer:
         # Normalize per sample
         per_sample_loss = per_sample_loss / per_sample_count.clamp(min=1.0)
 
-        # Apply SNR timestep weighting
-        if self.snr_weights is not None and t is not None:
+        # Apply global SNR timestep weighting (only when NOT using per-key SNR)
+        if self.snr_weights is not None and t is not None and not use_per_key_snr:
             per_sample_loss = per_sample_loss * self.snr_weights[t]
 
         return per_sample_loss.mean()
@@ -534,14 +571,29 @@ class DiffusionTrainer:
                 0, self.diffusion.schedule.num_timesteps, (batch_size,), device=self.device
             )
 
+            # Compute per-key effective timesteps (graded schedule)
+            eff_t_dict = (
+                self.diffusion.compute_effective_timesteps(t, batch_size)
+                if self._graded_enabled else None
+            )
+
             # Forward diffusion (per-sample timesteps)
-            noisy_tokens, _ = self.diffusion.forward_process(tokens, t, mask_dict=target)
+            noisy_tokens, _ = self.diffusion.forward_process(
+                tokens, t, mask_dict=target,
+                effective_timesteps_dict=eff_t_dict,
+            )
 
             # Predict
-            predicted_logits = self.denoiser(noisy_tokens, t, observed_dict=observed)
+            predicted_logits = self.denoiser(
+                noisy_tokens, t, observed_dict=observed,
+                **({"effective_timesteps_dict": eff_t_dict} if eff_t_dict is not None else {}),
+            )
 
             # Compute loss (with optional SNR/vocab weighting)
-            loss = self._compute_loss(predicted_logits, tokens, target, t=t)
+            loss = self._compute_loss(
+                predicted_logits, tokens, target, t=t,
+                effective_timesteps_dict=eff_t_dict,
+            )
             val_loss += loss.item()
 
             # Physics loss (monitoring only, no gradient in validation)

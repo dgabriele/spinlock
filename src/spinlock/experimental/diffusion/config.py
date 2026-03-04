@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, Field, field_validator
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 from enum import Enum
 
 
@@ -111,6 +111,53 @@ class MaskingConfig(BaseModel):
     )
 
 
+class GradedScheduleConfig(BaseModel):
+    """Truncation-graded forward process configuration.
+
+    When enabled, maps global diffusion timestep to per-truncation effective
+    timesteps using scale factors. Earlier truncations (shorter trajectories)
+    receive less noise at each global step, so the reverse process resolves
+    coarse-to-fine — encoding temporal causality directly into the noise model.
+
+    Scale factors map each truncation level to a multiplier:
+        effective_t(key, t) = clamp(round(t * scale[key]), 0, T-1)
+
+    When scale_factors is None (default), a linear ramp is auto-computed from
+    the truncation levels discovered in vocab_sizes keys, using min_scale as
+    the floor (e.g. 4 truncations with min_scale=0.7 → [0.7, 0.8, 0.9, 1.0]).
+
+    Non-temporal keys (initial conditions, theta parameters) get a low scale
+    by default (0.3) so they resolve first — they encode the shared causal
+    origin of all truncation observations.
+    """
+    enabled: bool = False
+    scale_factors: Optional[Dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Explicit per-truncation scale factors, e.g. {'T032': 0.7, 'T064': 0.8, ...}. "
+            "None = auto-compute ramp from discovered truncation labels using min_scale."
+        ),
+    )
+    min_scale: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Floor of the auto-computed ramp. With 4 truncations and min_scale=0.7, "
+            "the ramp is [0.7, 0.8, 0.9, 1.0]. Ignored when scale_factors is explicit."
+        ),
+    )
+    non_temporal_scale: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Scale factor for non-temporal keys (initial, theta). Low values "
+            "resolve causes first, matching the causal DAG: (theta, IC) → temporal."
+        ),
+    )
+
+
 class DiffusionConfig(BaseModel):
     """Diffusion process configuration."""
     num_timesteps: int = Field(default=50, ge=1)
@@ -119,6 +166,10 @@ class DiffusionConfig(BaseModel):
     schedule_type: str = Field(default="cosine", pattern="^(linear|cosine|sqrt)$")
     transition_type: str = Field(default="uniform", pattern="^(uniform|absorbing)$")
     beta_scaling: str = Field(default="uniform", pattern="^(uniform|vocab_aware)$")
+    graded_schedule: GradedScheduleConfig = Field(
+        default_factory=GradedScheduleConfig,
+        description="Truncation-graded forward process (per-truncation noise scaling)",
+    )
 
     @field_validator("beta_end")
     @classmethod
