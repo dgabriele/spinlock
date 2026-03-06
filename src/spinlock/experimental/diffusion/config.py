@@ -223,13 +223,15 @@ class FineTuningConfig(BaseModel):
 class RefinementConfig(BaseModel):
     """Offline hard-target refinement loop configuration.
 
-    Closed loop: D3PM predict -> MNO rollout -> retokenize -> quality filter -> fine-tune.
-    Requires trained D3PM, MNO, and VQTokenizer checkpoints.
+    Closed loop: D3PM predict -> CVAE decode -> MNO rollout -> retokenize ->
+    quality filter -> fine-tune.
+    Requires trained D3PM, MNO, VQTokenizer, and CVAE checkpoints.
     """
     # Checkpoints
     d3pm_checkpoint: str           # Path to trained D3PM checkpoint
     mno_checkpoint: str            # Path to trained MNO checkpoint
     tokenizer_checkpoint: str      # Path to VQTokenizer checkpoint
+    cvae_checkpoint: Optional[str] = None  # Path to trained CVAE checkpoint
 
     # Dataset
     dataset_path: str              # HDF5 dataset with (IC, theta, rollouts)

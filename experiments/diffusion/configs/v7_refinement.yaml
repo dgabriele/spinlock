@@ -15,6 +15,7 @@
 d3pm_checkpoint: "experiments/diffusion/results/v6_single_row/v6_single_row_d3pm_best.pt"
 mno_checkpoint: "checkpoints/mno/v2/mno_best.pt"
 tokenizer_checkpoint: "checkpoints/v5/pyramid/vq_tokenizer_best.pt"
+cvae_checkpoint: "checkpoints/cvae/best.pt"
 
 dataset_path: "datasets/50k_baseline.h5"
 max_samples: 10000

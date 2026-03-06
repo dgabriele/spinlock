@@ -1,18 +1,23 @@
 """Offline hard-target refinement loop for D3PM.
 
-Closed loop: D3PM predict → MNO rollout → retokenize → quality filter → fine-tune.
+Closed loop: D3PM predict → CVAE decode → MNO rollout → retokenize →
+quality filter → fine-tune.
 
-The D3PM generates token completions from partial observations, but has no
-mechanism to verify that predictions correspond to *realizable* operator dynamics.
-This script closes the loop through the MNO surrogate:
+The D3PM generates temporal token completions from partial observations, but
+has no mechanism to verify that predictions correspond to *realizable* operator
+dynamics. This script closes the loop through the CVAE + MNO surrogate:
 
-    1. D3PM completes masked tokens (inpainting)
-    2. Decode completed tokens to (theta, IC) via trained inverse heads
-    3. Run MNO rollout → realized trajectory
-    4. Retokenize the realized trajectory
-    5. Quality-filter: roundtrip self-consistency check — keep only samples
+    1. Tokenize dataset temporal features → dataset_tokens (temporal only)
+    2. Random mask → observed/target split
+    3. D3PM inpainting → completed_tokens (temporal only)
+    4. CVAE.sample(completed_tokens) → (theta_pred, IC_pred)
+       The CVAE models P(theta, IC | temporal_tokens): given what the dynamics
+       look like, generate plausible physical parameters and initial conditions.
+    5. MNO rollout from CVAE-sampled params → realized trajectory
+    6. Retokenize realized trajectory → realized_tokens (temporal only)
+    7. Quality-filter: roundtrip self-consistency check — keep only samples
        where retokenized observed positions match the original dataset tokens
-    6. Fine-tune D3PM on the accepted "realized" hard targets
+    8. Fine-tune D3PM on the accepted "realized" hard targets
 
 E2E differentiability through the MNO was rejected: 256-512 step gradient chain
 through chaotic dynamics is too noisy. Hard targets provide a clean,
@@ -48,6 +53,7 @@ from spinlock.experimental.diffusion.models import (
     DiffusionSchedule,
     DiscreteD3PM,
 )
+from spinlock.tokens.cvae import TokenConditionedCVAE
 from spinlock.tokens.tokenizer import VQTokenizer
 from spinlock.tokens.schema import TokenSchema
 
@@ -182,6 +188,26 @@ def load_tokenizer(checkpoint_path: str) -> VQTokenizer:
     return tokenizer
 
 
+def load_cvae(checkpoint_path: str, device: str) -> TokenConditionedCVAE:
+    """Load trained Token-Conditioned CVAE.
+
+    The CVAE models P(theta, IC | temporal_tokens) — given temporal tokens
+    describing dynamics, generate plausible physical parameters and ICs.
+
+    Args:
+        checkpoint_path: Path to CVAE checkpoint
+        device: Target device
+
+    Returns:
+        TokenConditionedCVAE in eval mode
+    """
+    cvae = TokenConditionedCVAE.from_checkpoint(
+        Path(checkpoint_path), device=device
+    )
+    logger.info(f"Loaded CVAE from {checkpoint_path}")
+    return cvae
+
+
 # ── Hard target generation ───────────────────────────────────────────────────
 
 
@@ -210,24 +236,25 @@ def generate_hard_targets(
     denoiser: DenoisingNetwork,
     mno,
     tokenizer: VQTokenizer,
+    cvae: TokenConditionedCVAE,
     config: RefinementConfig,
 ) -> List[Dict]:
     """Generate hard targets from the full refinement pipeline.
 
     For each sample:
-        1. Tokenize dataset sample → dataset_tokens (IC + theta from HDF5)
+        1. Tokenize dataset temporal features → dataset_tokens (temporal only)
         2. Random mask → observed/target split
-        3. D3PM inpainting → completed_tokens
-        4. Decode completed tokens → (theta_pred, u0_pred) via inverse heads
-        5. MNO rollout from decoded params → realized trajectory
-        6. Retokenize realized trajectory → realized_tokens
+        3. D3PM inpainting → completed_tokens (temporal only)
+        4. CVAE.sample(completed_tokens) → (theta_pred, IC_pred)
+        5. MNO rollout from CVAE-sampled params → realized trajectory
+        6. Retokenize realized trajectory → realized_tokens (temporal only)
         7. Quality filter: compare realized_tokens vs dataset_tokens at
            observed positions (roundtrip self-consistency check)
         8. If agreement >= threshold: accept realized tokens at target positions
 
-    The quality gate checks whether the decode → MNO → retokenize roundtrip
+    The quality gate checks whether the CVAE → MNO → retokenize roundtrip
     reproduces the original dataset tokens at observed positions. This validates
-    that the MNO is accurate for this sample's parameter regime before trusting
+    that the CVAE+MNO pipeline is accurate for this sample before trusting
     its predictions at masked positions.
 
     Returns:
@@ -244,22 +271,43 @@ def generate_hard_targets(
     total_accepted = 0
     agreement_sum = 0.0
 
+    # Discover temporal-only keys from tokenizer
+    schema = TokenSchema.from_tokenizer(tokenizer)
+    temporal_keys = schema.keys_for_family("temporal")
+
     # Process samples individually (MNO rollout is memory-intensive)
     for idx in range(len(dataset)):
         sample = dataset[idx]
-        ic = sample["ic"].unsqueeze(0).to(device)          # [1, C, H, W]
-        params = sample["params"].unsqueeze(0).to(device)  # [1, P]
 
-        # Step 1: Tokenize dataset sample (IC + theta from HDF5)
-        with torch.no_grad():
-            dataset_tokens = tokenizer.tokenize(
-                initial_raw=ic,
-                theta_features=params,
-            )
-        # Ensure all token tensors are on device
-        dataset_tokens = {k: v.to(device) for k, v in dataset_tokens.items()}
+        # Step 1: Tokenize from pre-extracted temporal features
+        gt_temporal = sample.get("gt_raw_temporal")
+        if gt_temporal is not None:
+            gt_temporal = gt_temporal.unsqueeze(0).to(device)  # [1, T, D_raw]
+            with torch.no_grad():
+                all_tokens = tokenizer.tokenize(
+                    temporal_features=gt_temporal,
+                )
+        else:
+            # Fallback: tokenize from IC + theta (if temporal features unavailable)
+            ic = sample["ic"].unsqueeze(0).to(device)
+            params = sample["params"].unsqueeze(0).to(device)
+            with torch.no_grad():
+                all_tokens = tokenizer.tokenize(
+                    initial_raw=ic,
+                    theta_features=params,
+                )
+
+        # Filter to temporal-only keys
+        dataset_tokens = {
+            k: v.to(device) for k, v in all_tokens.items()
+            if k in temporal_keys
+        }
 
         keys = sorted(dataset_tokens.keys())
+        if not keys:
+            logger.debug(f"Sample {idx}: no temporal keys found, skipping")
+            total_samples += 1
+            continue
         B = 1
 
         # Step 2: Random mask
@@ -278,11 +326,13 @@ def generate_hard_targets(
                 start_step=config.d3pm_start_step,
             )
 
-        # Step 4: Decode to (theta, u0) via separate inverse heads
+        # Step 4: CVAE decode — sample (theta, IC) from temporal tokens
         with torch.no_grad():
-            theta_pred, u0_pred = tokenizer.decode(completed_tokens)
+            cvae_output = cvae.sample(completed_tokens, n_samples=1)
+            theta_pred = cvae_output["theta"]  # [1, theta_dim]
+            u0_pred = cvae_output["grids"]     # [1, C, H, W]
 
-        # Step 5: MNO rollout from decoded params
+        # Step 5: MNO rollout from CVAE-sampled params
         with torch.no_grad():
             conditioning = {
                 "theta": theta_pred,
@@ -296,22 +346,25 @@ def generate_hard_targets(
                 total_samples += 1
                 continue
 
-        # Step 6: Retokenize realized trajectory
+        # Step 6: Retokenize realized trajectory (temporal only)
         with torch.no_grad():
-            realized_tokens = tokenizer.tokenize(
+            all_realized = tokenizer.tokenize(
                 temporal_raw=trajectory,
-                initial_raw=u0_pred,
-                theta_features=theta_pred,
             )
-        realized_tokens = {k: v.to(device) for k, v in realized_tokens.items()}
+        realized_tokens = {
+            k: v.to(device) for k, v in all_realized.items()
+            if k in temporal_keys
+        }
 
         # Step 7: Quality filter — roundtrip self-consistency check
         # Compare realized_tokens vs dataset_tokens at observed positions.
-        # If the MNO can't reproduce what we already know (the observed tokens),
-        # we shouldn't trust its predictions at masked positions either.
+        # If the CVAE+MNO can't reproduce what we already know (the observed
+        # tokens), we shouldn't trust its predictions at masked positions.
         num_observed = 0
         num_agree = 0
         for key in keys:
+            if key not in realized_tokens:
+                continue
             obs_mask = observed_dict[key]  # [1] bool
             if obs_mask.any():
                 dataset_val = dataset_tokens[key][obs_mask]
@@ -328,7 +381,9 @@ def generate_hard_targets(
             # Build hard target: dataset tokens at observed, realized at target
             hard_target_tokens = {}
             for key in keys:
-                obs_mask = observed_dict[key]  # [1]
+                if key not in realized_tokens:
+                    hard_target_tokens[key] = dataset_tokens[key].clone()
+                    continue
                 tgt_mask = target_dict[key]    # [1]
                 merged = dataset_tokens[key].clone()
                 merged[tgt_mask] = realized_tokens[key][tgt_mask]
@@ -552,6 +607,7 @@ def main(args):
     logger.info(f"  D3PM checkpoint:     {config.d3pm_checkpoint}")
     logger.info(f"  MNO checkpoint:      {config.mno_checkpoint}")
     logger.info(f"  Tokenizer checkpoint:{config.tokenizer_checkpoint}")
+    logger.info(f"  CVAE checkpoint:     {config.cvae_checkpoint}")
     logger.info(f"  Dataset:             {config.dataset_path}")
     logger.info(f"  Refinement cycles:   {config.num_refinement_cycles}")
     logger.info(f"  Mask probability:    {config.mask_probability}")
@@ -566,11 +622,20 @@ def main(args):
     mno = load_mno(config.mno_checkpoint, config.device)
     tokenizer = load_tokenizer(config.tokenizer_checkpoint)
 
-    # Load dataset
+    # Load CVAE for temporal-token → (theta, IC) decoding
+    if config.cvae_checkpoint is None:
+        raise ValueError(
+            "cvae_checkpoint is required in RefinementConfig. "
+            "Train a CVAE first: spinlock train-cvae --config configs/token_conditioned_cvae.yaml"
+        )
+    cvae = load_cvae(config.cvae_checkpoint, config.device)
+
+    # Load dataset with GT temporal features for temporal-only tokenization
     logger.info("\nLoading dataset...")
     dataset = SpinlockDataset(
         config.dataset_path,
         max_samples=config.max_samples,
+        load_gt_temporal_features=True,
     )
     logger.info(f"Dataset: {len(dataset)} samples")
 
@@ -584,7 +649,7 @@ def main(args):
         # Generate hard targets
         logger.info("\nGenerating hard targets...")
         hard_targets = generate_hard_targets(
-            dataset, diffusion, denoiser, mno, tokenizer, config
+            dataset, diffusion, denoiser, mno, tokenizer, cvae, config
         )
 
         # Fine-tune

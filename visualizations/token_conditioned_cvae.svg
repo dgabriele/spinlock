@@ -1,0 +1,1103 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 800 1100"
+   width="800"
+   height="1100"
+   font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+   version="1.1"
+   id="svg63"
+   sodipodi:docname="token_conditioned_cvae.svg"
+   inkscape:version="1.4.3 (0d15f75042, 2025-12-25)"
+   inkscape:export-filename="token_conditioned_cvae.png"
+   inkscape:export-xdpi="180"
+   inkscape:export-ydpi="180"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview63"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="1.6654545"
+     inkscape:cx="169.32314"
+     inkscape:cy="782.96943"
+     inkscape:window-width="3840"
+     inkscape:window-height="2060"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg63" />
+  <defs
+     id="defs3">
+    <marker
+       id="arrow"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="0 0.5, 7 3, 0 5.5"
+         fill="#2C3E50"
+         id="polygon1" />
+    </marker>
+    <marker
+       id="arrow-red"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="0 0.5, 7 3, 0 5.5"
+         fill="#E74C3C"
+         id="polygon2" />
+    </marker>
+    <marker
+       id="arrow-gray"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="0 0.5, 7 3, 0 5.5"
+         fill="#7F8C8D"
+         id="polygon3" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect
+     width="800"
+     height="1100"
+     fill="#FFFFFF"
+     rx="0"
+     id="rect3" />
+  <!-- ================================================================ -->
+  <!-- TITLE -->
+  <!-- ================================================================ -->
+  <text
+     x="400"
+     y="40"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="18"
+     font-weight="bold"
+     id="text3">
+    Token-Conditioned CVAE: P(θ, IC | temporal tokens)
+  </text>
+  <!-- ================================================================ -->
+  <!-- INPUTS SECTION (y=70) -->
+  <!-- ================================================================ -->
+  <!-- Left input: Temporal Tokens -->
+  <rect
+     x="50"
+     y="70"
+     width="320"
+     height="50"
+     rx="8"
+     fill="#E8DAEF"
+     stroke="#8E44AD"
+     stroke-width="2"
+     id="rect4" />
+  <text
+     x="210"
+     y="100"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="14"
+     font-weight="600"
+     id="text4">
+    Temporal Tokens (~90 positions)
+  </text>
+  <!-- Right input: Ground Truth theta, IC -->
+  <rect
+     x="430"
+     y="70"
+     width="320"
+     height="50"
+     rx="8"
+     fill="#D4E6F1"
+     stroke="#2980B9"
+     stroke-width="2"
+     id="rect5" />
+  <text
+     x="590"
+     y="96"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="14"
+     font-weight="600"
+     id="text5">
+    Ground Truth θ, IC
+  </text>
+  <text
+     x="590"
+     y="113"
+     text-anchor="middle"
+     fill="#7F8C8D"
+     font-size="11"
+     font-style="italic"
+     id="text6"
+     style="fill:#666666">
+    (training only)
+  </text>
+  <!-- ================================================================ -->
+  <!-- TOKEN CONDITIONING PIPELINE (left, y=155) -->
+  <!-- ================================================================ -->
+  <!-- Arrow from Temporal Tokens down -->
+  <line
+     x1="210"
+     y1="120"
+     x2="210"
+     y2="155"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line6" />
+  <!-- Frozen Codebook Embeddings -->
+  <rect
+     x="60"
+     y="155"
+     width="300"
+     height="44"
+     rx="8"
+     fill="#D6EAF8"
+     stroke="#2980B9"
+     stroke-width="2"
+     stroke-dasharray="6,3"
+     id="rect6" />
+  <text
+     x="210"
+     y="175"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="13"
+     font-weight="600"
+     id="text7">
+    Frozen Codebook Embeddings
+  </text>
+  <text
+     x="210"
+     y="191"
+     text-anchor="middle"
+     fill="#7F8C8D"
+     font-size="10"
+     id="text8"
+     style="fill:#4d4d4d">
+    (lookup, no grad)
+  </text>
+  <!-- Arrow down -->
+  <line
+     x1="210"
+     y1="199"
+     x2="210"
+     y2="224"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line8" />
+  <!-- Per-Group MLP -->
+  <rect
+     x="60"
+     y="224"
+     width="300"
+     height="44"
+     rx="8"
+     fill="#D5F5E3"
+     stroke="#27AE60"
+     stroke-width="2"
+     id="rect8" />
+  <text
+     x="210"
+     y="244"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="13"
+     font-weight="600"
+     id="text9">
+    Per-Group MLP (×90, weight-tied)
+  </text>
+  <text
+     x="210"
+     y="260"
+     text-anchor="middle"
+     fill="#7F8C8D"
+     font-size="10"
+     id="text10"
+     style="fill:#4d4d4d">
+    embed_dim → hidden → 64
+  </text>
+  <!-- Arrow down -->
+  <line
+     x1="210"
+     y1="268"
+     x2="210"
+     y2="293"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line10" />
+  <!-- Mean Pool -->
+  <rect
+     x="60"
+     y="293"
+     width="300"
+     height="40"
+     rx="8"
+     fill="#FAE5D3"
+     stroke="#E67E22"
+     stroke-width="2"
+     id="rect10" />
+  <text
+     x="210"
+     y="318"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="13"
+     font-weight="600"
+     id="text11">
+    Mean Pool → c [B, 64]
+  </text>
+  <!-- ================================================================ -->
+  <!-- TARGET ENCODER (right, y=155, training only) -->
+  <!-- ================================================================ -->
+  <!-- Arrow from GT down -->
+  <line
+     x1="590"
+     y1="120"
+     x2="590"
+     y2="155"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line11" />
+  <!-- Dashed container for training-only target encoder -->
+  <rect
+     x="435"
+     y="150"
+     width="310"
+     height="185"
+     rx="8"
+     fill="none"
+     stroke="#7F8C8D"
+     stroke-width="1.5"
+     stroke-dasharray="6,3"
+     id="rect11" />
+  <text
+     x="590"
+     y="168"
+     text-anchor="middle"
+     fill="#7F8C8D"
+     font-size="11"
+     font-style="italic"
+     id="text12"
+     style="fill:#666666">
+    Target Encoder (training only)
+  </text>
+  <!-- theta MLP -->
+  <rect
+     x="455"
+     y="180"
+     width="120"
+     height="38"
+     rx="6"
+     fill="#D5F5E3"
+     stroke="#27AE60"
+     stroke-width="1.5"
+     id="rect12" />
+  <text
+     x="515"
+     y="203"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="12"
+     font-weight="600"
+     id="text13">
+    θ MLP → [B, 256]
+  </text>
+  <!-- IC CNN -->
+  <rect
+     x="595"
+     y="180"
+     width="130"
+     height="38"
+     rx="6"
+     fill="#D5F5E3"
+     stroke="#27AE60"
+     stroke-width="1.5"
+     id="rect13" />
+  <text
+     x="660"
+     y="203"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="12"
+     font-weight="600"
+     id="text14">
+    IC CNN → [B, 256]
+  </text>
+  <!-- Arrows from theta MLP and IC CNN down to concat -->
+  <line
+     x1="515"
+     y1="218"
+     x2="515"
+     y2="245"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line14" />
+  <line
+     x1="660"
+     y1="218"
+     x2="660"
+     y2="245"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line15" />
+  <!-- Horizontal merge lines -->
+  <line
+     x1="515"
+     y1="245"
+     x2="590"
+     y2="245"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line16" />
+  <line
+     x1="660"
+     y1="245"
+     x2="590"
+     y2="245"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line17" />
+  <!-- Down to concat box -->
+  <line
+     x1="590"
+     y1="245"
+     x2="590"
+     y2="268"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line18" />
+  <!-- Concat box -->
+  <rect
+     x="465"
+     y="268"
+     width="250"
+     height="38"
+     rx="6"
+     fill="#FAE5D3"
+     stroke="#E67E22"
+     stroke-width="1.5"
+     id="rect18" />
+  <text
+     x="590"
+     y="292"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="12"
+     font-weight="600"
+     id="text18">
+    concat → target [B, 512]
+  </text>
+  <!-- ================================================================ -->
+  <!-- CVAE ENCODER (y=380) -->
+  <!-- ================================================================ -->
+  <!-- Arrows from Mean Pool and Target Encoder down to CVAE Encoder -->
+  <line
+     x1="210"
+     y1="333"
+     x2="210"
+     y2="360"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line19" />
+  <line
+     x1="210"
+     y1="360"
+     x2="400"
+     y2="360"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line20" />
+  <line
+     x1="590"
+     y1="306"
+     x2="590"
+     y2="360"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line21" />
+  <line
+     x1="590"
+     y1="360"
+     x2="400"
+     y2="360"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line22" />
+  <line
+     x1="400"
+     y1="360"
+     x2="400"
+     y2="380"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line23" />
+  <!-- CVAE Encoder box (dashed = training only) -->
+  <rect
+     x="80"
+     y="380"
+     width="640"
+     height="110"
+     rx="8"
+     fill="#D5F5E3"
+     stroke="#27AE60"
+     stroke-width="2"
+     stroke-dasharray="6,3"
+     id="rect23" />
+  <!-- Training only badge -->
+  <rect
+     x="588"
+     y="400"
+     width="100"
+     height="20"
+     rx="4"
+     fill="none"
+     stroke="#7f8c8d"
+     stroke-width="1"
+     stroke-dasharray="4, 2"
+     id="rect24" />
+  <text
+     x="638"
+     y="414"
+     text-anchor="middle"
+     fill="#7f8c8d"
+     font-size="10px"
+     font-style="italic"
+     id="text24"
+     style="fill:#4d4d4d">training only</text>
+  <text
+     x="400"
+     y="410"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="15"
+     font-weight="bold"
+     id="text25">
+    q(z | θ, IC, tokens)
+  </text>
+  <text
+     x="400"
+     y="435"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="12"
+     id="text26">
+    concat(target[512], c[64]) → MLP → (μ, log σ²)
+  </text>
+  <text
+     x="400"
+     y="460"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="13"
+     font-weight="600"
+     id="text27">
+    Reparameterize → z [B, 256]
+  </text>
+  <text
+     x="400"
+     y="480"
+     text-anchor="middle"
+     fill="#7F8C8D"
+     font-size="10"
+     id="text28"
+     style="fill:#666666">
+    z = μ + σ ⊙ ε,  ε ~ N(0, I)
+  </text>
+  <!-- ================================================================ -->
+  <!-- DECODER SECTION (y=530) -->
+  <!-- ================================================================ -->
+  <!-- Arrow from CVAE Encoder z down -->
+  <line
+     x1="340"
+     y1="490"
+     x2="340"
+     y2="520"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line28" />
+  <!-- Label "z" on arrow -->
+  <text
+     x="326"
+     y="515"
+     fill="#2C3E50"
+     font-size="11"
+     font-style="italic"
+     id="text29">z</text>
+  <!-- Arrow from c (mean pool) down, bypassing encoder -->
+  <!-- c path: from Mean Pool right side, route down along left margin -->
+  <line
+     x1="210"
+     y1="333"
+     x2="210"
+     y2="348"
+     stroke="#E67E22"
+     stroke-width="1.5"
+     id="line29" />
+  <line
+     x1="210"
+     y1="348"
+     x2="50"
+     y2="348"
+     stroke="#E67E22"
+     stroke-width="1.5"
+     id="line30" />
+  <line
+     x1="50"
+     y1="348"
+     x2="50"
+     y2="561.35504"
+     stroke="#e67e22"
+     stroke-width="1.49974"
+     id="line31" />
+  <line
+     x1="50.609818"
+     y1="560.82971"
+     x2="199.11028"
+     y2="560.82971"
+     stroke="#e67e22"
+     stroke-width="1.04989"
+     id="line32" />
+  <!-- Label "c" on path -->
+  <text
+     x="42"
+     y="440"
+     fill="#E67E22"
+     font-size="11"
+     font-weight="600"
+     id="text32">c</text>
+  <!-- Merge z and c -->
+  <line
+     x1="340"
+     y1="520"
+     x2="400"
+     y2="520"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line33" />
+  <line
+     x1="400"
+     y1="520"
+     x2="400"
+     y2="540"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line35" />
+  <!-- Concat z + c box -->
+  <rect
+     x="200"
+     y="540"
+     width="400"
+     height="40"
+     rx="8"
+     fill="#FAE5D3"
+     stroke="#E67E22"
+     stroke-width="2"
+     id="rect35" />
+  <text
+     x="400"
+     y="565"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="13"
+     font-weight="600"
+     id="text35">
+    concat(z[256], c[64]) = [B, 320]
+  </text>
+  <!-- Fork arrows to two decoders -->
+  <line
+     x1="300"
+     y1="580"
+     x2="300"
+     y2="595"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line36" />
+  <line
+     x1="300"
+     y1="595"
+     x2="220"
+     y2="595"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line37" />
+  <line
+     x1="220"
+     y1="595"
+     x2="220"
+     y2="615"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line38" />
+  <line
+     x1="500"
+     y1="580"
+     x2="500"
+     y2="595"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line39" />
+  <line
+     x1="500"
+     y1="595"
+     x2="580"
+     y2="595"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     id="line40" />
+  <line
+     x1="580"
+     y1="595"
+     x2="580"
+     y2="615"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line41" />
+  <!-- ParameterDecoder -->
+  <rect
+     x="110"
+     y="615"
+     width="220"
+     height="50"
+     rx="8"
+     fill="#D5F5E3"
+     stroke="#27AE60"
+     stroke-width="2"
+     id="rect41" />
+  <text
+     x="220"
+     y="637"
+     text-anchor="middle"
+     fill="#2c3e50"
+     font-size="13px"
+     font-weight="600"
+     id="text41">Parameter Decoder</text>
+  <text
+     x="220"
+     y="655"
+     text-anchor="middle"
+     fill="#7f8c8d"
+     font-size="11px"
+     id="text42"
+     style="fill:#666666">MLP → θ̂'[B, P]</text>
+  <!-- GridDecoder -->
+  <rect
+     x="470"
+     y="615"
+     width="220"
+     height="50"
+     rx="8"
+     fill="#D5F5E3"
+     stroke="#27AE60"
+     stroke-width="2"
+     id="rect42" />
+  <text
+     x="580"
+     y="637"
+     text-anchor="middle"
+     fill="#2c3e50"
+     font-size="13px"
+     font-weight="600"
+     id="text43">Grid Decoder</text>
+  <text
+     x="580"
+     y="655"
+     text-anchor="middle"
+     fill="#7F8C8D"
+     font-size="11"
+     id="text44"
+     style="fill:#666666">
+    Deconv → IC [B, C, H, W]
+  </text>
+  <!-- Output labels below decoders -->
+  <line
+     x1="220"
+     y1="665"
+     x2="220"
+     y2="690"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line44" />
+  <rect
+     x="150"
+     y="690"
+     width="140"
+     height="30"
+     rx="6"
+     fill="#E8DAEF"
+     stroke="#8E44AD"
+     stroke-width="1.5"
+     id="rect44" />
+  <text
+     x="220"
+     y="710"
+     text-anchor="middle"
+     fill="#2c3e50"
+     font-size="12px"
+     font-weight="600"
+     id="text45">θ̂'[B, P]</text>
+  <line
+     x1="580"
+     y1="665"
+     x2="580"
+     y2="690"
+     stroke="#2C3E50"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line45" />
+  <rect
+     x="510"
+     y="690"
+     width="140"
+     height="30"
+     rx="6"
+     fill="#E8DAEF"
+     stroke="#8E44AD"
+     stroke-width="1.5"
+     id="rect45" />
+  <text
+     x="580"
+     y="710"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="12"
+     font-weight="600"
+     id="text46">
+    IC [B, C, H, W]
+  </text>
+  <!-- ================================================================ -->
+  <!-- LOSS SECTION (y=750) -->
+  <!-- ================================================================ -->
+  <!-- Arrows from outputs down to loss -->
+  <line
+     x1="220"
+     y1="720"
+     x2="220"
+     y2="745"
+     stroke="#E74C3C"
+     stroke-width="1.5"
+     id="line46" />
+  <line
+     x1="220"
+     y1="745"
+     x2="400"
+     y2="745"
+     stroke="#E74C3C"
+     stroke-width="1.5"
+     id="line47" />
+  <line
+     x1="580"
+     y1="720"
+     x2="580"
+     y2="745"
+     stroke="#E74C3C"
+     stroke-width="1.5"
+     id="line48" />
+  <line
+     x1="580"
+     y1="745"
+     x2="400"
+     y2="745"
+     stroke="#E74C3C"
+     stroke-width="1.5"
+     id="line49" />
+  <line
+     x1="400"
+     y1="745"
+     x2="400"
+     y2="760"
+     stroke="#E74C3C"
+     stroke-width="1.5"
+     marker-end="url(#arrow-red)"
+     id="line50" />
+  <!-- Loss box -->
+  <rect
+     x="130"
+     y="760"
+     width="540"
+     height="48"
+     rx="8"
+     fill="#FADBD8"
+     stroke="#E74C3C"
+     stroke-width="2"
+     id="rect50" />
+  <text
+     x="400"
+     y="780"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="14"
+     font-weight="bold"
+     id="text50">
+    Loss
+  </text>
+  <text
+     x="400"
+     y="798"
+     text-anchor="middle"
+     fill="#C0392B"
+     font-size="13"
+     font-weight="600"
+     id="text51">
+    MSE(θ) + MSE(IC) + β · KL( q ‖ N(0, I) )
+  </text>
+  <!-- ================================================================ -->
+  <!-- INFERENCE CALLOUT (y=845) -->
+  <!-- ================================================================ -->
+  <rect
+     x="80.079575"
+     y="845.07953"
+     width="639.84088"
+     height="128.45439"
+     rx="9.9975138"
+     fill="#f8f9fa"
+     stroke="#7f8c8d"
+     stroke-width="2.02837"
+     stroke-dasharray="8, 4"
+     id="rect51" />
+  <text
+     x="400"
+     y="870"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="15"
+     font-weight="bold"
+     id="text52">
+    Inference Mode
+  </text>
+  <!-- Cloud / sample shape for z ~ N(0,I) -->
+  <ellipse
+     cx="210"
+     cy="910"
+     rx="90"
+     ry="24"
+     fill="#EBF5FB"
+     stroke="#2980B9"
+     stroke-width="1.5"
+     stroke-dasharray="4,2"
+     id="ellipse52" />
+  <text
+     x="210"
+     y="914"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="12"
+     font-weight="600"
+     id="text53">
+    z ~ N(0, I)
+  </text>
+  <!-- Arrow from cloud to concat -->
+  <line
+     x1="300"
+     y1="910"
+     x2="380"
+     y2="910"
+     stroke="#7F8C8D"
+     stroke-width="1.5"
+     marker-end="url(#arrow-gray)"
+     id="line53" />
+  <!-- Concat with c -->
+  <rect
+     x="385"
+     y="893"
+     width="200"
+     height="34"
+     rx="6"
+     fill="#FAE5D3"
+     stroke="#E67E22"
+     stroke-width="1.5"
+     id="rect53" />
+  <text
+     x="485"
+     y="914"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="12"
+     font-weight="600"
+     id="text54">
+    concat(z, c) → Decoders
+  </text>
+  <!-- Arrow from c to inference concat -->
+  <text
+     x="407.03055"
+     y="939.99567"
+     fill="#e67e22"
+     font-size="11px"
+     font-weight="600"
+     id="text55">c from tokens, ,e.g. from D3PM</text>
+  <!-- No target encoder annotation -->
+  <text
+     x="400"
+     y="960"
+     text-anchor="middle"
+     fill="#7f8c8d"
+     font-size="11px"
+     font-style="italic"
+     id="text56">No target encoder needed. Tokens provide full conditioning</text>
+  <!-- ================================================================ -->
+  <!-- LEGEND (y=980) -->
+  <!-- ================================================================ -->
+  <rect
+     x="80"
+     y="985"
+     width="640"
+     height="90"
+     rx="8"
+     fill="#FAFAFA"
+     stroke="#BDC3C7"
+     stroke-width="1"
+     id="rect56" />
+  <text
+     x="400"
+     y="1008"
+     text-anchor="middle"
+     fill="#2C3E50"
+     font-size="13"
+     font-weight="bold"
+     id="text57">
+    Legend
+  </text>
+  <!-- Row 1 -->
+  <!-- Purple = temporal tokens -->
+  <rect
+     x="110"
+     y="1018"
+     width="20"
+     height="14"
+     rx="3"
+     fill="#E8DAEF"
+     stroke="#8E44AD"
+     stroke-width="1.5"
+     id="rect57" />
+  <text
+     x="138"
+     y="1030"
+     fill="#2C3E50"
+     font-size="11"
+     id="text58">
+    Temporal tokens (input)
+  </text>
+  <!-- Green = learnable modules -->
+  <rect
+     x="310"
+     y="1018"
+     width="20"
+     height="14"
+     rx="3"
+     fill="#D5F5E3"
+     stroke="#27AE60"
+     stroke-width="1.5"
+     id="rect58" />
+  <text
+     x="338"
+     y="1030"
+     fill="#2C3E50"
+     font-size="11"
+     id="text59">
+    Learnable modules
+  </text>
+  <!-- Orange = intermediate -->
+  <rect
+     x="510"
+     y="1018"
+     width="20"
+     height="14"
+     rx="3"
+     fill="#FAE5D3"
+     stroke="#E67E22"
+     stroke-width="1.5"
+     id="rect59" />
+  <text
+     x="538"
+     y="1030"
+     fill="#2C3E50"
+     font-size="11"
+     id="text60">
+    Intermediate repr.
+  </text>
+  <!-- Row 2 -->
+  <!-- Blue dashed = frozen -->
+  <rect
+     x="110"
+     y="1045"
+     width="20"
+     height="14"
+     rx="3"
+     fill="#D6EAF8"
+     stroke="#2980B9"
+     stroke-width="1.5"
+     stroke-dasharray="4,2"
+     id="rect60" />
+  <text
+     x="138"
+     y="1057"
+     fill="#2C3E50"
+     font-size="11"
+     id="text61">
+    Frozen components
+  </text>
+  <!-- Red = loss -->
+  <rect
+     x="310"
+     y="1045"
+     width="20"
+     height="14"
+     rx="3"
+     fill="#FADBD8"
+     stroke="#E74C3C"
+     stroke-width="1.5"
+     id="rect61" />
+  <text
+     x="338"
+     y="1057"
+     fill="#2C3E50"
+     font-size="11"
+     id="text62">
+    Loss terms
+  </text>
+  <!-- Dashed = training only -->
+  <rect
+     x="510"
+     y="1045"
+     width="20"
+     height="14"
+     rx="3"
+     fill="none"
+     stroke="#7F8C8D"
+     stroke-width="1.5"
+     stroke-dasharray="4,2"
+     id="rect62" />
+  <text
+     x="538"
+     y="1057"
+     fill="#2C3E50"
+     font-size="11"
+     id="text63">
+    Training only
+  </text>
+</svg>

@@ -1,0 +1,74 @@
+# Token-Conditioned CVAE Configuration
+# Learns P(theta, IC | temporal_tokens) for the D3PM refinement pipeline.
+#
+# All data-dependent dimensions (theta_dim, grid_shape, embedding dims)
+# are auto-detected at runtime from the VQTokenizer checkpoint and dataset.
+#
+# Usage:
+#   poetry run spinlock train-cvae --config configs/token_conditioned_cvae.yaml
+#
+# Smoke test:
+#   poetry run spinlock train-cvae \
+#     --config configs/token_conditioned_cvae.yaml \
+#     --num-epochs 2 --batch-size 4 --device cpu
+
+model:
+  latent_dim: 256
+
+  # Token conditioning: frozen codebook embeddings -> condition vector
+  condition:
+    group_mlp_hidden_dim: 128
+    group_mlp_output_dim: 64
+    pooling: "mean"
+
+  # Target encoder (training only): GT theta + IC -> features
+  target_encoder:
+    theta_hidden_dim: 256
+    ic_hidden_dim: 256
+    ic_channels: [32, 64, 128]
+    dropout: 0.1
+
+  # Recognition network: q(z | target, condition) -> (mu, logvar)
+  encoder:
+    hidden_dims: [512, 256]
+    dropout: 0.1
+
+  # Parameter decoder: concat(z, condition) -> theta_hat
+  param_decoder:
+    hidden_dims: [256, 128]
+    dropout: 0.1
+
+  # Grid decoder: concat(z, condition) -> IC_hat
+  grid_decoder:
+    hidden_channels: [512, 256, 128, 64, 32]
+    dropout: 0.1
+
+training:
+  num_epochs: 200
+  batch_size: 256
+  learning_rate: 0.001
+
+  # KL annealing (prevents posterior collapse)
+  beta_schedule: "linear"
+  beta_max: 1.0
+  beta_warmup_epochs: 100
+
+  optimizer: "adam"
+  weight_decay: 0.0
+  scheduler_type: "cosine"
+  grad_clip_norm: 1.0
+
+data:
+  vq_checkpoint: "checkpoints/v5/pyramid/vq_tokenizer_best.pt"
+  dataset: "datasets/50k_baseline.h5"
+  tokenized_dataset: "datasets/50k_baseline_tokenized.h5"
+  temporal_keys_only: true
+  train_split: 0.9
+  val_split: 0.1
+
+validation:
+  freq_epochs: 5
+
+output_dir: "checkpoints/cvae/"
+device: "cuda"
+seed: 42

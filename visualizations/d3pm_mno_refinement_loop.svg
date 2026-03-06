@@ -115,7 +115,7 @@
      fill="#2C3E50"
      letter-spacing="0.3"
      id="text4">
-    Offline Hard-Target Refinement: D3PM  →  MNO  →  Retokenize
+    Offline Hard-Target Refinement: D3PM  &#x2192;  MNO  &#x2192;  Retokenize
   </text>
   <line
      x1="120"
@@ -262,7 +262,7 @@
      font-size="9.5"
      fill="#6C3483"
      id="text13">
-    Iterative reverse denoising (T → 0) with RePaint inpainting
+    Iterative reverse denoising (T &#x2192; 0) with RePaint inpainting
   </text>
   <text
      x="400"
@@ -311,7 +311,7 @@
      fill="#566573"
      id="text16">completed tokens</text>
   <!-- ================================================================ -->
-  <!-- SECTION 3: DECODE (three-stage pipeline)                         -->
+  <!-- SECTION 3: DECODE (CVAE)                                         -->
   <!-- ================================================================ -->
   <rect
      x="120"
@@ -319,135 +319,115 @@
      width="560"
      height="82"
      rx="8"
-     fill="#ECF0F1"
-     stroke="#95A5A6"
-     stroke-width="1.2"
+     fill="#E8DAEF"
+     stroke="#6C3483"
+     stroke-width="1.4"
      id="rect16" />
-  <rect
-     x="120"
-     y="250"
-     width="560"
-     height="82"
-     rx="8"
-     fill="url(#frozen-grid)"
-     opacity="0.3"
-     id="rect17" />
   <text
      x="400"
-     y="268"
+     y="270"
      text-anchor="middle"
-     font-size="11"
+     font-size="12"
      font-weight="bold"
      fill="#2C3E50"
-     id="text17">
-    VQTokenizer.decode()
-  </text>
-  <!-- Three sub-stages -->
+     id="text17">CVAE: P(&#x3B8;, IC | tokens)</text>
+  <!-- CVAE flow: tokens -> CVAE -> outputs -->
   <rect
-     x="135"
-     y="276"
-     width="155"
-     height="26"
-     rx="4"
-     fill="#FDEBD0"
-     stroke="#E67E22"
-     stroke-width="0.8"
-     id="rect18" />
-  <text
-     x="212"
-     y="293"
-     text-anchor="middle"
-     font-size="8.5"
-     fill="#2C3E50"
-     id="text18">
-    Codebook Embeddings
-  </text>
-  <line
-     x1="290"
-     y1="289"
-     x2="305"
-     y2="289"
-     stroke="#2C3E50"
-     stroke-width="0.9"
-     marker-end="url(#arrow)"
-     id="line18" />
-  <rect
-     x="308"
-     y="276"
-     width="140"
+     x="155"
+     y="280"
+     width="150"
      height="26"
      rx="4"
      fill="#D7BDE2"
      stroke="#6C3483"
      stroke-width="0.8"
-     id="rect19" />
+     id="rect18" />
   <text
-     x="378"
-     y="293"
+     x="230"
+     y="297"
      text-anchor="middle"
      font-size="8.5"
      fill="#2C3E50"
-     id="text19">
-    Shared VQ Decoder
-  </text>
+     id="text18">temporal_tokens</text>
   <line
-     x1="448"
-     y1="289"
-     x2="463"
-     y2="289"
+     x1="305"
+     y1="293"
+     x2="340"
+     y2="293"
+     stroke="#2C3E50"
+     stroke-width="0.9"
+     marker-end="url(#arrow)"
+     id="line18" />
+  <rect
+     x="343"
+     y="280"
+     width="100"
+     height="26"
+     rx="4"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.8"
+     id="rect19" />
+  <text
+     x="393"
+     y="297"
+     text-anchor="middle"
+     font-size="9"
+     font-weight="bold"
+     fill="#1E8449"
+     id="text19">CVAE</text>
+  <line
+     x1="443"
+     y1="293"
+     x2="478"
+     y2="293"
      stroke="#2C3E50"
      stroke-width="0.9"
      marker-end="url(#arrow)"
      id="line19" />
   <rect
-     x="466"
-     y="276"
-     width="198"
+     x="481"
+     y="280"
+     width="180"
      height="26"
      rx="4"
-     fill="#AED6F1"
-     stroke="#2471A3"
+     fill="#D7BDE2"
+     stroke="#6C3483"
      stroke-width="0.8"
      id="rect20" />
   <text
-     x="565"
-     y="293"
+     x="571"
+     y="297"
      text-anchor="middle"
      font-size="8.5"
      fill="#2C3E50"
-     id="text20">
-    Inverse Heads (separate NNs)
-  </text>
-  <!-- Sub-annotations for inverse heads -->
+     id="text20">(&#x3B8;_pred, IC_pred)</text>
+  <!-- Sub-annotation for CVAE outputs -->
   <text
      x="400"
      y="322"
      text-anchor="middle"
      font-size="9"
      fill="#566573"
-     id="text21">
-    ThetaInverseMLP → θ_pred [B,14]  InitialInverseCNN → u0_pred [B,C,H,W]
-  </text>
-  <!-- Frozen label -->
+     id="text21">&#x3B8;_pred [B,14] + u0_pred [B,C,H,W] &#x2014; sampled from learned posterior</text>
+  <!-- Trainable label -->
   <rect
      x="685"
      y="255"
-     width="50"
+     width="62"
      height="16"
      rx="4"
-     fill="#95A5A6"
+     fill="#8E44AD"
      opacity="0.85"
      id="rect21" />
   <text
-     x="710"
+     x="716"
      y="266"
      text-anchor="middle"
      font-size="8"
      fill="#FFFFFF"
      font-weight="bold"
-     id="text22">
-    FROZEN
-  </text>
+     id="text22">TRAINABLE</text>
   <!-- Arrow: Decode to MNO -->
   <line
      x1="400"
@@ -498,7 +478,7 @@
      font-size="9.5"
      fill="#CA6F1E"
      id="text24">
-    Conditioning: θ_pred + token embeddings (via TokenThetaICAdapter)
+    Conditioning: &#x3B8;_pred + token embeddings (via TokenThetaICAdapter)
   </text>
   <text
      x="400"
@@ -507,7 +487,7 @@
      font-size="9.5"
      fill="#CA6F1E"
      id="text25">
-    IC: u0_pred  →  512-step autoregressive rollout
+    IC: u0_pred  &#x2192;  512-step autoregressive rollout
   </text>
   <text
      x="400"
@@ -594,7 +574,7 @@
      font-size="9"
      fill="#7B7D7D"
      id="text30">
-    trajectory → realized_tokens (90 positions)
+    trajectory &#x2192; realized_tokens (90 positions)
   </text>
   <!-- Frozen label -->
   <rect
@@ -682,7 +662,7 @@
      font-weight="bold"
      fill="#27AE60"
      id="text35">
-    ≥ 80% agree
+    &#x2265; 80% agree
   </text>
   <!-- Accept box -->
   <rect
@@ -712,7 +692,7 @@
      font-size="8.5"
      fill="#1E8449"
      id="text37">
-    → Hard target pool
+    &#x2192; Hard target pool
   </text>
   <!-- Reject branch (right, red) -->
   <line
@@ -982,7 +962,7 @@
      y="966"
      font-size="9.5"
      fill="#2C3E50"
-     id="text53">Trainable (D3PM denoiser)</text>
+     id="text53">Trainable (D3PM, CVAE)</text>
   <rect
      x="330"
      y="956"
