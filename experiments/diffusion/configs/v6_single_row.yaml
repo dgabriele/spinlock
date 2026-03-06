@@ -1,0 +1,65 @@
+# D3PM Single-Row — Per-Position Graded Noise
+#
+# ~90 tokens from max-truncation tokenization.
+# Per-position noise scales from divergence analysis encode causal hierarchy:
+#   theta/IC: scale ~0.3 (resolve first)
+#   short-horizon temporal: scale ~0.5-0.7
+#   long-horizon temporal: scale ~0.85-1.0
+
+dataset:
+  tokenized_path: "datasets/lenia_1.5M_temporal.h5"
+  tokenizer_checkpoint: "checkpoints/v5/pyramid/vq_tokenizer_best.pt"
+  use_pretokenized: true
+  truncation_length: 512
+
+masking:
+  strategy: "random"
+  mask_probability: 0.5
+
+diffusion:
+  num_timesteps: 50
+  schedule_type: "cosine"
+  transition_type: "uniform"
+  beta_scaling: "vocab_aware"
+  graded_schedule:
+    enabled: true
+    position_scale_factors_path: "experiments/diffusion/configs/position_scales_v6.json"
+    non_temporal_scale: 0.3
+
+model:
+  hidden_dim: 256
+  num_layers: 6
+  num_heads: 8
+  dropout: 0.1
+  use_hierarchical_guidance: true
+  hierarchical_guidance_weight: 0.1
+  hierarchical_guidance_mode: "per_category"
+
+training:
+  batch_size: 64
+  num_epochs: 15
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  gradient_clip_norm: 1.0
+  use_snr_weighting: true
+  use_vocab_size_weighting: true
+  physics_loss:
+    timestep_gate: "bell"
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 2
+    min_lr: 1.0e-6
+  val_batch_size: 128
+  val_split: 0.1
+  val_frequency: 1
+  val_samples: 10
+  checkpoint_frequency: 5
+  save_best: true
+  log_frequency: 50
+
+output:
+  dir: "experiments/diffusion/results/v6_single_row"
+  checkpoint_prefix: "v6_single_row_d3pm"
+
+device: "cuda"
+seed: 42

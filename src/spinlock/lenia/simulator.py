@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import warnings
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Callable, Dict, List, Optional, Tuple, Type
 
 import torch
 
@@ -282,6 +282,80 @@ GROWTH_STEP = 2
 
 
 # =============================================================================
+# Shared simulation loop with per-sample convergence masking
+# =============================================================================
+
+
+def simulate_with_early_exit(
+    state: torch.Tensor,
+    step_fn: Callable,
+    kernel_ffts: torch.Tensor,
+    coupling: torch.Tensor,
+    mu: torch.Tensor,
+    sigma: torch.Tensor,
+    dt: torch.Tensor,
+    growth_type: Optional[torch.Tensor],
+    num_timesteps: int,
+    substeps: int = 1,
+    check_every: int = 16,
+    converge_eps: float = 1e-6,
+) -> torch.Tensor:
+    """Simulate Lenia with per-sample convergence masking.
+
+    Zeroes dt for samples whose max pixel change over ``check_every`` frames
+    falls below ``converge_eps``.  When all samples in the batch have
+    converged, fills remaining trajectory frames with the last state and
+    returns early.
+
+    Args:
+        state:          [B, C, H, W] initial state (advanced in-place).
+        step_fn:        Lenia step kernel (simulator._compiled_step).
+        kernel_ffts:    [B, C, H, W//2+1] complex pre-built kernel FFTs.
+        coupling:       [B, C, C] inter-channel coupling weights.
+        mu:             [B, C, 1, 1] growth centre.
+        sigma:          [B, C, 1, 1] growth width.
+        dt:             [B, 1, 1, 1] integration timestep per sample.
+        growth_type:    [B] long or None (0=gaussian, 1=poly, 2=step).
+        num_timesteps:  Number of visible frames to produce.
+        substeps:       Inner Euler steps per visible frame (CFL sub-stepping).
+        check_every:    Convergence check interval in visible frames.
+        converge_eps:   Max-pixel-change threshold for declaring convergence.
+
+    Returns:
+        Trajectory [B, T, C, H, W] — simulation frames only (no IC).
+    """
+    B, C, H, W = state.shape
+    dt_view = dt.clone()  # clone: we zero converged samples
+
+    traj = torch.empty(B, num_timesteps, C, H, W,
+                       device=state.device, dtype=torch.float32)
+
+    alive = torch.ones(B, dtype=torch.bool, device=state.device)
+    prev_check = state.clone()
+
+    for t in range(num_timesteps):
+        for _k in range(substeps):
+            state = step_fn(state, kernel_ffts, coupling, mu, sigma,
+                            dt_view, growth_type)
+        traj[:, t] = state
+
+        # Periodic convergence check
+        if t > 0 and (t + 1) % check_every == 0:
+            delta = (state - prev_check).abs().amax(dim=(1, 2, 3))
+            newly_dead = alive & (delta < converge_eps)
+            if newly_dead.any():
+                dt_view[newly_dead] = 0.0
+                alive &= ~newly_dead
+            if not alive.any():
+                if t + 1 < num_timesteps:
+                    traj[:, t + 1:] = state.unsqueeze(1)
+                break
+            prev_check = state.clone()
+
+    return traj
+
+
+# =============================================================================
 # Main simulator
 # =============================================================================
 
@@ -294,7 +368,7 @@ class LeniaSimulator:
     across all T timesteps.
     """
 
-    def __init__(self, grid_size: int = 64, device: str = "cuda"):
+    def __init__(self, grid_size: int = 64, device: str = "cuda", compile: bool = True):
         self.grid_size = grid_size
         self.device = torch.device(device)
         self._dist_grid: Optional[torch.Tensor] = None
@@ -307,7 +381,7 @@ class LeniaSimulator:
         # lazy compilation: lowering happens on first call, not at compile() time.
         self._compiled_step = self._step
         self._compiled_kernel_builder = build_kernel_ffts_batched
-        if torch.cuda.is_available():
+        if compile and torch.cuda.is_available():
             # Enable TF32 for faster float32 matmul on Ampere+ GPUs
             torch.set_float32_matmul_precision("high")
             try:
@@ -407,44 +481,15 @@ class LeniaSimulator:
         Returns:
             Trajectories [B, T, C, H, W] float32 ∈ [0,1].
         """
-        B, C, H, W = ics.shape
         state = ics.to(self.device).float()
+        mu = growth_mu[:, :, None, None]
+        sigma = growth_sigma[:, :, None, None]
+        dt_view = dt[:, None, None, None]
 
-        # Pre-shape for broadcast (done once, not 256 times)
-        mu = growth_mu[:, :, None, None]        # [B, C, 1, 1]
-        sigma = growth_sigma[:, :, None, None]  # [B, C, 1, 1]
-        dt_view = dt[:, None, None, None]       # [B, 1, 1, 1]
-
-        # Pre-allocate trajectory tensor (avoids list appends + stack copy)
-        traj = torch.empty(B, num_timesteps, C, H, W, device=self.device, dtype=torch.float32)
-
-        step_fn = self._compiled_step
-        dt_local = dt_view.clone()  # clone: we may zero converged samples
-
-        # Early-exit tracking: zero dt for converged samples, break when all dead
-        alive = torch.ones(B, dtype=torch.bool, device=state.device)
-        prev_check = state.clone()
-        _CHECK_EVERY = 16
-        _CONVERGE_EPS = 1e-6
-
-        for t in range(num_timesteps):
-            state = step_fn(state, kernel_ffts, coupling, mu, sigma, dt_local, growth_type)
-            traj[:, t] = state
-
-            # Periodic convergence check
-            if t > 0 and (t + 1) % _CHECK_EVERY == 0:
-                delta = (state - prev_check).abs().amax(dim=(1, 2, 3))
-                newly_dead = alive & (delta < _CONVERGE_EPS)
-                if newly_dead.any():
-                    dt_local[newly_dead] = 0.0
-                    alive &= ~newly_dead
-                if not alive.any():
-                    if t + 1 < num_timesteps:
-                        traj[:, t + 1:] = state.unsqueeze(1)
-                    break
-                prev_check = state.clone()
-
-        return traj
+        return simulate_with_early_exit(
+            state, self._compiled_step, kernel_ffts, coupling,
+            mu, sigma, dt_view, growth_type, num_timesteps,
+        )
 
     def _params_list_to_tensors(
         self,

@@ -16,7 +16,6 @@ from spinlock.experimental.diffusion.models import (
     DiscreteD3PM,
     DiffusionSchedule,
     DenoisingNetwork,
-    TemporalResolutionDenoisingNetwork,
 )
 from spinlock.experimental.diffusion.data import (
     HierarchicalMaskGenerator,
@@ -69,35 +68,6 @@ def extract_vocab_sizes_from_pretokenized(tokenized_path: Path) -> tuple[dict, d
     """
     schema = TokenSchema.from_pretokenized(tokenized_path)
     return schema.vocab_sizes_dict(), schema.category_level_info_dict()
-
-
-def load_truncation_lengths_from_dataset(dataset_path: Path) -> list[int] | None:
-    """Load truncation lengths from temporal resolution dataset.
-
-    Args:
-        dataset_path: Path to pre-tokenized HDF5 with temporal resolution
-
-    Returns:
-        Sorted list of truncation lengths or None if not a temporal resolution dataset
-    """
-    import h5py
-
-    try:
-        with h5py.File(dataset_path, 'r') as f:
-            if "temporal_resolution_mode" not in f.attrs or not f.attrs["temporal_resolution_mode"]:
-                logger.warning(
-                    f"Dataset {dataset_path} is not in temporal resolution format. "
-                    f"Did you forget --temporal-resolution flag during pretokenization?"
-                )
-                return None
-
-            truncation_lengths = list(f.attrs["truncation_lengths"])
-            logger.info(f"Loaded truncation lengths from dataset: {truncation_lengths}")
-            return truncation_lengths
-
-    except Exception as e:
-        logger.error(f"Failed to load truncation lengths from dataset: {e}")
-        return None
 
 
 def create_datasets(
@@ -179,15 +149,7 @@ def main(args):
 
     # Extract vocab sizes — prefer tokenizer codebook sizes (authoritative)
     # over pretokenized max+1 (which underestimates for underutilized codes).
-    # Exception: temporal-resolution pretokenized datasets have _trunc_T* keys
-    # not present in the tokenizer schema; must use pretokenized schema in that case.
-    temporal_res_mode = False
-    if config.dataset.use_pretokenized and config.dataset.tokenized_path:
-        import h5py as _h5py
-        with _h5py.File(config.dataset.tokenized_path, "r") as _f:
-            temporal_res_mode = bool(_f.attrs.get("temporal_resolution_mode", False))
-
-    if config.dataset.tokenizer_checkpoint is not None and not temporal_res_mode:
+    if config.dataset.tokenizer_checkpoint is not None:
         logger.info(
             "Extracting vocab sizes from tokenizer (authoritative codebook sizes)"
         )
@@ -195,17 +157,11 @@ def main(args):
             config.dataset.tokenizer_checkpoint
         )
     elif config.dataset.use_pretokenized:
-        if temporal_res_mode:
-            logger.info(
-                "Temporal-resolution pretokenized dataset detected — "
-                "using pretokenized schema for vocab sizes (includes _trunc_T* keys)"
-            )
-        else:
-            logger.warning(
-                "No tokenizer_checkpoint provided — inferring vocab sizes from "
-                "pretokenized data (max+1). This may underestimate vocab sizes "
-                "for codebooks with unused entries."
-            )
+        logger.warning(
+            "No tokenizer_checkpoint provided — inferring vocab sizes from "
+            "pretokenized data (max+1). This may underestimate vocab sizes "
+            "for codebooks with unused entries."
+        )
         vocab_sizes, category_level_info = extract_vocab_sizes_from_pretokenized(
             config.dataset.tokenized_path
         )
@@ -259,6 +215,13 @@ def main(args):
         schedule_type=config.diffusion.schedule_type,
     )
     graded_cfg = config.diffusion.graded_schedule
+    scale_factors = graded_cfg.scale_factors or {}
+    if graded_cfg.position_scale_factors_path:
+        import json
+        with open(graded_cfg.position_scale_factors_path) as f:
+            scale_factors = json.load(f)
+        logger.info(f"Loaded {len(scale_factors)} position scale factors from {graded_cfg.position_scale_factors_path}")
+
     diffusion = DiscreteD3PM(
         vocab_sizes,
         diffusion_schedule,
@@ -266,61 +229,24 @@ def main(args):
         transition_type=config.diffusion.transition_type,
         beta_scaling=config.diffusion.beta_scaling,
         graded_schedule_enabled=graded_cfg.enabled,
-        graded_scale_factors=graded_cfg.scale_factors,
-        graded_min_scale=graded_cfg.min_scale,
+        graded_scale_factors=scale_factors,
         non_temporal_scale=graded_cfg.non_temporal_scale,
     )
 
     # Create denoising network
-    if temporal_res_mode and config.model.temporal_resolution.enabled:
-        # Load truncation lengths from dataset
-        truncation_lengths = load_truncation_lengths_from_dataset(
-            config.dataset.tokenized_path
-        )
-        if truncation_lengths is None:
-            logger.error("Failed to load truncation lengths")
-            return
-
-        # Create temporal resolution denoising network
-        logger.info("Creating temporal resolution denoising network")
-        tr_config = config.model.temporal_resolution
-        denoiser = TemporalResolutionDenoisingNetwork(
-            vocab_sizes=vocab_sizes,
-            category_level_info=category_level_info,
-            truncation_lengths=truncation_lengths,
-            hidden_dim=config.model.hidden_dim,
-            num_layers=config.model.num_layers,
-            num_heads=config.model.num_heads,
-            dropout=config.model.dropout,
-            use_hierarchical_guidance=config.model.use_hierarchical_guidance,
-            hierarchical_guidance_weight=config.model.hierarchical_guidance_weight,
-            guidance_mode=config.model.hierarchical_guidance_mode,
-            transition_type=config.diffusion.transition_type,
-            use_temporal_bias=tr_config.use_temporal_bias,
-            temporal_bias_init=tr_config.temporal_bias_init,
-            temporal_bias_strength=tr_config.temporal_bias_strength,
-            enforce_causality=tr_config.enforce_causality,
-        )
-        if tr_config.use_temporal_bias:
-            bias_matrix = denoiser.get_temporal_bias_matrix()
-            logger.info(
-                f"Temporal attention bias [{bias_matrix.shape[0]}x{bias_matrix.shape[1]}]:\n"
-                f"{bias_matrix}"
-            )
-    else:
-        logger.info("Creating denoising network")
-        denoiser = DenoisingNetwork(
-            vocab_sizes=vocab_sizes,
-            category_level_info=category_level_info,
-            hidden_dim=config.model.hidden_dim,
-            num_layers=config.model.num_layers,
-            num_heads=config.model.num_heads,
-            dropout=config.model.dropout,
-            use_hierarchical_guidance=config.model.use_hierarchical_guidance,
-            hierarchical_guidance_weight=config.model.hierarchical_guidance_weight,
-            guidance_mode=config.model.hierarchical_guidance_mode,
-            transition_type=config.diffusion.transition_type,
-        )
+    logger.info("Creating denoising network")
+    denoiser = DenoisingNetwork(
+        vocab_sizes=vocab_sizes,
+        category_level_info=category_level_info,
+        hidden_dim=config.model.hidden_dim,
+        num_layers=config.model.num_layers,
+        num_heads=config.model.num_heads,
+        dropout=config.model.dropout,
+        use_hierarchical_guidance=config.model.use_hierarchical_guidance,
+        hierarchical_guidance_weight=config.model.hierarchical_guidance_weight,
+        guidance_mode=config.model.hierarchical_guidance_mode,
+        transition_type=config.diffusion.transition_type,
+    )
 
     # Log model size
     num_params = sum(p.numel() for p in denoiser.parameters())

@@ -934,6 +934,7 @@ class JointHierarchicalVQVAE(nn.Module):
         temporal_mask: Optional[torch.Tensor] = None,
         temporal_lengths: Optional[torch.Tensor] = None,
         temporal_raw: Optional[torch.Tensor] = None,
+        encode_only: bool = False,
     ) -> Dict[str, Any]:
         """Forward pass through joint VQ-VAE.
 
@@ -1191,6 +1192,12 @@ class JointHierarchicalVQVAE(nn.Module):
         # Concatenate all quantized vectors
         all_quantized_cat = torch.cat(all_quantized, dim=1)  # [B, total_latent_dim]
 
+        # Early return for encode-only path: skip decoder, inverse heads, aux heads.
+        # Used by encode() to avoid wasted computation during inference.
+        if encode_only:
+            token_indices = self._get_token_indices(encodings_dict)
+            return {"encodings": encodings_dict, "token_indices": token_indices}
+
         # Decode to reconstruct
         reconstructed = self.decoder(all_quantized_cat)  # [B, total_encoded_dim]
 
@@ -1278,13 +1285,15 @@ class JointHierarchicalVQVAE(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         """Encode inputs to discrete token indices.
 
+        Uses encode_only=True to skip decoder, inverse/aux heads, and avoids
+        redundant cdist computation (token_indices are computed once in forward).
+
         Args:
             Same as forward()
 
         Returns:
             Dict mapping "family_category_Ll" → token indices [B]
         """
-        # Run forward to get quantized encodings
         outputs = self.forward(
             temporal_features=temporal_features,
             initial_manual=initial_manual,
@@ -1293,25 +1302,9 @@ class JointHierarchicalVQVAE(nn.Module):
             temporal_mask=temporal_mask,
             temporal_lengths=temporal_lengths,
             temporal_raw=temporal_raw,
+            encode_only=True,
         )
-
-        # Extract token indices from quantizers
-        tokens = {}
-        for quantizer_key, quantizer in self.quantizers.items():
-            # Get the quantized vector for this key
-            quantized = outputs["encodings"][quantizer_key]
-
-            # Find nearest codebook entry
-            distances = torch.cdist(
-                quantized,
-                quantizer.embedding.weight,
-                p=2.0
-            )
-            token_indices = distances.argmin(dim=1)  # [B]
-
-            tokens[quantizer_key] = token_indices
-
-        return tokens
+        return outputs["token_indices"]
 
     def _split_reconstructed(
         self,

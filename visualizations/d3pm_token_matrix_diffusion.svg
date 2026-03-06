@@ -1,22 +1,19 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg
-   viewBox="0 0 800 1500"
+   viewBox="0 0 800 880"
    width="800"
-   height="1500"
+   height="880"
    font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
    version="1.1"
-   id="svg127"
+   id="svg99"
    sodipodi:docname="d3pm_token_matrix_diffusion.svg"
    inkscape:version="1.4.3 (0d15f75042, 2025-12-25)"
-   inkscape:export-filename="d3pm_token_matrix_diffusion.png"
-   inkscape:export-xdpi="180"
-   inkscape:export-ydpi="180"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
    xmlns:svg="http://www.w3.org/2000/svg">
   <sodipodi:namedview
-     id="namedview127"
+     id="namedview99"
      pagecolor="#ffffff"
      bordercolor="#000000"
      borderopacity="0.25"
@@ -24,102 +21,36 @@
      inkscape:pageopacity="0.0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="1.7875659"
-     inkscape:cx="190.76219"
-     inkscape:cy="952.13271"
+     inkscape:zoom="2.1545455"
+     inkscape:cx="440.46414"
+     inkscape:cy="226.03376"
      inkscape:window-width="3840"
-     inkscape:window-height="2060"
+     inkscape:window-height="2124"
      inkscape:window-x="0"
      inkscape:window-y="0"
      inkscape:window-maximized="1"
-     inkscape:current-layer="svg127" />
+     inkscape:current-layer="svg99" />
   <defs
-     id="defs4">
+     id="defs1">
     <marker
        id="arrow"
-       markerWidth="10"
-       markerHeight="7"
-       refX="9"
-       refY="3.5"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
        orient="auto">
       <polygon
-         points="0 0.5, 9 3.5, 0 6.5"
+         points="0 0.5, 7 3, 0 5.5"
          fill="#2C3E50"
          id="polygon1" />
     </marker>
-    <marker
-       id="arrow-sm"
-       markerWidth="8"
-       markerHeight="6"
-       refX="7"
-       refY="3"
-       orient="auto">
-      <polygon
-         points="0 0.4, 7 3, 0 5.6"
-         fill="#2C3E50"
-         id="polygon2" />
-    </marker>
-    <marker
-       id="arrow-red"
-       markerWidth="8"
-       markerHeight="6"
-       refX="7"
-       refY="3"
-       orient="auto">
-      <polygon
-         points="0 0.4, 7 3, 0 5.6"
-         fill="#C0392B"
-         id="polygon3" />
-    </marker>
-    <marker
-       id="arrow-orange"
-       markerWidth="8"
-       markerHeight="6"
-       refX="7"
-       refY="3"
-       orient="auto">
-      <polygon
-         points="0 0.4, 7 3, 0 5.6"
-         fill="#D35400"
-         id="polygon4" />
-    </marker>
-    <pattern
-       id="frozen-grid"
-       width="6"
-       height="6"
-       patternUnits="userSpaceOnUse">
-      <path
-         d="M 6 0 L 0 0 0 6"
-         fill="none"
-         stroke="#2980B9"
-         stroke-width="0.15"
-         opacity="0.3"
-         id="path4" />
-    </pattern>
-    <pattern
-       id="noise-dots"
-       width="4"
-       height="4"
-       patternUnits="userSpaceOnUse">
-      <circle
-         cx="2"
-         cy="2"
-         r="0.6"
-         fill="#C0392B"
-         opacity="0.2"
-         id="circle4" />
-    </pattern>
   </defs>
   <!-- Background -->
   <rect
      width="800"
-     height="1500"
-     fill="#fdfdfd"
-     rx="0"
-     id="rect4"
-     sodipodi:insensitive="true"
-     x="0"
-     y="0" />
+     height="880"
+     fill="#FDFDFD"
+     id="rect1" />
   <!-- ================================================================ -->
   <!-- TITLE                                                            -->
   <!-- ================================================================ -->
@@ -127,1802 +58,1320 @@
      x="400"
      y="30"
      text-anchor="middle"
-     font-size="14px"
+     font-size="15"
      font-weight="bold"
-     fill="#2c3e50"
+     fill="#2C3E50"
      letter-spacing="0.3"
-     id="text4">D3PM Token Matrix Diffusion: Multi-Resolution Behavioral Denoising</text>
+     id="text1">
+    Per-Position Graded Discrete Diffusion (D3PM)
+  </text>
   <line
-     x1="140"
+     x1="160"
      y1="38"
-     x2="660"
+     x2="640"
      y2="38"
      stroke="#BDC3C7"
      stroke-width="0.7"
-     id="line4" />
+     id="line1" />
+  <!-- ================================================================ -->
+  <!-- SECTION 1: TOKEN SEQUENCE                                        -->
+  <!-- ================================================================ -->
   <text
      x="400"
-     y="54"
+     y="56"
      text-anchor="middle"
-     font-size="9px"
-     fill="#7F8C8D"
-     id="text5">
-    Discrete diffusion over tokenizations at multiple truncation points of operator rollouts</text>
-  <!-- ================================================================ -->
-  <!-- INPUT: GT ROLLOUT                                                -->
-  <!-- y: 72-104                                                        -->
-  <!-- ================================================================ -->
-  <polygon
-     points="268,72 532,72 520,104 256,104"
-     fill="#D4E6F1"
-     stroke="#2C3E50"
-     stroke-width="1.4"
-     id="polygon5" />
-  <text
-     x="394"
-     y="85"
-     text-anchor="middle"
-     font-size="10px"
+     font-size="12"
      font-weight="bold"
-     fill="#2c3e50"
-     id="text6">GT Rollout</text>
+     fill="#2C3E50"
+     id="text2">
+    Token Sequence (30 groups × 3 VQ levels = 90 positions)
+  </text>
   <text
-     x="394"
-     y="97"
+     x="400"
+     y="72"
      text-anchor="middle"
-     font-size="8px"
-     fill="#2c3e50"
-     id="text7">[B, T, C, H, W] (e.g. t=256, C=3, 128x128)</text>
-  <!-- Arrow: rollout -> multi-truncation tokenization -->
-  <line
-     x1="394"
-     y1="104"
-     x2="394"
-     y2="128"
-     stroke="#2C3E50"
-     stroke-width="1.4"
-     marker-end="url(#arrow)"
-     id="line7"
-     style="stroke-width:1;stroke-dasharray:none" />
-  <!-- ================================================================ -->
-  <!-- MULTI-TRUNCATION TOKENIZATION                                    -->
-  <!-- y: 130-200                                                       -->
-  <!-- ================================================================ -->
+     font-size="9.5"
+     fill="#566573"
+     font-style="italic"
+     id="text3">
+    Noise scale assigned per group — no inherent ordering by sensitivity
+  </text>
+  <!-- 12 representative positions with interleaved noise scales -->
+  <!-- Group 1: G R O G O R -->
   <rect
-     x="130"
-     y="130"
-     width="540"
-     height="72"
-     rx="8"
-     fill="#D4E6F1"
-     stroke="#2980B9"
-     stroke-width="1.4"
+     x="247"
+     y="82"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect3" />
+  <rect
+     x="271"
+     y="82"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F1948A"
+     stroke="#C0392B"
+     stroke-width="0.9"
+     id="rect4" />
+  <rect
+     x="295"
+     y="82"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F0B27A"
+     stroke="#CA6F1E"
+     stroke-width="0.9"
+     id="rect5" />
+  <rect
+     x="319"
+     y="82"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect6" />
+  <rect
+     x="343"
+     y="82"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F0B27A"
+     stroke="#CA6F1E"
+     stroke-width="0.9"
      id="rect7" />
   <rect
-     x="131"
-     y="131"
-     width="538"
-     height="70"
-     rx="8"
-     fill="url(#frozen-grid)"
-     opacity="0.5"
+     x="367"
+     y="82"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F1948A"
+     stroke="#C0392B"
+     stroke-width="0.9"
      id="rect8" />
+  <!-- Ellipsis -->
   <text
      x="400"
-     y="150"
+     y="97"
      text-anchor="middle"
-     font-size="10px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text8">Frozen VQTokenizer (Multi-Truncation)</text>
-  <!-- 4 truncation arrows -->
-  <text
-     x="210"
-     y="170"
-     text-anchor="middle"
-     font-size="8px"
-     font-weight="bold"
-     fill="#2980b9"
-     id="text11">t=32</text>
-  <text
-     x="310"
-     y="170"
-     text-anchor="middle"
-     font-size="8px"
-     font-weight="bold"
-     fill="#2980b9"
-     id="text12">t=64</text>
-  <text
-     x="430"
-     y="170"
-     text-anchor="middle"
-     font-size="8px"
-     font-weight="bold"
-     fill="#2980b9"
-     id="text13">t=128</text>
-  <text
-     x="570"
-     y="170"
-     text-anchor="middle"
-     font-size="8px"
-     font-weight="bold"
-     fill="#2980b9"
-     id="text14">t=256</text>
+     font-size="13"
+     fill="#566573"
+     id="text8">...</text>
+  <!-- Group 2: G O R G R G -->
+  <rect
+     x="415"
+     y="82"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect9" />
+  <rect
+     x="439"
+     y="82"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F0B27A"
+     stroke="#CA6F1E"
+     stroke-width="0.9"
+     id="rect10" />
+  <rect
+     x="463"
+     y="82"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F1948A"
+     stroke="#C0392B"
+     stroke-width="0.9"
+     id="rect11" />
+  <rect
+     x="487"
+     y="82"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect12" />
+  <rect
+     x="511"
+     y="82"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F1948A"
+     stroke="#C0392B"
+     stroke-width="0.9"
+     id="rect13" />
+  <rect
+     x="535"
+     y="82"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect14" />
+  <!-- ================================================================ -->
+  <!-- SECTION 2: PER-POSITION NOISE SCALE                              -->
+  <!-- ================================================================ -->
   <text
      x="400"
-     y="190"
+     y="130"
      text-anchor="middle"
-     font-size="8px"
-     fill="#2c3e50"
-     id="text15">Tokenize rollout[:t] at each truncation point ➡ 90 tokens each</text>
-  <!-- Arrow: tokenization -> token matrix -->
-  <line
-     x1="400"
-     y1="202"
-     x2="400"
-     y2="226"
-     stroke="#2C3E50"
-     stroke-width="1.4"
-     marker-end="url(#arrow)"
-     id="line15"
-     style="stroke-width:1;stroke-dasharray:none" />
-  <!-- ================================================================ -->
-  <!-- TOKEN MATRIX (clean)                                             -->
-  <!-- y: 228-380                                                       -->
-  <!-- ================================================================ -->
+     font-size="12"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text14">
+    Per-Position Noise Scale Factors
+  </text>
   <rect
      x="100"
-     y="228"
-     width="600"
-     height="156"
-     rx="10"
-     fill="#E8DAEF"
-     stroke="#6C3483"
-     stroke-width="1.5"
+     y="142"
+     width="130"
+     height="24"
+     rx="4"
+     fill="#A9DFBF"
      id="rect15" />
+  <!-- Scale bar with gradient segments -->
+  <rect
+     x="226.88217"
+     y="142"
+     width="53.117832"
+     height="24"
+     fill="#c7e9c0"
+     id="rect16"
+     style="stroke-width:1.03071" />
+  <rect
+     x="280"
+     y="142"
+     width="120"
+     height="24"
+     fill="#F0B27A"
+     id="rect17" />
+  <rect
+     x="400"
+     y="142"
+     width="100"
+     height="24"
+     fill="#EB984E"
+     id="rect18" />
+  <rect
+     x="600"
+     y="142"
+     width="100"
+     height="24"
+     rx="4"
+     fill="#E74C3C"
+     id="rect20" />
+  <rect
+     x="499.01541"
+     y="142"
+     width="104.9229"
+     height="24"
+     fill="#f1948a"
+     id="rect19"
+     style="stroke-width:1.02432" />
+  <rect
+     x="100"
+     y="142"
+     width="600"
+     height="24"
+     rx="4"
+     fill="none"
+     stroke="#95A5A6"
+     stroke-width="0.9"
+     id="rect21" />
+  <!-- Scale value labels -->
+  <text
+     x="100"
+     y="182"
+     text-anchor="start"
+     font-size="10"
+     fill="#2C3E50"
+     font-weight="bold"
+     id="text21">0.3</text>
   <text
      x="400"
-     y="248"
+     y="182"
      text-anchor="middle"
-     font-size="11px"
+     font-size="10"
+     fill="#2C3E50"
      font-weight="bold"
-     fill="#2c3e50"
-     id="text16">Clean Token Matrix x<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan146">0</tspan></text>
+     id="text22">0.65</text>
+  <text
+     x="700"
+     y="182"
+     text-anchor="end"
+     font-size="10"
+     fill="#2C3E50"
+     font-weight="bold"
+     id="text23">1.0</text>
+  <!-- Resolution timing annotations -->
+  <line
+     x1="150"
+     y1="188"
+     x2="150"
+     y2="196"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="line23" />
+  <text
+     x="150"
+     y="208"
+     text-anchor="middle"
+     font-size="9"
+     fill="#1E8449"
+     id="text24">resolved by step ~15</text>
+  <line
+     x1="400"
+     y1="188"
+     x2="400"
+     y2="196"
+     stroke="#CA6F1E"
+     stroke-width="0.9"
+     id="line24" />
+  <text
+     x="400"
+     y="208"
+     text-anchor="middle"
+     font-size="9"
+     fill="#CA6F1E"
+     id="text25">resolved by step ~25</text>
+  <line
+     x1="650"
+     y1="188"
+     x2="650"
+     y2="196"
+     stroke="#C0392B"
+     stroke-width="0.9"
+     id="line25" />
+  <text
+     x="650"
+     y="208"
+     text-anchor="middle"
+     font-size="9"
+     fill="#C0392B"
+     id="text26">resolved by step ~50</text>
+  <text
+     x="400"
+     y="224"
+     text-anchor="middle"
+     font-size="9"
+     fill="#566573"
+     font-style="italic"
+     id="text27">
+    Sensitivity: how much a group's token code changes with simulation length
+  </text>
+  <!-- Arrow -->
+  <line
+     x1="400"
+     y1="232"
+     x2="400"
+     y2="246"
+     stroke="#2C3E50"
+     stroke-width="1.2"
+     marker-end="url(#arrow)"
+     id="line27" />
+  <!-- ================================================================ -->
+  <!-- SECTION 3: DENOISING TRAJECTORY                                  -->
+  <!-- ================================================================ -->
   <text
      x="400"
      y="262"
      text-anchor="middle"
-     font-size="8px"
-     fill="#6C3483"
-     id="text17">
-    ~360 discrete token indices (4 truncations x 30 groups x 3 levels)</text>
-  <!-- Matrix grid -->
-  <!-- Column headers -->
-  <text
-     x="230"
-     y="282"
-     text-anchor="middle"
-     font-size="7px"
+     font-size="12"
      font-weight="bold"
-     fill="#2c3e50"
-     id="text18">Grp 1</text>
+     fill="#2C3E50"
+     id="text28">
+    Reverse Denoising Trajectory (t = T ... 0)
+  </text>
+  <!-- t=50: All noised — 12 gray boxes -->
   <text
-     x="300"
-     y="282"
+     x="84"
+     y="290"
      text-anchor="middle"
-     font-size="7px"
+     font-size="10"
      font-weight="bold"
-     fill="#2c3e50"
-     id="text19">Grp 2</text>
-  <text
-     x="370"
-     y="282"
-     text-anchor="middle"
-     font-size="7px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text20">Grp 3</text>
-  <text
-     x="440"
-     y="282"
-     text-anchor="middle"
-     font-size="9px"
-     fill="#6C3483"
-     id="text21">...</text>
-  <text
-     x="510"
-     y="282"
-     text-anchor="middle"
-     font-size="7px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text22">Grp 29</text>
-  <text
-     x="580"
-     y="282"
-     text-anchor="middle"
-     font-size="7px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text23">Grp 30</text>
-  <!-- Row headers -->
-  <text
-     x="159.7137"
-     y="301.72028"
-     text-anchor="middle"
-     font-size="7px"
-     font-weight="bold"
-     fill="#6c3483"
-     id="text24">t = 32</text>
-  <text
-     x="159.7137"
-     y="321.72028"
-     text-anchor="middle"
-     font-size="7px"
-     font-weight="bold"
-     fill="#6c3483"
-     id="text25">t = 64</text>
-  <text
-     x="161.65968"
-     y="341.72028"
-     text-anchor="middle"
-     font-size="7px"
-     font-weight="bold"
-     fill="#6c3483"
-     id="text26">t = 128</text>
-  <text
-     x="161.65968"
-     y="361.72028"
-     text-anchor="middle"
-     font-size="7px"
-     font-weight="bold"
-     fill="#6c3483"
-     id="text27">t = 256</text>
-  <!-- Matrix cells (L0 shown, L1/L2 implied) -->
-  <!-- Row T=32 -->
+     fill="#2C3E50"
+     id="text29">t = 50</text>
   <rect
-     x="205"
-     y="292"
-     width="46"
-     height="14"
+     x="247"
+     y="278"
+     width="18"
+     height="22"
      rx="2"
-     fill="#D2B4DE"
-     stroke="#6C3483"
-     stroke-width="0.6"
-     id="rect27" />
-  <text
-     x="228"
-     y="302"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text28">12, 5, 2</text>
-  <rect
-     x="275"
-     y="292"
-     width="46"
-     height="14"
-     rx="2"
-     fill="#D2B4DE"
-     stroke="#6C3483"
-     stroke-width="0.6"
-     id="rect28" />
-  <text
-     x="298"
-     y="302"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text29">3, 8, 1</text>
-  <rect
-     x="345"
-     y="292"
-     width="46"
-     height="14"
-     rx="2"
-     fill="#D2B4DE"
-     stroke="#6C3483"
-     stroke-width="0.6"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
      id="rect29" />
-  <text
-     x="368"
-     y="302"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text30">7, 2, 4</text>
-  <text
-     x="440"
-     y="302"
-     text-anchor="middle"
-     font-size="8px"
-     fill="#6C3483"
-     id="text31">...</text>
   <rect
-     x="485"
-     y="292"
-     width="46"
-     height="14"
+     x="271"
+     y="278"
+     width="18"
+     height="22"
      rx="2"
-     fill="#D2B4DE"
-     stroke="#6C3483"
-     stroke-width="0.6"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
+     id="rect30" />
+  <rect
+     x="295"
+     y="278"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
      id="rect31" />
-  <text
-     x="508"
-     y="302"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text32">1, 4, 3</text>
   <rect
-     x="555"
-     y="292"
-     width="46"
-     height="14"
+     x="319"
+     y="278"
+     width="18"
+     height="22"
      rx="2"
-     fill="#D2B4DE"
-     stroke="#6C3483"
-     stroke-width="0.6"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
      id="rect32" />
-  <text
-     x="578"
-     y="302"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text33">9, 6, 2</text>
-  <!-- Row T=64 -->
   <rect
-     x="205"
-     y="312"
-     width="46"
-     height="14"
+     x="343"
+     y="278"
+     width="18"
+     height="22"
      rx="2"
-     fill="#D7BDE2"
-     stroke="#6C3483"
-     stroke-width="0.6"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
      id="rect33" />
-  <text
-     x="228"
-     y="322"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text34">12, 5, 2</text>
   <rect
-     x="275"
-     y="312"
-     width="46"
-     height="14"
+     x="367"
+     y="278"
+     width="18"
+     height="22"
      rx="2"
-     fill="#D7BDE2"
-     stroke="#6C3483"
-     stroke-width="0.6"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
      id="rect34" />
   <text
-     x="298"
-     y="322"
+     x="400"
+     y="293"
      text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text35">3, 7, 1</text>
+     font-size="13"
+     fill="#95A5A6"
+     id="text34">...</text>
   <rect
-     x="345"
-     y="312"
-     width="46"
-     height="14"
+     x="415"
+     y="278"
+     width="18"
+     height="22"
      rx="2"
-     fill="#D7BDE2"
-     stroke="#6C3483"
-     stroke-width="0.6"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
      id="rect35" />
-  <text
-     x="368"
-     y="322"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text36">7, 2, 3</text>
-  <text
-     x="440"
-     y="322"
-     text-anchor="middle"
-     font-size="8px"
-     fill="#6C3483"
-     id="text37">...</text>
   <rect
-     x="485"
-     y="312"
-     width="46"
-     height="14"
+     x="439"
+     y="278"
+     width="18"
+     height="22"
      rx="2"
-     fill="#D7BDE2"
-     stroke="#6C3483"
-     stroke-width="0.6"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
+     id="rect36" />
+  <rect
+     x="463"
+     y="278"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
      id="rect37" />
-  <text
-     x="508"
-     y="322"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text38">1, 4, 3</text>
   <rect
-     x="555"
-     y="312"
-     width="46"
-     height="14"
+     x="487"
+     y="278"
+     width="18"
+     height="22"
      rx="2"
-     fill="#D7BDE2"
-     stroke="#6C3483"
-     stroke-width="0.6"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
      id="rect38" />
-  <text
-     x="578"
-     y="322"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text39">9, 5, 2</text>
-  <!-- Row T=128 -->
   <rect
-     x="205"
-     y="332"
-     width="46"
-     height="14"
+     x="511"
+     y="278"
+     width="18"
+     height="22"
      rx="2"
-     fill="#EBDEF0"
-     stroke="#6C3483"
-     stroke-width="0.6"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
      id="rect39" />
-  <text
-     x="228"
-     y="342"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text40">11, 4, 2</text>
   <rect
-     x="275"
-     y="332"
-     width="46"
-     height="14"
+     x="535"
+     y="278"
+     width="18"
+     height="22"
      rx="2"
-     fill="#EBDEF0"
-     stroke="#6C3483"
-     stroke-width="0.6"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
      id="rect40" />
   <text
-     x="298"
-     y="342"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text41">3, 7, 1</text>
-  <rect
-     x="345"
-     y="332"
-     width="46"
-     height="14"
-     rx="2"
-     fill="#EBDEF0"
-     stroke="#6C3483"
-     stroke-width="0.6"
-     id="rect41" />
-  <text
-     x="368"
-     y="342"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text42">7, 2, 3</text>
-  <text
-     x="440"
-     y="342"
-     text-anchor="middle"
-     font-size="8px"
-     fill="#6C3483"
-     id="text43">...</text>
-  <rect
-     x="485"
-     y="332"
-     width="46"
-     height="14"
-     rx="2"
-     fill="#EBDEF0"
-     stroke="#6C3483"
-     stroke-width="0.6"
-     id="rect43" />
-  <text
-     x="508"
-     y="342"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text44">2, 4, 3</text>
-  <rect
-     x="555"
-     y="332"
-     width="46"
-     height="14"
-     rx="2"
-     fill="#EBDEF0"
-     stroke="#6C3483"
-     stroke-width="0.6"
-     id="rect44" />
-  <text
-     x="578"
-     y="342"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text45">9, 5, 1</text>
-  <!-- Row T=256 -->
-  <rect
-     x="205"
-     y="352"
-     width="46"
-     height="14"
-     rx="2"
-     fill="#F5EEF8"
-     stroke="#6C3483"
-     stroke-width="0.6"
-     id="rect45" />
-  <text
-     x="228"
-     y="362"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text46">11, 3, 2</text>
-  <rect
-     x="275"
-     y="352"
-     width="46"
-     height="14"
-     rx="2"
-     fill="#F5EEF8"
-     stroke="#6C3483"
-     stroke-width="0.6"
-     id="rect46" />
-  <text
-     x="298"
-     y="362"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text47">3, 7, 1</text>
-  <rect
-     x="345"
-     y="352"
-     width="46"
-     height="14"
-     rx="2"
-     fill="#F5EEF8"
-     stroke="#6C3483"
-     stroke-width="0.6"
-     id="rect47" />
-  <text
-     x="368"
-     y="362"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text48">8, 2, 3</text>
-  <text
-     x="440"
-     y="362"
-     text-anchor="middle"
-     font-size="8px"
-     fill="#6C3483"
-     id="text49">...</text>
-  <rect
-     x="485"
-     y="352"
-     width="46"
-     height="14"
-     rx="2"
-     fill="#F5EEF8"
-     stroke="#6C3483"
-     stroke-width="0.6"
-     id="rect49" />
-  <text
-     x="508"
-     y="362"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text50">2, 4, 3</text>
-  <rect
-     x="555"
-     y="352"
-     width="46"
-     height="14"
-     rx="2"
-     fill="#F5EEF8"
-     stroke="#6C3483"
-     stroke-width="0.6"
-     id="rect50" />
-  <text
-     x="578"
-     y="362"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#2c3e50"
-     id="text51">9, 5, 1</text>
-  <!-- Cell annotation -->
-  <text
-     x="638.19934"
-     y="311.58228"
+     x="580"
+     y="293"
      text-anchor="start"
-     font-size="6.5px"
-     fill="#7f8c8d"
-     id="text52"
-     style="fill:#333333">each cell:</text>
-  <text
-     x="638.19934"
-     y="323.58228"
-     text-anchor="start"
-     font-size="6.5px"
-     fill="#7f8c8d"
-     id="text53"
-     style="fill:#333333">L0, L1, L2</text>
-  <text
-     x="638.19934"
-     y="335.58228"
-     text-anchor="start"
-     font-size="6.5px"
-     fill="#7f8c8d"
-     id="text54"
-     style="fill:#333333">indices</text>
-  <!-- Temporal resolution annotation -->
-  <text
-     x="-309.82596"
-     y="133.9557"
-     text-anchor="middle"
-     font-size="7px"
-     fill="#7f8c8d"
-     transform="rotate(-90)"
-     id="text55"
-     style="fill:#333333">increasing temporal resolution</text>
-  <line
-     x1="142"
-     y1="294"
-     x2="142"
-     y2="366"
-     stroke="#BDC3C7"
-     stroke-width="0.6"
-     marker-end="url(#arrow-sm)"
-     id="line55"
-     style="fill:#333333;stroke:#535b61;stroke-opacity:1" />
-  <!-- ================================================================ -->
-  <!-- D3PM FORWARD PROCESS (noise)                                     -->
-  <!-- y: 396-470                                                       -->
-  <!-- ================================================================ -->
+     font-size="9"
+     fill="#566573"
+     id="text40">all noised</text>
+  <!-- Arrow -->
   <line
      x1="400"
-     y1="384"
+     y1="304"
      x2="400"
-     y2="406"
-     stroke="#C0392B"
-     stroke-width="1.4"
-     marker-end="url(#arrow-red)"
-     id="line56"
-     style="stroke-width:1;stroke-dasharray:none" />
+     y2="318"
+     stroke="#2C3E50"
+     stroke-width="1.2"
+     marker-end="url(#arrow)"
+     id="line40" />
+  <!-- t=25: Scattered resolution — stable(G)=green, moderate(O)=orange, sensitive(R)=gray -->
+  <text
+     x="84"
+     y="340"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text41">t = 25</text>
+  <!-- positions: G=green, R=gray, O=orange, G=green, O=orange, R=gray ... G=green, O=orange, R=gray, G=green, R=gray, G=green -->
   <rect
-     x="160"
-     y="408"
-     width="480"
-     height="66"
-     rx="8"
-     fill="#FADBD8"
-     stroke="#C0392B"
-     stroke-width="1.3"
-     id="rect56" />
+     x="247"
+     y="328"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect41" />
   <rect
-     x="161"
-     y="409"
-     width="478"
-     height="64"
-     rx="8"
-     fill="url(#noise-dots)"
-     opacity="0.5"
-     id="rect57" />
+     x="271"
+     y="328"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
+     id="rect42" />
+  <rect
+     x="295"
+     y="328"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F0B27A"
+     stroke="#CA6F1E"
+     stroke-width="0.9"
+     id="rect43" />
+  <rect
+     x="319"
+     y="328"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect44" />
+  <rect
+     x="343"
+     y="328"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F0B27A"
+     stroke="#CA6F1E"
+     stroke-width="0.9"
+     id="rect45" />
+  <rect
+     x="367"
+     y="328"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
+     id="rect46" />
   <text
      x="400"
-     y="426"
+     y="343"
      text-anchor="middle"
-     font-size="10px"
+     font-size="13"
+     fill="#95A5A6"
+     id="text46">...</text>
+  <rect
+     x="415"
+     y="328"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect47" />
+  <rect
+     x="439"
+     y="328"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F0B27A"
+     stroke="#CA6F1E"
+     stroke-width="0.9"
+     id="rect48" />
+  <rect
+     x="463"
+     y="328"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
+     id="rect49" />
+  <rect
+     x="487"
+     y="328"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect50" />
+  <rect
+     x="511"
+     y="328"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.9"
+     id="rect51" />
+  <rect
+     x="535"
+     y="328"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect52" />
+  <!-- Mini-legend for t=25 -->
+  <rect
+     x="580"
+     y="330"
+     width="8"
+     height="8"
+     rx="1"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.6"
+     id="rect53" />
+  <text
+     x="592"
+     y="338"
+     font-size="8.5"
+     fill="#566573"
+     id="text53">resolved</text>
+  <rect
+     x="580"
+     y="342"
+     width="8"
+     height="8"
+     rx="1"
+     fill="#D5D8DC"
+     stroke="#95A5A6"
+     stroke-width="0.6"
+     id="rect54" />
+  <text
+     x="592"
+     y="350"
+     font-size="8.5"
+     fill="#566573"
+     id="text54">still noisy</text>
+  <!-- Arrow -->
+  <line
+     x1="400"
+     y1="354"
+     x2="400"
+     y2="368"
+     stroke="#2C3E50"
+     stroke-width="1.2"
+     marker-end="url(#arrow)"
+     id="line54" />
+  <!-- t=0: All resolved — each position in its true color -->
+  <text
+     x="84"
+     y="390"
+     text-anchor="middle"
+     font-size="10"
      font-weight="bold"
-     fill="#2c3e50"
-     id="text57">D3PM Forward Process</text>
+     fill="#2C3E50"
+     id="text55">t = 0</text>
+  <rect
+     x="247"
+     y="378"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect55" />
+  <rect
+     x="271"
+     y="378"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F1948A"
+     stroke="#C0392B"
+     stroke-width="0.9"
+     id="rect56" />
+  <rect
+     x="295"
+     y="378"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F0B27A"
+     stroke="#CA6F1E"
+     stroke-width="0.9"
+     id="rect57" />
+  <rect
+     x="319"
+     y="378"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect58" />
+  <rect
+     x="343"
+     y="378"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F0B27A"
+     stroke="#CA6F1E"
+     stroke-width="0.9"
+     id="rect59" />
+  <rect
+     x="367"
+     y="378"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F1948A"
+     stroke="#C0392B"
+     stroke-width="0.9"
+     id="rect60" />
+  <text
+     x="400"
+     y="393"
+     text-anchor="middle"
+     font-size="13"
+     fill="#566573"
+     id="text60">...</text>
+  <rect
+     x="415"
+     y="378"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect61" />
+  <rect
+     x="439"
+     y="378"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F0B27A"
+     stroke="#CA6F1E"
+     stroke-width="0.9"
+     id="rect62" />
+  <rect
+     x="463"
+     y="378"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F1948A"
+     stroke="#C0392B"
+     stroke-width="0.9"
+     id="rect63" />
+  <rect
+     x="487"
+     y="378"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect64" />
+  <rect
+     x="511"
+     y="378"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#F1948A"
+     stroke="#C0392B"
+     stroke-width="0.9"
+     id="rect65" />
+  <rect
+     x="535"
+     y="378"
+     width="18"
+     height="22"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect66" />
+  <text
+     x="580"
+     y="393"
+     text-anchor="start"
+     font-size="9"
+     fill="#566573"
+     id="text66">all resolved</text>
+  <!-- Side annotation -->
+  <text
+     x="56"
+     y="340"
+     text-anchor="middle"
+     font-size="8.5"
+     fill="#566573"
+     transform="rotate(-90, 56, 340)"
+     id="text67">
+    denoising resolves stable groups first
+  </text>
+  <line
+     x1="68"
+     y1="282"
+     x2="68"
+     y2="396"
+     stroke="#95A5A6"
+     stroke-width="0.7"
+     marker-end="url(#arrow)"
+     id="line67" />
+  <!-- Arrow to denoiser -->
+  <line
+     x1="400"
+     y1="406"
+     x2="400"
+     y2="424"
+     stroke="#2C3E50"
+     stroke-width="1.2"
+     marker-end="url(#arrow)"
+     id="line68" />
+  <!-- ================================================================ -->
+  <!-- SECTION 4: DENOISER ARCHITECTURE                                 -->
+  <!-- ================================================================ -->
   <text
      x="400"
      y="440"
      text-anchor="middle"
-     font-size="8px"
-     fill="#2c3e50"
-     id="text58">Uniform categorical noise: Q<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan135">t</tspan> = (1 - beta<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan137">t</tspan>) * I + beta<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan136">t</tspan> * (1/V)</text>
-  <text
-     x="400"
-     y="454"
-     text-anchor="middle"
-     font-size="8px"
-     fill="#c0392b"
-     id="text59">Cosine schedule, 50 steps | Each token independently corrupted</text>
-  <text
-     x="400"
-     y="466"
-     text-anchor="middle"
-     font-size="7px"
-     fill="#7f8c8d"
-     id="text60">Per-codebook vocab sizes: L0 ~28, L1 ~12, L2 ~6</text>
-  <!-- Arrow: noise -> noisy matrix -->
-  <line
-     x1="400"
-     y1="474"
-     x2="400"
-     y2="496"
-     stroke="#C0392B"
-     stroke-width="1.4"
-     marker-end="url(#arrow-red)"
-     id="line60"
-     style="stroke-width:1;stroke-dasharray:none" />
-  <!-- Noisy token matrix (compact) -->
-  <rect
-     x="200"
-     y="498"
-     width="400"
-     height="36"
-     rx="6"
-     fill="#FADBD8"
-     stroke="#C0392B"
-     stroke-width="1.0"
-     id="rect60" />
-  <text
-     x="400"
-     y="514"
-     text-anchor="middle"
-     font-size="9px"
+     font-size="12"
      font-weight="bold"
-     fill="#2c3e50"
-     id="text61">Noisy Token Matrix x<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan138">t</tspan></text>
-  <text
-     x="400"
-     y="526"
-     text-anchor="middle"
-     font-size="7.5px"
-     fill="#c0392b"
-     id="text62">~360 corrupted token indices at diffusion step t</text>
-  <!-- ================================================================ -->
-  <!-- MASKING STRATEGY                                                 -->
-  <!-- y: 548-632                                                       -->
-  <!-- ================================================================ -->
-  <line
-     x1="400"
-     y1="534"
-     x2="400"
-     y2="556"
-     stroke="#2C3E50"
+     fill="#2C3E50"
+     id="text68">
+    Denoising Network
+  </text>
+  <!-- Input Embeddings -->
+  <rect
+     x="140"
+     y="450"
+     width="520"
+     height="40"
+     rx="8"
+     fill="#AED6F1"
+     stroke="#2471A3"
      stroke-width="1.4"
-     marker-end="url(#arrow)"
-     id="line62"
-     style="stroke-width:1;stroke-dasharray:none" />
-  <line
-     x1="400"
-     y1="640.47534"
-     x2="400"
-     y2="660"
-     stroke="#2c3e50"
-     stroke-width="1.4"
-     marker-end="url(#arrow)"
-     id="line84"
-     style="stroke-width:1;stroke-dasharray:none" />
-  <rect
-     x="100.01878"
-     y="558.0188"
-     width="599.96246"
-     height="82.577652"
-     rx="7.9994993"
-     fill="#fae5d3"
-     stroke="#d35400"
-     stroke-width="1.3"
-     id="rect62"
-     sodipodi:insensitive="true" />
-  <text
-     x="400"
-     y="576"
-     text-anchor="middle"
-     font-size="10px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text63">Masking Strategy (configurable)</text>
-  <text
-     x="400"
-     y="590"
-     text-anchor="middle"
-     font-size="8px"
-     fill="#2c3e50"
-     id="text64">
-    Determines which tokens are targets (predicted) vs observed (conditioned on)</text>
-  <!-- Masking strategy examples as small matrix icons -->
-  <!-- Random -->
-  <rect
-     x="156.32751"
-     y="599.16089"
-     width="30"
-     height="24"
-     rx="2"
-     fill="#ffffff"
-     stroke="#d35400"
-     stroke-width="0.6"
-     id="rect64" />
-  <rect
-     x="158.32751"
-     y="601.16089"
-     width="6"
-     height="4"
-     rx="1"
-     fill="#d35400"
-     opacity="0.6"
-     id="rect65" />
-  <rect
-     x="170.32751"
-     y="605.16089"
-     width="6"
-     height="4"
-     rx="1"
-     fill="#d35400"
-     opacity="0.6"
-     id="rect66" />
-  <rect
-     x="164.32751"
-     y="613.16089"
-     width="6"
-     height="4"
-     rx="1"
-     fill="#d35400"
-     opacity="0.6"
-     id="rect67" />
-  <rect
-     x="176.32751"
-     y="609.16089"
-     width="6"
-     height="4"
-     rx="1"
-     fill="#d35400"
-     opacity="0.6"
      id="rect68" />
   <text
-     x="171.32751"
-     y="633.16089"
-     text-anchor="middle"
-     font-size="6px"
-     fill="#d35400"
-     id="text68">random</text>
-  <!-- Truncation row -->
-  <rect
-     x="226.32751"
-     y="599.16089"
-     width="30"
-     height="24"
-     rx="2"
-     fill="#ffffff"
-     stroke="#d35400"
-     stroke-width="0.6"
-     id="rect69" />
-  <rect
-     x="228.32751"
-     y="613.16089"
-     width="26"
-     height="4"
-     rx="1"
-     fill="#d35400"
-     opacity="0.6"
-     id="rect70" />
-  <text
-     x="241.32751"
-     y="633.16089"
-     text-anchor="middle"
-     font-size="6px"
-     fill="#d35400"
-     id="text70">row</text>
-  <!-- Group column -->
-  <rect
-     x="296.32751"
-     y="599.16089"
-     width="30"
-     height="24"
-     rx="2"
-     fill="#ffffff"
-     stroke="#d35400"
-     stroke-width="0.6"
-     id="rect71" />
-  <rect
-     x="310.32751"
-     y="601.16089"
-     width="6"
-     height="20"
-     rx="1"
-     fill="#d35400"
-     opacity="0.6"
-     id="rect72" />
-  <text
-     x="311.32751"
-     y="633.16089"
-     text-anchor="middle"
-     font-size="6px"
-     fill="#d35400"
-     id="text72">categorical</text>
-  <!-- Temporal causal -->
-  <rect
-     x="366.32751"
-     y="599.16089"
-     width="30"
-     height="24"
-     rx="2"
-     fill="#ffffff"
-     stroke="#d35400"
-     stroke-width="0.6"
-     id="rect73" />
-  <rect
-     x="368.32751"
-     y="611.16089"
-     width="26"
-     height="10"
-     rx="1"
-     fill="#d35400"
-     opacity="0.6"
-     id="rect74" />
-  <text
-     x="381.32751"
-     y="633.16089"
-     text-anchor="middle"
-     font-size="6px"
-     fill="#d35400"
-     id="text74">temporal causal</text>
-  <!-- Hierarchical -->
-  <rect
-     x="456.32751"
-     y="599.16089"
-     width="30"
-     height="24"
-     rx="2"
-     fill="#ffffff"
-     stroke="#d35400"
-     stroke-width="0.6"
-     id="rect75" />
-  <rect
-     x="458.32751"
-     y="601.16089"
-     width="9"
-     height="20"
-     rx="1"
-     fill="#abebc6"
-     opacity="0.6"
-     id="rect76" />
-  <rect
-     x="467.32751"
-     y="601.16089"
-     width="17"
-     height="20"
-     rx="1"
-     fill="#d35400"
-     opacity="0.6"
-     id="rect77" />
-  <text
-     x="471.32751"
-     y="633.16089"
-     text-anchor="middle"
-     font-size="6px"
-     fill="#d35400"
-     id="text77">hierarchical</text>
-  <!-- Submatrix -->
-  <rect
-     x="536.32751"
-     y="599.16089"
-     width="30"
-     height="24"
-     rx="2"
-     fill="#ffffff"
-     stroke="#d35400"
-     stroke-width="0.6"
-     id="rect78" />
-  <rect
-     x="546.32751"
-     y="607.16089"
-     width="10"
-     height="8"
-     rx="1"
-     fill="#d35400"
-     opacity="0.6"
-     id="rect79" />
-  <text
-     x="551.32751"
-     y="633.16089"
-     text-anchor="middle"
-     font-size="6px"
-     fill="#d35400"
-     id="text79">submatrix</text>
-  <!-- Mixed -->
-  <rect
-     x="606.32751"
-     y="599.16089"
-     width="30"
-     height="24"
-     rx="2"
-     fill="#ffffff"
-     stroke="#d35400"
-     stroke-width="0.6"
-     id="rect80" />
-  <rect
-     x="608.32751"
-     y="601.16089"
-     width="6"
-     height="4"
-     rx="1"
-     fill="#d35400"
-     opacity="0.4"
-     id="rect81" />
-  <rect
-     x="620.32751"
-     y="601.16089"
-     width="14"
-     height="4"
-     rx="1"
-     fill="#d35400"
-     opacity="0.4"
-     id="rect82" />
-  <rect
-     x="608.32751"
-     y="609.16089"
-     width="26"
-     height="4"
-     rx="1"
-     fill="#d35400"
-     opacity="0.4"
-     id="rect83" />
-  <rect
-     x="614.32751"
-     y="617.16089"
-     width="6"
-     height="4"
-     rx="1"
-     fill="#d35400"
-     opacity="0.4"
-     id="rect84" />
-  <text
-     x="621.32751"
-     y="633.16089"
-     text-anchor="middle"
-     font-size="6px"
-     fill="#d35400"
-     id="text84">mixed</text>
-  <line
-     x1="400"
-     y1="848"
-     x2="400"
-     y2="870"
-     stroke="#2C3E50"
-     stroke-width="1.4"
-     marker-end="url(#arrow)"
-     id="line92"
-     style="stroke-width:1;stroke-dasharray:none" />
-  <!-- ================================================================ -->
-  <!-- TRANSFORMER DENOISER                                             -->
-  <!-- y: 652-840                                                       -->
-  <!-- ================================================================ -->
-  <rect
-     x="100"
-     y="662"
-     width="600"
-     height="186"
-     rx="10"
-     fill="#D5F5E3"
-     stroke="#1E8449"
-     stroke-width="1.6"
-     id="rect85" />
-  <text
      x="400"
-     y="684"
-     text-anchor="middle"
-     font-size="12px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text85">
-    Transformer Denoiser</text>
-  <text
-     x="400"
-     y="698"
-     text-anchor="middle"
-     font-size="8.5px"
-     fill="#7F8C8D"
-     id="text86">
-    Pre-LN bidirectional encoder | 6 layers, 8 heads, d=256</text>
-  <line
-     x1="400"
-     y1="758"
-     x2="400"
-     y2="770"
-     stroke="#2C3E50"
-     stroke-width="0.8"
-     marker-end="url(#arrow-sm)"
-     id="line89"
-     style="stroke-width:1;stroke-dasharray:none" />
-  <!-- Input embeddings row -->
-  <rect
-     x="120"
-     y="710"
-     width="560"
-     height="48"
-     rx="6"
-     fill="#A9DFBF"
-     stroke="#1E8449"
-     stroke-width="0.8"
-     id="rect86" />
-  <text
-     x="400"
-     y="726"
-     text-anchor="middle"
-     font-size="9px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text87">Input Embeddings</text>
-  <text
-     x="400"
-     y="740"
-     text-anchor="middle"
-     font-size="7.5px"
-     fill="#2c3e50"
-     id="text88">Per-codebook Embedding(V<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan139">k</tspan>, 256) + Positional Emb + Truncation-Level Emb + Timestep MLP(t)</text>
-  <text
-     x="400"
-     y="752"
-     text-anchor="middle"
-     font-size="7px"
-     fill="#1E8449"
-     id="text89">
-    [B, ~360, 256] -- each token position gets codebook-specific + structural embeddings</text>
-  <line
-     x1="400"
-     y1="796"
-     x2="400"
-     y2="808"
-     stroke="#2C3E50"
-     stroke-width="0.8"
-     marker-end="url(#arrow-sm)"
-     id="line90"
-     style="stroke-width:1;stroke-dasharray:none" />
-  <!-- Arrow to L0 guidance -->
-  <!-- L0 guidance -->
-  <rect
-     x="200"
-     y="772"
-     width="400"
-     height="24"
-     rx="4"
-     fill="#FAE5D3"
-     stroke="#D35400"
-     stroke-width="0.8"
-     id="rect89" />
-  <text
-     x="400"
-     y="788"
-     text-anchor="middle"
-     font-size="8px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text90">Hierarchical L0 Guidance: avg(L0 embeddings) ➡ project ➡ add as 0.1x residual</text>
-  <line
-     x1="400"
-     y1="834"
-     x2="400"
-     y2="847.07678"
-     stroke="#2c3e50"
-     stroke-width="0.8"
-     id="line91"
-     style="stroke-width:1;stroke-dasharray:none" />
-  <!-- Arrow to transformer layers -->
-  <!-- Transformer layers -->
-  <rect
-     x="200"
-     y="810"
-     width="400"
-     height="24"
-     rx="4"
-     fill="#A9DFBF"
-     stroke="#1E8449"
-     stroke-width="0.8"
-     id="rect90" />
-  <text
-     x="400"
-     y="826"
-     text-anchor="middle"
-     font-size="8px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text91">
-    6x TransformerEncoderLayer (Pre-LN, 8 heads, d_ff=1024, dropout=0.1)</text>
-  <line
-     x1="400"
-     y1="908"
-     x2="400"
-     y2="930"
-     stroke="#C0392B"
-     stroke-width="1.4"
-     marker-end="url(#arrow-red)"
-     id="line93"
-     style="stroke-width:1;stroke-dasharray:none" />
-  <!-- Per-key output heads -->
-  <!-- Arrow: denoiser -> predicted logits -->
-  <!-- Output: per-key logits -->
-  <rect
-     x="180"
-     y="872"
-     width="440"
-     height="36"
-     rx="6"
-     fill="#D5F5E3"
-     stroke="#1E8449"
-     stroke-width="1.0"
-     id="rect92" />
-  <text
-     x="400"
-     y="888"
-     text-anchor="middle"
-     font-size="9px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text92">Per-Codebook Output Heads</text>
-  <text
-     x="400"
-     y="902"
-     text-anchor="middle"
-     font-size="7.5px"
-     fill="#1e8449"
-     id="text93">~360 independent Linear(256, V<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan140">k</tspan>) ➡ logits p(x<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan141">0</tspan> | x<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan142">t</tspan>, t) per token position</text>
-  <line
-     x1="400"
-     y1="1004"
-     x2="400"
-     y2="1028"
-     stroke="#2C3E50"
-     stroke-width="1.4"
-     marker-end="url(#arrow)"
-     id="line97"
-     style="stroke-width:1;stroke-dasharray:none" />
-  <!-- ================================================================ -->
-  <!-- LOSS COMPUTATION                                                 -->
-  <!-- y: 920-1000                                                      -->
-  <!-- ================================================================ -->
-  <rect
-     x="140"
-     y="932"
-     width="520"
-     height="72"
-     rx="8"
-     fill="#FADBD8"
-     stroke="#C0392B"
-     stroke-width="1.3"
-     id="rect93" />
-  <text
-     x="400"
-     y="952"
-     text-anchor="middle"
-     font-size="10px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text94">Training Loss</text>
-  <text
-     x="400"
-     y="968"
-     text-anchor="middle"
-     font-size="8px"
-     fill="#2c3e50"
-     id="text95">
-    Per-codebook cross-entropy on target (masked) positions only</text>
-  <text
-     x="400"
-     y="982"
-     text-anchor="middle"
-     font-size="8px"
-     fill="#c0392b"
-     id="text96">SNR weighting: 1/beta<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan143">t</tspan> (emphasize low-noise steps) | Vocab weighting: log(V<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan144">k</tspan>)/log(V<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan145">max</tspan>)</text>
-  <text
-     x="400"
-     y="996"
-     text-anchor="middle"
-     font-size="7px"
-     fill="#7F8C8D"
-     id="text97">
-    Optional: physics-aware auxiliary loss (soft-decode logits through frozen VQ inverse heads)</text>
-  <!-- ================================================================ -->
-  <!-- REVERSE PROCESS / INFERENCE                                      -->
-  <!-- y: 1020-1180                                                     -->
-  <!-- ================================================================ -->
-  <rect
-     x="100"
-     y="1030"
-     width="600"
-     height="156"
-     rx="10"
-     fill="#FFFFFF"
-     stroke="#2C3E50"
-     stroke-width="1.4"
-     stroke-dasharray="6,3"
-     id="rect97" />
-  <text
-     x="400"
-     y="1052"
-     text-anchor="middle"
-     font-size="11px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text98">
-    Reverse Process (Inference)</text>
-  <!-- Reverse diffusion timeline -->
-  <text
-     x="140"
-     y="1076"
-     text-anchor="start"
-     font-size="8px"
-     fill="#c0392b"
-     id="text99"
-     style="font-size:12px"><tspan
-       style="font-weight:bold;font-size:12px"
-       id="tspan131">x</tspan><tspan
-       style="font-weight:bold;font-size:65%;baseline-shift:sub"
-       id="tspan127">t</tspan></text>
-  <text
-     x="165"
-     y="1076"
-     text-anchor="start"
-     font-size="7px"
-     fill="#7F8C8D"
-     id="text100"
-     style="fill:#333333">(noise)</text>
-  <line
-     x1="210"
-     y1="1073"
-     x2="260"
-     y2="1073"
-     stroke="#2C3E50"
-     stroke-width="0.8"
-     marker-end="url(#arrow-sm)"
-     id="line100" />
-  <rect
-     x="262"
-     y="1063"
-     width="36"
-     height="18"
-     rx="3"
-     fill="#D5F5E3"
-     stroke="#1E8449"
-     stroke-width="0.8"
-     id="rect100" />
-  <text
-     x="280"
-     y="1075"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#1E8449"
-     id="text101">denoise</text>
-  <line
-     x1="298"
-     y1="1073"
-     x2="320"
-     y2="1073"
-     stroke="#2C3E50"
-     stroke-width="0.8"
-     marker-end="url(#arrow-sm)"
-     id="line101" />
-  <text
-     x="332"
-     y="1076"
-     text-anchor="start"
-     font-size="8px"
-     fill="#2c3e50"
-     id="text102"
-     style="font-size:12px"><tspan
-       style="font-weight:bold;font-size:12px"
-       id="tspan132">x</tspan><tspan
-       style="font-weight:bold;font-size:65%;baseline-shift:sub"
-       id="tspan128">t-1</tspan></text>
-  <line
-     x1="365"
-     y1="1073"
-     x2="400"
-     y2="1073"
-     stroke="#2C3E50"
-     stroke-width="0.8"
-     marker-end="url(#arrow-sm)"
-     id="line102" />
-  <text
-     x="420"
-     y="1076"
-     text-anchor="middle"
-     font-size="10px"
-     fill="#7F8C8D"
-     id="text103">...</text>
-  <line
-     x1="440"
-     y1="1073"
-     x2="470"
-     y2="1073"
-     stroke="#2C3E50"
-     stroke-width="0.8"
-     marker-end="url(#arrow-sm)"
-     id="line103" />
-  <rect
-     x="472"
-     y="1063"
-     width="36"
-     height="18"
-     rx="3"
-     fill="#D5F5E3"
-     stroke="#1E8449"
-     stroke-width="0.8"
-     id="rect103" />
-  <text
-     x="490"
-     y="1075"
-     text-anchor="middle"
-     font-size="6.5px"
-     fill="#1E8449"
-     id="text104">denoise</text>
-  <line
-     x1="508"
-     y1="1073"
-     x2="540"
-     y2="1073"
-     stroke="#2C3E50"
-     stroke-width="0.8"
-     marker-end="url(#arrow-sm)"
-     id="line104" />
-  <text
-     x="552"
-     y="1076"
-     text-anchor="start"
-     font-size="8px"
-     fill="#2c3e50"
-     id="text105"
-     style="font-size:12px"><tspan
-       style="font-weight:bold;font-size:12px"
-       id="tspan133">x</tspan><tspan
-       style="font-weight:bold;font-size:65%;baseline-shift:sub"
-       id="tspan129">1</tspan></text>
-  <line
-     x1="570"
-     y1="1073"
-     x2="600"
-     y2="1073"
-     stroke="#2C3E50"
-     stroke-width="0.8"
-     marker-end="url(#arrow-sm)"
-     id="line105" />
-  <text
-     x="628"
-     y="1076"
-     text-anchor="start"
-     font-size="8px"
-     font-weight="bold"
-     fill="#1e8449"
-     id="text106"
-     style="font-size:12px">x<tspan
-   style="font-size:65%;baseline-shift:sub"
-   id="tspan134">0</tspan></text>
-  <!-- RePaint inpainting -->
-  <rect
-     x="160"
-     y="1096"
-     width="480"
-     height="40"
-     rx="6"
-     fill="#D4E6F1"
-     stroke="#2980B9"
-     stroke-width="0.8"
-     id="rect106" />
-  <text
-     x="400"
-     y="1112"
-     text-anchor="middle"
-     font-size="8.5px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text107">RePaint Inpainting</text>
-  <text
-     x="400"
-     y="1126"
-     text-anchor="middle"
-     font-size="7.5px"
-     fill="#2c3e50"
-     id="text108">
-    At each reverse step: re-noise observed tokens to t-1 via forward process, substitute back in</text>
-  <!-- Conditioning annotation -->
-  <text
-     x="400"
-     y="1152"
-     text-anchor="middle"
-     font-size="8px"
-     fill="#2980b9"
-     id="text109">Condition on: observed token subset (e.g., t=32 row, or L0 codes, or specific groups)</text>
-  <text
-     x="400"
-     y="1166"
-     text-anchor="middle"
-     font-size="8px"
-     fill="#2980B9"
-     id="text110">
-    Generate: remaining tokens consistent with observed conditioning</text>
-  <text
-     x="400"
-     y="1180"
-     text-anchor="middle"
-     font-size="7px"
-     fill="#7F8C8D"
-     id="text111">
-    50 reverse steps (cosine schedule)</text>
-  <!-- ================================================================ -->
-  <!-- OUTPUT                                                           -->
-  <!-- y: 1196-1230                                                     -->
-  <!-- ================================================================ -->
-  <line
-     x1="400"
-     y1="1186"
-     x2="400"
-     y2="1204"
-     stroke="#2C3E50"
-     stroke-width="1.4"
-     marker-end="url(#arrow)"
-     id="line111"
-     style="stroke-width:1;stroke-dasharray:none" />
-  <polygon
-     points="248,1206 552,1206 540,1238 236,1238"
-     fill="#E8DAEF"
-     stroke="#6C3483"
-     stroke-width="1.4"
-     id="polygon111" />
-  <text
-     x="394"
-     y="1219"
-     text-anchor="middle"
-     font-size="10px"
-     font-weight="bold"
-     fill="#2c3e50"
-     id="text112">Denoised Token Matrix</text>
-  <text
-     x="394"
-     y="1232"
-     text-anchor="middle"
-     font-size="8px"
-     fill="#6C3483"
-     id="text113">~360 clean token indices -- complete multi-resolution behavioral specification</text>
-  <!-- ================================================================ -->
-  <!-- LEGEND                                                           -->
-  <!-- y: 1260-1480                                                     -->
-  <!-- ================================================================ -->
-  <rect
-     x="50"
-     y="1260"
-     width="700"
-     height="220"
-     rx="8"
-     fill="#FFFFFF"
-     stroke="#BDC3C7"
-     stroke-width="1"
-     id="rect113" />
-  <text
-     x="400"
-     y="1282"
+     y="467"
      text-anchor="middle"
      font-size="11"
      font-weight="bold"
      fill="#2C3E50"
-     id="text114">Legend</text>
-  <line
-     x1="100"
-     y1="1290"
-     x2="700"
-     y2="1290"
-     stroke="#E5E7E9"
-     stroke-width="0.6"
-     id="line114" />
-  <!-- Row 1 -->
-  <polygon
-     points="80,1302 128,1302 123,1318 75,1318"
-     fill="#D4E6F1"
-     stroke="#2C3E50"
-     stroke-width="1"
-     id="polygon114" />
-  <text
-     x="140"
-     y="1314"
-     text-anchor="start"
-     font-size="9"
-     fill="#2C3E50"
-     id="text115">Data tensor</text>
-  <rect
-     x="290"
-     y="1302"
-     width="48"
-     height="16"
-     rx="5"
-     fill="#D5F5E3"
-     stroke="#1E8449"
-     stroke-width="1"
-     id="rect115" />
-  <text
-     x="348"
-     y="1314"
-     text-anchor="start"
-     font-size="9"
-     fill="#2C3E50"
-     id="text116">Learnable module</text>
-  <rect
-     x="520"
-     y="1302"
-     width="48"
-     height="16"
-     rx="5"
-     fill="#FAE5D3"
-     stroke="#D35400"
-     stroke-width="1"
-     id="rect116" />
-  <text
-     x="578"
-     y="1314"
-     text-anchor="start"
-     font-size="9"
-     fill="#2C3E50"
-     id="text117">Masking / conditioning</text>
-  <!-- Row 2 -->
-  <rect
-     x="80"
-     y="1330"
-     width="48"
-     height="16"
-     rx="5"
-     fill="#FADBD8"
-     stroke="#C0392B"
-     stroke-width="1"
-     id="rect117" />
-  <text
-     x="140"
-     y="1342"
-     text-anchor="start"
-     font-size="9"
-     fill="#2C3E50"
-     id="text118">Noise / loss</text>
-  <rect
-     x="290"
-     y="1330"
-     width="48"
-     height="16"
-     rx="5"
-     fill="#E8DAEF"
-     stroke="#6C3483"
-     stroke-width="1"
-     id="rect118" />
-  <text
-     x="348"
-     y="1342"
-     text-anchor="start"
-     font-size="9"
-     fill="#2C3E50"
-     id="text119">Token matrix</text>
-  <rect
-     x="520"
-     y="1330"
-     width="48"
-     height="16"
-     rx="5"
-     fill="#D4E6F1"
-     stroke="#2980B9"
-     stroke-width="1"
-     id="rect119" />
-  <rect
-     x="521"
-     y="1331"
-     width="46"
-     height="14"
-     rx="5"
-     fill="url(#frozen-grid)"
-     opacity="0.5"
-     id="rect120" />
-  <text
-     x="578"
-     y="1342"
-     text-anchor="start"
-     font-size="9"
-     fill="#2C3E50"
-     id="text120">Frozen (no gradient)</text>
-  <!-- Separator -->
-  <line
-     x1="100"
-     y1="1358"
-     x2="700"
-     y2="1358"
-     stroke="#E5E7E9"
-     stroke-width="0.6"
-     id="line120" />
-  <!-- Key dimensions -->
+     id="text69">
+    Per-Position Input Embeddings
+  </text>
   <text
      x="400"
-     y="1374"
+     y="483"
      text-anchor="middle"
-     font-size="9"
+     font-size="9.5"
+     fill="#2C3E50"
+     id="text70">
+    token embed + sinusoidal time + noise level + L0 hierarchical guidance
+  </text>
+  <!-- Arrow -->
+  <line
+     x1="400"
+     y1="492"
+     x2="400"
+     y2="506"
+     stroke="#2C3E50"
+     stroke-width="1.2"
+     marker-end="url(#arrow)"
+     id="line70" />
+  <!-- Transformer Encoder -->
+  <rect
+     x="200"
+     y="510"
+     width="400"
+     height="42"
+     rx="8"
+     fill="#D7BDE2"
+     stroke="#6C3483"
+     stroke-width="1.4"
+     id="rect70" />
+  <text
+     x="400"
+     y="528"
+     text-anchor="middle"
+     font-size="11"
      font-weight="bold"
      fill="#2C3E50"
-     id="text121">Key Dimensions</text>
+     id="text71">
+    Transformer Encoder (6L x 8H, d=256)
+  </text>
   <text
      x="400"
-     y="1390"
+     y="544"
      text-anchor="middle"
-     font-size="8.5px"
-     fill="#2c3e50"
-     id="text122">Token matrix: 4 truncations x 30 groups x 3 levels = ~360 tokens | hidden_dim=256 | t_diffusion=50</text>
-  <text
-     x="400"
-     y="1406"
-     text-anchor="middle"
-     font-size="8"
+     font-size="9.5"
      fill="#6C3483"
-     id="text123">
-    Codebook vocab: L0 ~28, L1 ~12, L2 ~6 | Combinatorial space: ~10^360 (sparse occupancy)</text>
-  <!-- Conceptual annotation -->
+     id="text72">
+    Full self-attention
+  </text>
+  <!-- Arrow -->
   <line
-     x1="100"
-     y1="1426"
-     x2="700"
-     y2="1426"
-     stroke="#e5e7e9"
-     stroke-width="0.6"
-     id="line124" />
+     x1="400"
+     y1="554"
+     x2="400"
+     y2="568"
+     stroke="#2C3E50"
+     stroke-width="1.2"
+     marker-end="url(#arrow)"
+     id="line72" />
+  <!-- Output Heads -->
+  <rect
+     x="140"
+     y="572"
+     width="520"
+     height="40"
+     rx="8"
+     fill="#F5B7B1"
+     stroke="#C0392B"
+     stroke-width="1.4"
+     id="rect72" />
   <text
      x="400"
-     y="1448"
+     y="589"
      text-anchor="middle"
-     font-size="8.5px"
-     fill="#7f8c8d"
-     id="text125">Learns how behavioral representations resolve over time: early truncations constrain but do not determine later ones</text>
+     font-size="11"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text73">
+    Per-Position Output Heads
+  </text>
   <text
      x="400"
-     y="1462"
+     y="605"
      text-anchor="middle"
-     font-size="8px"
-     fill="#7f8c8d"
-     id="text126">Temporal causal masking harnesses the causal structure latent in token grounding as inductive bias</text>
-  <!-- Footer -->
+     font-size="9.5"
+     fill="#2C3E50"
+     id="text74">
+    90 independent projections --&gt; logits [V_k] per position
+  </text>
+  <!-- ================================================================ -->
+  <!-- SECTION 5: EFFECTIVE NOISE LEVEL                                 -->
+  <!-- ================================================================ -->
   <text
      x="400"
-     y="1492"
+     y="634"
      text-anchor="middle"
-     font-size="7.5px"
-     fill="#abb2b9"
-     id="text127">DiscreteD3PM + TemporalResolutionDenoisingNetwork</text>
+     font-size="12"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text75">
+    Effective Noise Level at t = 25 (T = 50)
+  </text>
+  <rect
+     x="120"
+     y="646"
+     width="560"
+     height="60"
+     rx="8"
+     fill="#FFFFFF"
+     stroke="#BDC3C7"
+     stroke-width="1"
+     id="rect75" />
+  <!-- stable -->
+  <rect
+     x="150"
+     y="658"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.8"
+     id="rect76" />
+  <text
+     x="170"
+     y="668"
+     font-size="9.5"
+     fill="#2C3E50"
+     id="text76">stable groups</text>
+  <text
+     x="340"
+     y="668"
+     font-size="9.5"
+     fill="#566573"
+     id="text77">s = 0.30</text>
+  <text
+     x="440"
+     y="668"
+     font-size="10"
+     font-weight="bold"
+     fill="#1E8449"
+     id="text78">t_eff = 8</text>
+  <text
+     x="530"
+     y="668"
+     font-size="9"
+     fill="#566573"
+     id="text79">(nearly resolved)</text>
+  <!-- moderate -->
+  <rect
+     x="150"
+     y="674"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#F0B27A"
+     stroke="#CA6F1E"
+     stroke-width="0.8"
+     id="rect79" />
+  <text
+     x="170"
+     y="684"
+     font-size="9.5"
+     fill="#2C3E50"
+     id="text80">moderate groups</text>
+  <text
+     x="340"
+     y="684"
+     font-size="9.5"
+     fill="#566573"
+     id="text81">s = 0.65</text>
+  <text
+     x="440"
+     y="684"
+     font-size="10"
+     font-weight="bold"
+     fill="#CA6F1E"
+     id="text82">t_eff = 16</text>
+  <!-- sensitive -->
+  <rect
+     x="150"
+     y="690"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#F1948A"
+     stroke="#C0392B"
+     stroke-width="0.8"
+     id="rect82" />
+  <text
+     x="170"
+     y="700"
+     font-size="9.5"
+     fill="#2C3E50"
+     id="text83">horizon-sensitive groups</text>
+  <text
+     x="340"
+     y="700"
+     font-size="9.5"
+     fill="#566573"
+     id="text84">s = 0.95</text>
+  <text
+     x="440"
+     y="700"
+     font-size="10"
+     font-weight="bold"
+     fill="#C0392B"
+     id="text85">t_eff = 24</text>
+  <text
+     x="530"
+     y="700"
+     font-size="9"
+     fill="#566573"
+     id="text86">(still noisy)</text>
+  <!-- Formula note -->
+  <text
+     x="400"
+     y="720"
+     text-anchor="middle"
+     font-size="8.5"
+     fill="#ABB2B9"
+     font-style="italic"
+     id="text87"
+     style="fill:#4d4d4d">
+    t_eff(k, t) = round(t · s_k), clamped to [0, T-1]
+  </text>
+  <!-- ================================================================ -->
+  <!-- SECTION 6: TRAINING PIPELINE                                     -->
+  <!-- ================================================================ -->
+  <text
+     x="400"
+     y="742"
+     text-anchor="middle"
+     font-size="12"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text88">
+    Training Pipeline
+  </text>
+  <!-- Step 1 -->
+  <rect
+     x="100"
+     y="754"
+     width="130"
+     height="34"
+     rx="6"
+     fill="#AED6F1"
+     stroke="#2471A3"
+     stroke-width="1.3"
+     id="rect88" />
+  <text
+     x="165"
+     y="769"
+     text-anchor="middle"
+     font-size="9.5"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text89">Sample tokens</text>
+  <text
+     x="165"
+     y="782"
+     text-anchor="middle"
+     font-size="9"
+     fill="#2471A3"
+     id="text90">pretokenized HDF5</text>
+  <line
+     x1="230"
+     y1="771"
+     x2="248"
+     y2="771"
+     stroke="#2C3E50"
+     stroke-width="1.2"
+     marker-end="url(#arrow)"
+     id="line90" />
+  <!-- Step 2 -->
+  <rect
+     x="252"
+     y="754"
+     width="130"
+     height="34"
+     rx="6"
+     fill="#F0B27A"
+     stroke="#CA6F1E"
+     stroke-width="1.3"
+     id="rect90" />
+  <text
+     x="317"
+     y="769"
+     text-anchor="middle"
+     font-size="9.5"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text91">Forward diffuse</text>
+  <text
+     x="317"
+     y="782"
+     text-anchor="middle"
+     font-size="9"
+     fill="#7B4A1E"
+     id="text92">graded per-position</text>
+  <line
+     x1="382"
+     y1="771"
+     x2="400"
+     y2="771"
+     stroke="#2C3E50"
+     stroke-width="1.2"
+     marker-end="url(#arrow)"
+     id="line92" />
+  <!-- Step 3 -->
+  <rect
+     x="404"
+     y="754"
+     width="130"
+     height="34"
+     rx="6"
+     fill="#D7BDE2"
+     stroke="#6C3483"
+     stroke-width="1.3"
+     id="rect92" />
+  <text
+     x="469"
+     y="769"
+     text-anchor="middle"
+     font-size="9.5"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text93">Denoise</text>
+  <text
+     x="469"
+     y="782"
+     text-anchor="middle"
+     font-size="9"
+     fill="#6C3483"
+     id="text94">full self-attention</text>
+  <line
+     x1="534"
+     y1="771"
+     x2="552"
+     y2="771"
+     stroke="#2C3E50"
+     stroke-width="1.2"
+     marker-end="url(#arrow)"
+     id="line94" />
+  <!-- Step 4 -->
+  <rect
+     x="556"
+     y="754"
+     width="140"
+     height="34"
+     rx="6"
+     fill="#F5B7B1"
+     stroke="#C0392B"
+     stroke-width="1.3"
+     id="rect94" />
+  <text
+     x="626"
+     y="769"
+     text-anchor="middle"
+     font-size="9.5"
+     font-weight="bold"
+     fill="#2C3E50"
+     id="text95">Loss</text>
+  <text
+     x="626"
+     y="782"
+     text-anchor="middle"
+     font-size="9"
+     fill="#922B21"
+     id="text96">CE + SNR + vocab norm</text>
+  <!-- ================================================================ -->
+  <!-- LEGEND                                                           -->
+  <!-- ================================================================ -->
+  <rect
+     x="120"
+     y="808"
+     width="560"
+     height="48"
+     rx="6"
+     fill="#FFFFFF"
+     stroke="#BDC3C7"
+     stroke-width="0.8"
+     id="rect96" />
+  <!-- Row 1 -->
+  <rect
+     x="140"
+     y="818"
+     width="28"
+     height="12"
+     rx="3"
+     fill="#A9DFBF"
+     stroke="#1E8449"
+     stroke-width="0.9"
+     id="rect97" />
+  <text
+     x="176"
+     y="828"
+     font-size="9.5"
+     fill="#2C3E50"
+     id="text97">Stable: same token at any rollout length (s ~ 0.3-0.5)</text>
+  <!-- Row 2 -->
+  <rect
+     x="140"
+     y="838"
+     width="28"
+     height="12"
+     rx="3"
+     fill="#F0B27A"
+     stroke="#CA6F1E"
+     stroke-width="0.9"
+     id="rect98" />
+  <text
+     x="176"
+     y="848"
+     font-size="9.5"
+     fill="#2C3E50"
+     id="text98">Moderate (s ~ 0.5-0.7)</text>
+  <rect
+     x="370"
+     y="838"
+     width="28"
+     height="12"
+     rx="3"
+     fill="#F1948A"
+     stroke="#C0392B"
+     stroke-width="0.9"
+     id="rect99" />
+  <text
+     x="406"
+     y="848"
+     font-size="9.5"
+     fill="#2C3E50"
+     id="text99">Sensitive: token changes with rollout length (s ~ 0.8-1.0)</text>
 </svg>

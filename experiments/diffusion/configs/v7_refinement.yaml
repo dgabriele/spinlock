@@ -1,0 +1,39 @@
+# D3PM Offline Hard-Target Refinement (v7)
+#
+# Closed loop: D3PM predict -> MNO rollout -> retokenize -> quality filter -> fine-tune
+# Requires: trained D3PM (v6), trained MNO, VQTokenizer checkpoint
+#
+# Usage:
+#   poetry run python experiments/diffusion/scripts/refine_d3pm.py \
+#     --config experiments/diffusion/configs/v7_refinement.yaml
+#
+# Smoke test:
+#   poetry run python experiments/diffusion/scripts/refine_d3pm.py \
+#     --config experiments/diffusion/configs/v7_refinement.yaml \
+#     --max-samples 2 --device cpu
+
+d3pm_checkpoint: "experiments/diffusion/results/v6_single_row/v6_single_row_d3pm_best.pt"
+mno_checkpoint: "checkpoints/mno/v2/mno_best.pt"
+tokenizer_checkpoint: "checkpoints/v5/pyramid/vq_tokenizer_best.pt"
+
+dataset_path: "datasets/50k_baseline.h5"
+max_samples: 10000
+rollout_steps: 512
+
+num_refinement_cycles: 3
+mask_probability: 0.5
+d3pm_start_step: null  # Full sampling (set to ~25 for conservative corrections)
+
+quality_filter:
+  min_observed_agreement: 0.8
+
+fine_tuning:
+  learning_rate: 2.0e-5
+  num_epochs: 3
+  batch_size: 32
+  gradient_clip_norm: 1.0
+  weight_decay: 1.0e-5
+
+output_dir: "experiments/diffusion/results/v7_refinement"
+device: "cuda"
+seed: 42

@@ -33,6 +33,47 @@ from spinlock.experimental.diffusion.config import PhysicsLossConfig
 logger = logging.getLogger(__name__)
 
 
+def compute_timestep_gate(
+    timesteps: torch.Tensor,
+    T: int,
+    gate_type: str,
+    device: torch.device,
+) -> torch.Tensor:
+    """Compute timestep gate values.
+
+    Used by PhysicsAwareLoss for timestep-dependent loss gating.
+
+    Gate types:
+        - "bell": sin(πt/T) — peaks at t=T/2, zero at t=0 and t=T.
+        - "cosine": cos(πt/2T) — ≈1 at t=0, ≈0 at t=T.
+        - "linear": 1 - t/T — linearly decays from 1 to 0.
+        - "none" / anything else: constant 1 (no gating).
+
+    Args:
+        timesteps: [B] integer timesteps.
+        T: Total number of diffusion timesteps.
+        gate_type: One of "bell", "cosine", "linear", "none".
+        device: Tensor device.
+
+    Returns:
+        [B] gate values in [0, 1].
+    """
+    t_float = timesteps.float()
+
+    if gate_type == "bell":
+        # sin(πt/T): 0 at t=0, peaks at t=T/2, 0 at t=T
+        return torch.sin(math.pi * t_float / T)
+    elif gate_type == "cosine":
+        # cos(πt/2T): ≈1 at t=0, ≈0 at t=T
+        return torch.cos(math.pi * t_float / (2 * T))
+    elif gate_type == "linear":
+        # 1 - t/T: 1 at t=0, 0 at t=T
+        return 1.0 - t_float / T
+    else:
+        # No gating
+        return torch.ones(timesteps.shape[0], device=device)
+
+
 class PhysicsDecodeHead(nn.Module):
     """Frozen decode pipeline extracted from a VQTokenizer checkpoint.
 
@@ -390,24 +431,7 @@ class PhysicsAwareLoss(nn.Module):
     def _compute_gate(
         self, timesteps: torch.Tensor, T: int, device: torch.device
     ) -> torch.Tensor:
-        """Compute timestep gate values.
+        """Compute timestep gate values. Delegates to module-level function."""
+        return compute_timestep_gate(timesteps, T, self.config.timestep_gate, device)
 
-        Args:
-            timesteps: [B] integer timesteps.
-            T: Total timesteps.
-            device: Tensor device.
 
-        Returns:
-            [B] gate values in [0, 1].
-        """
-        t_float = timesteps.float()
-
-        if self.config.timestep_gate == "cosine":
-            # cos(πt/2T): ≈1 at t=0, ≈0 at t=T
-            return torch.cos(math.pi * t_float / (2 * T))
-        elif self.config.timestep_gate == "linear":
-            # 1 - t/T: 1 at t=0, 0 at t=T
-            return 1.0 - t_float / T
-        else:
-            # No gating
-            return torch.ones(timesteps.shape[0], device=device)

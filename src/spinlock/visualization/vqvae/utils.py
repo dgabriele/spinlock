@@ -16,14 +16,15 @@ from matplotlib.colors import LinearSegmentedColormap
 def get_utilization_cmap():
     """Get colormap for utilization heatmaps.
 
-    Uses dark gray (#111111) to green gradient.
-    Neutral coloring since low utilization isn't necessarily "bad" -
-    it may indicate natural capacity discovery.
+    Uses a warm light-yellow → amber → orange gradient.  Every stop has
+    sufficient luminance (>0.35 relative) so black text stays legible
+    across the full 0-to-1 range (WCAG AA contrast ratio ≥ 7:1 even at
+    the darkest anchor).
     """
     return LinearSegmentedColormap.from_list(
         "utilization",
-        ["#111111", "#2d5a27", "#4a9c3f", "#6ece5a"],  # dark gray → green
-        N=256
+        ["#fff8e1", "#ffecb3", "#ffd54f", "#ffb300", "#ff8f00"],
+        N=256,
     )
 
 
@@ -244,15 +245,18 @@ class VQVAECheckpointData:
     vl_metrics: Optional[Dict] = None
 
 
-def find_checkpoint_file(checkpoint_dir: Path) -> Path:
-    """Find the checkpoint file in a directory.
+def find_checkpoint_file(checkpoint_path: Path) -> Path:
+    """Find the checkpoint file from a path (file or directory).
+
+    If given a file path directly, returns it.  If given a directory,
+    searches for known checkpoint naming conventions.
 
     Supports multiple naming conventions:
     - final_model.pt / best_model.pt (legacy)
-    - vq_tokenizer_final.pt / vq_tokenizer_best.pt (new)
+    - vq_tokenizer_final.pt / vq_tokenizer_best.pt / vq_tokenizer_latest.pt (new)
 
     Args:
-        checkpoint_dir: Path to checkpoint directory
+        checkpoint_path: Path to checkpoint file or directory
 
     Returns:
         Path to checkpoint file
@@ -260,20 +264,24 @@ def find_checkpoint_file(checkpoint_dir: Path) -> Path:
     Raises:
         FileNotFoundError: If no checkpoint file is found
     """
-    # Prefer final_model.pt (has feature_names), fall back to best_model.pt
-    # Also support vq_tokenizer_* naming convention
+    checkpoint_path = Path(checkpoint_path)
+    if checkpoint_path.is_file():
+        return checkpoint_path
+
+    # Directory search: prefer final, then best, then latest
     candidates = [
-        checkpoint_dir / "final_model.pt",
-        checkpoint_dir / "vq_tokenizer_final.pt",
-        checkpoint_dir / "best_model.pt",
-        checkpoint_dir / "vq_tokenizer_best.pt",
+        checkpoint_path / "final_model.pt",
+        checkpoint_path / "vq_tokenizer_final.pt",
+        checkpoint_path / "best_model.pt",
+        checkpoint_path / "vq_tokenizer_best.pt",
+        checkpoint_path / "vq_tokenizer_latest.pt",
     ]
 
     for path in candidates:
         if path.exists():
             return path
 
-    raise FileNotFoundError(f"No model checkpoint found in {checkpoint_dir}")
+    raise FileNotFoundError(f"No model checkpoint found in {checkpoint_path}")
 
 
 def load_vqvae_checkpoint(checkpoint_dir: str | Path) -> VQVAECheckpointData:

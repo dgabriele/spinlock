@@ -13,10 +13,6 @@ class MaskingStrategy(str, Enum):
     HIERARCHICAL = "hierarchical"
     FAMILY_SELECTIVE = "family_selective"
     MIXED = "mixed"
-    TRUNCATION_ROW = "truncation_row"
-    GROUP_COLUMN = "group_column"
-    SUBMATRIX = "submatrix"
-    TEMPORAL_CAUSAL = "temporal_causal"
 
 
 class DatasetConfig(BaseModel):
@@ -24,6 +20,9 @@ class DatasetConfig(BaseModel):
     # Pre-tokenized mode (fast)
     use_pretokenized: bool = False
     tokenized_path: Optional[Path] = None
+
+    # Single truncation selection (load only this T from multi-trunc HDF5)
+    truncation_length: Optional[int] = None
 
     # On-the-fly tokenization mode (slow, flexible)
     path: Optional[Path] = None
@@ -100,59 +99,41 @@ class MaskingConfig(BaseModel):
     seed: int = 42
     strategies: Optional[List[MixedStrategyEntry]] = None  # only used when strategy="mixed"
 
-    # Temporal causal curriculum: ramp difficulty from 0 → max over warmup_epochs
-    temporal_causal_warmup_epochs: int = Field(
-        default=5, ge=1,
-        description="Epochs over which to ramp temporal causal difficulty from 0 to max"
-    )
-    temporal_causal_max_difficulty: float = Field(
-        default=2.0, ge=0.0,
-        description="Max difficulty exponent. 0=uniform, 1=linear, 2=quadratic preference for harder cutoffs"
-    )
-
 
 class GradedScheduleConfig(BaseModel):
-    """Truncation-graded forward process configuration.
+    """Per-position graded forward process configuration.
 
-    When enabled, maps global diffusion timestep to per-truncation effective
-    timesteps using scale factors. Earlier truncations (shorter trajectories)
-    receive less noise at each global step, so the reverse process resolves
-    coarse-to-fine — encoding temporal causality directly into the noise model.
+    When enabled, maps global diffusion timestep to per-position effective
+    timesteps using scale factors. Positions with low scale (theta, IC)
+    resolve first during denoising; positions with high scale (long-horizon
+    temporal) resolve last — encoding causal hierarchy directly in the
+    noise schedule.
 
-    Scale factors map each truncation level to a multiplier:
+    Scale factors map each position key to a multiplier:
         effective_t(key, t) = clamp(round(t * scale[key]), 0, T-1)
 
-    When scale_factors is None (default), a linear ramp is auto-computed from
-    the truncation levels discovered in vocab_sizes keys, using min_scale as
-    the floor (e.g. 4 truncations with min_scale=0.7 → [0.7, 0.8, 0.9, 1.0]).
-
-    Non-temporal keys (initial conditions, theta parameters) get a low scale
-    by default (0.3) so they resolve first — they encode the shared causal
-    origin of all truncation observations.
+    Scale factors can be provided inline (scale_factors dict) or loaded
+    from a JSON file (position_scale_factors_path), typically computed by
+    compute_position_scales.py from cross-truncation token divergence.
     """
     enabled: bool = False
     scale_factors: Optional[Dict[str, float]] = Field(
         default=None,
         description=(
-            "Explicit per-truncation scale factors, e.g. {'T032': 0.7, 'T064': 0.8, ...}. "
-            "None = auto-compute ramp from discovered truncation labels using min_scale."
+            "Inline per-position scale factors, e.g. "
+            "{'temporal_group_0_L0': 0.72, 'theta_group_0_L0': 0.3, ...}."
         ),
     )
-    min_scale: float = Field(
-        default=0.7,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Floor of the auto-computed ramp. With 4 truncations and min_scale=0.7, "
-            "the ramp is [0.7, 0.8, 0.9, 1.0]. Ignored when scale_factors is explicit."
-        ),
+    position_scale_factors_path: Optional[str] = Field(
+        default=None,
+        description="Path to JSON file with per-position scale factors.",
     )
     non_temporal_scale: float = Field(
         default=0.3,
         ge=0.0,
         le=1.0,
         description=(
-            "Scale factor for non-temporal keys (initial, theta). Low values "
+            "Fallback scale factor for keys not in scale_factors. Low values "
             "resolve causes first, matching the causal DAG: (theta, IC) → temporal."
         ),
     )
@@ -180,37 +161,6 @@ class DiffusionConfig(BaseModel):
         return v
 
 
-class TemporalResolutionConfig(BaseModel):
-    """Temporal resolution diffusion configuration.
-
-    Enables multi-truncation diffusion where tokens are generated at
-    multiple trajectory truncation points [32, 64, 128, 256], learning
-    how representation "resolves" over time with causal dependencies.
-    """
-    enabled: bool = Field(
-        default=False,
-        description="Enable temporal resolution mode (requires pyramid encoder)"
-    )
-    use_temporal_bias: bool = Field(
-        default=True,
-        description="Enable learnable temporal attention bias matrix"
-    )
-    temporal_bias_init: str = Field(
-        default="causal",
-        pattern="^(causal|uniform|zero)$",
-        description="Initialization strategy for temporal bias"
-    )
-    temporal_bias_strength: float = Field(
-        default=0.1,
-        ge=0.0,
-        description="Initial bias strength for causal initialization"
-    )
-    enforce_causality: bool = Field(
-        default=True,
-        description="Hard-mask non-causal attention (late → early) to -inf"
-    )
-
-
 class ModelConfig(BaseModel):
     """Denoising network model configuration."""
     hidden_dim: int = Field(default=256, ge=64)
@@ -221,10 +171,6 @@ class ModelConfig(BaseModel):
     hierarchical_guidance_weight: float = Field(default=0.1, ge=0.0)
     hierarchical_guidance_mode: str = Field(
         default="global", pattern="^(global|per_category)$"
-    )
-    temporal_resolution: TemporalResolutionConfig = Field(
-        default_factory=TemporalResolutionConfig,
-        description="Temporal resolution configuration (multi-truncation diffusion)"
     )
 
 
@@ -254,9 +200,57 @@ class PhysicsLossConfig(BaseModel):
     theta_weight: float = Field(default=1.0, ge=0.0)
     initial_weight: float = Field(default=1.0, ge=0.0)
     timestep_gate: str = Field(
-        default="cosine",
-        pattern="^(none|linear|cosine)$"
+        default="bell",
+        pattern="^(none|linear|cosine|bell)$"
     )
+
+
+class MNOQualityFilterConfig(BaseModel):
+    """Quality filter: trust MNO retokenization only when observed positions agree."""
+    min_observed_agreement: float = Field(default=0.8, ge=0.0, le=1.0)
+    # Fraction of observed-position tokens that must match GT
+
+
+class FineTuningConfig(BaseModel):
+    """Fine-tuning schedule for refinement epochs."""
+    learning_rate: float = Field(default=2e-5, gt=0.0)
+    num_epochs: int = Field(default=3, ge=1)
+    batch_size: int = Field(default=32, ge=1)
+    gradient_clip_norm: float = Field(default=1.0, gt=0.0)
+    weight_decay: float = Field(default=1e-5, ge=0.0)
+
+
+class RefinementConfig(BaseModel):
+    """Offline hard-target refinement loop configuration.
+
+    Closed loop: D3PM predict -> MNO rollout -> retokenize -> quality filter -> fine-tune.
+    Requires trained D3PM, MNO, and VQTokenizer checkpoints.
+    """
+    # Checkpoints
+    d3pm_checkpoint: str           # Path to trained D3PM checkpoint
+    mno_checkpoint: str            # Path to trained MNO checkpoint
+    tokenizer_checkpoint: str      # Path to VQTokenizer checkpoint
+
+    # Dataset
+    dataset_path: str              # HDF5 dataset with (IC, theta, rollouts)
+    max_samples: Optional[int] = None
+    rollout_steps: int = 512       # MNO rollout length
+
+    # D3PM sampling
+    num_refinement_cycles: int = Field(default=3, ge=1)
+    mask_probability: float = Field(default=0.5, ge=0.0, le=1.0)
+    d3pm_start_step: Optional[int] = None  # Partial-start for conservative corrections
+
+    # Quality filter
+    quality_filter: MNOQualityFilterConfig = Field(default_factory=MNOQualityFilterConfig)
+
+    # Fine-tuning
+    fine_tuning: FineTuningConfig = Field(default_factory=FineTuningConfig)
+
+    # Output
+    output_dir: str = "experiments/diffusion/results/v7_refinement"
+    device: str = "cuda"
+    seed: int = 42
 
 
 class TrainingConfig(BaseModel):

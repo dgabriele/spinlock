@@ -77,6 +77,112 @@ class _AsyncHDF5Writer:
             raise self._error
 
 
+class _AccumulationBuffer:
+    """Accumulates simulation batch results on CPU for mega-batch tokenization.
+
+    Simulation is memory-constrained to small batches (B=12), but VQ tokenization
+    at B=12 vastly underutilizes GPU compute. This buffer collects N simulation
+    batches' outputs on CPU, then flushes them as a single mega-batch for
+    tokenization at higher throughput.
+    """
+
+    def __init__(self, accumulate_n: int):
+        self.accumulate_n = accumulate_n
+        self.trajectories: list = []      # [B_i, T+1, C, H, W] CPU tensors
+        self.theta_batches: list = []     # [B_i, P] CPU tensors
+        self.ic_batches: list = []        # [B_i, C, H, W] CPU tensors
+        self.write_indices: list = []     # per-sample virtual indices (numpy)
+        self.total_samples = 0
+
+    @property
+    def is_full(self) -> bool:
+        return len(self.trajectories) >= self.accumulate_n
+
+    def append(
+        self,
+        full_traj: torch.Tensor,
+        theta: torch.Tensor,
+        ic: torch.Tensor,
+        virtual_indices: torch.Tensor,
+    ):
+        """Append one simulation batch's results (moved to CPU)."""
+        self.trajectories.append(full_traj.cpu() if full_traj.is_cuda else full_traj)
+        self.theta_batches.append(theta.cpu() if theta.is_cuda else theta)
+        self.ic_batches.append(ic.cpu() if ic.is_cuda else ic)
+        self.write_indices.append(virtual_indices.numpy())
+        self.total_samples += full_traj.shape[0]
+
+    def flush(self):
+        """Return concatenated data and clear the buffer."""
+        mega_traj = torch.cat(self.trajectories)
+        mega_theta = torch.cat(self.theta_batches)
+        mega_ic = torch.cat(self.ic_batches)
+        all_vi = np.concatenate(self.write_indices)
+        self.trajectories.clear()
+        self.theta_batches.clear()
+        self.ic_batches.clear()
+        self.write_indices.clear()
+        self.total_samples = 0
+        return mega_traj, mega_theta, mega_ic, all_vi
+
+
+def _compute_accumulation_count(
+    sim_batch_size: int,
+    max_T: int,
+    n_channels: int,
+    grid_size: int,
+    max_cpu_bytes: int = 4 * 1024**3,
+) -> int:
+    """Determine how many simulation batches to accumulate before flushing.
+
+    Balances two constraints:
+    - CPU memory budget (default 4 GB for trajectory storage)
+    - Minimum accumulated samples for GPU saturation (target >= 48)
+
+    Returns:
+        Number of simulation batches to accumulate (clamped to [2, 8]).
+    """
+    # bytes per batch: B * (T+1) * C * H * W * sizeof(float32)
+    per_batch_bytes = sim_batch_size * (max_T + 1) * n_channels * grid_size * grid_size * 4
+    max_batches = max(2, max_cpu_bytes // max(1, per_batch_bytes))
+    # Target at least 48 accumulated samples for meaningful GPU saturation
+    min_batches = max(2, 48 // max(1, sim_batch_size))
+    return min(max_batches, max(min_batches, 4), 8)
+
+
+def _compute_tokenization_batch_size(
+    trunc_len: int,
+    n_channels: int,
+    grid_size: int,
+    device: torch.device,
+) -> int:
+    """Compute adaptive tokenization batch size based on available GPU memory.
+
+    Memory model accounts for trajectory frames + ~1.875x pyramid expansion
+    on GPU (sum of 1/2^i for i=0..3).
+
+    Returns:
+        Batch size rounded down to a multiple of 12 (at least 12).
+    """
+    frames = trunc_len + 1
+    pyramid_factor = 1.875  # sum(1/2^i for i=0..3) approximate pyramid expansion
+    bytes_per_sample = int(frames * pyramid_factor * n_channels * grid_size * grid_size * 4)
+
+    if device.type == "cuda":
+        reserved = torch.cuda.memory_reserved(device)
+        allocated = torch.cuda.memory_allocated(device)
+        cuda_free = torch.cuda.mem_get_info(device)[0]
+        available = (reserved - allocated) + cuda_free
+    else:
+        available = 4 * 1024**3
+
+    # Reserve 1.5 GB for CNN chunks + VQ codebooks, use 60% of remainder
+    budget = int((available - 1.5 * 1024**3) * 0.6)
+    optimal = max(12, budget // max(1, bytes_per_sample))
+    # Round down to multiple of 12 (sim batch size alignment)
+    return max(12, (optimal // 12) * 12)
+
+
 class PretokenizeDatasetCommand(CLICommand):
     """
     Command to pre-tokenize CNO dataset for fast diffusion training.
@@ -194,6 +300,12 @@ Examples:
             help="Enable temporal resolution mode: tokenize at multiple truncation lengths for temporal resolution D3PM",
         )
 
+        parser.add_argument(
+            "--no-compile",
+            action="store_true",
+            help="Disable torch.compile for Lenia simulator (frees ~2 GB GPU for larger batches)",
+        )
+
     def execute(self, args: Namespace) -> int:
         """Execute dataset pre-tokenization."""
         # Validate inputs
@@ -213,6 +325,7 @@ Examples:
         self.replayer = None
 
         # Setup replayer for learned mode (trajectory generation)
+        self._use_compile = not getattr(args, 'no_compile', False)
         if self.is_learned_mode:
             self.replayer = self._setup_replayer(tokenizer.config, device)
             if self.replayer is None:
@@ -446,7 +559,8 @@ Examples:
             match operator_type:
                 case "lenia":
                     from spinlock.lenia.replay_adapter import LeniaReplayAdapter
-                    replayer = LeniaReplayAdapter.from_config(config_path, device=str(device))
+                    replayer = LeniaReplayAdapter.from_config(
+                        config_path, device=str(device), compile=self._use_compile)
                 case "cnn" | "u_afno":
                     from spinlock.mno.cno_replay import CNOReplayer
                     replayer = CNOReplayer.from_config(
@@ -880,6 +994,106 @@ Examples:
             self.error(f"Failed to create output file: {e}")
             return None
 
+    def _tokenize_mega_batch(
+        self,
+        tokenizer,
+        mega_traj: torch.Tensor,
+        mega_theta: torch.Tensor,
+        mega_ic: torch.Tensor,
+        all_vi: np.ndarray,
+        lengths_to_process: list,
+        device: torch.device,
+        use_gpu_traj: bool,
+    ) -> list:
+        """Tokenize accumulated mega-batch at all truncation lengths.
+
+        Processes the mega-batch in adaptive sub-batches sized per truncation
+        length. Short truncations (T=32) use larger sub-batches (B=48-96) to
+        saturate GPU compute; long truncations (T=256+) use smaller sub-batches
+        (B=12-24) to fit in GPU memory.
+
+        Args:
+            tokenizer: Loaded VQTokenizer instance.
+            mega_traj: [N, max_T+1, C, H, W] on CPU — concatenated trajectories.
+            mega_theta: [N, P] on CPU — concatenated parameters.
+            mega_ic: [N, C, H, W] on CPU — concatenated initial conditions.
+            all_vi: [N] numpy array of virtual HDF5 write indices.
+            lengths_to_process: Truncation lengths (or [None] for full-length).
+            device: Computation device.
+            use_gpu_traj: Whether to attempt GPU trajectory transfer.
+
+        Returns:
+            List of (save_key, tokens_np, start, end, indices) tuples for the writer.
+        """
+        N = mega_traj.shape[0]
+        all_writes = []
+
+        for trunc_len in lengths_to_process:
+            if trunc_len is not None:
+                traj = mega_traj[:, :trunc_len + 1]
+            else:
+                traj = mega_traj
+
+            effective_T = trunc_len if trunc_len is not None else (mega_traj.shape[1] - 1)
+            tok_batch = _compute_tokenization_batch_size(
+                effective_T, mega_traj.shape[2], mega_traj.shape[3], device)
+            tok_batch = min(tok_batch, N)
+
+            sub_start = 0
+            while sub_start < N:
+                sub_end = min(sub_start + tok_batch, N)
+                sub_traj = traj[sub_start:sub_end]
+
+                if use_gpu_traj:
+                    try:
+                        sub_traj = sub_traj.to(device)
+                    except torch.cuda.OutOfMemoryError:
+                        torch.cuda.empty_cache()
+                        tok_batch = max(12, tok_batch // 2)
+                        continue  # retry with smaller batch
+
+                tok_theta = None if self.is_temporal_only else mega_theta[sub_start:sub_end].to(device)
+                tok_ic = None if self.is_temporal_only else mega_ic[sub_start:sub_end].to(device)
+
+                batch_tokens = tokenizer.tokenize(
+                    temporal_features=None,
+                    initial_manual=None,
+                    initial_raw=tok_ic,
+                    theta_features=tok_theta,
+                    temporal_raw=sub_traj,
+                )
+
+                sub_vi = all_vi[sub_start:sub_end]
+                for key, tokens in batch_tokens.items():
+                    if trunc_len is not None and "temporal" in key:
+                        base_key, level_suffix = key.rsplit("_L", 1)
+                        save_key = f"{base_key}_trunc_T{trunc_len:03d}_L{level_suffix}"
+                    elif trunc_len is not None:
+                        # Initial/theta: save only from final truncation
+                        if trunc_len != lengths_to_process[-1]:
+                            continue
+                        save_key = key
+                    else:
+                        save_key = key
+
+                    tokens_np = tokens.cpu().numpy()
+                    # Detect contiguous slice for efficient HDF5 writes
+                    vi_sorted = np.sort(sub_vi)
+                    contiguous = (
+                        int(vi_sorted[-1]) - int(vi_sorted[0]) + 1 == len(vi_sorted)
+                        and np.array_equal(sub_vi, vi_sorted)
+                    )
+                    all_writes.append((
+                        save_key, tokens_np,
+                        int(sub_vi[0]) if contiguous else 0,
+                        int(sub_vi[-1]) + 1 if contiguous else 0,
+                        None if contiguous else sub_vi,
+                    ))
+
+                sub_start = sub_end
+
+        return all_writes
+
     def _batch_tokenize_streaming(
         self,
         tokenizer,
@@ -895,18 +1109,19 @@ Examples:
         Used for learned mode: ICs are read lazily per-batch from HDF5,
         trajectories generated via replayer, then tokenized.
 
-        Optimizations over naive approach:
+        Optimizations:
         - Generate trajectory ONCE at max truncation length, then truncate
-          for shorter lengths (eliminates redundant Lenia simulation)
+        - Accumulate N simulation batches on CPU → mega-batch tokenize at
+          adaptive batch sizes (B=48-96 for short T, B=12-24 for long T)
+        - encode_only path in model.forward() skips decoder + inverse heads
         - Async HDF5 writer overlaps disk I/O with GPU compute
-        - pin_memory for faster CPU→GPU transfers
 
         Args:
             tokenizer: Loaded VQTokenizer instance.
             dataset: SpinlockDataset in lazy_ics mode.
             category_levels: List of token key names for HDF5 output.
             output_file: Open HDF5 file with 'tokens' group pre-created.
-            batch_size: Samples per batch.
+            batch_size: Samples per batch (simulation batch size).
             device: Computation device.
             truncation_lengths: If set, tokenize at each truncation point.
         """
@@ -921,14 +1136,14 @@ Examples:
             print(
                 f"\nTokenizing {dataset.n_samples:,} samples at "
                 f"{len(truncation_lengths)} truncation lengths "
-                f"[learned mode, streaming, generate-once]..."
+                f"[learned mode, streaming, generate-once, accumulated-batch]..."
             )
         else:
             lengths_to_process = [None]
             max_gen_timesteps = generation_timesteps
             print(
                 f"\nTokenizing {dataset.n_samples:,} samples "
-                f"(batch_size={batch_size}) [learned mode, streaming]..."
+                f"(batch_size={batch_size}) [learned mode, streaming, accumulated-batch]..."
             )
 
         # Close any lazy HDF5 handle opened during token structure analysis,
@@ -962,6 +1177,20 @@ Examples:
             total_mem = torch.cuda.get_device_properties(device).total_memory
             print(f"  GPU trajectory mode: enabled ({total_mem / 1e9:.1f} GB GPU, try-except OOM)")
 
+        # Compute accumulation count: how many sim batches to collect on CPU
+        # before flushing as a single mega-batch for tokenization.
+        # Detect grid size from first sample for memory estimation.
+        sample0 = dataset[0]
+        grid_size = sample0['ic'].shape[-1]
+        n_channels = sample0['ic'].shape[0] if sample0['ic'].ndim >= 3 else 1
+        accumulate_n = _compute_accumulation_count(
+            batch_size, max_gen_timesteps, n_channels, grid_size)
+        print(f"  Accumulation: {accumulate_n} sim batches → "
+              f"~{accumulate_n * batch_size} samples per mega-batch tokenization")
+        dataset.close_lazy()  # Close again after sample0 access
+
+        buffer = _AccumulationBuffer(accumulate_n)
+
         # Async writer: GPU compute on batch N+1 overlaps with HDF5 I/O for batch N
         writer = _AsyncHDF5Writer(tokens_group)
 
@@ -970,68 +1199,30 @@ Examples:
                 for batch in tqdm(loader, desc="Batches", unit="batch"):
                     theta_batch = batch['params'].to(device)
                     ic_batch = batch['ic'].to(device)
-                    sample_indices = batch['sample_idx']  # [B] original HDF5 indices
+                    virtual_indices = batch['virtual_idx']  # [B] unique DataLoader indices
 
-                    # Determine write slice — contiguous slice when possible
-                    si_start = int(sample_indices[0])
-                    si_end = int(sample_indices[-1]) + 1
-                    contiguous = (si_end - si_start == len(sample_indices))
-                    np_indices = None if contiguous else sample_indices.numpy()
-
-                    # Generate trajectory ONCE at max length
+                    # Phase 1: Simulate (GPU memory-constrained at sim batch_size)
                     full_traj = self._generate_trajectories(
                         theta_batch, ic_batch, max_gen_timesteps,
                     )  # [B, max_T+1, C, H, W] on CPU
 
-                    # Tokenize at each truncation length from the same trajectory
-                    writes = []
-                    for trunc_len in lengths_to_process:
-                        # Truncate trajectory (view, no copy)
-                        if trunc_len is not None:
-                            traj = full_traj[:, : trunc_len + 1]
-                        else:
-                            traj = full_traj
+                    # Phase 2: Accumulate on CPU
+                    buffer.append(full_traj, theta_batch, ic_batch, virtual_indices)
 
-                        # Move to GPU if it fits — pyramid + CNN run 40× faster
-                        # on GPU, and per-chunk CPU→GPU transfers are eliminated.
-                        if use_gpu_traj:
-                            try:
-                                traj = traj.to(device)
-                            except torch.cuda.OutOfMemoryError:
-                                torch.cuda.empty_cache()
+                    # Phase 3: Flush when buffer full → mega-batch tokenize → write
+                    if buffer.is_full:
+                        mega_traj, mega_theta, mega_ic, all_vi = buffer.flush()
+                        writes = self._tokenize_mega_batch(
+                            tokenizer, mega_traj, mega_theta, mega_ic,
+                            all_vi, lengths_to_process, device, use_gpu_traj)
+                        writer.submit(writes)
 
-                        # In temporal_only mode, don't pass theta/initial to tokenize
-                        tok_theta = None if self.is_temporal_only else theta_batch
-                        tok_init_raw = None if self.is_temporal_only else ic_batch
-
-                        batch_tokens = tokenizer.tokenize(
-                            temporal_features=None,
-                            initial_manual=None,
-                            initial_raw=tok_init_raw,
-                            theta_features=tok_theta,
-                            temporal_raw=traj,
-                        )
-
-                        for key, tokens in batch_tokens.items():
-                            tokens_np = tokens.cpu().numpy()
-
-                            if trunc_len is not None and "temporal" in key:
-                                base_key, level_suffix = key.rsplit("_L", 1)
-                                save_key = f"{base_key}_trunc_T{trunc_len:03d}_L{level_suffix}"
-                            elif trunc_len is not None:
-                                # Initial/theta: save only from final truncation
-                                if trunc_len != lengths_to_process[-1]:
-                                    continue
-                                save_key = key
-                            else:
-                                save_key = key
-
-                            writes.append((
-                                save_key, tokens_np,
-                                si_start, si_end, np_indices,
-                            ))
-
-                    # Submit all writes for this batch asynchronously
+                # Final flush for remaining samples
+                if buffer.total_samples > 0:
+                    mega_traj, mega_theta, mega_ic, all_vi = buffer.flush()
+                    writes = self._tokenize_mega_batch(
+                        tokenizer, mega_traj, mega_theta, mega_ic,
+                        all_vi, lengths_to_process, device, use_gpu_traj)
                     writer.submit(writes)
         finally:
             writer.close()

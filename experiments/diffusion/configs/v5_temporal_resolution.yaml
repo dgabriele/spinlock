@@ -63,6 +63,16 @@ training:
   use_snr_weighting: true
   use_vocab_size_weighting: true
 
+  physics_loss:
+    timestep_gate: "bell"         # sin(πt/T): peaks at medium noise, zero at extremes
+
+  truncation_consistency:
+    enabled: true
+    weight: 0.05
+    temperature: 1.0
+    warmup_epochs: 3
+    timestep_gate: "bell"
+
   lr_scheduler:
     type: "cosine"
     warmup_epochs: 2

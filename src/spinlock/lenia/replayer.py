@@ -29,6 +29,7 @@ from .simulator import (
     LeniaSimulator,
     build_kernel_ffts_batched,
     build_multiring_kernel_ffts_batched,
+    simulate_with_early_exit,
 )
 
 logger = logging.getLogger(__name__)
@@ -455,43 +456,15 @@ class LeniaReplayer:
             dt_safe = sigma_min / g_prime
             sim_dt = torch.minimum(sim_dt, dt_safe)
 
-        # Memory-efficient substep loop: K inner steps per visible frame
-        B, C, H, W = ics.shape
         state = ics.to(self.simulator.device).float()
         mu = growth_mu[:, :, None, None]
         sigma = growth_sigma[:, :, None, None]
-        dt_view = sim_dt[:, None, None, None].clone()  # clone: we may zero dead samples
+        dt_view = sim_dt[:, None, None, None]
 
-        traj = torch.empty(B, num_timesteps, C, H, W,
-                           device=self.simulator.device, dtype=torch.float32)
-        step_fn = self.simulator._compiled_step
-
-        # Early-exit tracking: zero dt for converged samples, break when all dead
-        alive = torch.ones(B, dtype=torch.bool, device=state.device)
-        prev_check = state.clone()
-        _CHECK_EVERY = 16
-        _CONVERGE_EPS = 1e-6
-
-        for t in range(num_timesteps):
-            for _k in range(K):
-                state = step_fn(state, kernel_ffts, coupling, mu, sigma,
-                                dt_view, growth_type)
-            traj[:, t] = state
-
-            # Periodic convergence check
-            if t > 0 and (t + 1) % _CHECK_EVERY == 0:
-                delta = (state - prev_check).abs().amax(dim=(1, 2, 3))
-                newly_dead = alive & (delta < _CONVERGE_EPS)
-                if newly_dead.any():
-                    dt_view[newly_dead] = 0.0
-                    alive &= ~newly_dead
-                if not alive.any():
-                    if t + 1 < num_timesteps:
-                        traj[:, t + 1:] = state.unsqueeze(1)
-                    break
-                prev_check = state.clone()
-
-        return traj
+        return simulate_with_early_exit(
+            state, self.simulator._compiled_step, kernel_ffts, coupling,
+            mu, sigma, dt_view, growth_type, num_timesteps, substeps=K,
+        )
 
     def _rollout_one_realization_fast(
         self,

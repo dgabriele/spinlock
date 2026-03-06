@@ -30,6 +30,7 @@ from .params import (
 from .simulator import (
     LeniaSimulator,
     build_multiring_kernel_ffts_batched,
+    simulate_with_early_exit,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ class LeniaReplayAdapter:
         max_gpu_batch: int = 16,
         substeps: int = 1,
         param_ranges: Optional[LeniaParamRanges] = None,
+        compile: bool = True,
     ):
         self.n_channels = n_channels
         self.grid_size = grid_size
@@ -63,7 +65,7 @@ class LeniaReplayAdapter:
         self.substeps = substeps
         self.param_ranges = param_ranges
 
-        self.simulator = LeniaSimulator(grid_size=grid_size, device=device)
+        self.simulator = LeniaSimulator(grid_size=grid_size, device=device, compile=compile)
 
     @classmethod
     def from_config(
@@ -71,6 +73,7 @@ class LeniaReplayAdapter:
         config_path: str,
         device: str = "cuda",
         cache_size: int = 0,
+        compile: bool = True,
     ) -> LeniaReplayAdapter:
         """Create adapter from Lenia generation config YAML.
 
@@ -78,6 +81,7 @@ class LeniaReplayAdapter:
             config_path: Path to config YAML used for dataset generation.
             device: Computation device.
             cache_size: Ignored (kept for interface parity with CNOReplayer).
+            compile: Whether to torch.compile the simulator hot path.
 
         Returns:
             Configured LeniaReplayAdapter.
@@ -109,6 +113,7 @@ class LeniaReplayAdapter:
             max_gpu_batch=max_gpu_batch,
             substeps=lenia_cfg.get("substeps", 1),
             param_ranges=param_ranges,
+            compile=compile,
         )
 
     def _to_numpy_batch(
@@ -240,31 +245,18 @@ class LeniaReplayAdapter:
             dt_safe = sigma_min / g_prime
             sim_dt = torch.minimum(sim_dt, dt_safe)
 
-        B, C, H, W = ics.shape
         state = ics.float()
         mu = tensors.growth_mu[:, :, None, None]
         sigma = tensors.growth_sigma[:, :, None, None]
         dt_view = sim_dt[:, None, None, None]
-        step_fn = self.simulator._compiled_step
 
+        traj = simulate_with_early_exit(
+            state, self.simulator._compiled_step, kernel_ffts, tensors.coupling,
+            mu, sigma, dt_view, tensors.growth_type, timesteps, substeps=K,
+        )
         if return_all_steps:
-            # Pre-allocate with IC slot to avoid torch.cat memory spike
-            # (cat would momentarily require 2x trajectory memory).
-            traj = torch.empty(B, timesteps + 1, C, H, W,
-                               device=self.device, dtype=torch.float32)
-            traj[:, 0] = state
-            for t in range(timesteps):
-                for _k in range(K):
-                    state = step_fn(state, kernel_ffts, tensors.coupling,
-                                    mu, sigma, dt_view, tensors.growth_type)
-                traj[:, t + 1] = state
-            return traj
-        else:
-            for t in range(timesteps):
-                for _k in range(K):
-                    state = step_fn(state, kernel_ffts, tensors.coupling,
-                                    mu, sigma, dt_view, tensors.growth_type)
-            return state.unsqueeze(1)
+            return torch.cat([ics.unsqueeze(1), traj], dim=1)
+        return traj[:, -1]
 
     # ── Per-sample interface (CNOReplayer compat) ─────────────
 

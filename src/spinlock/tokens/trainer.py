@@ -349,13 +349,8 @@ class VQTokenizerTrainer:
                 # Custom metric: lower is better.  Includes all validation
                 # components that indicate token quality.
                 vq = val_metrics['vq']
-                best_metric = (
-                    recon
-                    + roundtrip
-                    + vq             # VQ commitment — codebook convergence
-                    + 0.1 * topo     # Distance preservation (de-emphasised)
-                    - 0.0001 * util_epoch  # Tiny utilization bonus
-                )
+                es_metric = recon + roundtrip + vq + 0.1 * topo
+                best_metric = es_metric - 0.0001 * util_epoch
 
                 # Always save if metric is strictly better (no min_delta gate).
                 # Early-stopping patience uses min_delta separately below.
@@ -371,12 +366,19 @@ class VQTokenizerTrainer:
                         f"vq={vq:.4f}, topo={topo:.4f}, util_epoch={util_epoch:.1f}%)"
                     )
 
-                # Early stopping uses min_delta for patience counting
-                if best_metric < self._best_es_metric - self.config.training.early_stopping_min_delta:
-                    self._best_es_metric = best_metric
+                # Early stopping uses loss-only metric (no utilization bonus)
+                # to prevent util oscillations from resetting patience.
+                if es_metric < self._best_es_metric - self.config.training.early_stopping_min_delta:
+                    self._best_es_metric = es_metric
                     self.epochs_without_improvement = 0
                 else:
                     self.epochs_without_improvement += 1
+
+                if self.config.verbose:
+                    logger.info(
+                        f"  ES: loss_metric={es_metric:.6f}, best_es={self._best_es_metric:.6f}, "
+                        f"patience={self.epochs_without_improvement}/{self.config.training.early_stopping_patience}"
+                    )
 
                 # Early stopping check
                 if self.epochs_without_improvement >= self.config.training.early_stopping_patience:

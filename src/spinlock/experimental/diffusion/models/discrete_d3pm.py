@@ -9,7 +9,6 @@ Implements discrete diffusion with:
 
 import logging
 import math
-import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Optional, Union
@@ -19,10 +18,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
-
-# Pattern to extract truncation label from vocab key
-# e.g. "temporal_group_1_trunc_T064_L0" → "T064"
-_TRUNC_PATTERN = re.compile(r"_trunc_(T\d+)_")
 
 
 class ScheduleType(str, Enum):
@@ -98,7 +93,6 @@ class DiscreteD3PM(nn.Module):
         beta_scaling: str = "uniform",
         graded_schedule_enabled: bool = False,
         graded_scale_factors: Optional[Dict[str, float]] = None,
-        graded_min_scale: float = 0.7,
         non_temporal_scale: float = 0.3,
     ):
         super().__init__()
@@ -131,11 +125,11 @@ class DiscreteD3PM(nn.Module):
         # Build per-category-level transition matrices
         self._build_transition_matrices()
 
-        # Build truncation-graded scale factors
+        # Build per-position graded scale factors
         self._key_scale_factors: Dict[str, float] = {}
         if graded_schedule_enabled:
             self._key_scale_factors = self._build_graded_scale_factors(
-                graded_scale_factors, graded_min_scale, non_temporal_scale
+                graded_scale_factors or {}, non_temporal_scale
             )
 
         logger.info(
@@ -256,84 +250,34 @@ class DiscreteD3PM(nn.Module):
 
     def _build_graded_scale_factors(
         self,
-        explicit_factors: Optional[Dict[str, float]],
-        min_scale: float,
+        scale_factors: Dict[str, float],
         non_temporal_scale: float,
     ) -> Dict[str, float]:
-        """Build per-key scale factors for truncation-graded forward process.
+        """Build per-position scale factors from explicit dict.
 
-        Auto-detects truncation levels from vocab key names by parsing
-        ``_trunc_T{NNN}_`` patterns. When ``explicit_factors`` is None,
-        computes a ramp from ``min_scale`` to 1.0:
-            scale = min_scale + (1 - min_scale) * rank / (N - 1)
-        E.g. 4 truncations with min_scale=0.7 → [0.7, 0.8, 0.9, 1.0].
+        Keys present in ``scale_factors`` use their specified value.
+        Keys not in ``scale_factors`` get ``non_temporal_scale`` as default.
 
         Args:
-            explicit_factors: Optional dict mapping truncation label (e.g. "T032")
-                to scale factor. None triggers auto-computation.
-            min_scale: Floor of the auto-computed ramp (ignored when explicit).
-            non_temporal_scale: Scale factor for non-temporal keys.
+            scale_factors: Dict mapping position key → scale factor.
+            non_temporal_scale: Default scale for keys not in scale_factors.
 
         Returns:
             Dict mapping each vocab key to its resolved scale factor.
-            Empty dict if no truncation keys are found (graceful fallback).
         """
-        # Discover truncation labels from vocab keys
-        key_to_trunc: Dict[str, str] = {}  # vocab_key → trunc label (e.g. "T064")
-        trunc_labels: set[str] = set()
-
-        for key in self.vocab_sizes:
-            m = _TRUNC_PATTERN.search(key)
-            if m:
-                label = m.group(1)
-                key_to_trunc[key] = label
-                trunc_labels.add(label)
-
-        if not trunc_labels:
-            logger.warning(
-                "graded_schedule_enabled=True but no _trunc_T*_ keys found in vocab. "
-                "Disabling graded schedule (all keys get uniform timesteps)."
-            )
-            return {}
-
-        # Sort labels numerically: T032 < T064 < T128 < T256
-        sorted_labels = sorted(trunc_labels, key=lambda s: int(s[1:]))
-        N = len(sorted_labels)
-
-        # Resolve scale factors
-        if explicit_factors is not None:
-            label_to_scale = dict(explicit_factors)
-            # Validate all discovered labels have a factor
-            missing = set(sorted_labels) - set(label_to_scale.keys())
-            if missing:
-                logger.warning(
-                    f"Explicit graded_scale_factors missing labels {missing}. "
-                    f"Assigning scale=1.0 for missing labels."
-                )
-                for m in missing:
-                    label_to_scale[m] = 1.0
-        else:
-            # Auto-compute ramp: [min_scale, ..., 1.0]
-            if N == 1:
-                label_to_scale = {sorted_labels[0]: 1.0}
-            else:
-                label_to_scale = {
-                    label: min_scale + (1.0 - min_scale) * rank / (N - 1)
-                    for rank, label in enumerate(sorted_labels)
-                }
-
-        # Build per-key mapping
         result: Dict[str, float] = {}
+        matched = 0
         for key in self.vocab_sizes:
-            if key in key_to_trunc:
-                result[key] = label_to_scale[key_to_trunc[key]]
+            if key in scale_factors:
+                result[key] = scale_factors[key]
+                matched += 1
             else:
                 result[key] = non_temporal_scale
 
         logger.info(
-            f"Graded schedule scale factors ({N} truncation levels): "
-            + ", ".join(f"{l}={label_to_scale[l]:.3f}" for l in sorted_labels)
-            + f", non_temporal={non_temporal_scale:.3f}"
+            f"Graded schedule: {matched}/{len(self.vocab_sizes)} keys matched "
+            f"from scale_factors, {len(self.vocab_sizes) - matched} defaulted "
+            f"to non_temporal_scale={non_temporal_scale:.3f}"
         )
         return result
 

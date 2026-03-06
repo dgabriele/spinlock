@@ -453,6 +453,164 @@ def plot_codebook_usage_heatmap(
     cbar.set_label("Utilization", fontsize=9)
 
 
+def plot_utilization_heatmap(
+    checkpoint_path: str | Path,
+    output_path: Optional[str | Path] = None,
+    figsize: Optional[tuple] = None,
+    dpi: int = 200,
+    sort_by: str = "avg",
+) -> Figure:
+    """Plot compact VQ codebook utilization heatmap from a checkpoint.
+
+    Each cell shows ``n/total  pct  dimD`` on one line.  Rows are feature
+    groups, columns are hierarchy levels.  Color encodes utilization fraction.
+
+    Works with both new-format keys (``temporal_group_N_LM``) and legacy
+    ``cb_N`` keys.
+
+    Args:
+        checkpoint_path: Path to checkpoint file or directory.
+        output_path: Optional path to save PNG.  None = return figure only.
+        figsize: Figure size ``(w, h)``.  None = auto-sized to row count.
+        dpi: Resolution.
+        sort_by: Row ordering — ``"avg"`` (mean utilization, descending),
+            ``"l0"`` (L0 utilization, descending), ``"numeric"`` (group
+            index ascending), or ``"none"`` (original key order).
+
+    Returns:
+        matplotlib Figure.
+    """
+    checkpoint_path = Path(checkpoint_path)
+
+    embeddings, usage, codebook_keys = extract_codebook_embeddings(checkpoint_path)
+
+    # Parse group/level structure from keys
+    groups: Dict[str, Dict[int, str]] = {}
+    for k in codebook_keys:
+        if "_L" in k:
+            base, lev = k.rsplit("_L", 1)
+            groups.setdefault(base, {})[int(lev)] = k
+        elif k.startswith("cb_"):
+            idx = int(k.split("_")[1])
+            # Legacy: infer group/level from flat index (3 levels per group)
+            g, l = divmod(idx, 3)
+            gname = f"group_{g}"
+            groups.setdefault(gname, {})[l] = k
+
+    group_names = sorted(groups.keys())
+    nc = len(group_names)
+    nl = max(max(lvls.keys()) for lvls in groups.values()) + 1
+
+    # Build matrices
+    util_matrix = np.zeros((nc, nl))
+    size_matrix = np.zeros((nc, nl), dtype=int)
+    used_matrix = np.zeros((nc, nl), dtype=int)
+    dim_matrix = np.zeros((nc, nl), dtype=int)
+
+    for gi, gname in enumerate(group_names):
+        for lev, key in groups[gname].items():
+            if key in usage:
+                counts = usage[key]
+                total = counts.sum()
+                cs = len(counts)
+                n_used = int(np.sum(counts > 0.01 * total / cs)) if total > 0 else 0
+                util_matrix[gi, lev] = n_used / cs if cs > 0 else 0
+                size_matrix[gi, lev] = cs
+                used_matrix[gi, lev] = n_used
+            if key in embeddings:
+                dim_matrix[gi, lev] = embeddings[key].shape[1]
+
+    # Sort rows
+    if sort_by == "avg":
+        order = np.argsort(-util_matrix.mean(axis=1))  # descending
+    elif sort_by == "l0":
+        order = np.argsort(-util_matrix[:, 0])
+    elif sort_by == "numeric":
+        import re
+        order = np.argsort([
+            int(re.search(r"(\d+)", g).group(1)) if re.search(r"\d+", g) else 0
+            for g in group_names
+        ])
+    else:
+        order = np.arange(nc)
+    group_names = [group_names[i] for i in order]
+    util_matrix = util_matrix[order]
+    size_matrix = size_matrix[order]
+    used_matrix = used_matrix[order]
+    dim_matrix = dim_matrix[order]
+
+    # Auto-size figure
+    if figsize is None:
+        cell_h = 0.16
+        figsize = (4.5, nc * cell_h + 1.2)
+
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+
+    # Per-column normalized color matrix: each level (L0, L1, L2) gets its
+    # own color range based on the active codeword counts in that column.
+    # This highlights which groups are over/under-utilized *within* a level,
+    # which is what matters for the combinatorial token vocabulary.
+    color_matrix = np.zeros_like(used_matrix, dtype=float)
+    for j in range(nl):
+        col = used_matrix[:, j].astype(float)
+        col_min, col_max = col.min(), col.max()
+        if col_max > col_min:
+            color_matrix[:, j] = (col - col_min) / (col_max - col_min)
+        else:
+            color_matrix[:, j] = 1.0  # all equal → full color
+
+    im = ax.imshow(color_matrix, cmap=get_utilization_cmap(), aspect="auto", vmin=0, vmax=1)
+
+    # Column headers: level + capacity + range
+    level_headers = []
+    for j in range(nl):
+        capacity = int(size_matrix[0, j]) if nc > 0 else 0
+        col = used_matrix[:, j]
+        level_headers.append(f"L{j}  (/{capacity}, {int(col.min())}–{int(col.max())} active)")
+    ax.set_xticks(range(nl))
+    ax.set_xticklabels(level_headers, fontsize=6)
+    ax.set_yticks(range(nc))
+    short_labels = [
+        g.replace("temporal_group_", "G").replace("group_", "G")
+        for g in group_names
+    ]
+    ax.set_yticklabels(short_labels, fontsize=5)
+
+    ax.set_xlabel("Level", fontsize=7)
+    ax.set_ylabel("Group", fontsize=7)
+    ax.set_title("Active Codewords per Group", fontsize=8, fontweight="bold", pad=18)
+    ax.text(
+        0.5, 1.01,
+        f"{used_matrix.sum()}/{size_matrix.sum()} active overall, "
+        f"{util_matrix.mean():.0%} avg utilization  ·  color normalized per column",
+        transform=ax.transAxes, ha="center", va="bottom",
+        fontsize=5, color="0.45",
+    )
+
+    # Annotate cells: just the active count
+    for i in range(nc):
+        for j in range(nl):
+            n = used_matrix[i, j]
+            c = color_matrix[i, j]
+            text_color = "white" if c > 0.75 else "black"
+            ax.text(
+                j, i, f"{n}",
+                ha="center", va="center", fontsize=5.5,
+                color=text_color, fontweight="bold", fontfamily="monospace",
+            )
+
+    cbar = plt.colorbar(im, ax=ax, shrink=0.3, pad=0.03, aspect=25)
+    cbar.set_label("within-level", fontsize=5)
+    cbar.ax.tick_params(labelsize=5)
+
+    fig.subplots_adjust(left=0.1, right=0.88, top=0.92, bottom=0.07)
+
+    if output_path is not None:
+        fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+
+    return fig
+
+
 def plot_codebook_similarity(
     ax: Axes,
     embeddings: Dict[str, np.ndarray],

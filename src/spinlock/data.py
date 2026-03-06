@@ -146,7 +146,7 @@ class SpinlockDataset:
             load_gt_temporal_features=True,
         )
         sample = dataset[0]
-        # {'ic': Tensor[C,H,W], 'params': Tensor[P], 'sample_idx': int,
+        # {'ic': Tensor[C,H,W], 'params': Tensor[P], 'sample_idx': int, 'virtual_idx': int,
         #  'gt_raw_temporal': Tensor[T,D_raw]}  ← only if load_gt_temporal_features=True
 
     **Context manager usage** (for accessing HDF5 objects directly):
@@ -354,7 +354,8 @@ class SpinlockDataset:
             dict with:
                 'ic':               [C, H, W]   initial condition
                 'params':           [P]          Sobol parameter vector
-                'sample_idx':       int          original HDF5 index
+                'sample_idx':       int          original HDF5 index (physical)
+                'virtual_idx':      int          DataLoader index (unique across realizations)
                 'gt_raw_temporal':  [T, D_raw]   (only when load_gt_temporal_features=True)
         """
         if not self._dataset_mode:
@@ -385,6 +386,7 @@ class SpinlockDataset:
             "ic": ic,
             "params": self.params[idx],
             "sample_idx": orig_idx,
+            "virtual_idx": idx,
         }
         if self._has_gt_features:
             self._ensure_h5_open()
