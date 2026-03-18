@@ -220,33 +220,74 @@ class FineTuningConfig(BaseModel):
     weight_decay: float = Field(default=1e-5, ge=0.0)
 
 
+class CVAEFineTuningConfig(BaseModel):
+    """CVAE fine-tuning on verified ensemble winners.
+
+    After ensemble selection, the winning (theta, IC) pairs have been verified
+    through rollout + retokenize to produce high observed-position agreement.
+    These verified pairs are ideal fine-tuning targets: they teach the CVAE
+    which (theta, IC) solutions actually survive the roundtrip when conditioned
+    on D3PM-completed tokens (with their errors).
+
+    Low beta (0.1 vs 0.5 during original training) prioritizes reconstruction
+    accuracy over KL regularization, since verified winners are high-quality
+    targets — not noisy samples that need regularization.
+    """
+    enabled: bool = True
+    learning_rate: float = Field(default=2e-5, gt=0.0)
+    num_epochs: int = Field(default=5, ge=1)
+    batch_size: int = Field(default=64, ge=1)
+    gradient_clip_norm: float = Field(default=1.0, gt=0.0)
+    weight_decay: float = Field(default=1e-5, ge=0.0)
+    beta: float = Field(default=0.1, ge=0.0)
+    free_bits: float = Field(default=2.0, ge=0.0)
+
+
 class RefinementConfig(BaseModel):
     """Offline hard-target refinement loop configuration.
 
-    Closed loop: D3PM predict -> CVAE decode -> MNO rollout -> retokenize ->
-    quality filter -> fine-tune.
-    Requires trained D3PM, MNO, VQTokenizer, and CVAE checkpoints.
+    Closed loop: D3PM inpaint → IntegratedTokenDecoder → rollout → retokenize →
+    quality filter → fine-tune.
+
+    The D3PM generates ALL token positions (temporal + initial + theta). Observed
+    temporal tokens are fixed; initial + theta positions are inpainted. The
+    IntegratedTokenDecoder (codebook lookup + inverse heads) replaces the CVAE.
+    Diversity comes from D3PM's stochastic denoising trajectories.
+
+    Rollout source (controlled by ``mno_checkpoint``):
+    - ``mno_checkpoint`` set: uses trained V2MNO surrogate
+    - ``mno_checkpoint`` null: uses GT simulator (LeniaReplayAdapter, etc.)
     """
     # Checkpoints
     d3pm_checkpoint: str           # Path to trained D3PM checkpoint
-    mno_checkpoint: str            # Path to trained MNO checkpoint
+    mno_checkpoint: Optional[str] = None  # MNO path, or null for GT simulator
     tokenizer_checkpoint: str      # Path to VQTokenizer checkpoint
-    cvae_checkpoint: Optional[str] = None  # Path to trained CVAE checkpoint
 
     # Dataset
     dataset_path: str              # HDF5 dataset with (IC, theta, rollouts)
+    dataset_config_path: Optional[str] = None  # Explicit dataset gen YAML override
     max_samples: Optional[int] = None
-    rollout_steps: int = 512       # MNO rollout length
+    rollout_steps: int = 512       # Rollout length (MNO or GT simulator)
 
     # D3PM sampling
     num_refinement_cycles: int = Field(default=3, ge=1)
     mask_probability: float = Field(default=0.5, ge=0.0, le=1.0)
     d3pm_start_step: Optional[int] = None  # Partial-start for conservative corrections
 
+    # D3PM stochastic diversity: run N independent denoising passes per batch.
+    # Different denoising trajectories produce different token completions.
+    d3pm_n_candidates: int = Field(default=4, ge=1)
+
+    # Early stopping: stop generating hard targets once enough are accepted.
+    max_accepted_targets: Optional[int] = None
+
+    # Mini-batch size for hard-target generation.
+    generation_batch_size: int = Field(default=8, ge=1)
+
     # Quality filter
     quality_filter: MNOQualityFilterConfig = Field(default_factory=MNOQualityFilterConfig)
 
-    # Fine-tuning
+    # Fine-tuning (D3PM only — no CVAE)
     fine_tuning: FineTuningConfig = Field(default_factory=FineTuningConfig)
 
     # Output

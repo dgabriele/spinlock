@@ -17,6 +17,7 @@ from .simulator import (
     build_kernel_ffts_batched,
     build_multiring_kernel_ffts_batched,
 )
+from .fourier_ic import FourierICConfig, FourierICGenerator
 from .initial_conditions import LeniaICGenerator
 from .replayer import LeniaReplayer
 from .replay_adapter import LeniaReplayAdapter
@@ -35,6 +36,8 @@ __all__ = [
     "KERNEL_BUILDERS",
     "build_kernel_ffts_batched",
     "build_multiring_kernel_ffts_batched",
+    "FourierICConfig",
+    "FourierICGenerator",
     "LeniaICGenerator",
     "LeniaReplayer",
     "LeniaReplayAdapter",

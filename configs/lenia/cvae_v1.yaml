@@ -1,0 +1,68 @@
+# Token-Conditioned CVAE for Lenia v1
+#
+# P(theta, IC | temporal_tokens)
+# Generates plausible (theta, IC) given observed temporal dynamics.
+#
+# Dataset: 500K params × 3 realizations = 1.5M token samples
+# Using 500K samples (sequential, no shuffle) to preserve Sobol coverage.
+# truncation_length=512 selects the 90 temporal keys at T=512.
+#
+# Grid shape auto-detected: (3, 128, 128)
+# theta_dim auto-detected: 34
+#
+# KL strategy: free_bits=2.0 prevents posterior collapse by allowing each
+# latent dim to carry ≥2 nats before the KL penalty applies.
+# beta_max=0.5 with 50-epoch warmup for gentler regularization.
+
+model:
+  latent_dim: 256
+  condition:
+    group_mlp_hidden_dim: 128
+    group_mlp_output_dim: 64
+    pooling: "mean"
+  target_encoder:
+    theta_hidden_dim: 256
+    ic_hidden_dim: 256
+    ic_channels: [32, 64, 128]
+    dropout: 0.1
+  encoder:
+    hidden_dims: [512, 256]
+    dropout: 0.1
+  param_decoder:
+    hidden_dims: [256, 128]
+    dropout: 0.1
+  grid_decoder:
+    # 4 upsample stages: 8x8 → 16 → 32 → 64 → 128 (exact match, no interpolation)
+    # Wider channels for better IC reconstruction (49K pixels from 320-dim input)
+    hidden_channels: [512, 256, 128, 64]
+    dropout: 0.1
+
+training:
+  num_epochs: 200
+  batch_size: 512
+  learning_rate: 1.0e-3
+  beta_schedule: "linear"
+  beta_max: 0.5
+  beta_warmup_epochs: 50
+  free_bits: 2.0
+  optimizer: "adam"
+  weight_decay: 0.0
+  scheduler_type: "cosine"
+  grad_clip_norm: 1.0
+
+data:
+  vq_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_latest.pt"
+  dataset: "datasets/ds_lenia_v1.h5"
+  tokenized_dataset: "datasets/ds_lenia_v1_temporal_resolution.h5"
+  temporal_keys_only: true
+  truncation_length: 512
+  max_samples: 500000
+  train_split: 0.9
+  val_split: 0.1
+
+validation:
+  freq_epochs: 5
+
+output_dir: "checkpoints/lenia/cvae/v1"
+device: "cuda"
+seed: 42

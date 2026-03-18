@@ -34,12 +34,36 @@ class ParameterDecoderConfig(BaseModel):
 
 
 class GridDecoderConfig(BaseModel):
-    """Grid decoder configuration."""
+    """Grid decoder configuration.
 
+    Two decoder types:
+    - "conv": ConvTranspose2d upsampling (general, works with any BC type)
+    - "spectral": Low-frequency Fourier coefficient prediction + iFFT
+      (compact, efficient for periodic-BC operators with smooth dynamics)
+    """
+
+    type: str = Field(
+        default="conv",
+        pattern="^(conv|spectral)$",
+        description="Decoder type: 'conv' (general) or 'spectral' (periodic BCs)",
+    )
+    # Conv-specific
     hidden_channels: List[int] = Field(
         default=[512, 256, 128, 64, 32],
-        description="ConvTranspose2d channel progression (spatial size resolved at runtime)",
+        description="ConvTranspose2d channel progression (conv type only)",
     )
+    # Spectral-specific
+    num_modes: int = Field(
+        default=16,
+        gt=0,
+        description="Fourier modes per spatial dim (spectral type only). "
+        "Controls frequency cutoff: modes capture wavelengths >= H/num_modes.",
+    )
+    spectral_hidden_dims: List[int] = Field(
+        default=[256, 128],
+        description="MLP hidden dims for spectral decoder (spectral type only)",
+    )
+    # Shared
     dropout: float = Field(
         default=0.1, ge=0.0, le=1.0, description="Dropout probability"
     )

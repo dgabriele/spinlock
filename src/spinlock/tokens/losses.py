@@ -17,6 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .config import LossConfig, RoundtripLossConfig, AuxHeadConfig
+from .fsq import FiniteScalarQuantizer
 
 logger = logging.getLogger(__name__)
 
@@ -96,17 +97,18 @@ def compute_aux_head_losses(
     aux_config: AuxHeadConfig,
     trajectory_targets: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, Dict[str, float]]:
-    """Compute auxiliary head losses for temporal-only mode.
+    """Compute auxiliary cross-family supervision losses.
 
-    In temporal-only mode, theta and IC are decoded from the concatenated
-    quantized temporal latents via auxiliary heads. These losses supervise
-    those heads with the ground-truth theta params and IC grids.
+    Aux heads predict theta/IC from temporal tokens. When inverse heads are
+    also active, aux outputs use "_aux" suffix keys (e.g. "theta_aux").
 
     Args:
         decoded: Dict with aux head outputs:
-            - "theta": [B, param_dim] predicted parameters (Sigmoid → [0,1])
-            - "initial": [B, C, H, W] predicted initial conditions
+            - "theta" or "theta_aux": [B, param_dim] predicted parameters
+            - "initial" or "initial_aux": [B, C, H, W] predicted ICs
             - "trajectory_prototype": [B, K, C, H, W] predicted keyframes
+            - "theta_probe": [B, param_dim] pre-VQ theta prediction
+            - "initial_probe": [B, C, H, W] pre-VQ IC prediction
         theta_gt: [B, param_dim] ground-truth parameters in [0,1]
         ic_gt: [B, C, H, W] ground-truth initial conditions
         trajectory_targets: [B, K, C, H, W] ground-truth keyframe images
@@ -118,13 +120,16 @@ def compute_aux_head_losses(
     losses = []
     metrics = {}
 
-    if "theta" in decoded and theta_gt is not None:
-        theta_loss = F.mse_loss(decoded["theta"], theta_gt)
+    # Check both "theta" and "theta_aux" keys (aux uses suffix when inverse also active)
+    theta_key = "theta_aux" if "theta_aux" in decoded else "theta"
+    if theta_key in decoded and theta_gt is not None:
+        theta_loss = F.mse_loss(decoded[theta_key], theta_gt)
         losses.append(aux_config.theta_weight * theta_loss)
         metrics["aux/theta"] = theta_loss.item()
 
-    if "initial" in decoded and ic_gt is not None:
-        ic_loss = F.mse_loss(decoded["initial"], ic_gt)
+    initial_key = "initial_aux" if "initial_aux" in decoded else "initial"
+    if initial_key in decoded and ic_gt is not None:
+        ic_loss = F.mse_loss(decoded[initial_key], ic_gt)
         losses.append(aux_config.initial_weight * ic_loss)
         metrics["aux/initial"] = ic_loss.item()
 
@@ -462,27 +467,82 @@ class RoundtripConsistencyLoss(nn.Module):
         # ── Re-encode each family through its REAL encoder ──
         rt_per_group: Dict[str, torch.Tensor] = {}
 
-        # Theta: decoded params → ThetaEncoder → [B, theta_encoded_dim]
+        # Theta: decoded params → re-encode for roundtrip
         if 'theta' in decoded:
-            theta_encoded_rt = model.theta_encoder(decoded['theta'])
-            for fc in model.group_indices:
-                if fc.startswith("theta_"):
-                    rt_per_group[fc] = theta_encoded_rt
+            if getattr(model, '_theta_direct', False):
+                # Direct mode: each param is its own VQ group.
+                # Re-encoding is identity — split decoded params per group.
+                theta_decoded = decoded['theta']  # [B, param_dim]
+                param_idx = 0
+                for fc in sorted(model.group_indices):
+                    if not fc.startswith("theta_"):
+                        continue
+                    n_features = len(model.group_indices[fc])
+                    rt_per_group[fc] = theta_decoded[:, param_idx:param_idx + n_features]
+                    param_idx += n_features
+            else:
+                theta_encoded_rt = model.theta_encoder(decoded['theta'])
+                for fc in model.group_indices:
+                    if fc.startswith("theta_"):
+                        rt_per_group[fc] = theta_encoded_rt
 
-        # Initial: decoded ICs → InitialCNNEncoder → [B, initial_encoded_dim]
-        if 'initial' in decoded:
+        # Initial: prefer latent-space path (skip CNN) if available.
+        # The latent decoder maps FSQ codes → pre-encoder latent space directly,
+        # bypassing the lossy pixel-space decode → CNN re-encode cycle.
+        if 'initial_latent' in decoded:
+            initial_encoded_rt = decoded['initial_latent']
+        elif 'initial' in decoded:
             initial_encoded_rt = self._encode_initial(
                 model, decoded['initial'], initial_manual
             )
-            for fc in model.group_indices:
-                if fc.startswith("initial_"):
-                    rt_per_group[fc] = initial_encoded_rt
+        else:
+            initial_encoded_rt = None
 
-        # Temporal: decoded CNN features → split groups → real PyramidTemporalEncoders
-        if 'temporal' in decoded and model.per_group_pyramid_encoders is not None:
+        if initial_encoded_rt is not None:
+            # SpatialICEncoder returns flat [B, G²×D] — split per position
+            from .encoders.initial_spatial import SpatialICEncoder
+            if isinstance(model.initial_encoder, SpatialICEncoder):
+                enc = model.initial_encoder
+                for i in range(enc.num_positions):
+                    fc = f"initial_spatial_{i}"
+                    if fc in model.group_indices:
+                        start = i * enc.spatial_token_dim
+                        end = start + enc.spatial_token_dim
+                        rt_per_group[fc] = initial_encoded_rt[:, start:end]
+            else:
+                for fc in model.group_indices:
+                    if fc.startswith("initial_"):
+                        rt_per_group[fc] = initial_encoded_rt
+
+        # Temporal: prefer latent bypass (skip shared decoder) if available.
+        # Latent path: quantized temporal → MLP → per-group D_group embeddings.
+        # Fallback: decoded CNN features → per_group_pyramid_encoders → project.
+        if 'temporal_latent' in decoded:
+            temporal_latent = decoded['temporal_latent']  # [B, num_groups × D_group]
+            learned_cfg = model.config.encoder.temporal.learned
+            group_dim = getattr(
+                model, '_temporal_group_dim',
+                learned_cfg.embedding_dim // learned_cfg.num_groups,
+            )
+            group_idx = 0
+            for fc in sorted(model.group_indices):
+                if not fc.startswith("temporal_"):
+                    continue
+                start = group_idx * group_dim
+                end = start + group_dim
+                rt_per_group[fc] = temporal_latent[:, start:end]  # [B, D_group]
+                group_idx += 1
+        elif 'temporal' in decoded and model.per_group_pyramid_encoders is not None:
             temporal_cnn_rt = decoded['temporal']  # [B, T_rt, D_cnn]
             learned_cfg = model.config.encoder.temporal.learned
-            group_dim = learned_cfg.embedding_dim // learned_cfg.num_groups
+            # In pyramid_first mode, _temporal_group_dim = D_group (embedding_dim).
+            # In per_frame mode, group_dim = embedding_dim // num_groups.
+            group_dim = getattr(
+                model, '_temporal_group_dim',
+                learned_cfg.embedding_dim // learned_cfg.num_groups,
+            )
+            # Projection layers for pyramid_first mode: sum(level_dims) → D_group
+            rt_projections = getattr(model, '_temporal_rt_projections', None)
             group_idx = 0
             for fc in sorted(model.group_indices):
                 if not fc.startswith("temporal_"):
@@ -492,6 +552,10 @@ class RoundtripConsistencyLoss(nn.Module):
                 group_features = temporal_cnn_rt[:, :, start:end]  # [B, T_rt, group_dim]
                 encoder = model.per_group_pyramid_encoders[fc]
                 enc = encoder(group_features)  # [B, pyramid_out_dim]
+                # In pyramid_first mode, project from sum(level_dims) → D_group
+                # so that the projector (created with input_dim=D_group) accepts it.
+                if rt_projections is not None and fc in rt_projections:
+                    enc = rt_projections[fc](enc)
                 rt_per_group[fc] = enc
                 group_idx += 1
 
@@ -510,14 +574,24 @@ class RoundtripConsistencyLoss(nn.Module):
             else:
                 continue
 
+            # Skip families with zero weight — avoids diluting the mean
+            # with zero-valued losses when only some families are active.
+            if weight == 0.0:
+                continue
+
             cat_losses = self._compute_category_roundtrip_direct(
                 model, tokens, rt_per_group[family_cat], family_cat, weight
             )
             losses.extend(cat_losses['losses'])
             metrics.update(cat_losses['metrics'])
 
-        total_loss = torch.stack(losses).sum() if losses else torch.tensor(0.0, device=device)
+        # Mean (not sum) over quantizers: makes the loss scale independent of
+        # #quantizers, so the weight is interpretable as "per-quantizer CE importance".
+        # Critical when exempt from EMA normalization — sum would inflate the raw
+        # value to ~115 (190 quantizers × 0.6 CE each), requiring a tiny weight.
+        total_loss = torch.stack(losses).mean() if losses else torch.tensor(0.0, device=device)
         metrics['roundtrip/total'] = total_loss.item()
+        metrics['roundtrip/n_quantizers'] = len(losses)
 
         return total_loss, metrics
 
@@ -591,16 +665,32 @@ class RoundtripConsistencyLoss(nn.Module):
         # Compute loss for each hierarchy level
         for level_idx, latent_rt in enumerate(latents_rt):
             quantizer_key = f"{family_cat}_L{level_idx}"
+            if quantizer_key not in model.quantizers:
+                continue
             quantizer = model.quantizers[quantizer_key]
 
-            target_tokens = tokens[quantizer_key]  # [B]
-
-            # Cross-entropy over codebook: negative squared distances as logits
-            # codebook: [K, D], latent_rt: [B, D]
-            codebook = quantizer.embedding.weight  # [K, D]
-            # Squared distances: [B, K]
-            dists = torch.cdist(latent_rt.unsqueeze(0), codebook.unsqueeze(0)).squeeze(0).pow(2)
-            logits = -dists  # [B, K] — closer = higher logit
+            # Get codebook and target tokens based on quantizer type
+            if isinstance(quantizer, FiniteScalarQuantizer):
+                if quantizer_key not in tokens:
+                    continue
+                target_tokens = tokens[quantizer_key]
+                # FSQ implicit codebook: enumerate all codes, compute CE in post-tanh space
+                all_indices = torch.arange(quantizer.codebook_size, device=latent_rt.device)
+                codebook = quantizer.indices_to_values(all_indices)  # [K, D] in [-1, 1]
+                # Apply tanh to match FSQ's internal mapping (latent_rt is pre-tanh)
+                latent_rt_bounded = torch.tanh(latent_rt)  # [B, D] in (-1, 1)
+                dists = torch.cdist(
+                    latent_rt_bounded.unsqueeze(0), codebook.unsqueeze(0)
+                ).squeeze(0).pow(2)
+                logits = -dists  # [B, K]
+            else:
+                target_tokens = tokens[quantizer_key]  # [B]
+                # VQ learned codebook: CE over embedding distances
+                codebook = quantizer.embedding.weight  # [K, D]
+                dists = torch.cdist(
+                    latent_rt.unsqueeze(0), codebook.unsqueeze(0)
+                ).squeeze(0).pow(2)
+                logits = -dists  # [B, K]
 
             loss = F.cross_entropy(logits, target_tokens)
             losses.append(weight * loss)
@@ -646,6 +736,7 @@ class VQVAELoss:
         self._normalize = config.normalize_loss_scales
         self._ema_momentum = config.loss_scale_ema_momentum
         self._ema: Dict[str, float] = {k: 1.0 for k in self._EMA_KEYS}
+        self._ema_exempt: set[str] = set(config.loss_scale_ema_exempt)
 
         # Create roundtrip loss if enabled
         self.roundtrip_loss = None
@@ -663,14 +754,18 @@ class VQVAELoss:
         L_i / EMA(L_i), so that weights reflect actual gradient ratios
         regardless of raw loss scale differences.
 
+        Exempt losses (configured via ``loss_scale_ema_exempt``) are returned
+        unchanged. This is necessary for losses where |∇L| is not proportional
+        to L, such as sum-of-CEs (roundtrip) or near-zero converged metrics.
+
         Args:
             name: Loss component name (must be in _EMA_KEYS).
             raw_loss: Raw loss tensor (scalar).
 
         Returns:
-            raw_loss / EMA if normalizing and loss is non-zero, else raw_loss.
+            raw_loss / EMA if normalizing and not exempt, else raw_loss.
         """
-        if not self._normalize:
+        if not self._normalize or name in self._ema_exempt:
             return raw_loss
         raw_val = raw_loss.item()
         if raw_val == 0.0:
@@ -730,30 +825,35 @@ class VQVAELoss:
         aux_loss = torch.tensor(0.0, device=original.device)
         aux_metrics = {}
 
-        if self.aux_config is not None and decoded:
-            # Temporal-only mode: encoded-space recon for temporal features,
-            # PLUS separate aux head losses for theta/IC decoded from quantized latents.
-            recon_loss = compute_reconstruction_loss(
-                original, reconstructed, normalize=self.config.normalize_reconstruction
-            )
-            aux_loss, aux_metrics = compute_aux_head_losses(
-                decoded=decoded,
-                theta_gt=original_theta,
-                ic_gt=original_initial,
-                aux_config=self.aux_config,
-                trajectory_targets=trajectory_targets,
-            )
-        elif decoded is not None and (original_theta is not None or original_initial is not None):
-            # Standard mode: inverse head outputs vs actual physical inputs
+        # Compute reconstruction losses from all available decode heads.
+        # Inverse heads and aux heads can both be active simultaneously.
+        has_inverse = decoded is not None and (
+            "theta" in decoded or "initial" in decoded or "temporal" in decoded
+        ) and not all(k.endswith("_aux") or k.endswith("_probe") or k == "trajectory_prototype" for k in decoded)
+        has_aux = self.aux_config is not None and decoded and any(
+            k in decoded for k in ("theta_aux", "initial_aux", "theta", "initial",
+                                    "theta_probe", "initial_probe", "trajectory_prototype")
+        )
+
+        if has_inverse and (original_theta is not None or original_initial is not None):
             recon_loss, recon_metrics = compute_inverse_reconstruction_loss(
                 decoded=decoded,
                 original_theta=original_theta,
                 original_initial=original_initial,
             )
         else:
-            # Fallback: encoded-space reconstruction (legacy, when no inverse heads)
+            # Encoded-space reconstruction (when no inverse heads, or no GT available)
             recon_loss = compute_reconstruction_loss(
                 original, reconstructed, normalize=self.config.normalize_reconstruction
+            )
+
+        if has_aux:
+            aux_loss, aux_metrics = compute_aux_head_losses(
+                decoded=decoded,
+                theta_gt=original_theta,
+                ic_gt=original_initial,
+                aux_config=self.aux_config,
+                trajectory_targets=trajectory_targets,
             )
 
         # 2. VQ loss (already computed by quantizers)

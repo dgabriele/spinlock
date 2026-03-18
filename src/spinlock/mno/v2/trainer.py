@@ -266,15 +266,20 @@ class V2Trainer:
             elapsed = time.time() - t0
 
             lr = self._optimizer.param_groups[0]["lr"]
-            logger.info(
-                "Epoch %d/%d | loss=%.4f | traj_mse=%.4f | "
-                "contrastive=%.4f | lr=%.2e | %.1fs",
-                epoch + 1, tc.epochs,
-                train_metrics["avg_loss"],
-                train_metrics.get("traj_mse", 0),
-                train_metrics.get("contrastive", 0),
-                lr, elapsed,
+
+            # Epoch summary with all tracked components
+            component_parts = " | ".join(
+                f"{k}={v:.4f}"
+                for k, v in sorted(train_metrics.items())
+                if k not in ("avg_loss", "n_optim_steps")
             )
+            logger.info(
+                "═══ Epoch %d/%d ═══ loss=%.4f | lr=%.2e | %.1fs",
+                epoch + 1, tc.epochs,
+                train_metrics["avg_loss"], lr, elapsed,
+            )
+            if component_parts:
+                logger.info("  Train | %s", component_parts)
 
             # Evaluation
             if (epoch + 1) % tc.eval_every == 0 or epoch == tc.epochs - 1:
@@ -285,11 +290,13 @@ class V2Trainer:
                     device=self._device,
                 )
                 logger.info(
-                    "Eval | traj_rmse=%.4f | relative_l2=%.4f | "
-                    "ic_rmse=%.4f",
+                    "  Eval  | traj_rmse=%.4f | relative_l2=%.2f%% | "
+                    "ic_rmse=%.4f | gt_rms=%.4f | n=%d",
                     eval_metrics.get("traj_rmse", 0),
-                    eval_metrics.get("relative_l2", 0),
+                    eval_metrics.get("relative_l2", 0) * 100,
                     eval_metrics.get("ic_rmse", 0),
+                    eval_metrics.get("gt_rms", 0),
+                    int(eval_metrics.get("n_evaluated", 0)),
                 )
                 all_metrics[f"eval_epoch_{epoch + 1}"] = eval_metrics
 
@@ -386,16 +393,21 @@ class V2Trainer:
                     gt_indicators = self._token_store.get_indicators(sample_indices)
 
             # Token conditioning: augment params with projected token embeddings.
-            # This happens AFTER replayer GT generation (which uses raw theta)
-            # but BEFORE BPTT forward (which sees the wider param vector).
-            # Gradients flow through the projection layer (frozen codebook
-            # lookups contribute no gradients).
-            if (
+            # For single-window BPTT, compute once before the forward pass.
+            # For multi-window BPTT, recompute per-window so each backward()
+            # frees only that window's projector graph (avoids "backward
+            # through graph a second time" error).
+            _has_token_cond = (
                 gt_tokens is not None
                 and isinstance(self._model.adapter, TokenThetaICAdapter)
-            ):
+            )
+
+            def _augment_params_with_tokens(base_params: torch.Tensor) -> torch.Tensor:
+                """Concatenate token embeddings onto params if token-conditioned."""
+                if not _has_token_cond:
+                    return base_params
                 token_emb = self._model.adapter.projector(gt_tokens)
-                params = torch.cat([params, token_emb], dim=1)
+                return torch.cat([base_params, token_emb], dim=1)
 
             # Forward + Loss + Backward
             # Branches on multi-window vs single-window BPTT
@@ -403,8 +415,13 @@ class V2Trainer:
                 # Multi-window: per-window forward + backward.
                 # Each window's backward() frees its computation graph,
                 # keeping peak activation memory = O(W) regardless of N.
+                #
+                # Token embeddings are recomputed per-window (via detached
+                # params passed to BPTT, then re-augmented for loss) so
+                # each window gets a fresh projector graph.
+                params_for_bptt = _augment_params_with_tokens(params).detach()
                 segments = self._bptt.multi_window_rollout(
-                    ic, params=params,
+                    ic, params=params_for_bptt,
                 )
                 window_loss_total = 0.0
                 window_components: Dict[str, float] = {}
@@ -434,9 +451,11 @@ class V2Trainer:
                             )
                             win_gt_tokens = gt_win_result["hard_tokens"]
 
+                    # Fresh token embedding graph for this window's backward
+                    params_for_loss = _augment_params_with_tokens(params)
                     loss_out = self._loss_fn.compute(
                         pred_w, gt_w,
-                        params=params,
+                        params=params_for_loss,
                         gt_raw_features=gt_raw_features,
                         gt_tokens=win_gt_tokens,
                         gt_indicators=gt_indicators,
@@ -461,9 +480,10 @@ class V2Trainer:
                         running_components.get(k, 0.0) + v / n_win
                     )
             else:
-                # Single-window (legacy path, unchanged)
+                # Single-window: compute once (only one backward call)
+                augmented_params = _augment_params_with_tokens(params)
                 pred_trajectory = self._bptt.rollout(
-                    ic, params=params,
+                    ic, params=augmented_params,
                 )  # [B, W+1, C, H, W]
 
                 if needs_gt:
@@ -495,7 +515,7 @@ class V2Trainer:
 
                 loss_output = self._loss_fn.compute(
                     pred_aligned, gt_aligned,
-                    params=params,
+                    params=augmented_params,
                     gt_raw_features=gt_raw_features,
                     gt_tokens=gt_tokens,
                     gt_indicators=gt_indicators,

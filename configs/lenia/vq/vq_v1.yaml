@@ -16,9 +16,6 @@ generation_timesteps: 512
 replayer_cache_size: 16
 realization_mode: "all"            # each realization tokenized independently (500K × 3 = 1.5M samples)
 
-# ── Temporal-only mode ───────────────────────────────────────
-temporal_only: true
-
 # ═══════════════════════════════════════════════════════════════
 # Encoder Configuration
 # ═══════════════════════════════════════════════════════════════

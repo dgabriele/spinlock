@@ -7,8 +7,8 @@
 #   long-horizon temporal: scale ~0.85-1.0
 
 dataset:
-  tokenized_path: "datasets/lenia_1.5M_temporal.h5"
-  tokenizer_checkpoint: "checkpoints/v5/pyramid/vq_tokenizer_best.pt"
+  tokenized_path: "datasets/ds_lenia_v1_temporal_resolution.h5"
+  tokenizer_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_latest.pt"
   use_pretokenized: true
   truncation_length: 512
 

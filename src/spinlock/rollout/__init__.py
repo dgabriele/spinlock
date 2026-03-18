@@ -45,6 +45,13 @@ from .metrics import TrajectoryMetrics, MetricsComputer
 from .engine import OperatorRollout
 from .initializers import InitialConditionSampler
 from .trajectory import TrajectoryWriter
+from .provider import (
+    RolloutProvider,
+    MNORolloutProvider,
+    SimulatorRolloutProvider,
+    create_replayer,
+    build_rollout_provider,
+)
 
 __all__ = [
     # Policies
@@ -58,6 +65,12 @@ __all__ = [
     "MetricsComputer",
     # Rollout
     "OperatorRollout",
+    # Provider (MNO vs GT simulator toggle)
+    "RolloutProvider",
+    "MNORolloutProvider",
+    "SimulatorRolloutProvider",
+    "create_replayer",
+    "build_rollout_provider",
     # Utilities
     "InitialConditionSampler",
     "TrajectoryWriter",

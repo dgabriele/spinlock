@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset, random_
 from .model import JointHierarchicalVQVAE
 from .losses import VQVAELoss
 from .config import TokenizerConfig
+from .fsq import FiniteScalarQuantizer
 from .checkpoint import save_checkpoint
 from .schedules import ParameterSchedule
 
@@ -70,9 +71,8 @@ class VQTokenizerTrainer:
 
         self.model.to(self.device)
 
-        # Loss function (pass aux_config for temporal-only mode)
-        aux_config = config.aux_heads if config.temporal_only else None
-        self.loss_fn = VQVAELoss(config.loss, aux_config=aux_config)
+        # Loss function (pass aux_config whenever configured)
+        self.loss_fn = VQVAELoss(config.loss, aux_config=config.aux_heads)
 
         # Optimizer
         if config.training.optimizer == "adam":
@@ -108,6 +108,32 @@ class VQTokenizerTrainer:
                 self.scheduler = torch.optim.lr_scheduler.ExponentialLR(
                     self.optimizer, gamma=0.95
                 )
+
+        # Per-batch linear LR warmup (optional): ramps LR from 0.1% to 100%
+        # over warmup_batches *batches*.  Since the optimizer only steps every
+        # gradient_accumulation_steps micro-batches, we convert to optimizer
+        # steps so the warmup completes after the configured number of batches.
+        self._warmup_scheduler = None
+        self._warmup_steps_done = 0
+        accum = config.training.gradient_accumulation_steps
+        warmup_optim_steps = max(
+            1, (config.training.warmup_batches + accum - 1) // accum
+        ) if config.training.warmup_batches > 0 else 0
+        self._warmup_batches = warmup_optim_steps
+        if self._warmup_batches > 0:
+            self._warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+                self.optimizer,
+                start_factor=1e-3,
+                end_factor=1.0,
+                total_iters=self._warmup_batches,
+            )
+            logger.info(
+                "Per-batch LR warmup: %d batches → %d optimizer steps (%.4f → %.4f)",
+                config.training.warmup_batches,
+                self._warmup_batches,
+                config.training.learning_rate * 1e-3,
+                config.training.learning_rate,
+            )
 
         # Model compilation (optional)
         if config.training.compile_model and hasattr(torch, 'compile'):
@@ -160,21 +186,49 @@ class VQTokenizerTrainer:
                     )
                 self._weight_schedules[name] = (ParameterSchedule(sched_cfg), target)
 
-        # Length curriculum: start with longer trajectories, decay min_T over training
+        # Length curriculum: start with longer trajectories, cosine-decay min_T
+        # over curriculum_batches. Per-batch granularity for smooth transitions.
         self._curriculum_start_min: Optional[int] = None
         self._curriculum_end_min: Optional[int] = None
+        self._curriculum_batches: int = 0
+        # Weighted length curriculum state
+        self._curriculum_weights_start: Optional[list] = None
+        self._curriculum_weights_end: Optional[list] = None
+
         if (
+            self.length_sampler is not None
+            and hasattr(vl_config, 'curriculum_length_bin_weights_start')
+            and vl_config.curriculum_length_bin_weights_start is not None
+        ):
+            # New weighted curriculum: per-bin probability interpolation
+            self._curriculum_weights_start = vl_config.curriculum_length_bin_weights_start
+            end = vl_config.curriculum_length_bin_weights_end
+            if end is None:
+                # Default end: uniform across all bins
+                n = len(self._curriculum_weights_start)
+                end = [1.0 / n] * n
+            self._curriculum_weights_end = end
+            self._curriculum_batches = getattr(vl_config, 'curriculum_batches', 563)
+            # Set initial weights
+            self.length_sampler.set_bin_weights(self._curriculum_weights_start)
+            logger.info(
+                f"Weighted length curriculum: {self._curriculum_weights_start} → "
+                f"{self._curriculum_weights_end} over {self._curriculum_batches} batches"
+            )
+        elif (
             self.length_sampler is not None
             and hasattr(vl_config, 'curriculum_start_min')
             and vl_config.curriculum_start_min is not None
         ):
+            # Legacy hard-gated curriculum (deprecated)
             self._curriculum_start_min = vl_config.curriculum_start_min
             self._curriculum_end_min = vl_config.min_timesteps
-            # Set initial min_T to curriculum start
+            self._curriculum_batches = getattr(vl_config, 'curriculum_batches', 563)
             self.length_sampler.min_T = self._curriculum_start_min
             logger.info(
-                f"Length curriculum: min_T {self._curriculum_start_min} → "
-                f"{self._curriculum_end_min} (cosine schedule)"
+                f"Length curriculum (deprecated): min_T {self._curriculum_start_min} → "
+                f"{self._curriculum_end_min} over {self._curriculum_batches} batches "
+                f"(cosine schedule)"
             )
 
         # Batch unpacking mode: False = TensorDataset (index-based), True = dict batches
@@ -287,10 +341,27 @@ class VQTokenizerTrainer:
             for name, (sched, _) in self._weight_schedules.items():
                 logger.info(f"  Weight schedule [{name}]: {sched}")
 
+        # Track whether encoders have been frozen
+        self._encoders_frozen = False
+        # Persistent batch counter for dead code reset (spans epochs)
+        self._global_batch_count = 0
+
         # Training loop
         val_loss = None  # Initialize for final checkpoint saving
         for epoch in range(start_epoch, self.config.training.num_epochs):
             self._apply_schedules(epoch)
+
+            # Encoder freezing: after warmup, freeze encoder params so decoders
+            # train against fixed VQ cells (eliminates co-adaptation instability).
+            # Epoch-based freezing is skipped when rt_te peak-drop is enabled.
+            freeze_epoch = self.config.training.freeze_encoders_after_epoch
+            if (
+                freeze_epoch >= 0
+                and epoch == freeze_epoch
+                and not self._encoders_frozen
+                and not self.config.training.freeze_on_rt_drop
+            ):
+                self._freeze_encoders()
 
             # Train
             train_metrics = self._train_epoch(train_loader, epoch)
@@ -855,21 +926,108 @@ class VQTokenizerTrainer:
             setattr(cfg_obj, name, new_val)
             logger.info(f"  [Schedule] {name}={new_val:.4f} (progress={progress:.3f})")
 
-        # Length curriculum: cosine decay of min_T from start_min → end_min
-        if self._curriculum_start_min is not None and self.length_sampler is not None:
-            import math
-            s, e = self._curriculum_start_min, self._curriculum_end_min
-            new_min = int(e + (s - e) * 0.5 * (1.0 + math.cos(math.pi * progress)))
-            self.length_sampler.min_T = new_min
-            # Log which bins are active
-            if hasattr(self.length_sampler, 'bins'):
-                active = [b for b in self.length_sampler.bins if b >= new_min]
-                logger.info(
-                    f"  [Schedule] min_T={new_min} (progress={progress:.3f}), "
-                    f"active bins={active}"
+    def _freeze_encoders(self) -> None:
+        """Freeze encoder + projector parameters and rebuild optimizer.
+
+        Frozen modules: pyramid_first_encoder, temporal_cnn_encoder,
+        initial_encoder, theta_encoder, projectors (encoder→VQ mapping),
+        per_group_pyramid_encoders (roundtrip), _temporal_rt_projections.
+
+        Kept trainable: quantizers (EMA), all inverse/bypass/aux heads,
+        initial_latent_decoder, shared decoder.
+        """
+        encoder_modules = []
+        encoder_names = []
+
+        # Gather all encoder modules to freeze
+        for attr_name in (
+            'pyramid_first_encoder',
+            'temporal_cnn_encoder',
+            'initial_encoder',
+        ):
+            module = getattr(self.model, attr_name, None)
+            if module is not None:
+                encoder_modules.append(module)
+                encoder_names.append(attr_name)
+
+        # Theta encoder (only exists in MLP mode, not direct)
+        if hasattr(self.model, 'theta_encoder'):
+            encoder_modules.append(self.model.theta_encoder)
+            encoder_names.append('theta_encoder')
+
+        # Also freeze projectors and roundtrip re-encoding paths — without
+        # freezing these, the encoder→VQ mapping keeps shifting even when
+        # encoders are frozen, negating the stability benefit.
+        for attr_name in (
+            'projectors',               # HierarchicalProjector: encoder → VQ latents
+            'per_group_pyramid_encoders',  # roundtrip re-encoding path
+        ):
+            module = getattr(self.model, attr_name, None)
+            if module is not None:
+                encoder_modules.append(module)
+                encoder_names.append(attr_name)
+
+        # _temporal_rt_projections: roundtrip projection layers (may not exist)
+        rt_proj = getattr(self.model, '_temporal_rt_projections', None)
+        if rt_proj is not None:
+            encoder_modules.append(rt_proj)
+            encoder_names.append('_temporal_rt_projections')
+
+        # Freeze parameters
+        total_frozen = 0
+        for module in encoder_modules:
+            for param in module.parameters():
+                param.requires_grad = False
+                total_frozen += param.numel()
+
+        # Invalidate warmup scheduler — the new optimizer won't reference it
+        self._warmup_scheduler = None
+
+        # Rebuild optimizer with only trainable parameters
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        old_lr = self.optimizer.param_groups[0]['lr']
+
+        if self.config.training.optimizer == "adam":
+            self.optimizer = torch.optim.Adam(
+                trainable_params,
+                lr=old_lr,
+                weight_decay=self.config.training.weight_decay,
+            )
+        elif self.config.training.optimizer == "adamw":
+            self.optimizer = torch.optim.AdamW(
+                trainable_params,
+                lr=old_lr,
+                weight_decay=self.config.training.weight_decay,
+            )
+
+        # Rebuild scheduler if active (uses new optimizer)
+        if self.scheduler is not None:
+            old_state = self.scheduler.state_dict()
+            if self.config.training.scheduler_type == "cosine":
+                self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    self.optimizer,
+                    T_max=self.config.training.num_epochs - self.config.training.warmup_epochs,
                 )
-            else:
-                logger.info(f"  [Schedule] min_T={new_min} (progress={progress:.3f})")
+            elif self.config.training.scheduler_type == "step":
+                self.scheduler = torch.optim.lr_scheduler.StepLR(
+                    self.optimizer,
+                    step_size=self.config.training.num_epochs // 3,
+                    gamma=0.1,
+                )
+            elif self.config.training.scheduler_type == "exponential":
+                self.scheduler = torch.optim.lr_scheduler.ExponentialLR(
+                    self.optimizer, gamma=0.95,
+                )
+            self.scheduler.load_state_dict(old_state)
+
+        self._encoders_frozen = True
+        total_trainable = sum(p.numel() for p in trainable_params)
+        logger.info(
+            "Froze encoders: %s (%d params frozen, %d params remain trainable)",
+            ", ".join(encoder_names),
+            total_frozen,
+            total_trainable,
+        )
 
     def _train_epoch(self, loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Run one training epoch.
@@ -899,6 +1057,11 @@ class VQTokenizerTrainer:
         _conv_info_buf: list = []
         _conv_topo_post_buf: list = []
 
+        # Dynamic rt_te peak-drop encoder freeze state
+        _freeze_rt = tc.freeze_on_rt_drop and not self._encoders_frozen
+        _rt_te_peak: float = 0.0
+        _rt_te_below_count: int = 0
+
         dead_code_interval = self.config.training.dead_code_reset_interval
         num_batches_total = len(loader)
         accum_steps = self.config.training.gradient_accumulation_steps
@@ -918,6 +1081,36 @@ class VQTokenizerTrainer:
 
             # Subsample trajectory keyframes for trajectory prototype head
             trajectory_targets = self._compute_trajectory_targets(temporal_raw)
+
+            # Per-batch length curriculum
+            if self._curriculum_weights_start is not None and self.length_sampler is not None:
+                # Weighted curriculum: interpolate per-bin probabilities
+                cur_progress = min(1.0, self._global_batch_count / max(self._curriculum_batches, 1))
+                interpolated = [
+                    s + (e - s) * cur_progress
+                    for s, e in zip(self._curriculum_weights_start, self._curriculum_weights_end)
+                ]
+                self.length_sampler.set_bin_weights(interpolated)
+                if batch_idx % 50 == 0:
+                    w_str = "[" + ", ".join(f"{w:.3f}" for w in interpolated) + "]"
+                    logger.info(
+                        f"  [Curriculum] weights={w_str} (batch {self._global_batch_count}/"
+                        f"{self._curriculum_batches})"
+                    )
+            elif self._curriculum_start_min is not None and self.length_sampler is not None:
+                # Legacy hard-gated curriculum (deprecated)
+                import math
+                cur_progress = min(1.0, self._global_batch_count / max(self._curriculum_batches, 1))
+                s, e = self._curriculum_start_min, self._curriculum_end_min
+                new_min = int(e + (s - e) * 0.5 * (1.0 + math.cos(math.pi * cur_progress)))
+                if new_min != self.length_sampler.min_T:
+                    self.length_sampler.min_T = new_min
+                    if batch_idx % 50 == 0:
+                        active = [b for b in self.length_sampler.bins if b >= new_min]
+                        logger.info(
+                            f"  [Curriculum] min_T={new_min} (batch {self._global_batch_count}/"
+                            f"{self._curriculum_batches}), active bins={active}"
+                        )
 
             # Random length sampling for variable-length training (manual mode only)
             if self.length_sampler is not None and temporal_feats is not None:
@@ -941,25 +1134,17 @@ class VQTokenizerTrainer:
                     f"  [MEM pre-fwd] alloc={torch.cuda.memory_allocated()/1024**2:.0f}MB"
                 )
 
-            # Forward pass — in temporal-only mode, don't pass theta/initial to model
-            # (they have no encoders), but keep them for aux loss computation.
-            if self.config.temporal_only:
-                outputs = self.model(
-                    temporal_features=temporal_feats,
-                    temporal_mask=temp_mask,
-                    temporal_lengths=temp_lens,
-                    temporal_raw=temporal_raw,
-                )
-            else:
-                outputs = self.model(
-                    temporal_features=temporal_feats,
-                    initial_manual=initial_man,
-                    initial_raw=initial_r,
-                    theta_features=theta_feats,
-                    temporal_mask=temp_mask,
-                    temporal_lengths=temp_lens,
-                    temporal_raw=temporal_raw,
-                )
+            # Forward pass — pass all available inputs; the model consumes
+            # only those for which it has encoders (based on family presence).
+            outputs = self.model(
+                temporal_features=temporal_feats,
+                initial_manual=initial_man if "initial" in self.model.families else None,
+                initial_raw=initial_r if "initial" in self.model.families else None,
+                theta_features=theta_feats if "theta" in self.model.families else None,
+                temporal_mask=temp_mask,
+                temporal_lengths=temp_lens,
+                temporal_raw=temporal_raw,
+            )
 
             if _do_mem_log and self.device.type == "cuda":
                 logger.info(
@@ -989,6 +1174,7 @@ class VQTokenizerTrainer:
             codebooks = {
                 key: quantizer.embedding.weight
                 for key, quantizer in self.model.quantizers.items()
+                if not isinstance(quantizer, FiniteScalarQuantizer)
             }
 
             # Prepare roundtrip loss inputs (if enabled)
@@ -1055,12 +1241,23 @@ class VQTokenizerTrainer:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
-            # Dead code reset: fires every N batches (not epochs) so that
-            # underused codebook entries get reseeded from fresh latents.
-            if dead_code_interval > 0 and (batch_idx + 1) % dead_code_interval == 0:
+                # Per-batch LR warmup: step LinearLR until warmup completes
+                if (
+                    self._warmup_scheduler is not None
+                    and self._warmup_steps_done < self._warmup_batches
+                ):
+                    self._warmup_scheduler.step()
+                    self._warmup_steps_done += 1
+
+            # Dead code reset: fires every N global batches (spans epochs)
+            # so that underused codebook entries get reseeded from fresh latents.
+            self._global_batch_count += 1
+            if dead_code_interval > 0 and self._global_batch_count % dead_code_interval == 0:
                 latents_dict = outputs.get("latents", {})
                 total_reset = 0
                 for qkey, quantizer in self.model.quantizers.items():
+                    if isinstance(quantizer, FiniteScalarQuantizer):
+                        continue  # FSQ has 100% utilization by construction
                     if qkey in latents_dict:
                         n = quantizer.reset_dead_codes(
                             latents_dict[qkey].detach(),
@@ -1131,6 +1328,17 @@ class VQTokenizerTrainer:
                     rt_accs = [v for k, v in losses.items() if k.startswith('roundtrip_acc/')]
                     if rt_accs:
                         parts.append(f"rt_acc={sum(rt_accs)/len(rt_accs):.3f}")
+                    # Per-family rt_acc breakdown
+                    family_rt: dict[str, list[float]] = {}
+                    for k, v in losses.items():
+                        if not k.startswith('roundtrip_acc/'):
+                            continue
+                        qname = k.split('/', 1)[1]  # e.g. "initial_spatial_0_L0"
+                        fam = qname.split('_', 1)[0]  # "initial", "temporal", "theta"
+                        family_rt.setdefault(fam, []).append(v)
+                    for fam in sorted(family_rt):
+                        vals = family_rt[fam]
+                        parts.append(f"rt_{fam[:2]}={sum(vals)/len(vals):.3f}({len(vals)})")
                 if 'topographic' in losses:
                     parts.append(f"topo={losses['topographic'].item():.4f}")
                     if 'topo_pre' in losses and 'topo_post' in losses:
@@ -1174,6 +1382,37 @@ class VQTokenizerTrainer:
                     if all_utils:
                         parts.append(f"cb_util={sum(all_utils)/len(all_utils):.3f}")
                 logger.info(" ".join(parts))
+
+            # ── Dynamic rt_te peak-drop encoder freezing ───────────────
+            if _freeze_rt and num_batches >= tc.freeze_rt_drop_min_batches:
+                # Compute mean temporal roundtrip accuracy for this batch
+                te_accs = [
+                    v for k, v in losses.items()
+                    if k.startswith('roundtrip_acc/') and k.split('/', 1)[1].startswith('temporal_')
+                ]
+                if te_accs:
+                    rt_te = sum(te_accs) / len(te_accs)
+                    # Update peak
+                    if rt_te > _rt_te_peak:
+                        _rt_te_peak = rt_te
+                        _rt_te_below_count = 0
+                    elif rt_te < _rt_te_peak - tc.freeze_rt_drop_delta:
+                        _rt_te_below_count += 1
+                    else:
+                        _rt_te_below_count = 0  # Reset: still within delta of peak
+
+                    if _rt_te_below_count >= tc.freeze_rt_drop_window:
+                        logger.info(
+                            "rt_te peak-drop freeze triggered at E%d B%d/%d: "
+                            "peak=%.4f, current=%.4f, drop=%.4f > delta=%.4f "
+                            "(sustained %d batches)",
+                            epoch + 1, batch_idx + 1, num_batches_total,
+                            _rt_te_peak, rt_te,
+                            _rt_te_peak - rt_te, tc.freeze_rt_drop_delta,
+                            _rt_te_below_count,
+                        )
+                        self._freeze_encoders()
+                        _freeze_rt = False  # Stop checking
 
             # ── Intra-epoch convergence stopping ──────────────────────
             if _conv_enabled and num_batches >= tc.convergence_stop_min_batches:
@@ -1309,33 +1548,26 @@ class VQTokenizerTrainer:
                     temp_mask = sampled_mask.to(self.device)
                     temp_lens = sampled_lengths.to(self.device)
 
-                # Forward pass — temporal-only mode skips theta/initial inputs
-                if self.config.temporal_only:
-                    outputs = self.model(
-                        temporal_features=temporal_feats,
-                        temporal_mask=temp_mask,
-                        temporal_lengths=temp_lens,
-                        temporal_raw=temporal_raw,
-                    )
-                else:
-                    outputs = self.model(
-                        temporal_features=temporal_feats,
-                        initial_manual=initial_man,
-                        initial_raw=initial_r,
-                        theta_features=theta_feats,
-                        temporal_mask=temp_mask,
-                        temporal_lengths=temp_lens,
-                        temporal_raw=temporal_raw,
-                    )
+                # Forward pass — pass inputs matching active families
+                outputs = self.model(
+                    temporal_features=temporal_feats,
+                    initial_manual=initial_man if "initial" in self.model.families else None,
+                    initial_raw=initial_r if "initial" in self.model.families else None,
+                    theta_features=theta_feats if "theta" in self.model.families else None,
+                    temporal_mask=temp_mask,
+                    temporal_lengths=temp_lens,
+                    temporal_raw=temporal_raw,
+                )
 
                 # Extract category embeddings
                 category_embeddings = self._extract_category_embeddings(outputs)
 
                 # Compute loss
-                # Extract codebooks for topographic loss
+                # Extract codebooks for topographic loss (skip FSQ — no learned embeddings)
                 codebooks = {
                     key: quantizer.embedding.weight
                     for key, quantizer in self.model.quantizers.items()
+                    if not isinstance(quantizer, FiniteScalarQuantizer)
                 }
 
                 # Prepare roundtrip loss inputs (if enabled)
@@ -1553,6 +1785,11 @@ class VQTokenizerTrainer:
         utilizations = []
 
         for name, quantizer in self.model.quantizers.items():
+            # FSQ has 100% utilization by construction — skip
+            if isinstance(quantizer, FiniteScalarQuantizer):
+                utilizations.append(1.0)
+                continue
+
             # Get embedding weights
             embeddings = quantizer.embedding.weight  # [num_embeddings, embedding_dim]
 

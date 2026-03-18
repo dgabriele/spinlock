@@ -8,6 +8,9 @@
    id="svg137"
    sodipodi:docname="mno_cvae_conditioning.svg"
    inkscape:version="1.4.3 (0d15f75042, 2025-12-25)"
+   inkscape:export-filename="mno_cvae_conditioning.png"
+   inkscape:export-xdpi="180"
+   inkscape:export-ydpi="180"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns:xlink="http://www.w3.org/1999/xlink"
@@ -22,14 +25,14 @@
      inkscape:pageopacity="0.0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="1"
-     inkscape:cx="-633.5"
-     inkscape:cy="513"
-     inkscape:window-width="3840"
-     inkscape:window-height="2124"
+     inkscape:zoom="1.4142136"
+     inkscape:cx="-90.156115"
+     inkscape:cy="1052.882"
+     inkscape:window-width="1220"
+     inkscape:window-height="1232"
      inkscape:window-x="0"
      inkscape:window-y="0"
-     inkscape:window-maximized="1"
+     inkscape:window-maximized="0"
      inkscape:current-layer="svg137" />
   <defs
      id="defs6">
@@ -241,7 +244,7 @@
      text-anchor="middle"
      font-size="8px"
      fill="#2c3e50"
-     id="text11">[B, 34] Sobol-sampled</text>
+     id="text11">[B, 34] Sobol-sampled or generated</text>
   <!-- Token indices input -->
   <polygon
      points="508,72 728,72 718,104 498,104"
@@ -1367,9 +1370,9 @@
      xml:space="preserve"><tspan
        x="207"
        y="1126"
-       id="tspan2">u<tspan
+       id="tspan4">u<tspan
    style="font-size:65%;baseline-shift:sub"
-   id="tspan1">1</tspan></tspan></text>
+   id="tspan3">1</tspan></tspan></text>
   <rect
      x="225"
      y="1116"
@@ -1908,19 +1911,19 @@
      fill="#c0392b"
      id="text116">L<tspan
    style="font-size:65%;baseline-shift:sub"
-   id="tspan144">total</tspan> <tspan
+   id="tspan144">total</tspan><tspan
    style="font-weight:normal;fill:#333333"
    id="tspan147">=</tspan> λ<tspan
    style="font-size:65%;baseline-shift:sub"
    id="tspan138">traj</tspan>L<tspan
    style="font-size:65%;baseline-shift:sub"
-   id="tspan143">traj</tspan> <tspan
+   id="tspan143">traj</tspan><tspan
    style="font-weight:normal;fill:#333333"
    id="tspan145">+</tspan> λ<tspan
    style="font-size:65%;baseline-shift:sub"
    id="tspan139">token_ce</tspan>L<tspan
    style="font-size:65%;baseline-shift:sub"
-   id="tspan142">ce</tspan> <tspan
+   id="tspan142">ce</tspan><tspan
    style="font-weight:normal;fill:#333333"
    id="tspan146">+</tspan> λ<tspan
    style="font-size:65%;baseline-shift:sub"

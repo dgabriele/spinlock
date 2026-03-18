@@ -1399,10 +1399,23 @@ class DatasetGenerationPipeline:
         if cfg.n_channels is None:
             raise ValueError("simulation.n_channels required for operator_type='lenia'")
 
-        # Build diverse IC generator if input_generation.ic_type_weights is configured
+        # Build IC generator: Fourier (theta-coherent) or diverse random
         ic_generator = None
         input_gen_cfg = cfg.input_generation
-        if input_gen_cfg and input_gen_cfg.ic_type_weights:
+
+        if lenia_cfg.fourier_ic_enabled:
+            from spinlock.lenia.fourier_ic import FourierICConfig, FourierICGenerator
+
+            ic_generator = FourierICGenerator(FourierICConfig(
+                num_modes=lenia_cfg.fourier_ic_num_modes,
+                base_frequency_scale=lenia_cfg.fourier_ic_base_frequency_scale,
+            ))
+            print(
+                f"Lenia: Fourier IC generation enabled "
+                f"({lenia_cfg.fourier_ic_num_modes} modes, "
+                f"scale={lenia_cfg.fourier_ic_base_frequency_scale})"
+            )
+        elif input_gen_cfg and input_gen_cfg.ic_type_weights:
             from spinlock.lenia.initial_conditions import DiverseLeniaICGenerator
 
             ic_type_params: dict[str, dict] = {}
@@ -1488,9 +1501,21 @@ class DatasetGenerationPipeline:
         self._ensure_lenia_initialized()
 
         if not self._needs_rollout():
+            # Extract kernel_radii for Fourier IC generator (theta-coherent)
+            kernel_radii = None
+            ic_gen = self._lenia_replayer.ic_generator
+            if type(ic_gen).__name__ == "FourierICGenerator":
+                from spinlock.lenia.params import sobol_batch_to_tensors
+                tensors = sobol_batch_to_tensors(
+                    param_batch, self.config.simulation.n_channels, self.device,
+                    ranges=self._lenia_replayer.param_ranges,
+                )
+                kernel_radii = tensors.radii
+
             inputs, _ic_types = self._lenia_replayer.generate_ics_only(
                 batch_size=batch_size,
                 num_realizations=self.config.simulation.num_realizations,
+                kernel_radii=kernel_radii,
             )
             # Minimal dummy output (T=0) — never stored, never transferred
             B, M, C, H, W = inputs.shape

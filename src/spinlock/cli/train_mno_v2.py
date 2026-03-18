@@ -3,58 +3,13 @@
 import logging
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
-from typing import Any
 
 import yaml
 
 from spinlock.cli.base import CLICommand
+from spinlock.rollout.provider import create_replayer
 
 logger = logging.getLogger(__name__)
-
-
-def _create_replayer(config_path: str, device: str, cache_size: int) -> Any:
-    """Create a replayer from the generation config YAML.
-
-    Reads ``simulation.operator_type`` and dispatches to the appropriate
-    replayer class. Supports duck-typed replayer interface (rollout method).
-
-    Args:
-        config_path: Path to dataset generation config YAML.
-        device: Computation device.
-        cache_size: Operator cache size (ignored by some replayers).
-
-    Returns:
-        Replayer instance with .rollout() method.
-    """
-    with open(config_path) as f:
-        gen_cfg = yaml.safe_load(f)
-    op_type = gen_cfg.get("simulation", {}).get("operator_type")
-
-    match op_type:
-        case "lenia":
-            from spinlock.lenia.replay_adapter import LeniaReplayAdapter
-            return LeniaReplayAdapter.from_config(
-                config_path, device=device, cache_size=cache_size,
-            )
-        case "cnn":
-            from spinlock.mno.cno_replay import CNOReplayer
-            return CNOReplayer.from_config(
-                config_path, device=device, cache_size=cache_size,
-            )
-        case "u_afno":
-            raise NotImplementedError(
-                "U-AFNO replayer not yet implemented for MNO training"
-            )
-        case "qbm":
-            raise NotImplementedError(
-                "QBM replayer not yet implemented for MNO training"
-            )
-        case None:
-            raise ValueError(
-                f"No simulation.operator_type found in {config_path}"
-            )
-        case _:
-            raise ValueError(f"Unknown operator_type: {op_type!r}")
 
 
 class TrainMNOV2Command(CLICommand):
@@ -140,6 +95,8 @@ class TrainMNOV2Command(CLICommand):
             file_path=config.data.dataset_path,
             max_samples=tc.n_samples,
             load_gt_temporal_features=has_feat_mse,
+            lazy_ics=config.data.realization_mode == "all",
+            realization_mode=config.data.realization_mode,
         )
         dims_full = dataset.infer_mno_dimensions()
         dims = dims_full.get("model", dims_full)
@@ -159,7 +116,7 @@ class TrainMNOV2Command(CLICommand):
         )
 
         # --- Replayer (auto-detected from generation config) ---
-        replayer = _create_replayer(
+        replayer = create_replayer(
             config_path=config.data.config,
             device=device,
             cache_size=tc.replayer_cache_size,

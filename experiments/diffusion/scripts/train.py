@@ -82,6 +82,7 @@ def create_datasets(
         full_dataset = PretokenizedDiffusionDataset(
             tokenized_dataset_path=config.dataset.tokenized_path,
             mask_generator=mask_generator,
+            truncation_length=config.dataset.truncation_length,
         )
     else:
         logger.info("Using on-the-fly tokenization (slow mode)")

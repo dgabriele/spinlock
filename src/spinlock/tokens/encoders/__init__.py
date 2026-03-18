@@ -23,6 +23,8 @@ from .initial import (
     InitialHybridEncoder,
     FrameCNNEncoder,
 )
+from .initial_spectral import SpectralICEncoder
+from .initial_spatial import SpatialICEncoder
 
 from .temporal_cnn_feature import TemporalCNNFeatureEncoder
 from .pyramid_first import PyramidFirstEncoder
@@ -38,4 +40,6 @@ __all__ = [
     "InitialCNNEncoder",
     "InitialHybridEncoder",
     "FrameCNNEncoder",
+    "SpectralICEncoder",
+    "SpatialICEncoder",
 ]

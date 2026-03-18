@@ -2,7 +2,8 @@
 
 Metrics:
   - traj_rmse: Root mean squared error between predicted and GT trajectories
-  - relative_l2: ||pred - gt|| / ||gt|| (scale-invariant error)
+  - relative_l2: Per-sample ||pred - gt||₂ / ||gt||₂, averaged (0.10 = 10% error)
+  - gt_rms: RMS magnitude of GT trajectories (contextualizes RMSE)
   - ic_rmse: RMSE at the first supervised timestep (warmup endpoint quality)
 
 Note: Contrastive quality (mean_jaccard, rank_corr) is a training-time concern
@@ -55,6 +56,7 @@ class TrajectoryEvaluator:
         sum_traj_mse = 0.0
         sum_ic_mse = 0.0
         sum_relative_l2 = 0.0
+        sum_gt_sq = 0.0
 
         for batch in dataloader:
             if n_evaluated >= n_samples:
@@ -89,7 +91,7 @@ class TrajectoryEvaluator:
                 pred_trajectory, gt_trajectory,
             )  # [B, W, C, H, W] each
 
-            # Trajectory RMSE
+            # Trajectory RMSE (per-element, averaged over batch)
             mse = (pred_aligned - gt_aligned).pow(2).mean()
             sum_traj_mse += mse.item() * b
 
@@ -97,10 +99,17 @@ class TrajectoryEvaluator:
             ic_mse = (pred_aligned[:, 0] - gt_aligned[:, 0]).pow(2).mean()
             sum_ic_mse += ic_mse.item() * b
 
-            # Relative L2
-            gt_norm = gt_aligned.pow(2).sum().sqrt().clamp(min=1e-8)
-            diff_norm = (pred_aligned - gt_aligned).pow(2).sum().sqrt()
-            sum_relative_l2 += (diff_norm / gt_norm).item() * b
+            # Per-sample relative L2: ||pred_i - gt_i||₂ / ||gt_i||₂
+            per_sample_diff = (
+                (pred_aligned - gt_aligned).pow(2).flatten(1).sum(1).sqrt()
+            )  # [B]
+            per_sample_gt = (
+                gt_aligned.pow(2).flatten(1).sum(1).sqrt().clamp(min=1e-8)
+            )  # [B]
+            sum_relative_l2 += (per_sample_diff / per_sample_gt).sum().item()
+
+            # GT signal magnitude (for contextualizing RMSE)
+            sum_gt_sq += gt_aligned.pow(2).mean().item() * b
 
             n_evaluated += b
 
@@ -109,6 +118,7 @@ class TrajectoryEvaluator:
             metrics["traj_rmse"] = (sum_traj_mse / n_evaluated) ** 0.5
             metrics["ic_rmse"] = (sum_ic_mse / n_evaluated) ** 0.5
             metrics["relative_l2"] = sum_relative_l2 / n_evaluated
+            metrics["gt_rms"] = (sum_gt_sq / n_evaluated) ** 0.5
 
         model.train()
         return metrics

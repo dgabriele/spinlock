@@ -281,6 +281,87 @@ class TemporalInverseMLP(nn.Module):
         )
 
 
+class InitialSpectralInverse(nn.Module):
+    """Decode quantized IC features to grids via Fourier synthesis.
+
+    MLP: encoded_dim → 2*C*K*K → reshape to [B, C, K, K] complex → hermitian_ifft2.
+    Counterpart of SpectralICEncoder: the encoder extracts low-frequency Fourier
+    coefficients deterministically; this inverse reconstructs the grid from
+    quantized coefficients via iFFT with Hermitian symmetry.
+
+    Args:
+        encoded_dim: Input dimension from the shared decoder / quantized space.
+        channels: Number of output channels (e.g. 3 for Lenia).
+        spatial_size: Target grid size H=W.
+        num_modes: Fourier modes per spatial dimension.
+        hidden_dims: MLP hidden layer dimensions.
+        dropout: Dropout rate.
+    """
+
+    def __init__(
+        self,
+        encoded_dim: int,
+        channels: int,
+        spatial_size: int,
+        num_modes: int = 16,
+        hidden_dims: list[int] = [256, 128],
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.encoded_dim = encoded_dim
+        self.channels = channels
+        self.spatial_size = spatial_size
+        self.num_modes = num_modes
+
+        if num_modes > spatial_size // 2:
+            raise ValueError(
+                f"num_modes ({num_modes}) must be <= spatial_size//2 = {spatial_size // 2}"
+            )
+
+        # MLP: encoded_dim → C * K * K * 2 (real + imaginary)
+        coeff_size = channels * num_modes * num_modes * 2
+        layers = []
+        prev_dim = encoded_dim
+        for hidden_dim in hidden_dims:
+            layers.extend([
+                nn.Linear(prev_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            ])
+            prev_dim = hidden_dim
+        layers.append(nn.Linear(prev_dim, coeff_size))
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, encoded: torch.Tensor) -> torch.Tensor:
+        """Decode quantized IC features to spatial grids.
+
+        Args:
+            encoded: Quantized/reconstructed IC features [B, encoded_dim].
+
+        Returns:
+            Reconstructed grids [B, C, H, W].
+        """
+        from .spectral_utils import hermitian_ifft2
+
+        B = encoded.shape[0]
+        C = self.channels
+        K = self.num_modes
+
+        raw = self.mlp(encoded)  # [B, C * K * K * 2]
+        raw = raw.view(B, C, K, K, 2)
+        coeffs = torch.complex(raw[..., 0], raw[..., 1])  # [B, C, K, K]
+
+        return hermitian_ifft2(coeffs, self.spatial_size, self.spatial_size)
+
+    def __repr__(self) -> str:
+        return (
+            f"InitialSpectralInverse(encoded_dim={self.encoded_dim}, "
+            f"channels={self.channels}, spatial_size={self.spatial_size}, "
+            f"num_modes={self.num_modes})"
+        )
+
+
 def _sinusoidal_embedding(positions: torch.Tensor, dim: int) -> torch.Tensor:
     """Sinusoidal positional encoding for temporal positions in [0, 1].
 

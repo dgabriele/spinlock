@@ -293,6 +293,7 @@ class DenoisingNetwork(nn.Module):
         timesteps: torch.Tensor,
         observed_dict: Optional[Dict[str, torch.BoolTensor]] = None,
         return_hidden: bool = False,
+        effective_timesteps_dict: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Union[Dict[str, torch.Tensor], Tuple[Dict[str, torch.Tensor], torch.Tensor]]:
         """Predict clean tokens from noisy tokens and timestep.
 
@@ -302,6 +303,10 @@ class DenoisingNetwork(nn.Module):
             observed_dict: Optional dict of observed masks [B] (for conditioning)
             return_hidden: If True, also return the transformer's encoded
                 hidden states [B, N_total, hidden_dim] alongside logits.
+            effective_timesteps_dict: Optional per-key effective timesteps from
+                graded schedule. When provided, each token position gets a
+                sinusoidal embedding reflecting its actual noise level instead
+                of the global broadcast.
 
         Returns:
             If return_hidden is False:
@@ -316,10 +321,23 @@ class DenoisingNetwork(nn.Module):
         # Flatten dict to sequence
         embeddings = self._flatten_dict_to_sequence(tokens_dict)  # [B, N_total, hidden_dim]
 
-        # Add time embedding (broadcast to all tokens)
-        t_emb = self.time_embedding(timesteps)  # [B, hidden_dim]
-        t_emb = self.time_mlp(t_emb)  # [B, hidden_dim]
-        embeddings = embeddings + t_emb.unsqueeze(1)  # [B, N_total, hidden_dim]
+        # Add time embedding — per-token when graded, global broadcast otherwise
+        if effective_timesteps_dict is not None:
+            # Per-position effective timesteps: each token gets its own noise level
+            per_token_t = torch.stack([
+                effective_timesteps_dict.get(key, timesteps)
+                for key in self.sorted_keys
+            ], dim=1)  # [B, N_total]
+            # Compute sinusoidal embedding for each position independently
+            per_token_t_flat = per_token_t.reshape(-1)  # [B*N_total]
+            t_emb_flat = self.time_embedding(per_token_t_flat)  # [B*N_total, hidden_dim]
+            t_emb_flat = self.time_mlp(t_emb_flat)  # [B*N_total, hidden_dim]
+            t_emb = t_emb_flat.reshape(B, self.num_tokens, self.hidden_dim)  # [B, N_total, hidden_dim]
+            embeddings = embeddings + t_emb
+        else:
+            t_emb = self.time_embedding(timesteps)  # [B, hidden_dim]
+            t_emb = self.time_mlp(t_emb)  # [B, hidden_dim]
+            embeddings = embeddings + t_emb.unsqueeze(1)  # [B, N_total, hidden_dim]
 
         # Add position embeddings
         positions = torch.arange(self.num_tokens, device=embeddings.device)

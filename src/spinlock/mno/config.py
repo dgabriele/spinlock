@@ -322,6 +322,10 @@ class DataConfig(BaseModel):
     config: str  # Path to ground truth replayer config (e.g., configs/qbm/substrate.yaml)
     val_split: float = Field(default=0.2, ge=0.0, le=1.0)
     num_workers: int = Field(default=8, ge=0)
+    realization_mode: Literal["single", "mean", "all"] = Field(
+        default="single",
+        description="How to handle M realizations: 'single' (realization 0), 'mean', or 'all' (expand)",
+    )
 
 
 class CheckpointingConfig(BaseModel):

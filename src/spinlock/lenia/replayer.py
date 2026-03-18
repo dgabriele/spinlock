@@ -221,6 +221,7 @@ class LeniaReplayer:
         batch_size: int,
         num_realizations: int = 3,
         seed: Optional[int] = None,
+        kernel_radii: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, list[str]]:
         """Generate initial conditions without running simulation.
 
@@ -251,6 +252,7 @@ class LeniaReplayer:
                     grid_size=H,
                     seed=ic_seed,
                     device=self.device,
+                    kernel_radii=kernel_radii,
                 )
                 inputs[:, m] = ic
         finally:
@@ -489,6 +491,7 @@ class LeniaReplayer:
             grid_size=self.grid_size,
             seed=seed,
             device=self.device,
+            kernel_radii=tensors.radii,
         )
         batch_ic_types = getattr(self.ic_generator, 'last_types', None)
 
@@ -517,6 +520,7 @@ class LeniaReplayer:
                     grid_size=self.grid_size,
                     seed=retry_seed,
                     device=self.device,
+                    kernel_radii=tensors.radii[b:b+1],
                 )
                 if saved_locked is not None:
                     self.ic_generator._locked_types = saved_locked

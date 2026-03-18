@@ -90,6 +90,9 @@ class TrajectoryLengthSampler:
                         f"[{min_timesteps}, {max_timesteps}]"
                     )
 
+            # Weighted curriculum: per-bin probability weights (None = uniform)
+            self._bin_weights: Optional[torch.Tensor] = None
+
         elif strategy == "uniform":
             # No additional parameters needed
             pass
@@ -159,8 +162,37 @@ class TrajectoryLengthSampler:
         # Clamp and convert to integers
         return lengths.long().clamp(self.min_T, self.max_T)
 
+    def set_bin_weights(self, weights: List[float]) -> None:
+        """Set per-bin sampling probability weights.
+
+        Args:
+            weights: One weight per bin. Normalized to sum=1 internally.
+                     All values must be >= 0 with at least one > 0.
+        """
+        if len(weights) != len(self.bins):
+            raise ValueError(
+                f"weights length ({len(weights)}) must match bins length ({len(self.bins)})"
+            )
+        w = torch.tensor(weights, dtype=torch.float32)
+        total = w.sum()
+        if total <= 0:
+            raise ValueError("At least one weight must be > 0")
+        self._bin_weights = w / total
+
     def _sample_fixed_bins(self, batch_size: int) -> torch.Tensor:
-        """Sample uniformly from predefined bins that are >= min_T."""
+        """Sample from predefined bins, optionally weighted.
+
+        When _bin_weights is set (weighted curriculum), uses torch.multinomial
+        to sample bin indices with per-bin probabilities. Otherwise falls back
+        to min_T-filtered uniform sampling (legacy curriculum).
+        """
+        if self._bin_weights is not None:
+            # Weighted curriculum: all bins always accessible
+            indices = torch.multinomial(self._bin_weights, batch_size, replacement=True)
+            bins_tensor = torch.tensor(self.bins, dtype=torch.long)
+            return bins_tensor[indices]
+
+        # Legacy: uniform over bins >= min_T
         valid_bins = [b for b in self.bins if b >= self.min_T]
         if not valid_bins:
             # All bins below min_T — fall back to min_T itself

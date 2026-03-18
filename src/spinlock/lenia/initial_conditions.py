@@ -33,6 +33,7 @@ class LeniaICGenerator:
         blob_radius_range: Tuple[float, float] = (4.0, 16.0),
         seed: Optional[int] = None,
         device: torch.device = torch.device("cpu"),
+        **kwargs,
     ) -> torch.Tensor:
         """Generate a batch of random Gaussian blob ICs.
 
@@ -141,6 +142,7 @@ class DiverseLeniaICGenerator:
         grid_size: int = 64,
         seed: Optional[int] = None,
         device: torch.device = torch.device("cpu"),
+        **kwargs,
     ) -> torch.Tensor:
         """Generate a batch of diverse ICs normalized to [0, 1].
 

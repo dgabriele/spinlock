@@ -37,7 +37,7 @@ from typing import Dict, Tuple
 import torch
 import torch.nn as nn
 
-from spinlock.tokens.rollout_vae import ParameterDecoder, GridDecoder
+from spinlock.tokens.rollout_vae import ParameterDecoder, GridDecoder, SpectralGridDecoder
 from spinlock.tokens.schema import TokenSchema
 
 
@@ -47,14 +47,20 @@ class TemporalTokenConditioner(nn.Module):
     For each temporal token key:
         1. Look up frozen codebook embedding
         2. Project through per-group MLP (weight-tied across all groups)
-        3. Mean-pool across all groups
+        3. Pool across all groups (mean or attention)
 
-    This produces a condition vector that summarizes the observed dynamics.
+    Pooling strategies:
+        - "mean": uniform average across all groups (baseline)
+        - "attention": learned per-group importance scores. A small scoring
+          network produces scalar attention weights per group, softmax-
+          normalized, then weighted sum. This lets the model upweight
+          discriminative groups and suppress uninformative ones.
 
     Args:
         vq_checkpoint_path: Path to VQTokenizer checkpoint
         group_mlp_hidden_dim: Hidden dim for projection MLP
         group_mlp_output_dim: Output dim for projection MLP (= condition_dim)
+        pooling: Pooling strategy ("mean" or "attention")
     """
 
     def __init__(
@@ -62,9 +68,11 @@ class TemporalTokenConditioner(nn.Module):
         vq_checkpoint_path: Path,
         group_mlp_hidden_dim: int = 128,
         group_mlp_output_dim: int = 64,
+        pooling: str = "mean",
     ):
         super().__init__()
         self.group_mlp_output_dim = group_mlp_output_dim
+        self.pooling = pooling
 
         # Load frozen tokenizer
         from spinlock.tokens.tokenizer import VQTokenizer
@@ -99,6 +107,14 @@ class TemporalTokenConditioner(nn.Module):
             nn.ReLU(),
             nn.Linear(group_mlp_hidden_dim, group_mlp_output_dim),
         )
+
+        # Attention pooling scorer (Ilse et al. 2018, "Attention-based MIL")
+        if pooling == "attention":
+            self.attention_scorer = nn.Sequential(
+                nn.Linear(group_mlp_output_dim, group_mlp_output_dim),
+                nn.Tanh(),
+                nn.Linear(group_mlp_output_dim, 1),
+            )
 
     @property
     def condition_dim(self) -> int:
@@ -141,9 +157,17 @@ class TemporalTokenConditioner(nn.Module):
             proj = self.group_mlp(emb)  # [B, condition_dim]
             projections.append(proj)
 
-        # Mean pool across all temporal groups
+        # Pool across all temporal groups
         stacked = torch.stack(projections, dim=1)  # [B, num_groups, condition_dim]
-        condition = stacked.mean(dim=1)  # [B, condition_dim]
+
+        if self.pooling == "attention":
+            # Learned attention weights per group
+            scores = self.attention_scorer(stacked).squeeze(-1)  # [B, num_groups]
+            weights = torch.softmax(scores, dim=-1)  # [B, num_groups]
+            condition = (stacked * weights.unsqueeze(-1)).sum(dim=1)  # [B, condition_dim]
+        else:
+            condition = stacked.mean(dim=1)  # [B, condition_dim]
+
         return condition
 
 
@@ -303,24 +327,30 @@ class TokenConditionedCVAE(nn.Module):
         latent_dim: int = 256,
         group_mlp_hidden_dim: int = 128,
         group_mlp_output_dim: int = 64,
+        pooling: str = "mean",
         theta_hidden_dim: int = 256,
         ic_hidden_dim: int = 256,
         ic_channels: list[int] = [32, 64, 128],
         encoder_hidden_dims: list[int] = [512, 256],
         param_decoder_hidden_dims: list[int] = [256, 128],
         grid_decoder_hidden_channels: list[int] = [512, 256, 128, 64, 32],
+        grid_decoder_type: str = "conv",
+        grid_decoder_num_modes: int = 16,
+        grid_decoder_spectral_hidden_dims: list[int] = [256, 128],
         dropout: float = 0.1,
     ):
         super().__init__()
         self.theta_dim = theta_dim
         self.grid_shape = grid_shape
         self.latent_dim = latent_dim
+        self.grid_decoder_type = grid_decoder_type
 
         # Conditioning network (frozen codebook embeddings → condition vector)
         self.conditioner = TemporalTokenConditioner(
             vq_checkpoint,
             group_mlp_hidden_dim=group_mlp_hidden_dim,
             group_mlp_output_dim=group_mlp_output_dim,
+            pooling=pooling,
         )
         condition_dim = self.conditioner.condition_dim
 
@@ -351,12 +381,23 @@ class TokenConditionedCVAE(nn.Module):
             hidden_dims=param_decoder_hidden_dims,
             dropout=dropout,
         )
-        self.grid_decoder = GridDecoder(
-            latent_dim=decoder_input_dim,
-            grid_shape=grid_shape,
-            hidden_channels=grid_decoder_hidden_channels,
-            dropout=dropout,
-        )
+
+        # Select grid decoder based on type
+        if grid_decoder_type == "spectral":
+            self.grid_decoder = SpectralGridDecoder(
+                latent_dim=decoder_input_dim,
+                grid_shape=grid_shape,
+                num_modes=grid_decoder_num_modes,
+                hidden_dims=grid_decoder_spectral_hidden_dims,
+                dropout=dropout,
+            )
+        else:
+            self.grid_decoder = GridDecoder(
+                latent_dim=decoder_input_dim,
+                grid_shape=grid_shape,
+                hidden_channels=grid_decoder_hidden_channels,
+                dropout=dropout,
+            )
 
     def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """Reparameterization trick: z = mu + eps * exp(0.5 * logvar)."""
@@ -497,12 +538,16 @@ class TokenConditionedCVAE(nn.Module):
             latent_dim=model_cfg.get("latent_dim", 256),
             group_mlp_hidden_dim=condition_cfg.get("group_mlp_hidden_dim", 128),
             group_mlp_output_dim=condition_cfg.get("group_mlp_output_dim", 64),
+            pooling=condition_cfg.get("pooling", "mean"),
             theta_hidden_dim=target_cfg.get("theta_hidden_dim", 256),
             ic_hidden_dim=target_cfg.get("ic_hidden_dim", 256),
             ic_channels=target_cfg.get("ic_channels", [32, 64, 128]),
             encoder_hidden_dims=encoder_cfg.get("hidden_dims", [512, 256]),
             param_decoder_hidden_dims=param_cfg.get("hidden_dims", [256, 128]),
             grid_decoder_hidden_channels=grid_cfg.get("hidden_channels", [512, 256, 128, 64, 32]),
+            grid_decoder_type=grid_cfg.get("type", "conv"),
+            grid_decoder_num_modes=grid_cfg.get("num_modes", 16),
+            grid_decoder_spectral_hidden_dims=grid_cfg.get("spectral_hidden_dims", [256, 128]),
             dropout=encoder_cfg.get("dropout", 0.1),
         )
 

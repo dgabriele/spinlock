@@ -48,9 +48,11 @@ class ConditionConfig(BaseModel):
         gt=0,
         description="Output dim for per-group MLP (= condition vector dim)",
     )
-    pooling: Literal["mean"] = Field(
+    pooling: Literal["mean", "attention"] = Field(
         default="mean",
-        description="Pooling strategy over group embeddings",
+        description="Pooling strategy over group embeddings. "
+        "'mean': uniform average across all groups. "
+        "'attention': learned per-group importance scores (MIL-style).",
     )
 
 
@@ -67,12 +69,36 @@ class ParameterDecoderConfig(BaseModel):
 
 
 class GridDecoderConfig(BaseModel):
-    """Grid decoder configuration (shared with rollout_vae)."""
+    """Grid decoder configuration.
 
+    Two decoder types:
+    - "conv": ConvTranspose2d upsampling (general, works with any BC type)
+    - "spectral": Low-frequency Fourier coefficient prediction + iFFT
+      (compact, efficient for periodic-BC operators with smooth dynamics)
+    """
+
+    type: str = Field(
+        default="conv",
+        pattern="^(conv|spectral)$",
+        description="Decoder type: 'conv' (general) or 'spectral' (periodic BCs)",
+    )
+    # Conv-specific
     hidden_channels: List[int] = Field(
         default=[512, 256, 128, 64, 32],
-        description="ConvTranspose2d channel progression (spatial size resolved at runtime)",
+        description="ConvTranspose2d channel progression (conv type only)",
     )
+    # Spectral-specific
+    num_modes: int = Field(
+        default=16,
+        gt=0,
+        description="Fourier modes per spatial dim (spectral type only). "
+        "Controls frequency cutoff: modes capture wavelengths >= H/num_modes.",
+    )
+    spectral_hidden_dims: List[int] = Field(
+        default=[256, 128],
+        description="MLP hidden dims for spectral decoder (spectral type only)",
+    )
+    # Shared
     dropout: float = Field(
         default=0.1, ge=0.0, le=1.0, description="Dropout probability"
     )
@@ -136,6 +162,12 @@ class CVAETrainingConfig(BaseModel):
     beta_warmup_epochs: int = Field(
         default=100, ge=0, description="Number of epochs to ramp beta from 0 to beta_max"
     )
+    free_bits: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Per-dimension KL floor (nats). Prevents posterior collapse by "
+        "stopping gradients when a dimension's KL falls below this threshold.",
+    )
     optimizer: Literal["adam", "adamw"] = Field(default="adam", description="Optimizer type")
     weight_decay: float = Field(default=0.0, ge=0.0, description="Weight decay (L2 penalty)")
     scheduler_type: Optional[Literal["cosine", "step", "none"]] = Field(
@@ -164,6 +196,14 @@ class CVAEDataConfig(BaseModel):
     temporal_keys_only: bool = Field(
         default=True,
         description="Filter to temporal-family token keys only (removes initial/theta)",
+    )
+    truncation_length: Optional[int] = Field(
+        default=None,
+        description="Filter to this truncation length from multi-trunc pretokenized HDF5",
+    )
+    max_samples: Optional[int] = Field(
+        default=None,
+        description="Limit total samples (before splitting). Useful for large datasets.",
     )
     train_split: float = Field(default=0.9, ge=0.0, le=1.0, description="Training split ratio")
     val_split: float = Field(default=0.1, ge=0.0, le=1.0, description="Validation split ratio")

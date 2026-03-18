@@ -1,7 +1,15 @@
 # D3PM Offline Hard-Target Refinement (v7)
 #
-# Closed loop: D3PM predict -> MNO rollout -> retokenize -> quality filter -> fine-tune
-# Requires: trained D3PM (v6), trained MNO, VQTokenizer checkpoint
+# Closed loop: D3PM inpaint → IntegratedTokenDecoder → rollout → retokenize →
+# quality filter → fine-tune D3PM.
+#
+# The D3PM generates ALL token positions (temporal + initial + theta). Observed
+# temporal tokens are fixed; initial + theta positions are inpainted. The
+# IntegratedTokenDecoder (codebook lookup + inverse heads) replaces the CVAE.
+# Diversity comes from D3PM's stochastic denoising trajectories.
+#
+# Requires: trained D3PM (v6+), VQTokenizer checkpoint (with all 3 families)
+# Rollout: set mno_checkpoint for MNO surrogate, null for GT simulator
 #
 # Usage:
 #   poetry run python experiments/diffusion/scripts/refine_d3pm.py \
@@ -10,20 +18,29 @@
 # Smoke test:
 #   poetry run python experiments/diffusion/scripts/refine_d3pm.py \
 #     --config experiments/diffusion/configs/v7_refinement.yaml \
-#     --max-samples 2 --device cpu
+#     --max-samples 2 --device cuda
 
 d3pm_checkpoint: "experiments/diffusion/results/v6_single_row/v6_single_row_d3pm_best.pt"
-mno_checkpoint: "checkpoints/mno/v2/mno_best.pt"
-tokenizer_checkpoint: "checkpoints/v5/pyramid/vq_tokenizer_best.pt"
-cvae_checkpoint: "checkpoints/cvae/best.pt"
+mno_checkpoint: null  # Set path for MNO surrogate, null for GT simulator
+tokenizer_checkpoint: "checkpoints/lenia/vq/v2/vq_tokenizer_latest.pt"
+# dataset_config_path auto-resolved from tokenizer checkpoint
+# Uncomment to override: dataset_config_path: "configs/lenia/datasets/ds_lenia_v1.yaml"
 
-dataset_path: "datasets/50k_baseline.h5"
+dataset_path: "datasets/ds_lenia_v1.h5"
 max_samples: 10000
 rollout_steps: 512
 
 num_refinement_cycles: 3
 mask_probability: 0.5
 d3pm_start_step: null  # Full sampling (set to ~25 for conservative corrections)
+
+# D3PM stochastic diversity: run N independent denoising passes per batch.
+# Different denoising trajectories produce different token completions,
+# replacing CVAE ensemble sampling.
+d3pm_n_candidates: 4
+
+max_accepted_targets: 1000  # Early stop: stop generating once this many accepted (null = no limit)
+generation_batch_size: 16   # Mini-batch size (8=safe, 32=OOM on 8GB; Lenia sub-batches internally)
 
 quality_filter:
   min_observed_agreement: 0.8

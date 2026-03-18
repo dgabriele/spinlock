@@ -548,6 +548,20 @@ class LeniaSimulationConfig(BaseModel):
         description="Store per-sample dynamics class in HDF5 metadata."
     )
 
+    # ── Fourier IC generation (theta-coherent) ──
+    fourier_ic_enabled: bool = Field(
+        default=False,
+        description="Use theta-coherent Fourier ICs instead of diverse random ICs."
+    )
+    fourier_ic_num_modes: int = Field(
+        default=4, ge=1,
+        description="Number of Fourier modes per channel (K)."
+    )
+    fourier_ic_base_frequency_scale: float = Field(
+        default=1.0, gt=0.0,
+        description="Scale factor for f_k = scale * G / kernel_radius_c * harmonic_k."
+    )
+
 
 class SimulationConfig(BaseModel):
     """Complete simulation configuration."""

@@ -1,0 +1,207 @@
+# VQ Tokenizer — Lenia Integrated (Temporal + Initial + Theta)
+#
+# Produces ALL token families for D3PM joint generation:
+#   - 30 temporal groups × 3 levels = 90 behavioral tokens
+#   - 8 initial (IC) groups × 3 levels = 24 spectral IC tokens
+#   - 34 theta groups × 3 levels = 102 parameter tokens (1 per param, direct)
+#   Total: 72 groups, 216 tokens
+#
+# Architecture:
+#   Temporal: Raw trajectory → SpatioTemporalPyramid → CNN → per-group VQ
+#   Initial: IC grid → FFT → crop K×K modes → flatten → VQ (deterministic)
+#   Theta: each parameter → own VQ group (direct, no MLP bottleneck)
+#
+# Eliminates CVAE: D3PM generates temporal+initial+theta jointly.
+# During refinement, fix observed temporal tokens, inpaint initial+theta.
+# D3PM's stochastic denoising provides natural candidate diversity.
+#
+# Inverse heads decode tokens back to continuous values:
+#   - InitialSpectralInverse: Fourier coefficients → hermitian_ifft2 → grid
+#   - ThetaInverseMLP: per-param quantized embeddings → parameter values
+#
+# Aux heads provide cross-family supervision (IC only):
+#   - temporal tokens → IC prediction (behavioral consistency)
+#   - Theta aux disabled: with direct mode, predicting 34 independent params
+#     from temporal features provides little useful gradient signal.
+
+dataset_path: "datasets/ds_lenia_v1.h5"
+checkpoint_dir: "checkpoints/lenia/vq/v2"
+
+# ── Feature source: learned CNN ──────────────────────────────
+feature_source: "learned"
+generation_config_path: "configs/lenia/datasets/ds_lenia_v1.yaml"
+generation_timesteps: 512
+replayer_cache_size: 16
+realization_mode: "all"
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration — All Three Families
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  # ── Initial condition: spectral (FFT-based, deterministic) ──
+  initial:
+    variant: "spectral"
+    num_modes: 16              # K×K low-frequency Fourier modes
+    num_initial_groups: 8      # 8 VQ groups (192D/group, ~104 bits total)
+    # in_channels: auto-detected from dataset (3 for Lenia)
+    # spatial_size: auto-detected from dataset (128 for Lenia)
+
+  # ── Temporal: pyramid-first learned CNN ─────────────────────
+  temporal:
+    variant: "pyramid"
+    learned:
+      architecture: "pyramid_first"
+      d_cnn: 256
+      d_agg: 128
+      num_groups: 30
+      gated_groups: true
+      gate_init_bias: 5.0
+    level_dims: [6, 12, 20, 26]
+    downsample_factors: [2, 4, 8, 16]
+    variable_length:
+      enabled: true
+      min_timesteps: 32
+      max_timesteps: 512
+      length_bins: [32, 64, 128, 256, 512]
+      sampling_strategy: "fixed_bins"
+      adaptive_pyramid: true
+      min_pyramid_length: 1
+      mask_downsample_method: "ceil"
+
+  # ── Theta: direct per-parameter VQ (no MLP bottleneck) ─────
+  # Each of the 34 Lenia params gets its own VQ group (~5 bits/param).
+  # D3PM's transformer learns cross-parameter correlations, not the encoder.
+  theta:
+    variant: "direct"
+    # param_dim: auto-detected from dataset (34 for 3-channel Lenia)
+
+  embedding_dim: 32
+  hidden_dim: 128
+  dropout: 0.1
+  use_layer_norm: true
+
+# ═══════════════════════════════════════════════════════════════
+# Inverse Heads — Within-Family Reconstruction
+# ═══════════════════════════════════════════════════════════════
+
+inverse_heads:
+  theta_enabled: true
+  # Bypass decoder auto-created when theta variant="direct" — maps quantized
+  # theta latents → params directly, skipping shared decoder.
+  theta_hidden_dim: 64
+  initial_enabled: true
+  initial_variant: "spectral"    # Fourier synthesis via hermitian_ifft2
+  initial_bypass_decoder: true   # Skip shared decoder — IC quantized latents → spectral inverse directly
+  initial_spectral_num_modes: 16
+  initial_spectral_hidden_dims: [256, 512]  # Expand from compact quantized latents to 1536D spectral coeffs
+
+# ═══════════════════════════════════════════════════════════════
+# Auxiliary Heads — Cross-Family Supervision (IC only)
+# ═══════════════════════════════════════════════════════════════
+# Theta aux/probe disabled: with direct theta (34 independent groups),
+# predicting all 34 params from temporal features is too hard and provides
+# negligible gradient signal (stuck at random baseline 0.083).
+# IC aux/probe kept: temporal tokens predicting IC is a valid behavioral
+# consistency signal and is actively learning (loss 0.05 and dropping).
+
+aux_heads:
+  theta_enabled: false
+  theta_probe_enabled: false
+
+  initial_enabled: true
+  initial_base_channels: 256
+  initial_weight: 1.0
+
+  initial_probe_enabled: true
+  initial_probe_weight: 1.0
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  embedding_dim: 64
+  commitment_cost: 0.25
+  use_ema: true
+  ema_decay: 0.99
+  epsilon: 1.0e-5
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchy
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3
+  min_latent_dim: 4
+  max_latent_dim: 192
+
+# ═══════════════════════════════════════════════════════════════
+# Training
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 3
+  batch_size: 48
+  learning_rate: 0.001
+  val_split: 0.1
+  val_every_n_epochs: 1
+
+  optimizer: "adamw"
+  weight_decay: 0.05
+  gradient_clip_norm: 1.0
+  gradient_accumulation_steps: 4   # 48 × 4 = 192 effective batch size
+
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 1
+
+  early_stopping_patience: 30
+  early_stopping_min_delta: 0.001
+
+  convergence_stop_enabled: true
+  convergence_stop_vq: 0.001
+  convergence_stop_recon: 0.0001
+  convergence_stop_info: 0.001
+  convergence_stop_topo_post: 0.999
+  convergence_stop_window: 100
+  convergence_stop_min_batches: 500
+
+  dead_code_reset_interval: 500
+  dead_code_threshold: 0.01
+
+  device: "auto"
+  compile_model: false
+
+# ═══════════════════════════════════════════════════════════════
+# Loss — Behavioral Discriminability
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  reconstruction_weight: 0.1
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  informativeness_mode: "log_barrier"
+  topographic_weight: 0.5
+  topographic_n_samples: 192
+  group_balance_weight: 2.0
+  gate_sparsity_weight: 0.0
+  normalize_reconstruction: true
+  normalize_loss_scales: true
+  loss_scale_ema_momentum: 0.99
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "none"
+  clip_std_multiplier: null
+
+# ═══════════════════════════════════════════════════════════════
+# System
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 7
+verbose: true
+log_level: "INFO"

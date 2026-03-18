@@ -1,0 +1,216 @@
+# VQ Tokenizer v3 — Lenia Integrated (Temporal + Spatial IC + Theta)
+#
+# Changes from v2:
+#   - IC encoder: spectral (FFT) → spatial (CNN + FSQ)
+#   - IC quantization: VQ (8 groups × 3 levels) → FSQ (16 positions × 1 level)
+#   - IC reconstruction: should improve below 0.20 MSE (was stuck at 0.24 with spectral)
+#
+# Token budget:
+#   - 30 temporal groups × 3 levels = 90 behavioral tokens (VQ)
+#   - 16 IC spatial positions × 1 level = 16 IC tokens (FSQ, 512 codes each)
+#   - 34 theta groups × 3 levels = 102 parameter tokens (VQ, direct)
+#   Total: 80 groups, 208 tokens
+#
+# Architecture:
+#   Temporal: Raw trajectory → SpatioTemporalPyramid → CNN → per-group VQ
+#   Initial: IC grid → ResNet CNN → 4×4 spatial grid → per-position FSQ
+#   Theta: each parameter → own VQ group (direct, no MLP bottleneck)
+#
+# FSQ advantages:
+#   - 100% codebook utilization by construction (no dead codes)
+#   - No commitment loss or EMA updates needed
+#   - Simpler training dynamics (one fewer loss term)
+#
+# Eliminates CVAE: D3PM generates temporal+initial+theta jointly.
+# During refinement, fix observed temporal tokens, inpaint initial+theta.
+# D3PM's stochastic denoising provides natural candidate diversity.
+
+dataset_path: "datasets/ds_lenia_v1.h5"
+checkpoint_dir: "checkpoints/lenia/vq/v3"
+
+# ── Feature source: learned CNN ──────────────────────────────
+feature_source: "learned"
+generation_config_path: "configs/lenia/datasets/ds_lenia_v1.yaml"
+generation_timesteps: 512
+replayer_cache_size: 16
+realization_mode: "all"
+
+# ═══════════════════════════════════════════════════════════════
+# Encoder Configuration — All Three Families
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  # ── Initial condition: spatial CNN + FSQ ─────────────────────
+  initial:
+    variant: "spatial"
+    spatial_token_grid: 4       # 4×4 = 16 spatial positions
+    spatial_token_dim: 8        # 8D per position → projected to 3D for FSQ
+    spatial_base_channels: 32   # CNN base width (32→64→128→256→256)
+    fsq_levels: [8, 8, 8]      # 3D × 8 levels = 512 implicit codes per position
+    # in_channels: auto-detected from dataset (3 for Lenia)
+    # spatial_size: auto-detected from dataset (128 for Lenia)
+
+  # ── Temporal: pyramid-first learned CNN ─────────────────────
+  temporal:
+    variant: "pyramid"
+    learned:
+      architecture: "pyramid_first"
+      d_cnn: 256
+      d_agg: 128
+      num_groups: 30
+      gated_groups: true
+      gate_init_bias: 5.0
+    level_dims: [6, 12, 20, 26]
+    downsample_factors: [2, 4, 8, 16]
+    variable_length:
+      enabled: true
+      min_timesteps: 32
+      max_timesteps: 512
+      length_bins: [32, 64, 128, 256, 512]
+      sampling_strategy: "fixed_bins"
+      adaptive_pyramid: true
+      min_pyramid_length: 1
+      mask_downsample_method: "ceil"
+
+  # ── Theta: direct per-parameter VQ (no MLP bottleneck) ─────
+  theta:
+    variant: "direct"
+    # param_dim: auto-detected from dataset (34 for 3-channel Lenia)
+
+  embedding_dim: 32
+  hidden_dim: 128
+  dropout: 0.1
+  use_layer_norm: true
+
+# ═══════════════════════════════════════════════════════════════
+# Inverse Heads — Within-Family Reconstruction
+# ═══════════════════════════════════════════════════════════════
+
+inverse_heads:
+  theta_enabled: true
+  theta_hidden_dim: 64
+  initial_enabled: true
+  initial_variant: "spatial"     # CNN transpose-conv decoder, symmetric with SpatialICEncoder
+  initial_bypass_decoder: true   # IC quantized latents → CNN decoder directly
+
+# ═══════════════════════════════════════════════════════════════
+# Auxiliary Heads — Cross-Family Supervision (IC only)
+# ═══════════════════════════════════════════════════════════════
+
+aux_heads:
+  theta_enabled: false
+  theta_probe_enabled: false
+
+  initial_enabled: true
+  initial_base_channels: 256
+  initial_weight: 1.0
+
+  initial_probe_enabled: true
+  initial_probe_weight: 1.0
+
+# ═══════════════════════════════════════════════════════════════
+# Quantizer (for VQ families only — FSQ ignores this)
+# ═══════════════════════════════════════════════════════════════
+
+quantizer:
+  embedding_dim: 64
+  commitment_cost: 0.25
+  use_ema: true
+  ema_decay: 0.99
+  epsilon: 1.0e-5
+
+# ═══════════════════════════════════════════════════════════════
+# Hierarchy (for VQ families only — FSQ uses 1 level)
+# ═══════════════════════════════════════════════════════════════
+
+hierarchy:
+  num_levels: 3
+  min_latent_dim: 4
+  max_latent_dim: 192
+
+# ═══════════════════════════════════════════════════════════════
+# Training
+# ═══════════════════════════════════════════════════════════════
+
+training:
+  num_epochs: 3
+  batch_size: 48
+  learning_rate: 0.001
+  val_split: 0.1
+  val_every_n_epochs: 1
+
+  optimizer: "adamw"
+  weight_decay: 0.05
+  gradient_clip_norm: 1.0
+  gradient_accumulation_steps: 4   # 48 × 4 = 192 effective batch size
+
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 1
+
+  early_stopping_patience: 30
+  early_stopping_min_delta: 0.001
+
+  convergence_stop_enabled: true
+  convergence_stop_vq: 0.001
+  convergence_stop_recon: 0.0001
+  convergence_stop_info: 0.001
+  convergence_stop_topo_post: 0.999
+  convergence_stop_window: 100
+  convergence_stop_min_batches: 500
+
+  dead_code_reset_interval: 500
+  dead_code_threshold: 0.01
+
+  device: "auto"
+  compile_model: false
+
+# ═══════════════════════════════════════════════════════════════
+# Loss — Behavioral Discriminability
+# ═══════════════════════════════════════════════════════════════
+
+loss:
+  reconstruction_weight: 0.1
+  orthogonality_weight: 0.1
+  informativeness_weight: 0.1
+  informativeness_mode: "log_barrier"
+  topographic_weight: 0.5
+  topographic_n_samples: 192
+  group_balance_weight: 2.0
+  gate_sparsity_weight: 0.0
+  normalize_reconstruction: true
+  normalize_loss_scales: true
+  loss_scale_ema_momentum: 0.99
+  # Exempt roundtrip from EMA normalization: EMA assumes |∇L| ∝ L, which
+  # fails for sum-of-CEs (loss grows with #quantizers, gradient bounded).
+  # With EMA, roundtrip got gradient factor weight/EMA = 2.0/115 = 0.017,
+  # while recon got 0.1/0.05 = 2.0 — a 100× disadvantage.
+  loss_scale_ema_exempt: ["roundtrip"]
+
+  # Roundtrip consistency: decode tokens → re-encode → CE against originals.
+  # Ensures the IC/theta bypass decoders produce values that re-tokenize
+  # to the same tokens — the core property needed for D3PM sampling.
+  # Now uses mean (not sum) over quantizers, so weight is per-quantizer scale.
+  # Raw value ~0.6 CE × weight 5.0 → contribution ~3.0, dominant over all other terms.
+  roundtrip:
+    enabled: true
+    weight: 5.0            # dominant signal — pipeline output quality
+    theta_weight: 1.0
+    initial_weight: 1.0
+    temporal_weight: 0.5   # temporal roundtrip less critical (input to D3PM, not output)
+
+# ═══════════════════════════════════════════════════════════════
+# Normalization
+# ═══════════════════════════════════════════════════════════════
+
+normalization:
+  method: "none"
+  clip_std_multiplier: null
+
+# ═══════════════════════════════════════════════════════════════
+# System
+# ═══════════════════════════════════════════════════════════════
+
+random_seed: 7
+verbose: true
+log_level: "INFO"

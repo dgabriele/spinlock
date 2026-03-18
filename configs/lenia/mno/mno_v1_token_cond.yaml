@@ -1,15 +1,9 @@
-# Lenia V1 MNO — Token-Conditioned Training
+# Lenia V1 MNO — Trajectory-First U-AFNO
 #
-# Goal: Use VQ token embeddings as an additional MNO input conditioning signal.
-# Token embeddings encode behavioral context (temporal dynamics) from the VQ
-# tokenizer, giving the MNO richer conditioning beyond just physics parameters θ.
-#
-# Architecture: θ [B,34] || token_emb [B,128] → param_embedding MLP → FiLM
-# The backbone's param_embedding MLP sees [B, 162] instead of [B, 34].
-# Token embeddings come from frozen VQ codebook lookup + per-group shared MLP
-# with mean pooling (DeepSets/PointNet principle over symmetric VQ groups).
-#
-# Train from scratch (param_dim changed from 34 → 162).
+# Goal: Most accurate MNO possible — diverse trajectories conditioned on θ.
+# Strategy: L_traj as primary loss. FiLM conditioning ensures different θ
+# produce different rollouts (not mode-collapsed to mean behavior).
+# No token conditioning — pure physics-driven trajectory matching.
 
 model:
   backbone_type: "u_afno"
@@ -26,58 +20,47 @@ model:
   use_checkpointing: true
 
 training:
-  n_samples: 100000
-  batch_size: 4
-  gradient_accumulation_steps: 8
-  epochs: 30
-  learning_rate: 5.0e-5
-  warmup_optimizer_steps: 500
+  n_samples: 1500
+  batch_size: 2
+  gradient_accumulation_steps: 16
+  epochs: 2
+  learning_rate: 5.0e-4
+  warmup_optimizer_steps: 20
   weight_decay: 0.01
   clip_grad: 1.0
   timesteps: 256
   bptt_window: 32
-  bptt_num_windows: 3
+  bptt_num_windows: 2
   film_lr_multiplier: 5.0
-  token_head_lr_multiplier: 1.0
   replayer_cache_size: 0
-  eval_every: 5
+  eval_every: 1
   eval_samples: 50
 
 loss:
-  lambda_traj: 1.0
-  lambda_ic: 0.0
+  lambda_traj: 1.0               # PRIMARY — trajectory MSE fidelity
+  lambda_ic: 0.3                  # endpoint quality at t=0
   lambda_contrastive: 0.0
   lambda_centroid_mse: 0.0
-  lambda_token_ce: 0.5
-  lambda_token_head: 0.5
-  token_ce_temperature: 1.0
-  gate_weight_token_ce: true
-  normalize_loss_scales: true
-  loss_scale_ema_momentum: 0.99
-  contrastive:
-    temperature: 0.1
-    embed_dim: 128
-    queue_size: 64
+  lambda_token_ce: 0.0
+  lambda_token_head: 0.0
+  normalize_loss_scales: false    # no normalization — direct MSE gradient
 
 data:
   dataset_path: "datasets/ds_lenia_v1.h5"
   config: "configs/lenia/datasets/ds_lenia_v1.yaml"
   val_split: 0.1
   num_workers: 4
+  realization_mode: "all"
 
 checkpointing:
-  save_dir: "checkpoints/lenia/mno/v1_token_cond"
-  save_every: 5
+  save_dir: "checkpoints/lenia/mno/v1_traj_first"
+  save_every: 1
   keep_best: true
 
-# Token conditioning (new)
-token_conditioning: true
-token_embed_dim: 128
-
-# Token dataset + tokenizer (reused from VQ step 1)
-tokenizer_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_best.pt"
-token_dataset: "datasets/ds_lenia_v1_tokens.h5"
-token_truncation_length: 256
+resume_from: "checkpoints/lenia/mno/v1_traj_first/best.pt"
+quantization_aware: false
+tokenizer_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_latest.pt"
+token_dataset: "datasets/ds_lenia_v1_temporal_resolution.h5"
 
 device: "cuda"
 seed: 42

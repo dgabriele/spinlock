@@ -125,8 +125,15 @@ class VQTokenizer:
         logger.info(f"Resuming from checkpoint: {resume_from}")
         ckpt = load_checkpoint(resume_from)
 
-        # Restore model weights
-        self.model.load_state_dict(ckpt.model_state_dict)
+        # Restore model weights (strict=False tolerates new buffers like
+        # _usage_count that may not exist in older checkpoints)
+        missing, unexpected = self.model.load_state_dict(
+            ckpt.model_state_dict, strict=False,
+        )
+        if unexpected:
+            logger.warning("Unexpected keys in checkpoint: %s", unexpected)
+        if missing:
+            logger.info("New buffers initialized from defaults: %s", missing)
         logger.info("Restored model weights")
 
         # Restore trainer state (optimizer, scheduler, loss EMA, tracking)
@@ -663,31 +670,53 @@ class VQTokenizer:
                     range(i * group_dim, (i + 1) * group_dim)
                 )
 
-        # Add theta and initial groups if data available
-        # In temporal-only mode, skip theta/initial VQ groups (they're decoded
-        # from temporal tokens via aux heads), but still auto-detect dimensions
-        # needed for aux head creation.
+        # Add theta and initial groups if data available and encoder is configured.
+        # Family presence is derived from config: if encoder.theta exists, theta
+        # is a VQ family. No boolean flag needed.
         if param_dim is not None:
             # Auto-detect theta param_dim in config (needed for aux head dim)
             if self.config.encoder.theta is not None and self.config.encoder.theta.param_dim is None:
                 self.config.encoder.theta.param_dim = param_dim
 
-            if not self.config.temporal_only:
-                theta_cfg = self.config.encoder.theta
-                if theta_cfg is not None and theta_cfg.variant == "direct":
+            theta_cfg = self.config.encoder.theta
+            if theta_cfg is not None:
+                if theta_cfg.variant == "direct":
                     for i in range(param_dim):
                         self.group_indices[f"theta_param_{i}"] = [i]
                 else:
                     self.group_indices["theta_group_0"] = list(range(param_dim))
 
         if num_channels is not None:
-            # Auto-detect in_channels (needed for aux head creation)
+            # Auto-detect in_channels (needed for encoder/aux head creation)
             if self.config.encoder.initial.in_channels is None:
                 self.config.encoder.initial.in_channels = num_channels
 
-            if not self.config.temporal_only and self.config.encoder.initial.variant == "cnn":
+            if self.config.encoder.initial.variant == "cnn":
                 cnn_dim = self.config.encoder.initial.cnn_embedding_dim
                 self.group_indices["initial_group_0"] = list(range(cnn_dim))
+            elif self.config.encoder.initial.variant == "spectral":
+                num_modes = self.config.encoder.initial.num_modes
+                num_initial_groups = self.config.encoder.initial.num_initial_groups
+                embedding_dim = self.config.encoder.embedding_dim  # group_dim for projection
+                # With learned per-group projection, each group outputs embedding_dim features.
+                # Without projection, raw spectral features are split across groups.
+                if embedding_dim is not None:
+                    group_size = embedding_dim  # projected dim per group
+                else:
+                    raw_dim = 2 * num_channels * num_modes * num_modes
+                    group_size = raw_dim // num_initial_groups
+                for i in range(num_initial_groups):
+                    start = i * group_size
+                    end = start + group_size
+                    self.group_indices[f"initial_group_{i}"] = list(range(start, end))
+
+            elif self.config.encoder.initial.variant == "spatial":
+                grid = self.config.encoder.initial.spatial_token_grid
+                dim = self.config.encoder.initial.spatial_token_dim
+                for i in range(grid * grid):
+                    self.group_indices[f"initial_spatial_{i}"] = list(
+                        range(i * dim, (i + 1) * dim)
+                    )
 
         logger.info(f"Sequential group indices: {len(self.group_indices)} groups")
 

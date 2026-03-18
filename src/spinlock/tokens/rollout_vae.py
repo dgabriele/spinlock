@@ -288,6 +288,91 @@ class GridDecoder(nn.Module):
         return out
 
 
+class SpectralGridDecoder(nn.Module):
+    """Decode latent to grids via low-frequency Fourier coefficients.
+
+    Instead of ConvTranspose2d upsampling (O(H*W) output), predicts a compact
+    set of low-frequency 2D Fourier coefficients and reconstructs the grid
+    via inverse FFT. Reduces effective output dimensionality by ~(H/K)^2 while
+    preserving all spatially smooth structure.
+
+    Appropriate for operators where:
+    - The domain has periodic boundary conditions
+    - Dynamics are dominated by low-frequency spatial modes
+    - High-frequency IC detail decays rapidly under the operator
+
+    For operators with non-periodic BCs or important fine-scale structure
+    (sharp interfaces, cracks, shocks), use GridDecoder instead.
+
+    Args:
+        latent_dim: Input dimension (z + condition)
+        grid_shape: (C, H, W) target grid shape
+        num_modes: Fourier modes per spatial dimension (controls frequency cutoff)
+        hidden_dims: MLP hidden layer dimensions
+        dropout: Dropout rate
+    """
+
+    def __init__(
+        self,
+        latent_dim: int,
+        grid_shape: Tuple[int, int, int],
+        num_modes: int = 16,
+        hidden_dims: list[int] = [256, 128],
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.grid_shape = grid_shape
+        self.num_modes = num_modes
+        C, H, W = grid_shape
+
+        if num_modes > min(H, W) // 2:
+            raise ValueError(
+                f"num_modes ({num_modes}) must be <= min(H, W)//2 = {min(H, W) // 2}"
+            )
+
+        # MLP: latent_dim → C * K * K * 2 (real + imaginary parts)
+        coeff_size = C * num_modes * num_modes * 2
+        layers = []
+        prev_dim = latent_dim
+        for hidden_dim in hidden_dims:
+            layers.extend([
+                nn.Linear(prev_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            ])
+            prev_dim = hidden_dim
+        layers.append(nn.Linear(prev_dim, coeff_size))
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        """Decode latent to grids via spectral reconstruction.
+
+        Args:
+            z: Latent codes [B, latent_dim]
+
+        Returns:
+            Reconstructed grids [B, C, H, W]
+        """
+        from .spectral_utils import hermitian_ifft2
+
+        C, H, W = self.grid_shape
+        K = self.num_modes
+        B = z.shape[0]
+
+        # Predict Fourier coefficients
+        raw = self.mlp(z)  # [B, C * K * K * 2]
+        raw = raw.view(B, C, K, K, 2)
+
+        # Handle mixed precision: ensure float32 for complex construction
+        if raw.dtype == torch.float16:
+            raw = raw.float()
+        coeffs = torch.complex(raw[..., 0], raw[..., 1])  # [B, C, K, K]
+
+        return hermitian_ifft2(coeffs, H, W)
+
+
 class TokenToRolloutVAE(nn.Module):
     """Complete VAE: tokens → (theta, initial_grids).
 

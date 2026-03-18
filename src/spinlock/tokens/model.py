@@ -22,13 +22,20 @@ from .encoders import (
     TemporalCNNEncoder,
     InitialCNNEncoder,
     InitialHybridEncoder,
+    SpectralICEncoder,
+    SpatialICEncoder,
 )
+from .fsq import FiniteScalarQuantizer
 from .encoders.theta import ThetaMLPEncoder
 from .encoders.temporal_cnn_feature import TemporalCNNFeatureEncoder
 from .encoders.pyramid_first import PyramidFirstEncoder
 from .config import TokenizerConfig, HierarchyConfig, AuxHeadConfig
 from .projector import HierarchicalProjector
-from .inverse_models import ThetaInverseMLP, InitialInverseCNN, TemporalInverseMLP, TrajectoryPrototypeHead
+from .inverse_models import (
+    ThetaInverseMLP, InitialInverseCNN, InitialSpectralInverse,
+    TemporalInverseMLP, TrajectoryPrototypeHead,
+)
+from .decoders import SpatialICDecoder, SpatialICLatentDecoder
 
 logger = logging.getLogger(__name__)
 
@@ -76,14 +83,9 @@ class JointHierarchicalVQVAE(nn.Module):
         self.temporal_input_dim = temporal_input_dim
         self.initial_input_dim = initial_input_dim
 
-        # In temporal-only mode, filter out non-temporal groups
-        if config.temporal_only:
-            self.group_indices = {
-                k: v for k, v in group_indices.items()
-                if k.startswith("temporal_")
-            }
-        else:
-            self.group_indices = group_indices
+        # Accept all groups present in group_indices — family presence is
+        # determined by which groups exist, not by a boolean flag.
+        self.group_indices = group_indices
 
         # Parse families from group_indices keys
         self.families = self._parse_families(self.group_indices)
@@ -118,11 +120,16 @@ class JointHierarchicalVQVAE(nn.Module):
         self.initial_inverse: Optional[InitialInverseCNN] = None
         self.temporal_inverse: Optional[TemporalInverseMLP] = None
 
-        # Dedicated theta bypass decoder (direct quantization mode only).
-        # In direct mode, the shared decoder's 2318D output space has only 14D
-        # for θ (0.6%), so gradients get diluted. This bypass gives θ a short,
-        # high-bandwidth gradient path: quantized theta latents → MLP → params.
+        # Dedicated bypass decoders for theta and IC.
+        # The shared decoder's output space is dominated by temporal features,
+        # so theta/IC gradients get diluted. Bypass decoders give these families
+        # short, high-bandwidth gradient paths: quantized latents → MLP → output.
         self.theta_bypass_decoder: Optional[nn.Module] = None
+        self.initial_bypass_inverse: Optional[nn.Module] = None
+        # Latent-space IC decoder for roundtrip (skip CNN pixel path)
+        self.initial_latent_decoder: Optional[SpatialICLatentDecoder] = None
+        # Latent-space temporal decoder for roundtrip (skip shared decoder)
+        self.temporal_latent_decoder: Optional[nn.Module] = None
 
         if config.inverse_heads is not None:
             # Create theta inverse if theta family exists
@@ -160,32 +167,165 @@ class JointHierarchicalVQVAE(nn.Module):
             if "initial" in self.families and self.initial_dim > 0:
                 initial_channels = config.encoder.initial.in_channels
                 initial_spatial_size = config.encoder.initial.spatial_size or 64
-                self.initial_inverse = InitialInverseCNN(
-                    encoded_dim=self.initial_dim,
-                    channels=initial_channels,
-                    spatial_size=initial_spatial_size,
-                )
-                logger.info(f"Created InitialInverseCNN: {self.initial_dim} → [{initial_channels}, {initial_spatial_size}, {initial_spatial_size}]")
 
-            # Create temporal inverse if learned mode (CNN features)
+                if config.inverse_heads.initial_bypass_decoder:
+                    # Bypass mode: concat IC quantized latents → inverse directly.
+                    # Skips shared decoder, giving IC a high-bandwidth gradient path.
+                    # Spatial IC groups have 1 level (FSQ), others have num_levels (VQ).
+                    use_fsq = (
+                        config.encoder.initial.spatial_quantizer == "fsq"
+                    )
+                    initial_latent_dim = 0
+                    for fc in group_indices:
+                        if not fc.startswith("initial_"):
+                            continue
+                        if fc.startswith("initial_spatial_") and use_fsq:
+                            # FSQ: 1 level, dim = len(fsq_levels)
+                            initial_latent_dim += len(config.encoder.initial.fsq_levels)
+                        else:
+                            for l in range(config.hierarchy.num_levels):
+                                initial_latent_dim += self._get_latent_dim(fc, l)
+
+                    if config.inverse_heads.initial_variant == "spatial":
+                        # CNN decoder symmetric with SpatialICEncoder
+                        self.initial_bypass_inverse = SpatialICDecoder(
+                            encoded_dim=initial_latent_dim,
+                            channels=initial_channels,
+                            spatial_size=initial_spatial_size,
+                            spatial_token_grid=config.encoder.initial.spatial_token_grid,
+                            base_channels=config.encoder.initial.spatial_base_channels,
+                        )
+                        logger.info(
+                            f"Created IC bypass decoder (spatial CNN): {initial_latent_dim}D → "
+                            f"[{initial_channels}, {initial_spatial_size}, {initial_spatial_size}] "
+                            f"(grid={config.encoder.initial.spatial_token_grid})"
+                        )
+                    else:
+                        self.initial_bypass_inverse = InitialSpectralInverse(
+                            encoded_dim=initial_latent_dim,
+                            channels=initial_channels,
+                            spatial_size=initial_spatial_size,
+                            num_modes=config.inverse_heads.initial_spectral_num_modes,
+                            hidden_dims=config.inverse_heads.initial_spectral_hidden_dims,
+                        )
+                        logger.info(
+                            f"Created IC bypass decoder (spectral): {initial_latent_dim}D → "
+                            f"[{initial_channels}, {initial_spatial_size}, {initial_spatial_size}] "
+                            f"(K={config.inverse_heads.initial_spectral_num_modes})"
+                        )
+                elif config.inverse_heads.initial_variant == "spectral":
+                    self.initial_inverse = InitialSpectralInverse(
+                        encoded_dim=self.initial_dim,
+                        channels=initial_channels,
+                        spatial_size=initial_spatial_size,
+                        num_modes=config.inverse_heads.initial_spectral_num_modes,
+                        hidden_dims=config.inverse_heads.initial_spectral_hidden_dims,
+                    )
+                    logger.info(
+                        f"Created InitialSpectralInverse: {self.initial_dim} → "
+                        f"[{initial_channels}, {initial_spatial_size}, {initial_spatial_size}] "
+                        f"(K={config.inverse_heads.initial_spectral_num_modes})"
+                    )
+                else:
+                    self.initial_inverse = InitialInverseCNN(
+                        encoded_dim=self.initial_dim,
+                        channels=initial_channels,
+                        spatial_size=initial_spatial_size,
+                    )
+                    logger.info(f"Created InitialInverseCNN: {self.initial_dim} → [{initial_channels}, {initial_spatial_size}, {initial_spatial_size}]")
+
+                # Latent-space IC decoder for roundtrip (skip CNN pixel path)
+                if config.inverse_heads.initial_latent_roundtrip:
+                    # Compute total IC quantized latent dim (same as bypass decoder)
+                    use_fsq_rt = (
+                        config.encoder.initial.spatial_quantizer == "fsq"
+                    )
+                    initial_latent_dim = 0
+                    for fc in group_indices:
+                        if not fc.startswith("initial_"):
+                            continue
+                        if fc.startswith("initial_spatial_") and use_fsq_rt:
+                            initial_latent_dim += len(config.encoder.initial.fsq_levels)
+                        else:
+                            for l in range(config.hierarchy.num_levels):
+                                initial_latent_dim += self._get_latent_dim(fc, l)
+
+                    # Output dim = SpatialICEncoder output (grid² × token_dim)
+                    grid = config.encoder.initial.spatial_token_grid
+                    spatial_token_dim = config.encoder.initial.spatial_token_dim
+                    encoder_output_dim = (grid ** 2) * spatial_token_dim
+
+                    self.initial_latent_decoder = SpatialICLatentDecoder(
+                        encoded_dim=initial_latent_dim,
+                        output_dim=encoder_output_dim,
+                    )
+                    logger.info(
+                        f"Created IC latent decoder (roundtrip): "
+                        f"{initial_latent_dim}D → {encoder_output_dim}D "
+                        f"({grid}²×{spatial_token_dim})"
+                    )
+
+            # Create temporal inverse if learned mode (CNN features or pyramid_first)
+            has_temporal_encoder = (
+                self.temporal_cnn_encoder is not None
+                or self.pyramid_first_encoder is not None
+            )
             if (
                 "temporal" in self.families
                 and self.temporal_dim > 0
-                and self.temporal_cnn_encoder is not None
+                and has_temporal_encoder
                 and config.encoder.temporal.learned is not None
             ):
                 learned_cfg = config.encoder.temporal.learned
+                # In pyramid_first mode, cnn_dim = num_groups × D_group (embedding_dim);
+                # in per_frame mode, cnn_dim = learned_cfg.embedding_dim.
+                if self.pyramid_first_encoder is not None:
+                    cnn_dim = learned_cfg.num_groups * config.encoder.embedding_dim
+                else:
+                    cnn_dim = learned_cfg.embedding_dim
                 self.temporal_inverse = TemporalInverseMLP(
                     encoded_dim=self.temporal_dim,
-                    cnn_dim=learned_cfg.embedding_dim,
+                    cnn_dim=cnn_dim,
                     roundtrip_timesteps=config.inverse_heads.temporal_roundtrip_timesteps,
                     hidden_dim=config.inverse_heads.temporal_hidden_dim,
                     dropout=config.inverse_heads.temporal_dropout,
                 )
                 logger.info(
                     f"Created TemporalInverseMLP: {self.temporal_dim} → "
-                    f"[{config.inverse_heads.temporal_roundtrip_timesteps}, {learned_cfg.embedding_dim}]"
+                    f"[{config.inverse_heads.temporal_roundtrip_timesteps}, {cnn_dim}]"
                 )
+
+                # Temporal latent bypass: MLP from quantized temporal latents directly
+                # to per-group embeddings, skipping shared decoder + TemporalInverseMLP
+                # + per_group_pyramid_encoders (6 layers → 2 layers in gradient chain).
+                if config.inverse_heads.temporal_latent_roundtrip:
+                    temporal_latent_dim = 0
+                    for fc in group_indices:
+                        if not fc.startswith("temporal_"):
+                            continue
+                        for l in range(config.hierarchy.num_levels):
+                            temporal_latent_dim += self._get_latent_dim(fc, l)
+
+                    temporal_output_dim = (
+                        learned_cfg.num_groups * config.encoder.embedding_dim
+                    )  # 30 × D_group
+                    hidden = config.inverse_heads.temporal_hidden_dim
+
+                    self.temporal_latent_decoder = nn.Sequential(
+                        nn.Linear(temporal_latent_dim, hidden),
+                        nn.LayerNorm(hidden),
+                        nn.GELU(),
+                        nn.Linear(hidden, hidden),
+                        nn.LayerNorm(hidden),
+                        nn.GELU(),
+                        nn.Linear(hidden, temporal_output_dim),
+                    )
+                    logger.info(
+                        f"Created temporal latent decoder (roundtrip bypass): "
+                        f"{temporal_latent_dim}D → {temporal_output_dim}D "
+                        f"({learned_cfg.num_groups} groups × "
+                        f"{config.encoder.embedding_dim}D)"
+                    )
 
         # Auxiliary heads for temporal-only mode (theta/IC decoded from temporal tokens)
         self.theta_aux_head: Optional[nn.Module] = None
@@ -194,7 +334,7 @@ class JointHierarchicalVQVAE(nn.Module):
         self.ic_probe: Optional[nn.Module] = None     # Pre-VQ IC probe
         self.traj_prototype_head: Optional[TrajectoryPrototypeHead] = None
 
-        if config.temporal_only and config.aux_heads is not None:
+        if config.aux_heads is not None:
             # Compute total quantized latent dimension across all temporal groups
             temporal_groups = [fc for fc in group_indices if fc.startswith("temporal_")]
             total_quantized_dim = sum(
@@ -320,22 +460,47 @@ class JointHierarchicalVQVAE(nn.Module):
                 cat_dim = 1
             elif family == "theta":
                 cat_dim = self.theta_dim
+            elif family == "initial" and family_cat.startswith("initial_spatial_"):
+                # Spatial IC: each position gets spatial_token_dim as input
+                cat_dim = config.encoder.initial.spatial_token_dim
             elif family == "initial":
                 cat_dim = self.initial_dim
             else:
                 cat_dim = len(indices)
 
             # Create hierarchical projector
-            self.projectors[family_cat] = self._create_projector(
-                family_cat, cat_dim
-            )
+            # Spatial IC groups with FSQ use 1 level (FSQ handles discretization directly)
+            if (
+                family_cat.startswith("initial_spatial_")
+                and config.encoder.initial.spatial_quantizer == "fsq"
+            ):
+                self.projectors[family_cat] = self._create_projector(
+                    family_cat, cat_dim, num_levels_override=1,
+                    latent_dim_override=len(config.encoder.initial.fsq_levels),
+                )
+            else:
+                self.projectors[family_cat] = self._create_projector(
+                    family_cat, cat_dim
+                )
 
         # Create vector quantizers (N×L total, one per family-category-level)
+        # Spatial IC groups get FSQ (1 level) or VQ (3 levels) based on config.
         self.quantizers = nn.ModuleDict()
         for family_cat in self.group_indices.keys():
             family, _ = family_cat.split('_', 1)
-            num_levels = config.hierarchy.num_levels
 
+            if (
+                family_cat.startswith("initial_spatial_")
+                and config.encoder.initial.spatial_quantizer == "fsq"
+            ):
+                # FSQ: single level, implicit codebook
+                quantizer_key = f"{family_cat}_L0"
+                self.quantizers[quantizer_key] = FiniteScalarQuantizer(
+                    levels=config.encoder.initial.fsq_levels,
+                )
+                continue
+
+            num_levels = config.hierarchy.num_levels
             for level_idx in range(num_levels):
                 quantizer_key = f"{family_cat}_L{level_idx}"
                 latent_dim = self._get_latent_dim(family_cat, level_idx)
@@ -380,12 +545,19 @@ class JointHierarchicalVQVAE(nn.Module):
                 total_all,
             )
 
-        # Shared decoder
-        total_latent_dim = sum(
-            self._get_latent_dim(fc, l)
-            for fc in self.group_indices.keys()
-            for l in range(config.hierarchy.num_levels)
-        )
+        # Shared decoder: total quantized dim must match concatenated quantizer outputs.
+        # Spatial IC groups with FSQ have 1 level; VQ spatial and everything else have num_levels.
+        total_latent_dim = 0
+        for fc in self.group_indices.keys():
+            if (
+                fc.startswith("initial_spatial_")
+                and config.encoder.initial.spatial_quantizer == "fsq"
+            ):
+                # FSQ: 1 level, dim = len(fsq_levels)
+                total_latent_dim += len(config.encoder.initial.fsq_levels)
+            else:
+                for l in range(config.hierarchy.num_levels):
+                    total_latent_dim += self._get_latent_dim(fc, l)
 
         self.decoder = MultiLayerResidualDecoder(
             latent_dim=total_latent_dim,
@@ -396,9 +568,8 @@ class JointHierarchicalVQVAE(nn.Module):
     def _parse_families(self, group_indices: Dict[str, List[int]]) -> List[str]:
         """Parse unique families from group_indices keys.
 
-        In temporal_only mode, only "temporal" is treated as a VQ family.
-        Theta and IC are decoded from temporal tokens via auxiliary heads,
-        not encoded/quantized separately.
+        Family presence is derived from group_indices: if there are keys
+        starting with "theta_", the theta family exists. No boolean flag needed.
 
         Args:
             group_indices: Dict with keys like "temporal_group_1", "initial_group_2"
@@ -406,9 +577,6 @@ class JointHierarchicalVQVAE(nn.Module):
         Returns:
             List of unique families, e.g., ["temporal", "initial"]
         """
-        if self.config.temporal_only:
-            return ["temporal"]
-
         families = set()
         for key in group_indices.keys():
             family = key.split('_', 1)[0]
@@ -555,13 +723,58 @@ class JointHierarchicalVQVAE(nn.Module):
                 if k.startswith("temporal_")
             }
             self.temporal_dim = len(temporal_groups) * config.encoder.embedding_dim
+            # Store per-group dim for roundtrip re-encoding (used by losses.py)
+            self._temporal_group_dim = config.encoder.embedding_dim
+
+            # Roundtrip re-encoding path: lightweight per-group PyramidTemporalEncoders
+            # that take decoded per-group features [B, T_rt, D_group] → [B, sum(level_dims)].
+            # These are separate from PyramidFirstEncoder (which takes raw pixels).
+            vl_config_rt = None
+            if pyramid_cfg.variable_length:
+                if isinstance(pyramid_cfg.variable_length, bool):
+                    vl_config_rt = {
+                        "enabled": True,
+                        "adaptive_pyramid": pyramid_cfg.adaptive_pyramid,
+                        "min_pyramid_length": pyramid_cfg.min_timesteps,
+                    }
+                else:
+                    vl_cfg = pyramid_cfg.variable_length
+                    vl_config_rt = {
+                        "enabled": vl_cfg.enabled,
+                        "adaptive_pyramid": vl_cfg.adaptive_pyramid,
+                        "min_pyramid_length": vl_cfg.min_pyramid_length,
+                        "mask_downsample_method": vl_cfg.mask_downsample_method,
+                    }
+
+            pyramid_out_dim = sum(pyramid_cfg.level_dims)
+            self.per_group_pyramid_encoders = nn.ModuleDict({
+                group_name: PyramidTemporalEncoder(
+                    input_dim=config.encoder.embedding_dim,  # D_group
+                    level_dims=pyramid_cfg.level_dims,
+                    variable_length_config=vl_config_rt,
+                )
+                for group_name in temporal_groups.keys()
+            })
+            # Projection from pyramid output (sum(level_dims)) to D_group so that
+            # the existing projectors (created with input_dim=D_group) accept the
+            # roundtrip-encoded features. In per_frame mode this isn't needed
+            # because the projector is created with input_dim=sum(level_dims).
+            self._temporal_rt_projections = nn.ModuleDict({
+                group_name: nn.Linear(pyramid_out_dim, config.encoder.embedding_dim)
+                for group_name in temporal_groups.keys()
+            })
+
             logger.info(
-                "Pyramid-first mode: %d levels × %dD_agg → %d groups × %dD = %dD temporal",
+                "Pyramid-first mode: %d levels × %dD_agg → %d groups × %dD = %dD temporal "
+                "(+ %d roundtrip pyramid encoders, %dD→%dD projection)",
                 len(pyramid_cfg.downsample_factors),
                 learned_cfg.d_agg,
                 len(temporal_groups),
                 config.encoder.embedding_dim,
                 self.temporal_dim,
+                len(self.per_group_pyramid_encoders),
+                pyramid_out_dim,
+                config.encoder.embedding_dim,
             )
 
         elif "temporal" in self.families and config.feature_source == "learned":
@@ -743,6 +956,40 @@ class JointHierarchicalVQVAE(nn.Module):
                     use_final_batchnorm=config.encoder.initial.use_final_batchnorm,
                 )
                 self.initial_dim = config.encoder.initial.cnn_embedding_dim
+
+            elif config.encoder.initial.variant == "spectral":
+                # group_dim: compress spectral features per group for VQ.
+                # Uses encoder.embedding_dim (same as temporal groups) so VQ
+                # operates on manageable dimensionality.
+                group_dim = config.encoder.embedding_dim  # e.g. 32
+                self.initial_encoder = SpectralICEncoder(
+                    in_channels=config.encoder.initial.in_channels,
+                    spatial_size=config.encoder.initial.spatial_size or 128,
+                    num_modes=config.encoder.initial.num_modes,
+                    num_groups=config.encoder.initial.num_initial_groups,
+                    group_dim=group_dim,
+                )
+                self.initial_dim = self.initial_encoder.output_dim
+                logger.info(
+                    f"Spectral IC encoder: {config.encoder.initial.in_channels}ch × "
+                    f"{config.encoder.initial.num_modes}² modes → {self.initial_dim}D"
+                )
+
+            elif config.encoder.initial.variant == "spatial":
+                ic_cfg = config.encoder.initial
+                self.initial_encoder = SpatialICEncoder(
+                    in_channels=ic_cfg.in_channels,
+                    spatial_token_grid=ic_cfg.spatial_token_grid,
+                    spatial_token_dim=ic_cfg.spatial_token_dim,
+                    base_channels=ic_cfg.spatial_base_channels,
+                )
+                self.initial_dim = self.initial_encoder.output_dim
+                logger.info(
+                    f"Spatial IC encoder: {ic_cfg.in_channels}ch → "
+                    f"{ic_cfg.spatial_token_grid}×{ic_cfg.spatial_token_grid} grid, "
+                    f"{ic_cfg.spatial_token_dim}D/position, "
+                    f"FSQ {ic_cfg.fsq_levels} → {self.initial_dim}D total"
+                )
             else:
                 raise ValueError(f"Unknown initial variant: {config.encoder.initial.variant}")
 
@@ -775,24 +1022,33 @@ class JointHierarchicalVQVAE(nn.Module):
                 raise ValueError(f"Unknown theta encoder variant: {theta_cfg.variant}")
 
     def _create_projector(
-        self, family_cat: str, category_dim: int
+        self,
+        family_cat: str,
+        category_dim: int,
+        num_levels_override: int | None = None,
+        latent_dim_override: int | None = None,
     ) -> HierarchicalProjector:
         """Create hierarchical projector for a family-category.
 
         Args:
             family_cat: Family-category key (e.g., "temporal_group_1")
             category_dim: Number of features in this category
+            num_levels_override: Override number of hierarchy levels (e.g. 1 for FSQ)
+            latent_dim_override: Override latent dim for all levels (e.g. len(fsq_levels))
 
         Returns:
             HierarchicalProjector instance
         """
         config = self.config
-        num_levels = config.hierarchy.num_levels
+        num_levels = num_levels_override or config.hierarchy.num_levels
 
         # Build level configs
         levels = []
         for level_idx in range(num_levels):
-            latent_dim = self._get_latent_dim(family_cat, level_idx)
+            if latent_dim_override is not None:
+                latent_dim = latent_dim_override
+            else:
+                latent_dim = self._get_latent_dim(family_cat, level_idx)
             levels.append({"latent_dim": latent_dim})
 
         return HierarchicalProjector(
@@ -1109,6 +1365,19 @@ class JointHierarchicalVQVAE(nn.Module):
                         "initial_manual and initial_raw required for initial_hybrid"
                     )
                 init_encoded = self.initial_encoder(initial_manual, initial_raw)
+            elif isinstance(self.initial_encoder, SpatialICEncoder):
+                if initial_raw is None:
+                    raise ValueError("initial_raw required for spatial IC encoder")
+                init_encoded = self.initial_encoder(initial_raw)  # [B, G²×token_dim]
+                # Split into per-position entries for the quantizer loop
+                for i in range(self.initial_encoder.num_positions):
+                    start = i * self.initial_encoder.spatial_token_dim
+                    end = start + self.initial_encoder.spatial_token_dim
+                    encoded[f"initial_spatial_{i}"] = init_encoded[:, start:end]
+            elif isinstance(self.initial_encoder, SpectralICEncoder):
+                if initial_raw is None:
+                    raise ValueError("initial_raw required for spectral IC encoder")
+                init_encoded = self.initial_encoder(initial_raw)
             else:
                 if initial_raw is None:
                     raise ValueError("initial_raw required for initial_cnn")
@@ -1141,6 +1410,7 @@ class JointHierarchicalVQVAE(nn.Module):
 
         # Project to categorical latent spaces and quantize
         all_quantized = []
+        temporal_quantized = []  # Temporal-only quantized vectors (for aux heads)
         vq_losses = []
         perplexities = []
         encodings_dict = {}
@@ -1158,6 +1428,9 @@ class JointHierarchicalVQVAE(nn.Module):
                 or self.pyramid_first_encoder is not None
             ):
                 cat_features = encoded[family_cat]  # [B, per_group_dim]
+            elif family_cat.startswith("initial_spatial_") and family_cat in encoded:
+                # Spatial IC: per-position features from SpatialICEncoder
+                cat_features = encoded[family_cat]  # [B, spatial_token_dim]
             elif family == "theta" and family_cat in encoded:
                 # Direct theta mode: per-param entries; MLP mode: falls through
                 cat_features = encoded[family_cat]  # [B, 1] or [B, theta_dim]
@@ -1181,6 +1454,8 @@ class JointHierarchicalVQVAE(nn.Module):
                 quantized, encodings, losses = quantizer(latent)
 
                 all_quantized.append(quantized)
+                if family == "temporal":
+                    temporal_quantized.append(quantized)
                 vq_losses.append(losses['loss'])
                 # Compute perplexity from encodings
                 avg_probs = encodings.mean(dim=0)
@@ -1204,39 +1479,75 @@ class JointHierarchicalVQVAE(nn.Module):
         # Split reconstructed back into family components
         reconstructed_split = self._split_reconstructed(reconstructed, all_encoded)
 
-        # Apply decode heads (aux heads for temporal-only, inverse heads otherwise)
+        # Apply decode heads: inverse heads (within-family) and aux heads
+        # (cross-family) can both be active simultaneously.
         decoded = {}
-        if self.config.temporal_only:
-            # Temporal-only mode: aux heads decode theta/IC from quantized latents
-            if self.theta_aux_head is not None:
-                decoded["theta"] = self.theta_aux_head(all_quantized_cat)
-            if self.ic_aux_head is not None:
-                decoded["initial"] = self.ic_aux_head(all_quantized_cat)
-            if self.traj_prototype_head is not None:
-                decoded["trajectory_prototype"] = self.traj_prototype_head(all_quantized_cat)
-            # Pre-VQ probes: direct CNN → gradient (no VQ bottleneck)
-            if self.theta_probe is not None:
-                decoded["theta_probe"] = self.theta_probe(encoded["temporal"])
-            if self.ic_probe is not None:
-                decoded["initial_probe"] = self.ic_probe(encoded["temporal"])
-        else:
-            # Standard mode: inverse heads decode from reconstructed encoded space
-            if self.theta_bypass_decoder is not None:
-                # Direct mode: bypass the shared decoder — gather theta quantized
-                # latents and decode directly to parameter space.
-                theta_q_parts = []
-                for key in sorted(encodings_dict.keys()):
-                    if key.startswith("theta_"):
-                        theta_q_parts.append(encodings_dict[key])
-                if theta_q_parts:
-                    theta_q_cat = torch.cat(theta_q_parts, dim=1)
-                    decoded["theta"] = self.theta_bypass_decoder(theta_q_cat)
-            elif self.theta_inverse is not None and "theta" in reconstructed_split:
-                decoded["theta"] = self.theta_inverse(reconstructed_split["theta"])
-            if self.initial_inverse is not None and "initial" in reconstructed_split:
-                decoded["initial"] = self.initial_inverse(reconstructed_split["initial"])
-            if self.temporal_inverse is not None and "temporal" in reconstructed_split:
-                decoded["temporal"] = self.temporal_inverse(reconstructed_split["temporal"])
+
+        # ── Inverse heads (active when families have inverse configs) ──
+        # Theta bypass: concatenated theta quantized latents → MLP → params
+        if self.theta_bypass_decoder is not None:
+            theta_q_parts = []
+            for key in sorted(encodings_dict.keys()):
+                if key.startswith("theta_"):
+                    theta_q_parts.append(encodings_dict[key])
+            if theta_q_parts:
+                theta_q_cat = torch.cat(theta_q_parts, dim=1)
+                decoded["theta"] = self.theta_bypass_decoder(theta_q_cat)
+        elif self.theta_inverse is not None and "theta" in reconstructed_split:
+            decoded["theta"] = self.theta_inverse(reconstructed_split["theta"])
+        # IC: gather quantized latents (shared between bypass decoder and latent decoder)
+        initial_q_cat = None
+        if self.initial_bypass_inverse is not None or self.initial_latent_decoder is not None:
+            initial_q_parts = []
+            for key in sorted(encodings_dict.keys()):
+                if key.startswith("initial_"):
+                    initial_q_parts.append(encodings_dict[key])
+            if initial_q_parts:
+                initial_q_cat = torch.cat(initial_q_parts, dim=1)
+        # IC bypass: concatenated IC quantized latents → spectral/spatial inverse → grid
+        if self.initial_bypass_inverse is not None and initial_q_cat is not None:
+            decoded["initial"] = self.initial_bypass_inverse(initial_q_cat)
+        elif self.initial_inverse is not None and "initial" in reconstructed_split:
+            decoded["initial"] = self.initial_inverse(reconstructed_split["initial"])
+        # IC latent decoder for roundtrip (skip CNN re-encoding)
+        if self.initial_latent_decoder is not None and initial_q_cat is not None:
+            decoded["initial_latent"] = self.initial_latent_decoder(initial_q_cat)
+        if self.temporal_inverse is not None and "temporal" in reconstructed_split:
+            decoded["temporal"] = self.temporal_inverse(reconstructed_split["temporal"])
+        # Temporal latent decoder for roundtrip (skip shared decoder path)
+        if self.temporal_latent_decoder is not None:
+            temporal_q_parts = []
+            for key in sorted(encodings_dict.keys()):
+                if key.startswith("temporal_"):
+                    temporal_q_parts.append(encodings_dict[key])
+            if temporal_q_parts:
+                temporal_q_cat = torch.cat(temporal_q_parts, dim=1)
+                decoded["temporal_latent"] = self.temporal_latent_decoder(
+                    temporal_q_cat
+                )
+
+        # ── Aux heads (cross-family supervision — always active if configured) ──
+        # Aux heads take TEMPORAL quantized features only (not all families),
+        # testing whether temporal tokens alone encode enough to predict theta/IC.
+        # Use _aux suffix when both inverse and aux heads are active to avoid
+        # key collision (e.g. "theta" from inverse + "theta_aux" from aux).
+        temporal_quantized_cat = (
+            torch.cat(temporal_quantized, dim=1) if temporal_quantized
+            else all_quantized_cat  # fallback: temporal-only models
+        )
+        if self.theta_aux_head is not None:
+            key = "theta_aux" if "theta" in decoded else "theta"
+            decoded[key] = self.theta_aux_head(temporal_quantized_cat)
+        if self.ic_aux_head is not None:
+            key = "initial_aux" if "initial" in decoded else "initial"
+            decoded[key] = self.ic_aux_head(temporal_quantized_cat)
+        if self.traj_prototype_head is not None:
+            decoded["trajectory_prototype"] = self.traj_prototype_head(temporal_quantized_cat)
+        # Pre-VQ probes: direct CNN → gradient (no VQ bottleneck)
+        if self.theta_probe is not None and "temporal" in encoded:
+            decoded["theta_probe"] = self.theta_probe(encoded["temporal"])
+        if self.ic_probe is not None and "temporal" in encoded:
+            decoded["initial_probe"] = self.ic_probe(encoded["temporal"])
 
         # Aggregate VQ losses
         total_vq_loss = torch.stack(vq_losses).mean()
@@ -1350,13 +1661,17 @@ class JointHierarchicalVQVAE(nn.Module):
         token_indices = {}
         for quantizer_key, quantizer in self.quantizers.items():
             quantized = encodings[quantizer_key]
-            # Find nearest codebook entry
-            distances = torch.cdist(
-                quantized,
-                quantizer.embedding.weight,
-                p=2.0
-            )
-            indices = distances.argmin(dim=1)  # [B]
+            if isinstance(quantizer, FiniteScalarQuantizer):
+                # FSQ: mixed-radix index from quantized values
+                indices = quantizer.values_to_indices(quantized)
+            else:
+                # VQ: nearest codebook entry
+                distances = torch.cdist(
+                    quantized,
+                    quantizer.embedding.weight,
+                    p=2.0
+                )
+                indices = distances.argmin(dim=1)  # [B]
             token_indices[quantizer_key] = indices
 
         return token_indices

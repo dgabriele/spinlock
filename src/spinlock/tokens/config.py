@@ -31,8 +31,13 @@ class InitialEncoderConfig(BaseModel):
 
     Dimensions (manual_dim, in_channels) are automatically detected from dataset
     if not specified. Manual specification only needed for overrides.
+
+    Variants:
+        - "cnn": ResNet-3 CNN encoder for spatial IC processing
+        - "hybrid": Hybrid encoder combining manual features + end-to-end CNN
+        - "spectral": Deterministic FFT encoder for periodic-BC operators (Lenia)
     """
-    variant: Literal["cnn", "hybrid"] = "hybrid"
+    variant: Literal["cnn", "hybrid", "spectral", "spatial"] = "hybrid"
     manual_dim: Optional[int] = Field(
         default=None,
         ge=0,
@@ -53,6 +58,49 @@ class InitialEncoderConfig(BaseModel):
     use_final_batchnorm: bool = False
     encode_manual: bool = False
 
+    # Spectral-specific (only used when variant="spectral")
+    num_modes: int = Field(
+        default=16,
+        gt=0,
+        description="Fourier modes per spatial dim (spectral variant only)",
+    )
+    num_initial_groups: int = Field(
+        default=4,
+        gt=0,
+        description="Number of VQ groups for initial features (spectral variant only)",
+    )
+
+    # Spatial-specific (only used when variant="spatial")
+    spatial_token_grid: int = Field(
+        default=4,
+        gt=0,
+        description="Spatial grid for CNN IC encoder (spatial variant only). "
+                    "Grid G produces G² spatial token positions.",
+    )
+    spatial_token_dim: int = Field(
+        default=8,
+        gt=0,
+        description="Feature dim per spatial position (spatial variant only)",
+    )
+    spatial_base_channels: int = Field(
+        default=32,
+        gt=0,
+        description="Base CNN channel width (spatial variant only)",
+    )
+    fsq_levels: list[int] = Field(
+        default=[8, 8, 8],
+        description="FSQ levels per dim (spatial variant only, when spatial_quantizer='fsq'). "
+                    "prod(levels) = implicit codebook size per position.",
+    )
+    spatial_quantizer: Literal["fsq", "vq"] = Field(
+        default="fsq",
+        description=(
+            "Quantizer type for spatial IC positions: "
+            "'fsq' (fixed grid, 1 level per position) or "
+            "'vq' (learned codebook, multi-level hierarchy per position)."
+        ),
+    )
+
 
 class VariableLengthConfig(BaseModel):
     """Variable-length sequence configuration for pyramid encoder."""
@@ -70,10 +118,79 @@ class VariableLengthConfig(BaseModel):
         default=None,
         ge=1,
         description=(
-            "Initial min_timesteps at training start (must be > min_timesteps). "
-            "Decays to min_timesteps over training via the schedule. None = no curriculum."
+            "DEPRECATED: use curriculum_length_bin_weights_start instead. "
+            "Hard-gates bins below this threshold, causing OOM when all bins are long. "
+            "Decays to min_timesteps over curriculum_batches via cosine schedule. "
+            "Mutually exclusive with curriculum_length_bin_weights_start."
         ),
     )
+    curriculum_batches: int = Field(
+        default=563,
+        ge=1,
+        description="Number of batches over which the length curriculum completes.",
+    )
+
+    # Weighted length curriculum: per-bin probability weights that interpolate
+    # from long-biased to uniform. All bins always have nonzero probability.
+    curriculum_length_bin_weights_start: Optional[List[float]] = Field(
+        default=None,
+        description=(
+            "Per-bin sampling weights at curriculum start (e.g. [0.02, 0.03, 0.1, 0.4, 0.45]). "
+            "Must match length of length_bins. Interpolates to weights_end over curriculum_batches. "
+            "Mutually exclusive with curriculum_start_min."
+        ),
+    )
+    curriculum_length_bin_weights_end: Optional[List[float]] = Field(
+        default=None,
+        description=(
+            "Per-bin sampling weights at curriculum end (e.g. [0.2, 0.2, 0.2, 0.2, 0.2]). "
+            "Must match length of length_bins. If None but weights_start is set, defaults to uniform."
+        ),
+    )
+
+    @field_validator('curriculum_length_bin_weights_start')
+    @classmethod
+    def validate_curriculum_weights(cls, v, info):
+        """Validate weighted curriculum config."""
+        if v is None:
+            return v
+        # Mutual exclusivity with curriculum_start_min
+        if info.data.get('curriculum_start_min') is not None:
+            raise ValueError(
+                "curriculum_length_bin_weights_start and curriculum_start_min are "
+                "mutually exclusive — use one or the other"
+            )
+        # Length must match length_bins
+        bins = info.data.get('length_bins')
+        if bins is not None and len(v) != len(bins):
+            raise ValueError(
+                f"curriculum_length_bin_weights_start has {len(v)} entries but "
+                f"length_bins has {len(bins)} — they must match"
+            )
+        # All values >= 0
+        if any(w < 0 for w in v):
+            raise ValueError("All curriculum_length_bin_weights_start values must be >= 0")
+        if sum(v) <= 0:
+            raise ValueError("curriculum_length_bin_weights_start must have at least one nonzero weight")
+        return v
+
+    @field_validator('curriculum_length_bin_weights_end')
+    @classmethod
+    def validate_curriculum_weights_end(cls, v, info):
+        """Validate end weights match start weights length."""
+        if v is None:
+            return v
+        start = info.data.get('curriculum_length_bin_weights_start')
+        if start is not None and len(v) != len(start):
+            raise ValueError(
+                f"curriculum_length_bin_weights_end has {len(v)} entries but "
+                f"curriculum_length_bin_weights_start has {len(start)} — they must match"
+            )
+        if any(w < 0 for w in v):
+            raise ValueError("All curriculum_length_bin_weights_end values must be >= 0")
+        if sum(v) <= 0:
+            raise ValueError("curriculum_length_bin_weights_end must have at least one nonzero weight")
+        return v
 
 
 class LearnedTemporalConfig(BaseModel):
@@ -244,13 +361,16 @@ class HierarchyConfig(BaseModel):
 
 
 class AuxHeadConfig(BaseModel):
-    """Config for auxiliary decoder heads in temporal-only mode.
+    """Config for auxiliary cross-family supervision heads.
 
-    When temporal_only=True, theta and IC are NOT separate token families.
-    Instead, they are DECODED from the concatenated quantized temporal latents
-    via lightweight auxiliary MLP/CNN heads. This eliminates the cross-family
-    consistency problem: every valid temporal token sequence automatically
-    produces valid (theta, IC) by construction.
+    Auxiliary heads predict theta/IC from temporal tokens, providing cross-family
+    supervision signals. These are valuable even when theta/IC are separate VQ
+    families: they force temporal tokens to encode theta/IC information, exactly
+    the property D3PM needs for cross-family correlation learning.
+
+    Can be used alongside inverse heads (within-family reconstruction):
+    - Inverse heads: theta tokens → theta, IC tokens → grid
+    - Aux heads: temporal tokens → theta/IC (cross-family supervision)
 
     Note: theta_param_dim and initial channels/spatial_size are auto-detected
     from encoder config and dataset at runtime.
@@ -300,6 +420,49 @@ class InverseHeadConfig(BaseModel):
 
     # Initial inverse (dimensions inferred from encoder config and data)
     initial_base_channels: int = Field(default=256, description="Base channels for CNN decoder")
+    initial_variant: Literal["cnn", "spectral", "spatial"] = Field(
+        default="cnn",
+        description="Initial inverse type: 'cnn' (pixel space), 'spectral' (Fourier), "
+                    "or 'spatial' (CNN transpose-conv, symmetric with SpatialICEncoder)",
+    )
+    initial_bypass_decoder: bool = Field(
+        default=False,
+        description=(
+            "Bypass shared decoder for IC inverse. Maps concatenated IC quantized "
+            "latents directly to grid via spectral inverse, giving IC a high-bandwidth "
+            "gradient path (same pattern as theta bypass decoder)."
+        ),
+    )
+    initial_spectral_num_modes: int = Field(
+        default=16, gt=0, description="Fourier modes for spectral initial inverse",
+    )
+    initial_spectral_hidden_dims: List[int] = Field(
+        default=[256, 128], description="MLP hidden dims for spectral initial inverse",
+    )
+
+    # IC latent-space roundtrip: bypass CNN pixel path for token stability.
+    # When enabled, an MLP maps concatenated IC quantized latents directly to
+    # pre-encoder latent space, skipping the lossy decode → CNN re-encode cycle.
+    initial_latent_roundtrip: bool = Field(
+        default=False,
+        description=(
+            "Use MLP latent decoder for IC roundtrip instead of pixel-space CNN. "
+            "Dramatically improves IC roundtrip accuracy by avoiding double-CNN loss."
+        ),
+    )
+
+    # Temporal latent-space roundtrip: bypass shared decoder for token stability.
+    # When enabled, an MLP maps concatenated temporal quantized latents directly
+    # to per-group embeddings, skipping the shared decoder + TemporalInverseMLP
+    # + per_group_pyramid_encoders chain (6 learnable layers → 2).
+    temporal_latent_roundtrip: bool = Field(
+        default=False,
+        description=(
+            "Use MLP latent decoder for temporal roundtrip instead of shared decoder path. "
+            "Shortens the gradient chain from 6 layers to 2, dramatically improving "
+            "temporal roundtrip convergence."
+        ),
+    )
 
     # Temporal inverse (only used in learned feature mode)
     temporal_hidden_dim: int = Field(default=1536, description="Hidden dimension for temporal inverse MLP")
@@ -358,6 +521,17 @@ class LossConfig(BaseModel):
         le=1.0,
         description="EMA momentum for loss-scale normalization (higher = slower adaptation)",
     )
+    loss_scale_ema_exempt: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Loss terms exempt from EMA normalization — use raw value × weight. "
+            "EMA normalization assumes |∇L| ∝ L, which fails for: (1) sum-of-CEs "
+            "like roundtrip (loss grows with #quantizers but per-quantizer gradient "
+            "is bounded); (2) near-zero converged losses where EMA division amplifies "
+            "gradient noise. Valid names: reconstruction, vq, orthogonality, "
+            "informativeness, topographic, roundtrip, aux, group_balance, gate_sparsity."
+        ),
+    )
 
     # Group balance loss (learned mode): penalizes per-group variance imbalance
     # in CNN output features. CV = std(group_vars)/mean(group_vars).
@@ -409,6 +583,15 @@ class TrainingConfig(BaseModel):
     use_scheduler: bool = False
     scheduler_type: Literal["cosine", "step", "exponential"] = "cosine"
     warmup_epochs: int = Field(default=0, ge=0)
+    warmup_batches: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Per-batch linear LR warmup: ramp from start_factor=1e-3 to full LR "
+            "over this many optimizer steps. Prevents encoder from outrunning "
+            "EMA codebook updates in early training. 0 = disabled."
+        ),
+    )
 
     early_stopping_patience: int = Field(default=20, ge=1)
     early_stopping_min_delta: float = Field(default=1e-4, ge=0.0)
@@ -439,6 +622,42 @@ class TrainingConfig(BaseModel):
     convergence_stop_min_batches: int = Field(
         default=500, ge=100,
         description="Minimum batches before convergence stopping can trigger",
+    )
+
+    # Encoder freezing: after warmup, freeze all encoder params so decoders
+    # train against fixed VQ cells.  Eliminates co-adaptation instability
+    # where encoders shift, VQ cells move, and decoders chase moving targets.
+    freeze_encoders_after_epoch: int = Field(
+        default=-1,
+        description=(
+            "Freeze encoder parameters after this epoch (-1 = never). "
+            "Projectors, quantizers (EMA), inverse/aux heads remain trainable. "
+            "Ignored when freeze_encoders_convergence is enabled."
+        ),
+    )
+
+    # Dynamic rt_acc-based encoder freezing: tracks rolling max of temporal
+    # roundtrip accuracy (rt_te).  Freezes encoders when rt_te drops below
+    # (peak - delta) for `window` consecutive batches — direct evidence of
+    # co-adaptation damage.  Supersedes freeze_encoders_after_epoch when enabled.
+    freeze_on_rt_drop: bool = Field(
+        default=False,
+        description="Enable rt_te peak-drop encoder freezing",
+    )
+    freeze_rt_drop_delta: float = Field(
+        default=0.02,
+        gt=0.0,
+        description="Freeze when rt_te drops more than this below its rolling peak",
+    )
+    freeze_rt_drop_window: int = Field(
+        default=20,
+        ge=5,
+        description="Number of consecutive batches rt_te must stay below (peak - delta) to trigger freeze",
+    )
+    freeze_rt_drop_min_batches: int = Field(
+        default=100,
+        ge=10,
+        description="Minimum training batches before rt_te freeze can trigger",
     )
 
     dead_code_reset_interval: int = Field(default=10, ge=0, description="0 = disabled")
@@ -539,18 +758,13 @@ class TokenizerConfig(BaseModel):
         description="Configuration for inverse decoder heads (theta/initial reconstruction)"
     )
 
-    # Temporal-only mode: only temporal tokens, theta/IC decoded from aux heads
-    temporal_only: bool = Field(
-        default=False,
-        description=(
-            "When True, only temporal features go through VQ encoding/quantization. "
-            "Theta and IC are decoded from quantized temporal latents via auxiliary heads, "
-            "eliminating the cross-family consistency problem for D3PM."
-        ),
-    )
+    # Auxiliary cross-family supervision heads (independent of which families are active)
     aux_heads: Optional[AuxHeadConfig] = Field(
         default=None,
-        description="Auxiliary head config for temporal-only mode (theta/IC prediction from temporal tokens)"
+        description=(
+            "Cross-family supervision: temporal tokens → theta/IC prediction. "
+            "Active whenever configured, regardless of which VQ families exist."
+        ),
     )
 
     # Learned temporal feature mode

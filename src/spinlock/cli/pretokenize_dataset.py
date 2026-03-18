@@ -320,7 +320,9 @@ Examples:
 
         # Detect learned mode from tokenizer config
         self.is_learned_mode = tokenizer.config.feature_source == "learned"
-        self.is_temporal_only = tokenizer.config.temporal_only
+        # Derive family presence from model capabilities
+        self.has_theta = hasattr(tokenizer.model, 'theta_dim') and tokenizer.model.theta_dim > 0
+        self.has_initial = hasattr(tokenizer.model, 'initial_dim') and tokenizer.model.initial_dim > 0
         self._realization_mode = getattr(tokenizer.config, "realization_mode", "single")
         self.replayer = None
 
@@ -871,11 +873,10 @@ Examples:
                             theta_batch, init_raw_batch, gen_timesteps,
                         )  # [1, gen_timesteps+1, C, H, W] on CPU
 
-                    # In temporal_only mode, don't pass theta/initial to tokenize
-                    # (they're decoded from temporal tokens via aux heads, not separate families)
-                    tok_theta = None if self.is_temporal_only else theta_batch
-                    tok_init_manual = None if self.is_temporal_only else init_manual_batch
-                    tok_init_raw = None if self.is_temporal_only else init_raw_batch
+                    # Only pass theta/initial if the model has those families
+                    tok_theta = theta_batch if self.has_theta else None
+                    tok_init_manual = init_manual_batch if self.has_initial else None
+                    tok_init_raw = init_raw_batch if self.has_initial else None
 
                     sample_tokens = tokenizer.tokenize(
                         temporal_features=temp_batch,
@@ -1052,8 +1053,8 @@ Examples:
                         tok_batch = max(12, tok_batch // 2)
                         continue  # retry with smaller batch
 
-                tok_theta = None if self.is_temporal_only else mega_theta[sub_start:sub_end].to(device)
-                tok_ic = None if self.is_temporal_only else mega_ic[sub_start:sub_end].to(device)
+                tok_theta = mega_theta[sub_start:sub_end].to(device) if self.has_theta else None
+                tok_ic = mega_ic[sub_start:sub_end].to(device) if self.has_initial else None
 
                 batch_tokens = tokenizer.tokenize(
                     temporal_features=None,
@@ -1302,10 +1303,10 @@ Examples:
                                     except torch.cuda.OutOfMemoryError:
                                         torch.cuda.empty_cache()
 
-                            # In temporal_only mode, don't pass theta/initial to tokenize
-                            tok_theta = None if self.is_temporal_only else theta_batch
-                            tok_init_manual = None if self.is_temporal_only else init_manual_batch
-                            tok_init_raw = None if self.is_temporal_only else init_raw_batch
+                            # Pass inputs matching active families
+                            tok_theta = theta_batch if self.has_theta else None
+                            tok_init_manual = init_manual_batch if self.has_initial else None
+                            tok_init_raw = init_raw_batch if self.has_initial else None
 
                             batch_tokens = tokenizer.tokenize(
                                 temporal_features=temp_batch,
@@ -1373,10 +1374,10 @@ Examples:
                                 theta_batch, init_raw_batch, generation_timesteps,
                             )  # [B, T+1, C, H, W] on CPU
 
-                        # In temporal_only mode, don't pass theta/initial to tokenize
-                        tok_theta = None if self.is_temporal_only else theta_batch
-                        tok_init_manual = None if self.is_temporal_only else init_manual_batch
-                        tok_init_raw = None if self.is_temporal_only else init_raw_batch
+                        # Pass inputs matching active families
+                        tok_theta = theta_batch if self.has_theta else None
+                        tok_init_manual = init_manual_batch if self.has_initial else None
+                        tok_init_raw = init_raw_batch if self.has_initial else None
 
                         # Tokenize
                         batch_tokens = tokenizer.tokenize(

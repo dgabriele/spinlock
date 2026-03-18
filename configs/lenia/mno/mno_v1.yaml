@@ -23,9 +23,9 @@ model:
 
 training:
   n_samples: 10000
-  batch_size: 1
-  gradient_accumulation_steps: 32
-  epochs: 30
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  epochs: 1
   learning_rate: 5.0e-5
   warmup_optimizer_steps: 3     # Minimal — clip_grad + cosine annealing suffice
   weight_decay: 0.01
@@ -39,7 +39,7 @@ training:
   eval_samples: 50
 
 loss:
-  lambda_traj: 0.0             # disabled — focus on token-level accuracy
+  lambda_traj: 0.05            # light regularizer — continuous smoothness without fighting token CE
   lambda_ic: 0.0               # disabled in QA mode
   lambda_contrastive: 0.0      # disabled — gt_indicators have 256-vs-32 temporal mismatch
   lambda_centroid_mse: 0.0     # not needed with hybrid CE
@@ -59,16 +59,17 @@ data:
   config: "configs/lenia/datasets/ds_lenia_v1.yaml"   # operator_type: "lenia" → LeniaReplayAdapter
   val_split: 0.1
   num_workers: 4
+  realization_mode: "all"   # Expand 3 realizations per param → aligns with pretokenized HDF5
 
 checkpointing:
   save_dir: "checkpoints/lenia/mno/v1"
   save_every: 1
   keep_best: true
 
-resume_from: "checkpoints/lenia/mno/v1_uafno/best.pt"
+# resume_from: null — fresh training (no resume)
 quantization_aware: true
-tokenizer_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_best.pt"
-token_dataset: "datasets/ds_lenia_v1_tokens.h5"
+tokenizer_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_latest.pt"
+token_dataset: "datasets/ds_lenia_v1_temporal_resolution.h5"
 token_truncation_length: 256
 
 device: "cuda"

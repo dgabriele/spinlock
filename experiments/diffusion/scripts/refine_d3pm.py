@@ -1,27 +1,21 @@
 """Offline hard-target refinement loop for D3PM.
 
-Closed loop: D3PM predict → CVAE decode → MNO rollout → retokenize →
+Closed loop: D3PM inpaint → IntegratedTokenDecoder → rollout → retokenize →
 quality filter → fine-tune.
 
-The D3PM generates temporal token completions from partial observations, but
-has no mechanism to verify that predictions correspond to *realizable* operator
-dynamics. This script closes the loop through the CVAE + MNO surrogate:
+The D3PM generates ALL token positions (temporal + initial + theta). Observed
+temporal tokens are fixed; initial + theta positions are inpainted. The
+IntegratedTokenDecoder (codebook lookup + inverse heads) replaces the CVAE.
+Diversity comes from D3PM's stochastic denoising trajectories.
 
-    1. Tokenize dataset temporal features → dataset_tokens (temporal only)
-    2. Random mask → observed/target split
-    3. D3PM inpainting → completed_tokens (temporal only)
-    4. CVAE.sample(completed_tokens) → (theta_pred, IC_pred)
-       The CVAE models P(theta, IC | temporal_tokens): given what the dynamics
-       look like, generate plausible physical parameters and initial conditions.
-    5. MNO rollout from CVAE-sampled params → realized trajectory
-    6. Retokenize realized trajectory → realized_tokens (temporal only)
-    7. Quality-filter: roundtrip self-consistency check — keep only samples
-       where retokenized observed positions match the original dataset tokens
-    8. Fine-tune D3PM on the accepted "realized" hard targets
-
-E2E differentiability through the MNO was rejected: 256-512 step gradient chain
-through chaotic dynamics is too noisy. Hard targets provide a clean,
-non-differentiable supervision signal.
+    1. Tokenize dataset → ALL tokens (temporal + initial + theta)
+    2. Mask: fix temporal positions, mask initial + theta positions
+    3. D3PM inpaint masked positions
+    4. IntegratedTokenDecoder.decode(completed_tokens) → (theta, IC)
+    5. Rollout from decoded params → realized trajectory
+    6. Retokenize realized trajectory → realized_tokens
+    7. Quality filter: observed-position agreement check
+    8. Fine-tune D3PM on accepted hard targets (all positions)
 
 Usage:
     poetry run python experiments/diffusion/scripts/refine_d3pm.py \
@@ -36,6 +30,7 @@ Usage:
 import argparse
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -53,7 +48,8 @@ from spinlock.experimental.diffusion.models import (
     DiffusionSchedule,
     DiscreteD3PM,
 )
-from spinlock.tokens.cvae import TokenConditionedCVAE
+from spinlock.rollout.provider import build_rollout_provider, RolloutProvider
+from spinlock.tokens.token_decoder import IntegratedTokenDecoder
 from spinlock.tokens.tokenizer import VQTokenizer
 from spinlock.tokens.schema import TokenSchema
 
@@ -145,30 +141,6 @@ def load_d3pm_and_denoiser(
     return diffusion, denoiser, ckpt
 
 
-def load_mno(checkpoint_path: str, device: str):
-    """Load trained V2MNO from checkpoint.
-
-    Returns:
-        V2MNO model instance (eval mode, on device)
-    """
-    from spinlock.mno.v2.model import V2MNO
-
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-
-    # V2MNO checkpoints store config + state dict
-    config = ckpt["config"]
-    dims = ckpt.get("dims", {})
-    operator_type = ckpt.get("operator_type", None)
-
-    mno = V2MNO.from_config(config, dims, device=device, operator_type=operator_type)
-    mno.load_state_dict(ckpt["model_state_dict"])
-    mno.to(device)
-    mno.eval()
-
-    logger.info(f"Loaded V2MNO from {checkpoint_path}")
-    return mno
-
-
 def load_tokenizer(checkpoint_path: str) -> VQTokenizer:
     """Load VQTokenizer with inverse decoders.
 
@@ -188,45 +160,36 @@ def load_tokenizer(checkpoint_path: str) -> VQTokenizer:
     return tokenizer
 
 
-def load_cvae(checkpoint_path: str, device: str) -> TokenConditionedCVAE:
-    """Load trained Token-Conditioned CVAE.
-
-    The CVAE models P(theta, IC | temporal_tokens) — given temporal tokens
-    describing dynamics, generate plausible physical parameters and ICs.
-
-    Args:
-        checkpoint_path: Path to CVAE checkpoint
-        device: Target device
-
-    Returns:
-        TokenConditionedCVAE in eval mode
-    """
-    cvae = TokenConditionedCVAE.from_checkpoint(
-        Path(checkpoint_path), device=device
-    )
-    logger.info(f"Loaded CVAE from {checkpoint_path}")
-    return cvae
-
-
 # ── Hard target generation ───────────────────────────────────────────────────
 
 
 def generate_random_mask(
-    keys: List[str], batch_size: int, mask_probability: float, device: str
+    keys: List[str],
+    temporal_keys: set,
+    batch_size: int,
+    mask_probability: float,
+    device: str,
 ) -> Tuple[Dict[str, torch.BoolTensor], Dict[str, torch.BoolTensor]]:
-    """Generate random observed/target masks for inpainting.
+    """Generate observed/target masks for inpainting.
+
+    Temporal positions: randomly masked (some observed, some targets).
+    Initial + theta positions: always masked (always targets for inpainting).
 
     Returns:
         (observed_dict, target_dict) — both map key → [B] boolean.
-        observed[k] = True means position k is observed (kept).
-        target[k] = True means position k is masked (to predict).
     """
     observed = {}
     target = {}
     for key in keys:
-        mask = torch.rand(batch_size, device=device) < mask_probability
-        target[key] = mask
-        observed[key] = ~mask
+        if key in temporal_keys:
+            # Temporal: random masking
+            mask = torch.rand(batch_size, device=device) < mask_probability
+            target[key] = mask
+            observed[key] = ~mask
+        else:
+            # Initial/theta: always masked (target for inpainting)
+            target[key] = torch.ones(batch_size, dtype=torch.bool, device=device)
+            observed[key] = torch.zeros(batch_size, dtype=torch.bool, device=device)
     return observed, target
 
 
@@ -234,35 +197,19 @@ def generate_hard_targets(
     dataset: SpinlockDataset,
     diffusion: DiscreteD3PM,
     denoiser: DenoisingNetwork,
-    mno,
+    rollout_provider: RolloutProvider,
     tokenizer: VQTokenizer,
-    cvae: TokenConditionedCVAE,
+    decoder: IntegratedTokenDecoder,
     config: RefinementConfig,
 ) -> List[Dict]:
     """Generate hard targets from the full refinement pipeline.
 
-    For each sample:
-        1. Tokenize dataset temporal features → dataset_tokens (temporal only)
-        2. Random mask → observed/target split
-        3. D3PM inpainting → completed_tokens (temporal only)
-        4. CVAE.sample(completed_tokens) → (theta_pred, IC_pred)
-        5. MNO rollout from CVAE-sampled params → realized trajectory
-        6. Retokenize realized trajectory → realized_tokens (temporal only)
-        7. Quality filter: compare realized_tokens vs dataset_tokens at
-           observed positions (roundtrip self-consistency check)
-        8. If agreement >= threshold: accept realized tokens at target positions
-
-    The quality gate checks whether the CVAE → MNO → retokenize roundtrip
-    reproduces the original dataset tokens at observed positions. This validates
-    that the CVAE+MNO pipeline is accurate for this sample before trusting
-    its predictions at masked positions.
+    D3PM generates ALL token positions (temporal + initial + theta).
+    Multiple denoising passes provide diversity (different trajectories →
+    different completions). Best candidate per sample is kept.
 
     Returns:
-        List of accepted hard-target dicts, each with:
-            tokens: full token dict (dataset tokens at observed, realized at target)
-            observed: observed mask dict
-            target: target mask dict
-            agreement: float agreement rate
+        List of accepted hard-target dicts.
     """
     device = config.device
     threshold = config.quality_filter.min_observed_agreement
@@ -270,143 +217,283 @@ def generate_hard_targets(
     total_samples = 0
     total_accepted = 0
     agreement_sum = 0.0
+    max_accept = config.max_accepted_targets
+    gen_bs = config.generation_batch_size
 
-    # Discover temporal-only keys from tokenizer
+    # Discover all keys and temporal keys from tokenizer
     schema = TokenSchema.from_tokenizer(tokenizer)
-    temporal_keys = schema.keys_for_family("temporal")
+    temporal_keys = set(schema.keys_for_family("temporal"))
+    all_keys = sorted(schema.vocab_sizes_dict().keys())
 
-    # Process samples individually (MNO rollout is memory-intensive)
-    for idx in range(len(dataset)):
-        sample = dataset[idx]
+    N = len(dataset)
+    done = False
 
-        # Step 1: Tokenize from pre-extracted temporal features
-        gt_temporal = sample.get("gt_raw_temporal")
-        if gt_temporal is not None:
-            gt_temporal = gt_temporal.unsqueeze(0).to(device)  # [1, T, D_raw]
-            with torch.no_grad():
-                all_tokens = tokenizer.tokenize(
-                    temporal_features=gt_temporal,
-                )
-        else:
-            # Fallback: tokenize from IC + theta (if temporal features unavailable)
-            ic = sample["ic"].unsqueeze(0).to(device)
-            params = sample["params"].unsqueeze(0).to(device)
-            with torch.no_grad():
-                all_tokens = tokenizer.tokenize(
-                    initial_raw=ic,
-                    theta_features=params,
-                )
+    D3PM_BS = 512
 
-        # Filter to temporal-only keys
-        dataset_tokens = {
-            k: v.to(device) for k, v in all_tokens.items()
-            if k in temporal_keys
-        }
+    # ── Prefetch helper: CPU-only data collation ────────────────
 
-        keys = sorted(dataset_tokens.keys())
-        if not keys:
-            logger.debug(f"Sample {idx}: no temporal keys found, skipping")
-            total_samples += 1
-            continue
-        B = 1
+    def _collate_batch(start: int, end: int):
+        """Load samples from HDF5 and stack tensors on CPU."""
+        gt_temporals = []
+        ics = []
+        params_list = []
+        has_gt_features = True
 
-        # Step 2: Random mask
-        observed_dict, target_dict = generate_random_mask(
-            keys, B, config.mask_probability, device
-        )
+        for idx in range(start, end):
+            sample = dataset[idx]
+            ics.append(sample["ic"])
+            params_list.append(sample["params"])
+            gt = sample.get("gt_raw_temporal")
+            if gt is None:
+                has_gt_features = False
+            gt_temporals.append(gt)
 
-        # Step 3: D3PM inpainting (observed positions held fixed via RePaint)
-        with torch.no_grad():
-            completed_tokens = diffusion.sample(
-                batch_size=B,
-                observed_dict=observed_dict,
-                x_0_dict=dataset_tokens,
-                denoising_network=denoiser,
-                device=device,
-                start_step=config.d3pm_start_step,
-            )
+        ics_cpu = torch.stack(ics)
+        params_cpu = torch.stack(params_list)
+        gt_cpu = torch.stack(gt_temporals) if has_gt_features else None
+        return ics_cpu, params_cpu, gt_cpu, has_gt_features, end - start
 
-        # Step 4: CVAE decode — sample (theta, IC) from temporal tokens
-        with torch.no_grad():
-            cvae_output = cvae.sample(completed_tokens, n_samples=1)
-            theta_pred = cvae_output["theta"]  # [1, theta_dim]
-            u0_pred = cvae_output["grids"]     # [1, C, H, W]
+    # ── Super-batch loop ──────────────────────────────────────────
+    super_ranges = [
+        (s, min(s + D3PM_BS, N)) for s in range(0, N, D3PM_BS)
+    ]
 
-        # Step 5: MNO rollout from CVAE-sampled params
-        with torch.no_grad():
-            conditioning = {
-                "theta": theta_pred,
-                "ic": u0_pred,
-                "token_indices": completed_tokens,
+    with ThreadPoolExecutor(max_workers=1) as prefetch_pool:
+        first_end = min(gen_bs, N)
+        pending_future = prefetch_pool.submit(_collate_batch, 0, first_end)
+
+        for si, (super_start, super_end) in enumerate(super_ranges):
+            if done:
+                break
+
+            # ══ Phase 1a: Tokenize super-batch in mini-batches ════
+            mini_ranges = [
+                (s, min(s + gen_bs, super_end))
+                for s in range(super_start, super_end, gen_bs)
+            ]
+            accumulated = []
+
+            for mi, (mb_start, mb_end) in enumerate(mini_ranges):
+                ics_cpu, params_cpu, gt_cpu, has_gt, B = pending_future.result()
+
+                next_global = mb_end
+                if next_global < N:
+                    next_mb_end = min(next_global + gen_bs, N)
+                    pending_future = prefetch_pool.submit(
+                        _collate_batch, next_global, next_mb_end,
+                    )
+
+                ics_t = ics_cpu.to(device, non_blocking=True)
+                params_t = params_cpu.to(device, non_blocking=True)
+
+                # Step 1: Tokenize ALL families (temporal + initial + theta)
+                with torch.no_grad():
+                    if has_gt:
+                        gt_batch = gt_cpu.to(device, non_blocking=True)
+                        all_tokens = tokenizer.tokenize(
+                            temporal_features=gt_batch,
+                            theta_features=params_t if tokenizer.model.theta_dim > 0 else None,
+                            initial_raw=ics_t if tokenizer.model.initial_dim > 0 else None,
+                        )
+                        del gt_batch
+                    else:
+                        conditioning = {"theta": params_t, "ic": ics_t}
+                        trajectories = rollout_provider.rollout(
+                            conditioning, steps=config.rollout_steps,
+                        )
+                        all_tokens = tokenizer.tokenize(
+                            temporal_raw=trajectories,
+                            theta_features=params_t if tokenizer.model.theta_dim > 0 else None,
+                            initial_raw=ics_t if tokenizer.model.initial_dim > 0 else None,
+                        )
+                        del trajectories
+
+                dataset_tokens = {
+                    k: v.to(device) for k, v in all_tokens.items()
+                    if k in all_keys
+                }
+                if dataset_tokens:
+                    accumulated.append(dataset_tokens)
+
+            if not accumulated:
+                continue
+
+            keys = sorted(accumulated[0].keys())
+            chunk_tokens = {
+                k: torch.cat([bt[k] for bt in accumulated])
+                for k in keys
             }
-            try:
-                trajectory = mno.rollout(conditioning, steps=config.rollout_steps)
-            except Exception as e:
-                logger.debug(f"Sample {idx}: MNO rollout failed: {e}")
-                total_samples += 1
-                continue
+            del accumulated
+            chunk_N = chunk_tokens[keys[0]].shape[0]
 
-        # Step 6: Retokenize realized trajectory (temporal only)
-        with torch.no_grad():
-            all_realized = tokenizer.tokenize(
-                temporal_raw=trajectory,
+            # ══ Phase 1b: Bulk mask generation ════════════════════
+            chunk_observed, chunk_target = generate_random_mask(
+                keys, temporal_keys, chunk_N, config.mask_probability, device,
             )
-        realized_tokens = {
-            k: v.to(device) for k, v in all_realized.items()
-            if k in temporal_keys
-        }
 
-        # Step 7: Quality filter — roundtrip self-consistency check
-        # Compare realized_tokens vs dataset_tokens at observed positions.
-        # If the CVAE+MNO can't reproduce what we already know (the observed
-        # tokens), we shouldn't trust its predictions at masked positions.
-        num_observed = 0
-        num_agree = 0
-        for key in keys:
-            if key not in realized_tokens:
-                continue
-            obs_mask = observed_dict[key]  # [1] bool
-            if obs_mask.any():
-                dataset_val = dataset_tokens[key][obs_mask]
-                realized_val = realized_tokens[key][obs_mask]
-                num_observed += dataset_val.numel()
-                num_agree += (dataset_val == realized_val).sum().item()
+            # ══ Phase 2: D3PM diversity ensemble + decode + quality filter ═
+            n_candidates = config.d3pm_n_candidates
 
-        agreement = num_agree / max(num_observed, 1)
-        agreement_sum += agreement
-        total_samples += 1
+            for p2_start in range(0, chunk_N, gen_bs):
+                if done:
+                    break
+                p2_end = min(p2_start + gen_bs, chunk_N)
+                B = p2_end - p2_start
 
-        # Step 8: Accept or reject
-        if agreement >= threshold:
-            # Build hard target: dataset tokens at observed, realized at target
-            hard_target_tokens = {}
-            for key in keys:
-                if key not in realized_tokens:
-                    hard_target_tokens[key] = dataset_tokens[key].clone()
-                    continue
-                tgt_mask = target_dict[key]    # [1]
-                merged = dataset_tokens[key].clone()
-                merged[tgt_mask] = realized_tokens[key][tgt_mask]
-                hard_target_tokens[key] = merged
+                dataset_tokens_mb = {
+                    k: v[p2_start:p2_end] for k, v in chunk_tokens.items()
+                }
+                observed_dict = {
+                    k: v[p2_start:p2_end] for k, v in chunk_observed.items()
+                }
+                target_dict = {
+                    k: v[p2_start:p2_end] for k, v in chunk_target.items()
+                }
 
-            hard_targets.append({
-                "tokens": hard_target_tokens,
-                "observed": observed_dict,
-                "target": target_dict,
-                "agreement": agreement,
-            })
-            total_accepted += 1
+                best_agreement = [-1.0] * B
+                best_realized: list = [None] * B
+                first_agreement = [0.0] * B
 
-        if (idx + 1) % 100 == 0:
-            logger.info(
-                f"  Processed {idx + 1}/{len(dataset)}: "
-                f"accepted={total_accepted}/{total_samples} "
-                f"({100 * total_accepted / max(total_samples, 1):.1f}%), "
-                f"mean_agreement={agreement_sum / max(total_samples, 1):.3f}"
-            )
+                for candidate_idx in range(n_candidates):
+                    # D3PM inpainting (stochastic — different each call)
+                    with torch.no_grad():
+                        completed_tokens = diffusion.sample(
+                            batch_size=B,
+                            observed_dict=observed_dict,
+                            x_0_dict=dataset_tokens_mb,
+                            denoising_network=denoiser,
+                            device=device,
+                            start_step=config.d3pm_start_step,
+                        )
+
+                    # Decode tokens → (theta, IC) via inverse heads
+                    with torch.no_grad():
+                        decoded = decoder.decode(completed_tokens)
+                        theta_pred = decoded.get("theta")
+                        u0_pred = decoded.get("grids")
+
+                    if theta_pred is None or u0_pred is None:
+                        logger.debug(
+                            f"Candidate {candidate_idx}: decoder returned "
+                            f"theta={theta_pred is not None}, grids={u0_pred is not None}"
+                        )
+                        continue
+
+                    # Rollout from decoded params
+                    with torch.no_grad():
+                        conditioning = {
+                            "theta": theta_pred,
+                            "ic": u0_pred,
+                            "token_indices": completed_tokens,
+                        }
+                        try:
+                            trajectories = rollout_provider.rollout(
+                                conditioning, steps=config.rollout_steps,
+                            )
+                        except Exception as e:
+                            logger.debug(f"Candidate {candidate_idx}: rollout failed: {e}")
+                            continue
+
+                    # Retokenize
+                    with torch.no_grad():
+                        all_realized = tokenizer.tokenize(temporal_raw=trajectories)
+                    del trajectories
+                    realized_tokens = {
+                        k: v.to(device) for k, v in all_realized.items()
+                        if k in temporal_keys
+                    }
+
+                    # Score: agreement on observed temporal positions
+                    for b in range(B):
+                        num_observed = 0
+                        num_agree = 0
+                        for key in keys:
+                            if key not in temporal_keys or key not in realized_tokens:
+                                continue
+                            if observed_dict[key][b]:
+                                num_observed += 1
+                                if dataset_tokens_mb[key][b] == realized_tokens[key][b]:
+                                    num_agree += 1
+                        agreement = num_agree / max(num_observed, 1)
+
+                        if candidate_idx == 0:
+                            first_agreement[b] = agreement
+                        if agreement > best_agreement[b]:
+                            best_agreement[b] = agreement
+                            # Store the complete token set (all families)
+                            best_realized[b] = {
+                                k: v[b:b+1].clone()
+                                for k, v in completed_tokens.items()
+                            }
+
+                # Ensemble improvement logging
+                if n_candidates > 1:
+                    improvements = sum(
+                        1 for b in range(B)
+                        if best_agreement[b] > first_agreement[b]
+                    )
+                    logger.debug(
+                        f"  Ensemble: {improvements}/{B} samples "
+                        f"improved by best-of-{n_candidates}"
+                    )
+
+                # ── Quality filter + accept ───────────────────────
+                for b in range(B):
+                    if best_realized[b] is None:
+                        total_samples += 1
+                        continue
+
+                    agreement = best_agreement[b]
+                    agreement_sum += agreement
+                    total_samples += 1
+
+                    if agreement >= threshold:
+                        # Build hard target: dataset tokens at observed, best at target
+                        hard_target_tokens = {}
+                        for key in keys:
+                            if key in best_realized[b]:
+                                # For target positions, use D3PM completion
+                                # For observed positions, keep dataset values
+                                if target_dict[key][b]:
+                                    hard_target_tokens[key] = best_realized[b][key]
+                                else:
+                                    hard_target_tokens[key] = dataset_tokens_mb[key][b:b+1].clone()
+                            else:
+                                hard_target_tokens[key] = dataset_tokens_mb[key][b:b+1].clone()
+
+                        hard_targets.append({
+                            "tokens": hard_target_tokens,
+                            "observed": {k: v[b:b+1] for k, v in observed_dict.items()},
+                            "target": {k: v[b:b+1] for k, v in target_dict.items()},
+                            "agreement": agreement,
+                        })
+                        total_accepted += 1
+
+                        if max_accept is not None and total_accepted >= max_accept:
+                            logger.info(
+                                f"  Early stop: reached {max_accept} accepted targets "
+                                f"after {super_start + p2_start + b + 1}/{N} samples"
+                            )
+                            done = True
+                            break
+
+                # Periodic logging
+                global_processed = super_start + p2_end
+                if global_processed % 100 < gen_bs or global_processed >= N:
+                    target_str = f"/{max_accept}" if max_accept else ""
+                    logger.info(
+                        f"  Processed {global_processed}/{N}: "
+                        f"accepted={total_accepted}{target_str}/{total_samples}"
+                        f" ({100 * total_accepted / max(total_samples, 1):.1f}%"
+                        f"), mean_agreement="
+                        f"{agreement_sum / max(total_samples, 1):.3f}"
+                    )
+
+            del chunk_tokens, chunk_observed, chunk_target
 
     logger.info(
-        f"Hard target generation complete: {total_accepted}/{total_samples} accepted "
+        f"Hard target generation complete: "
+        f"{total_accepted}/{total_samples} accepted "
         f"({100 * total_accepted / max(total_samples, 1):.1f}%), "
         f"mean_agreement={agreement_sum / max(total_samples, 1):.3f}"
     )
@@ -424,11 +511,7 @@ def fine_tune_d3pm(
 ) -> Dict[str, float]:
     """Fine-tune the D3PM denoiser on collected hard targets.
 
-    Uses the same loss pattern as DiffusionTrainer._compute_loss() but with:
-    - Targets at masked positions = realized tokens (not GT)
-    - Lower learning rate (2e-5 vs 1e-4)
-    - Fewer epochs (3)
-    - Gradient clipping
+    All token positions (temporal + initial + theta) are trained.
 
     Returns:
         Dict with final training metrics.
@@ -446,7 +529,6 @@ def fine_tune_d3pm(
         f"batch_size={ft_config.batch_size}"
     )
 
-    # Set up optimizer (only denoiser is trainable)
     optimizer = AdamW(
         denoiser.parameters(),
         lr=ft_config.learning_rate,
@@ -463,12 +545,10 @@ def fine_tune_d3pm(
         epoch_loss = 0.0
         epoch_steps = 0
 
-        # Simple batching over hard targets
         for batch_start in range(0, len(hard_targets), ft_config.batch_size):
             batch_items = hard_targets[batch_start : batch_start + ft_config.batch_size]
             B = len(batch_items)
 
-            # Stack tokens into batched tensors
             tokens_batch = {
                 key: torch.cat([item["tokens"][key] for item in batch_items], dim=0).to(device)
                 for key in keys
@@ -482,35 +562,27 @@ def fine_tune_d3pm(
                 for key in keys
             }
 
-            # Sample random timesteps
             t = torch.randint(
                 0, diffusion.schedule.num_timesteps, (B,), device=device
             )
 
-            # Forward diffusion
             noisy_tokens, _ = diffusion.forward_process(
                 tokens_batch, t, mask_dict=target_batch
             )
 
-            # Predict clean tokens
             predicted_logits = denoiser(
                 noisy_tokens, t, observed_dict=observed_batch
             )
 
-            # Compute loss on target positions (same pattern as DiffusionTrainer)
             loss = _compute_refinement_loss(
                 predicted_logits, tokens_batch, target_batch
             )
 
-            # Backward
             optimizer.zero_grad()
             loss.backward()
-
-            # Gradient clipping
             nn.utils.clip_grad_norm_(
                 denoiser.parameters(), ft_config.gradient_clip_norm
             )
-
             optimizer.step()
 
             epoch_loss += loss.item()
@@ -533,11 +605,7 @@ def _compute_refinement_loss(
     target_tokens: Dict[str, torch.Tensor],
     target_mask: Dict[str, torch.BoolTensor],
 ) -> torch.Tensor:
-    """Cross-entropy loss on target (masked) positions.
-
-    Simplified version of DiffusionTrainer._compute_loss() without SNR/vocab
-    weighting — refinement is a focused fine-tuning step.
-    """
+    """Cross-entropy loss on target (masked) positions."""
     B = next(iter(predicted_logits.values())).shape[0]
     device = next(iter(predicted_logits.values())).device
     per_sample_loss = torch.zeros(B, device=device)
@@ -585,33 +653,29 @@ def save_refinement_checkpoint(
 
 def main(args):
     """Main refinement entry point."""
-    # Load config
     config = load_experiment_config(args.config, RefinementConfig)
 
-    # CLI overrides
     if args.max_samples is not None:
         config = config.model_copy(update={"max_samples": args.max_samples})
     if args.device is not None:
         config = config.model_copy(update={"device": args.device})
 
-    # Set seed
     torch.manual_seed(config.seed)
 
-    # Create output directory
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("=" * 60)
-    logger.info("D3PM Offline Hard-Target Refinement")
+    logger.info("D3PM Offline Hard-Target Refinement (Integrated)")
     logger.info("=" * 60)
     logger.info(f"  D3PM checkpoint:     {config.d3pm_checkpoint}")
-    logger.info(f"  MNO checkpoint:      {config.mno_checkpoint}")
+    logger.info(f"  Rollout source:      {config.mno_checkpoint or 'GT simulator'}")
     logger.info(f"  Tokenizer checkpoint:{config.tokenizer_checkpoint}")
-    logger.info(f"  CVAE checkpoint:     {config.cvae_checkpoint}")
     logger.info(f"  Dataset:             {config.dataset_path}")
     logger.info(f"  Refinement cycles:   {config.num_refinement_cycles}")
     logger.info(f"  Mask probability:    {config.mask_probability}")
     logger.info(f"  Quality threshold:   {config.quality_filter.min_observed_agreement}")
+    logger.info(f"  D3PM candidates:     {config.d3pm_n_candidates}")
     logger.info(f"  Device:              {config.device}")
 
     # Load models
@@ -619,18 +683,16 @@ def main(args):
     diffusion, denoiser, _ = load_d3pm_and_denoiser(
         config.d3pm_checkpoint, config.device
     )
-    mno = load_mno(config.mno_checkpoint, config.device)
+    rollout_provider = build_rollout_provider(
+        mno_checkpoint=config.mno_checkpoint,
+        tokenizer_checkpoint=config.tokenizer_checkpoint,
+        device=config.device,
+        dataset_config_path=config.dataset_config_path,
+    )
     tokenizer = load_tokenizer(config.tokenizer_checkpoint)
+    decoder = IntegratedTokenDecoder(tokenizer)
 
-    # Load CVAE for temporal-token → (theta, IC) decoding
-    if config.cvae_checkpoint is None:
-        raise ValueError(
-            "cvae_checkpoint is required in RefinementConfig. "
-            "Train a CVAE first: spinlock train-cvae --config configs/token_conditioned_cvae.yaml"
-        )
-    cvae = load_cvae(config.cvae_checkpoint, config.device)
-
-    # Load dataset with GT temporal features for temporal-only tokenization
+    # Load dataset
     logger.info("\nLoading dataset...")
     dataset = SpinlockDataset(
         config.dataset_path,
@@ -646,24 +708,22 @@ def main(args):
         logger.info(f"Refinement Cycle {cycle + 1}/{config.num_refinement_cycles}")
         logger.info(f"{'='*60}")
 
-        # Generate hard targets
         logger.info("\nGenerating hard targets...")
         hard_targets = generate_hard_targets(
-            dataset, diffusion, denoiser, mno, tokenizer, cvae, config
+            dataset, diffusion, denoiser, rollout_provider, tokenizer, decoder, config
         )
 
-        # Fine-tune
         logger.info("\nFine-tuning D3PM on hard targets...")
         ft_metrics = fine_tune_d3pm(diffusion, denoiser, hard_targets, config)
+
         all_metrics.append({
             "cycle": cycle + 1,
             "num_accepted": len(hard_targets),
             **ft_metrics,
         })
 
-        # Save checkpoint
         save_refinement_checkpoint(
-            diffusion, denoiser, cycle + 1, ft_metrics, config, output_dir
+            diffusion, denoiser, cycle + 1, ft_metrics, config, output_dir,
         )
 
     # Summary
@@ -676,17 +736,13 @@ def main(args):
             f"loss={m['loss']:.4f}"
         )
 
-    # Save final checkpoint
     final_path = output_dir / "refinement_final.pt"
-    torch.save(
-        {
-            "denoiser_state_dict": denoiser.state_dict(),
-            "diffusion_state_dict": diffusion.state_dict(),
-            "all_metrics": all_metrics,
-            "refinement_config": config.model_dump(),
-        },
-        final_path,
-    )
+    torch.save({
+        "denoiser_state_dict": denoiser.state_dict(),
+        "diffusion_state_dict": diffusion.state_dict(),
+        "all_metrics": all_metrics,
+        "refinement_config": config.model_dump(),
+    }, final_path)
     logger.info(f"\nFinal refined model saved: {final_path}")
 
 

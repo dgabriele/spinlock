@@ -1,0 +1,65 @@
+# Token-Conditioned CVAE for Lenia v1 — Spectral Grid Decoder + Attention Pooling
+#
+# Key changes from baseline:
+#   pooling: "mean" → "attention" (learned per-group attention weights)
+#   Spectral grid decoder: 16×16 Fourier modes per channel via iFFT
+#
+# Rationale: Mean pooling over 90 temporal groups treats all equally, washing
+# out high-information groups with noise from low-information ones. Attention
+# pooling (MIL-style) learns per-group importance scores, upweighting
+# discriminative groups and suppressing uninformative ones.
+#
+# Spectral decoder: appropriate for Lenia (periodic BCs, smooth dynamics).
+
+model:
+  latent_dim: 256
+  condition:
+    group_mlp_hidden_dim: 128
+    group_mlp_output_dim: 64
+    pooling: "attention"
+  target_encoder:
+    theta_hidden_dim: 256
+    ic_hidden_dim: 256
+    ic_channels: [32, 64, 128]
+    dropout: 0.1
+  encoder:
+    hidden_dims: [512, 256]
+    dropout: 0.1
+  param_decoder:
+    hidden_dims: [256, 128]
+    dropout: 0.1
+  grid_decoder:
+    type: "spectral"
+    num_modes: 16
+    spectral_hidden_dims: [256, 128]
+    dropout: 0.1
+
+training:
+  num_epochs: 200
+  batch_size: 512
+  learning_rate: 1.0e-3
+  beta_schedule: "linear"
+  beta_max: 0.5
+  beta_warmup_epochs: 50
+  free_bits: 2.0
+  optimizer: "adam"
+  weight_decay: 0.0
+  scheduler_type: "cosine"
+  grad_clip_norm: 1.0
+
+data:
+  vq_checkpoint: "checkpoints/lenia/vq/v1/vq_tokenizer_latest.pt"
+  dataset: "datasets/ds_lenia_v1.h5"
+  tokenized_dataset: "datasets/ds_lenia_v1_temporal_resolution.h5"
+  temporal_keys_only: true
+  truncation_length: 512
+  max_samples: 1000000  # 1M of 1.5M (333K params × 3 realizations; full 1.5M OOMs)
+  train_split: 0.9
+  val_split: 0.1
+
+validation:
+  freq_epochs: 5
+
+output_dir: "checkpoints/lenia/cvae/v1_spectral"
+device: "cuda"
+seed: 42

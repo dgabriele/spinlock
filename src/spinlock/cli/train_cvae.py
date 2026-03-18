@@ -69,6 +69,18 @@ class TrainCVAECommand(CLICommand):
             help="Output directory for checkpoints and logs",
         )
 
+        # Data overrides
+        parser.add_argument(
+            "--truncation-length",
+            type=int,
+            help="Filter to this truncation length from multi-trunc pretokenized HDF5",
+        )
+        parser.add_argument(
+            "--max-samples",
+            type=int,
+            help="Limit total samples before splitting (for large datasets)",
+        )
+
         # Training overrides
         parser.add_argument(
             "--num-epochs",
@@ -165,7 +177,13 @@ class TrainCVAECommand(CLICommand):
                 output_dir=args.output_dir,
             )
 
-        # Apply CLI overrides
+        # Apply CLI overrides — data
+        if hasattr(args, 'truncation_length') and args.truncation_length is not None:
+            config.data.truncation_length = args.truncation_length
+        if hasattr(args, 'max_samples') and args.max_samples is not None:
+            config.data.max_samples = args.max_samples
+
+        # Apply CLI overrides — training
         if args.num_epochs is not None:
             config.training.num_epochs = args.num_epochs
         if args.batch_size is not None:

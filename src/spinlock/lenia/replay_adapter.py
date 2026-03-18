@@ -67,6 +67,11 @@ class LeniaReplayAdapter:
 
         self.simulator = LeniaSimulator(grid_size=grid_size, device=device, compile=compile)
 
+        # Cache of last successful sub-batch size per timestep count.
+        # Avoids repeated OOM + empty_cache() cycles when GPU memory is
+        # stable across batches (the common case during training).
+        self._sub_batch_cache: dict[int, int] = {}
+
     @classmethod
     def from_config(
         cls,
@@ -360,7 +365,14 @@ class LeniaReplayAdapter:
         """
         params_np = self._to_numpy_batch(params_batch)
         B = params_np.shape[0]
-        eff_batch = self._effective_max_gpu_batch(timesteps)
+
+        # Use cached sub-batch size if available, otherwise estimate from
+        # free GPU memory.  The cache prevents repeated OOM + empty_cache()
+        # cycles that waste ~50-100ms per occurrence.
+        if timesteps in self._sub_batch_cache:
+            eff_batch = self._sub_batch_cache[timesteps]
+        else:
+            eff_batch = self._effective_max_gpu_batch(timesteps)
 
         # Pre-allocate result on CPU to avoid O(num_chunks) intermediate
         # tensors and the expensive torch.cat copy at the end.
@@ -378,6 +390,8 @@ class LeniaReplayAdapter:
                     timesteps, return_all_steps,
                 )
                 start = end  # advance on success
+                # Cache the working size for this timestep count
+                self._sub_batch_cache[timesteps] = eff_batch
             except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
                 old = eff_batch

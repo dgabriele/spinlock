@@ -24,9 +24,6 @@ feature_source: "learned"
 cno_config_path: "configs/50k_baseline/50k_baseline.yaml"
 replayer_cache_size: 16
 
-# ── Temporal-only mode ───────────────────────────────────────
-temporal_only: true
-
 # ═══════════════════════════════════════════════════════════════
 # Encoder Configuration
 # ═══════════════════════════════════════════════════════════════

@@ -63,6 +63,10 @@ class VectorQuantizer(nn.Module):
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
         self.embedding.weight.data.uniform_(-1.0 / num_embeddings, 1.0 / num_embeddings)
 
+        # Usage counter: accumulates assignment counts between dead code resets.
+        # Used by both EMA and gradient modes for dead code detection.
+        self.register_buffer("_usage_count", torch.zeros(num_embeddings))
+
         if use_ema:
             # EMA statistics for codebook updates
             self.register_buffer("ema_cluster_size", torch.zeros(num_embeddings))
@@ -98,6 +102,10 @@ class VectorQuantizer(nn.Module):
 
         # Quantize: look up embeddings
         quantized = self.embedding(encoding_indices)  # [N, D]
+
+        if self.training:
+            # Accumulate assignment counts for dead code detection
+            self._usage_count.add_(encodings.sum(0))
 
         if self.training and self.use_ema:
             # EMA codebook updates (only in training)
@@ -178,63 +186,60 @@ class VectorQuantizer(nn.Module):
         percentile_threshold: float = 10.0,
         max_reset_fraction: float = 0.25,
     ) -> int:
-        """Reset codes below Nth percentile of EMA cluster sizes with reset cap.
+        """Reset underused codebook entries by reinitializing from encoder outputs.
 
-        This method identifies "dead codes" (codebook entries with EMA cluster
-        sizes below a percentile threshold) and reinitializes them with random
-        data points. Uses EMA statistics for more stable detection compared to
-        batch-based counting.
+        Identifies "dead codes" (entries below a usage percentile) and replaces
+        them with random samples from the current batch.  Works in both EMA
+        mode (uses ``ema_cluster_size``) and gradient mode (uses accumulated
+        ``_usage_count`` since last reset).
 
         Args:
-            data_tensor: Input data tensor [N, D] for reinitialization samples
-            percentile_threshold: Percentile threshold (0-100). Codes with EMA
-                cluster sizes below this percentile are reset.
-                Default 10.0 = reset bottom 10% of codes.
-            max_reset_fraction: Maximum fraction of codebook to reset at once
-                to avoid training disruption. Default 0.25 = max 25% reset.
+            data_tensor: Encoder output tensor [N, D] for reinitialization
+            percentile_threshold: Percentile (0-100) below which codes are
+                considered dead.  Default 10.0 = bottom 10%.
+            max_reset_fraction: Max fraction of codebook to reset per call.
 
         Returns:
             Number of codes that were reset
         """
-        if not self.use_ema:
-            return 0  # Only applies to EMA-based training
-
         with torch.no_grad():
-            # Use EMA cluster sizes (more stable than batch counting)
-            ema_sizes = self.ema_cluster_size.clone()
+            # Select usage signal: EMA cluster sizes or accumulated counts
+            usage = (
+                self.ema_cluster_size.clone()
+                if self.use_ema
+                else self._usage_count.clone()
+            )
 
-            # Compute percentile threshold from EMA distribution
-            threshold_value = torch.quantile(ema_sizes, percentile_threshold / 100.0)
+            # Identify dead codes (at or below percentile threshold)
+            threshold = torch.quantile(usage, percentile_threshold / 100.0)
+            dead_codes = (usage <= threshold).nonzero(as_tuple=True)[0]
 
-            # Find dead codes (at or below percentile threshold)
-            # Use <= to handle cases where many codes have identical EMA sizes
-            dead_mask = ema_sizes <= threshold_value
-            dead_codes_all = dead_mask.nonzero(as_tuple=True)[0]
-
-            # Cap number of resets to avoid training disruption
+            # Cap resets to avoid training disruption
             max_reset = int(self.num_embeddings * max_reset_fraction)
-            if len(dead_codes_all) > max_reset:
-                # Sort by EMA size and reset the lowest ones first
-                sorted_indices = torch.argsort(ema_sizes[dead_codes_all])
-                dead_codes = dead_codes_all[sorted_indices[:max_reset]]
-            else:
-                dead_codes = dead_codes_all
+            if len(dead_codes) > max_reset:
+                sorted_idx = torch.argsort(usage[dead_codes])
+                dead_codes = dead_codes[sorted_idx[:max_reset]]
 
             if len(dead_codes) > 0:
-                # Get random samples from current batch for reinitialization
                 flat_input = data_tensor.view(-1, self.embedding_dim)
-                random_indices = torch.randint(
-                    0, len(flat_input), (len(dead_codes),), device=data_tensor.device
+                rand_idx = torch.randint(
+                    0, len(flat_input), (len(dead_codes),),
+                    device=data_tensor.device,
                 )
-                random_embeddings = flat_input[random_indices]
+                new_embeddings = flat_input[rand_idx]
 
-                # Update codebook and EMA buffers
-                self.embedding.weight.data[dead_codes] = random_embeddings
-                self.ema_w[dead_codes] = random_embeddings
+                # Reinitialize codebook entries
+                self.embedding.weight.data[dead_codes] = new_embeddings
 
-                # Reset to median cluster size (not 1.0 - prevents immediate re-death)
-                median_size = ema_sizes.median()
-                self.ema_cluster_size[dead_codes] = median_size
+                # Update mode-specific bookkeeping
+                median_usage = usage.median()
+                if self.use_ema:
+                    self.ema_w[dead_codes] = new_embeddings
+                    self.ema_cluster_size[dead_codes] = median_usage
+                self._usage_count[dead_codes] = median_usage
+
+            # Reset accumulated counts for next interval
+            self._usage_count.zero_()
 
             return int(len(dead_codes))
 
