@@ -19,7 +19,7 @@ mask_probability: 0.5
 d3pm_start_step: null   # Full sampling
 
 d3pm_n_candidates: 4    # 4 stochastic denoising passes per sample
-max_accepted_targets: 5000
+max_accepted_targets: 1000
 generation_batch_size: 48
 
 quality_filter:
@@ -27,8 +27,8 @@ quality_filter:
 
 fine_tuning:
   learning_rate: 2.0e-5
-  num_epochs: 3
-  batch_size: 32
+  num_epochs: 5
+  batch_size: 128
   gradient_clip_norm: 1.0
   weight_decay: 1.0e-5
 

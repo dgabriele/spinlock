@@ -60,19 +60,19 @@ curriculum:
   stages:
     - name: "joint_random"
       strategy: "random"
-      num_epochs: 4
+      num_epochs: 8
       mask_probability: 0.5
       # Joint distribution learning — focal loss focuses on divergent tokens
     - name: "inverse_generation"
       strategy: "random"
-      num_epochs: 4
+      num_epochs: 8
       mask_probability: 0.4
       always_masked_families: ["initial", "theta"]
       learning_rate: 5.0e-5
       # Temporal randomly masked; IC+theta always targets
     - name: "consolidation"
       strategy: "random"
-      num_epochs: 2
+      num_epochs: 4
       mask_probability: 0.5
       learning_rate: 2.0e-5
       # Back to pure random to prevent catastrophic forgetting

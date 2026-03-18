@@ -536,6 +536,7 @@ def generate_novel_sobol_targets(
     decoder: IntegratedTokenDecoder,
     config: RefinementConfig,
     token_filter=None,
+    cycle: int = 0,
 ) -> List[Dict]:
     """Generate hard targets from novel Sobol parameters + D3PM temporal completion.
 
@@ -578,11 +579,12 @@ def generate_novel_sobol_targets(
         all_keys = full_keys
         temporal_keys = full_temporal_keys
 
-    # Sobol sampler with DIFFERENT seed from dataset generation (seed=42 → seed=137)
+    # Sobol sampler with different seed per cycle (avoids resampling same configs)
     n_channels = 3  # Lenia channels
     sobol_dim = sobol_expected_dims(n_channels, DEFAULT_RANGES)
+    cycle_seed = config.seed + 95 + cycle * 1000
     sobol_sampler = StratifiedSobolSampler(
-        dimensionality=sobol_dim, scramble=True, seed=config.seed + 95,
+        dimensionality=sobol_dim, scramble=True, seed=cycle_seed,
     )
 
     # Fourier IC generator (theta-coherent ICs)
@@ -592,7 +594,7 @@ def generate_novel_sobol_targets(
     done = False
 
     logger.info(
-        f"Novel-Sobol generation: seed_offset=+95, "
+        f"Novel-Sobol generation: cycle={cycle}, seed={cycle_seed}, "
         f"up to {n_attempts} proposals, target {max_accept} accepted"
     )
 
@@ -619,7 +621,7 @@ def generate_novel_sobol_targets(
             batch_size=B,
             n_channels=n_channels,
             grid_size=128,
-            seed=config.seed + 95 + batch_start,
+            seed=cycle_seed + batch_start,
             device=torch.device(device),
             kernel_radii=batch_tensors.radii,
         )  # [B, C, H, W]
@@ -1024,7 +1026,7 @@ def main(args):
         if unconditional:
             hard_targets = generate_novel_sobol_targets(
                 diffusion, denoiser, rollout_provider, tokenizer, decoder, config,
-                token_filter=token_filter,
+                token_filter=token_filter, cycle=cycle,
             )
         else:
             hard_targets = generate_hard_targets(
