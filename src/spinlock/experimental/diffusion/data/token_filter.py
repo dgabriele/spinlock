@@ -66,33 +66,34 @@ class TokenFilter:
         with h5py.File(tokenized_path, "r") as f:
             all_keys = sorted(f["tokens"].keys())
 
-            # Select truncation-specific keys
-            keys = _select_truncation_keys(all_keys, truncation_length)
+            # Select truncation-specific keys and remap to base form
+            hdf5_keys, remap = _select_truncation_keys(all_keys, truncation_length)
 
-            # Compute per-key entropy and mode
+            # Compute per-key entropy and mode (using HDF5 keys for data access)
             key_stats = {}
-            for key in keys:
-                vals = f["tokens"][key][:]
+            for hdf5_key in hdf5_keys:
+                base_key = remap[hdf5_key]
+                vals = f["tokens"][hdf5_key][:]
                 counts = Counter(vals.tolist())
                 total = len(vals)
                 probs = np.array([c / total for c in counts.values()])
                 entropy = max(0.0, -np.sum(probs * np.log2(probs + 1e-15)))
                 mode_val = counts.most_common(1)[0][0]
-                key_stats[key] = {"entropy": entropy, "mode": int(mode_val)}
+                key_stats[base_key] = {"entropy": entropy, "mode": int(mode_val)}
 
         # Determine threshold
         entropies = np.array([s["entropy"] for s in key_stats.values()])
         if threshold is None:
             threshold = _otsu_threshold(entropies)
 
-        # Split
+        # Split (using base keys that match category_level_info)
         active_keys = []
         frozen_modes = {}
-        for key, stats in key_stats.items():
+        for base_key, stats in key_stats.items():
             if stats["entropy"] > threshold:
-                active_keys.append(key)
+                active_keys.append(base_key)
             else:
-                frozen_modes[key] = stats["mode"]
+                frozen_modes[base_key] = stats["mode"]
 
         logger.info(
             f"TokenFilter: Otsu threshold={threshold:.4f} bits, "
@@ -201,20 +202,33 @@ class TokenFilter:
 
 def _select_truncation_keys(
     all_keys: List[str], truncation_length: Optional[int]
-) -> List[str]:
-    """Select keys for a specific truncation length from multi-trunc HDF5."""
+) -> Tuple[List[str], Dict[str, str]]:
+    """Select keys for a specific truncation length and remap to base form.
+
+    Returns:
+        Tuple of (hdf5_keys, remap) where remap maps hdf5_key → base_key.
+        Base keys have truncation tags stripped (e.g.,
+        temporal_group_0_trunc_T512_L0 → temporal_group_0_L0).
+    """
+    import re
+
     if truncation_length is None:
-        return all_keys
+        identity = {k: k for k in all_keys}
+        return all_keys, identity
 
     trunc_tag = f"_trunc_T{truncation_length:03d}_"
+    trunc_re = re.compile(r"_trunc_T\d+_")
     selected = []
+    remap = {}
     for k in all_keys:
         if "_trunc_T" in k:
             if trunc_tag in k:
                 selected.append(k)
+                remap[k] = trunc_re.sub("_", k)
         else:
             selected.append(k)
-    return selected
+            remap[k] = k
+    return selected, remap
 
 
 def _otsu_threshold(values: np.ndarray) -> float:
