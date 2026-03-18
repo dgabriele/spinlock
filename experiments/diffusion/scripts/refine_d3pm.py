@@ -790,7 +790,71 @@ def generate_novel_sobol_targets(
         f"agreement: mean={ag.mean():.3f} std={ag.std():.3f} "
         f"min={ag.min():.3f} max={ag.max():.3f}"
     )
+    _log_agreement_distribution(ag, threshold)
     return hard_targets
+
+
+def _log_agreement_distribution(
+    agreements: np.ndarray, threshold: float, n_bins: int = 5,
+):
+    """Log a data-driven bucketed frequency distribution of agreement values.
+
+    Uses Jenks natural breaks (Fisher-Caspall) to find optimal bin edges
+    that minimize within-class variance, then logs counts per bin.
+    """
+    if len(agreements) < n_bins:
+        return
+
+    # Jenks natural breaks via dynamic programming (1D k-means)
+    sorted_vals = np.sort(agreements)
+    n = len(sorted_vals)
+
+    # Compute sum-of-squared-deviations matrix
+    # ssd[i][j] = SSD of sorted_vals[i:j+1]
+    def _ssd(arr):
+        return np.sum((arr - arr.mean()) ** 2) if len(arr) > 0 else 0.0
+
+    # DP: find k breaks minimizing total SSD
+    # For small n_bins this is fast enough with a greedy approach
+    # Use quantile-based initialization then refine
+    breaks = [sorted_vals[0]]
+    for b in range(1, n_bins):
+        breaks.append(np.quantile(sorted_vals, b / n_bins))
+    breaks.append(sorted_vals[-1] + 1e-6)
+
+    # Refine: iterate to find better break points (1D k-means style)
+    for _ in range(20):
+        # Assign to bins
+        assignments = np.digitize(sorted_vals, breaks[1:-1])
+        # Recompute breaks as midpoints between adjacent cluster boundaries
+        new_breaks = [sorted_vals[0]]
+        for b in range(n_bins):
+            cluster = sorted_vals[assignments == b]
+            if len(cluster) > 0:
+                new_breaks.append(cluster.max() + 1e-6)
+            else:
+                new_breaks.append(new_breaks[-1])
+        if len(new_breaks) == len(breaks) and all(
+            abs(a - b) < 1e-6 for a, b in zip(new_breaks, breaks)
+        ):
+            break
+        breaks = new_breaks
+
+    # Build histogram with final breaks
+    bin_edges = sorted(set(breaks))
+    if len(bin_edges) < 2:
+        return
+
+    logger.info("  Agreement distribution:")
+    for i in range(len(bin_edges) - 1):
+        lo, hi = bin_edges[i], bin_edges[i + 1]
+        count = np.sum((agreements >= lo) & (agreements < hi))
+        pct = 100 * count / len(agreements)
+        bar = "#" * int(pct / 2)
+        accepted = "✓" if lo >= threshold else " "
+        logger.info(
+            f"    {accepted} [{lo:.3f}-{hi:.3f}): {count:5d} ({pct:5.1f}%) {bar}"
+        )
 
 
 # ── Fine-tuning ──────────────────────────────────────────────────────────────
