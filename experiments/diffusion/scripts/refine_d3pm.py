@@ -861,7 +861,7 @@ def fine_tune_d3pm(
             )
 
             loss = _compute_refinement_loss(
-                predicted_logits, tokens_batch, target_batch
+                predicted_logits, tokens_batch, target_batch,
             )
 
             optimizer.zero_grad()
@@ -890,8 +890,13 @@ def _compute_refinement_loss(
     predicted_logits: Dict[str, torch.Tensor],
     target_tokens: Dict[str, torch.Tensor],
     target_mask: Dict[str, torch.BoolTensor],
+    focal_gamma: float = 2.0,
 ) -> torch.Tensor:
-    """Cross-entropy loss on target (masked) positions."""
+    """Focal cross-entropy loss on target (masked) positions.
+
+    Uses the same focal loss as training to avoid wasting gradient on
+    shared tokens that the model already predicts with high confidence.
+    """
     B = next(iter(predicted_logits.values())).shape[0]
     device = next(iter(predicted_logits.values())).device
     per_sample_loss = torch.zeros(B, device=device)
@@ -903,6 +908,15 @@ def _compute_refinement_loss(
         mask = target_mask[key].float()     # [B]
 
         loss = F.cross_entropy(logits, targets, reduction="none")  # [B]
+
+        # Focal weighting: down-weight easy predictions
+        if focal_gamma > 0:
+            with torch.no_grad():
+                p_t = F.softmax(logits, dim=-1)
+                p_correct = p_t.gather(1, targets.unsqueeze(1)).squeeze(1)
+                focal_weight = (1 - p_correct) ** focal_gamma
+            loss = loss * focal_weight
+
         per_sample_loss = per_sample_loss + loss * mask
         per_sample_count = per_sample_count + mask
 
