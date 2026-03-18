@@ -92,6 +92,9 @@ class CurriculumDiffusionTrainer(DiffusionTrainer):
     def train_curriculum(self) -> Dict[str, Any]:
         """Train through all curriculum stages.
 
+        Supports resume: if loaded from a checkpoint with ``current_stage_idx``,
+        stages up to and including that index are skipped.
+
         Returns:
             Dict with complete training history across all stages
         """
@@ -100,12 +103,25 @@ class CurriculumDiffusionTrainer(DiffusionTrainer):
         logger.info("=" * 70)
 
         total_epochs = sum(stage.num_epochs for stage in self.curriculum_stages)
+        # Determine resume start: skip completed stages
+        resume_from_stage = getattr(self, '_resume_stage_idx', -1) + 1
+        if resume_from_stage > 0:
+            logger.info(
+                f"Resuming from stage {resume_from_stage + 1} "
+                f"(skipping {resume_from_stage} completed stages)"
+            )
+
         logger.info(
             f"Total stages: {len(self.curriculum_stages)}, "
             f"total epochs: {total_epochs}"
         )
 
         for stage_idx, stage in enumerate(self.curriculum_stages):
+            # Skip completed stages on resume
+            if stage_idx < resume_from_stage:
+                logger.info(f"Skipping completed stage {stage_idx + 1}: {stage.name}")
+                continue
+
             self.current_stage_idx = stage_idx
             logger.info("\n" + "=" * 70)
             logger.info(
@@ -125,9 +141,8 @@ class CurriculumDiffusionTrainer(DiffusionTrainer):
                 self._set_learning_rate(stage.learning_rate)
                 logger.info(f"Learning rate set to {stage.learning_rate}")
 
-            # Train for this stage
-            stage_start_epoch = self.current_epoch
-            stage_end_epoch = stage_start_epoch + stage.num_epochs
+            # Reset epoch counter so train(num_epochs=N) runs range(0, N)
+            self.current_epoch = 0
 
             stage_metrics = self.train(num_epochs=stage.num_epochs)
 
@@ -136,8 +151,7 @@ class CurriculumDiffusionTrainer(DiffusionTrainer):
                 'stage_idx': stage_idx,
                 'stage_name': stage.name,
                 'strategy': str(stage.strategy),
-                'start_epoch': stage_start_epoch,
-                'end_epoch': stage_end_epoch,
+                'num_epochs': stage.num_epochs,
                 'metrics': stage_metrics,
             })
 
@@ -223,7 +237,7 @@ class CurriculumDiffusionTrainer(DiffusionTrainer):
             param_group['lr'] = lr
 
     def save_stage_checkpoint(self, stage: CurriculumStage):
-        """Save checkpoint at end of stage."""
+        """Save checkpoint at end of stage (resumable)."""
         checkpoint = {
             'epoch': self.current_epoch,
             'global_step': self.global_step,
@@ -234,16 +248,37 @@ class CurriculumDiffusionTrainer(DiffusionTrainer):
             'best_val_loss': self.best_val_loss,
             'config': self.config,
             'history': self.history,
-            'stage_idx': self.current_stage_idx,
+            'curriculum_stage_idx': self.current_stage_idx,
             'stage_name': stage.name,
             'stage_history': self.stage_history,
         }
 
-        prefix = self.config['output']['checkpoint_prefix']
+        if isinstance(self.config, dict):
+            prefix = self.config['output']['checkpoint_prefix']
+        else:
+            prefix = self.config.output.checkpoint_prefix
         path = self.output_dir / f"{prefix}_stage_{stage.name}.pt"
 
         torch.save(checkpoint, path)
         logger.info(f"Stage checkpoint saved: {path}")
+
+    def load_checkpoint(self, checkpoint_path):
+        """Load checkpoint with curriculum stage awareness.
+
+        Restores model weights and sets ``_resume_stage_idx`` so
+        ``train_curriculum()`` skips completed stages.
+        """
+        super().load_checkpoint(checkpoint_path)
+
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        self._resume_stage_idx = checkpoint.get('curriculum_stage_idx', -1)
+        self.stage_history = checkpoint.get('stage_history', [])
+
+        if self._resume_stage_idx >= 0:
+            logger.info(
+                f"Curriculum resume: completed through stage {self._resume_stage_idx + 1} "
+                f"({checkpoint.get('stage_name', '?')})"
+            )
 
 
 # Predefined curriculum templates

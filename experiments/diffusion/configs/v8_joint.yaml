@@ -41,7 +41,7 @@ model:
   hierarchical_guidance_mode: "per_category"
 
 training:
-  batch_size: 32
+  batch_size: 128
   num_epochs: 10        # reduced — converges in 1-2 epochs with focal loss
   learning_rate: 1.0e-4
   weight_decay: 1.0e-5
