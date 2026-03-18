@@ -81,6 +81,7 @@ class DiffusionTrainer:
 
         # Training state
         self.current_epoch = 0
+        self.global_epoch = 0  # never resets (curriculum-safe)
         self.global_step = 0
         self.best_val_loss = float('inf')
 
@@ -228,6 +229,7 @@ class DiffusionTrainer:
         try:
             for epoch in range(start_epoch, num_epochs):
                 self.current_epoch = epoch + 1
+                self.global_epoch += 1
 
                 # Train epoch
                 train_metrics = self.train_epoch()
@@ -642,6 +644,7 @@ class DiffusionTrainer:
         """
         checkpoint = {
             'epoch': self.current_epoch,
+            'global_epoch': self.global_epoch,
             'global_step': self.global_step,
             'denoiser_state_dict': self.denoiser.state_dict(),
             'diffusion_state_dict': self.diffusion.state_dict(),
@@ -657,7 +660,7 @@ class DiffusionTrainer:
         if is_best:
             path = self.output_dir / f"{prefix}_best.pt"
         else:
-            path = self.output_dir / f"{prefix}_epoch{self.current_epoch}.pt"
+            path = self.output_dir / f"{prefix}_epoch{self.global_epoch}.pt"
 
         torch.save(checkpoint, path)
         logger.info(f"Checkpoint saved: {path}")
@@ -678,6 +681,7 @@ class DiffusionTrainer:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
         self.current_epoch = checkpoint['epoch']
+        self.global_epoch = checkpoint.get('global_epoch', checkpoint['epoch'])
         self.global_step = checkpoint['global_step']
         self.best_val_loss = checkpoint['best_val_loss']
         self.history = checkpoint['history']
