@@ -395,7 +395,8 @@ def generate_hard_targets(
                             logger.debug(f"Candidate {candidate_idx}: rollout failed: {e}")
                             continue
 
-                    # Retokenize (pass IC+theta to avoid encoder errors, but only temporal tokens used)
+                    # Retokenize all families from rollout
+                    # (IC+theta passed to satisfy encoder, but only temporal used for scoring)
                     with torch.no_grad():
                         all_realized = tokenizer.tokenize(
                             temporal_raw=trajectories,
@@ -405,10 +406,13 @@ def generate_hard_targets(
                     del trajectories
                     realized_tokens = {
                         k: v.to(device) for k, v in all_realized.items()
-                        if k in temporal_keys
+                        if k in all_keys
                     }
 
-                    # Score: agreement on observed temporal positions
+                    # Score: temporal observed-position agreement ONLY
+                    # IC/theta roundtrip is NOT scored — theta→behavior is many-to-many
+                    # and IC is the diversity source. The right question is: "does
+                    # the D3PM's (theta, IC) produce dynamics matching observed tokens?"
                     for b in range(B):
                         num_observed = 0
                         num_agree = 0
