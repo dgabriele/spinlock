@@ -42,15 +42,16 @@ model:
 
 training:
   batch_size: 32
-  num_epochs: 30
+  num_epochs: 10        # reduced — converges in 1-2 epochs with focal loss
   learning_rate: 1.0e-4
   weight_decay: 1.0e-5
   gradient_clip_norm: 1.0
   use_snr_weighting: true
   use_vocab_size_weighting: true
+  focal_gamma: 2.0      # down-weight shared tokens (70-80% of positions)
   lr_scheduler:
     type: "cosine"
-    warmup_epochs: 2
+    warmup_epochs: 1
     min_lr: 1.0e-6
 
 curriculum:
@@ -58,19 +59,19 @@ curriculum:
   stages:
     - name: "joint_random"
       strategy: "random"
-      num_epochs: 15
+      num_epochs: 4
       mask_probability: 0.5
-      # No family overrides — pure joint distribution learning
+      # Joint distribution learning — focal loss focuses on divergent tokens
     - name: "inverse_generation"
       strategy: "random"
-      num_epochs: 10
+      num_epochs: 4
       mask_probability: 0.4
       always_masked_families: ["initial", "theta"]
       learning_rate: 5.0e-5
       # Temporal randomly masked; IC+theta always targets
     - name: "consolidation"
       strategy: "random"
-      num_epochs: 5
+      num_epochs: 2
       mask_probability: 0.5
       learning_rate: 2.0e-5
       # Back to pure random to prevent catastrophic forgetting

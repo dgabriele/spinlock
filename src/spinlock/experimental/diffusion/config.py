@@ -342,6 +342,15 @@ class TrainingConfig(BaseModel):
     gradient_clip_norm: float = Field(default=1.0, gt=0.0)
     use_snr_weighting: bool = False
     use_vocab_size_weighting: bool = False
+    focal_gamma: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Focal loss gamma. 0 = standard CE. γ>0 down-weights easy predictions: "
+            "loss_i = -(1-p_i)^γ · log(p_i). γ=2.0 recommended when rollouts share "
+            "70-80% of tokens, amplifying gradient on the 20-30% that differ."
+        ),
+    )
     physics_loss: PhysicsLossConfig = Field(default_factory=PhysicsLossConfig)
 
     lr_scheduler: LRSchedulerConfig = Field(default_factory=LRSchedulerConfig)

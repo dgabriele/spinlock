@@ -108,6 +108,11 @@ class DiffusionTrainer:
         # Cache graded schedule flag
         self._graded_enabled = bool(self.diffusion._key_scale_factors)
 
+        # Focal loss gamma (0 = standard CE)
+        self._focal_gamma = config.training.focal_gamma
+        if self._focal_gamma > 0:
+            logger.info(f"Focal loss enabled: gamma={self._focal_gamma}")
+
         # Optional wandb logging
         self.use_wandb = config.training.use_wandb
         if self.use_wandb:
@@ -236,7 +241,7 @@ class DiffusionTrainer:
                 if epoch % self.config.training.val_frequency == 0:
                     val_metrics = self.validate()
 
-                    # Log
+                    # Log headline metrics
                     val_log = (
                         f"Epoch {self.current_epoch}/{num_epochs}: "
                         f"train_loss={train_metrics['loss']:.4f}, "
@@ -246,6 +251,22 @@ class DiffusionTrainer:
                     if 'physics_loss' in val_metrics:
                         val_log += f", val_phys={val_metrics['physics_loss']:.6f}"
                     logger.info(val_log)
+
+                    # Log diagnostic breakdowns
+                    noise_parts = []
+                    for band in ['low', 'mid', 'high']:
+                        k = f'acc_{band}_noise'
+                        if k in val_metrics:
+                            noise_parts.append(f"{band}={val_metrics[k]:.4f}")
+                    if noise_parts:
+                        logger.info(f"  Noise bands: {', '.join(noise_parts)}")
+
+                    family_parts = []
+                    for k, v in sorted(val_metrics.items()):
+                        if k.startswith('acc_') and not k.endswith('_noise') and k != 'accuracy':
+                            family_parts.append(f"{k[4:]}={v:.4f}")
+                    if family_parts:
+                        logger.info(f"  Families: {', '.join(family_parts)}")
 
                     # Track history
                     self.history['train_loss'].append(train_metrics['loss'])
@@ -457,6 +478,14 @@ class DiffusionTrainer:
             # Compute cross-entropy loss
             loss = F.cross_entropy(logits, targets, reduction='none')  # [B]
 
+            # Focal loss: down-weight easy predictions by (1-p_t)^γ
+            if self._focal_gamma > 0:
+                with torch.no_grad():
+                    p_t = F.softmax(logits, dim=-1)  # [B, V]
+                    p_correct = p_t.gather(1, targets.unsqueeze(1)).squeeze(1)  # [B]
+                    focal_weight = (1 - p_correct) ** self._focal_gamma  # [B]
+                loss = loss * focal_weight
+
             # Apply vocab-size weighting
             w_v = self.vocab_loss_weights.get(key, 1.0)
 
@@ -480,17 +509,33 @@ class DiffusionTrainer:
 
     @torch.no_grad()
     def validate(self) -> Dict[str, float]:
-        """Run validation.
+        """Run validation with detailed diagnostic breakdowns.
 
         Returns:
-            Dict with validation metrics (loss, accuracy, and optionally physics_loss).
-            When using temporal_causal masking, also includes per-cutoff breakdowns.
+            Dict with metrics including:
+            - loss, accuracy: overall
+            - acc_high_noise: accuracy at t > 2T/3 (hardest regime)
+            - acc_<family>: per-family accuracy (temporal, initial, theta)
+            - physics_loss: optional
         """
         self.denoiser.eval()
         val_loss = 0.0
         val_physics_loss = 0.0
-        val_accuracy = 0.0
         num_batches = 0
+
+        # Accumulate detailed accuracy counters
+        total_correct = 0
+        total_count = 0
+
+        # Per-noise-band: low (t < T/3), mid (T/3 <= t < 2T/3), high (t >= 2T/3)
+        T = self.diffusion.schedule.num_timesteps
+        band_correct = {'low': 0, 'mid': 0, 'high': 0}
+        band_count = {'low': 0, 'mid': 0, 'high': 0}
+
+        # Per-family
+        cat_info = self.diffusion.category_level_info
+        family_correct: Dict[str, int] = {}
+        family_count: Dict[str, int] = {}
 
         physics_active = (
             self.physics_loss is not None
@@ -498,99 +543,96 @@ class DiffusionTrainer:
         )
 
         for batch in self.val_loader:
-            # Move to device
             tokens = {k: v.to(self.device) for k, v in batch['tokens'].items()}
             observed = {k: v.to(self.device) for k, v in batch['observed'].items()}
             target = {k: v.to(self.device) for k, v in batch['target'].items()}
 
-            # Sample random timesteps
             batch_size = next(iter(tokens.values())).shape[0]
-            t = torch.randint(
-                0, self.diffusion.schedule.num_timesteps, (batch_size,), device=self.device
-            )
+            t = torch.randint(0, T, (batch_size,), device=self.device)
 
-            # Compute per-key effective timesteps (graded schedule)
             eff_t_dict = (
                 self.diffusion.compute_effective_timesteps(t, batch_size)
                 if self._graded_enabled else None
             )
 
-            # Forward diffusion (per-sample timesteps)
             noisy_tokens, _ = self.diffusion.forward_process(
                 tokens, t, mask_dict=target,
                 effective_timesteps_dict=eff_t_dict,
             )
 
-            # Predict
             predicted_logits = self.denoiser(
                 noisy_tokens, t, observed_dict=observed,
                 **({"effective_timesteps_dict": eff_t_dict} if eff_t_dict is not None else {}),
             )
 
-            # Compute loss (with optional SNR/vocab weighting)
             loss = self._compute_loss(
                 predicted_logits, tokens, target, t=t,
                 effective_timesteps_dict=eff_t_dict,
             )
             val_loss += loss.item()
 
-            # Physics loss (monitoring only, no gradient in validation)
             if physics_active:
                 p_loss = self.physics_loss(
                     predicted_logits, tokens, target, t,
-                    T=self.diffusion.schedule.num_timesteps,
+                    T=T,
                 )
                 val_physics_loss += p_loss.item()
 
-            # Compute accuracy on target positions
-            accuracy = self._compute_accuracy(predicted_logits, tokens, target)
-            val_accuracy += accuracy
+            # Noise band masks [B]
+            band_low = t < (T // 3)
+            band_mid = (t >= T // 3) & (t < 2 * T // 3)
+            band_high = t >= (2 * T // 3)
+
+            # Accumulate per-key accuracy with band and family breakdowns
+            for key in predicted_logits.keys():
+                logits = predicted_logits[key]
+                targets = tokens[key]
+                mask = target[key]
+
+                preds = torch.argmax(logits, dim=-1)
+                correct = (preds == targets) & mask  # [B]
+                n_masked = mask.sum().item()
+
+                total_correct += correct.sum().item()
+                total_count += n_masked
+
+                # Per-band (intersect correct/mask with band membership)
+                for band_name, band_mask in [('low', band_low), ('mid', band_mid), ('high', band_high)]:
+                    bm = correct & band_mask  # correct AND in this band AND masked
+                    bc = mask & band_mask       # masked AND in this band
+                    band_correct[band_name] += bm.sum().item()
+                    band_count[band_name] += bc.sum().item()
+
+                # Per-family
+                family = cat_info.get(key, {}).get('family', 'unknown')
+                family_correct[family] = family_correct.get(family, 0) + correct.sum().item()
+                family_count[family] = family_count.get(family, 0) + n_masked
 
             num_batches += 1
 
         avg_loss = val_loss / num_batches
-        avg_accuracy = val_accuracy / num_batches
+        avg_accuracy = total_correct / total_count if total_count > 0 else 0.0
 
         metrics = {'loss': avg_loss, 'accuracy': avg_accuracy}
+
+        # Noise band accuracies
+        for band_name in ['low', 'mid', 'high']:
+            bc = band_count[band_name]
+            metrics[f'acc_{band_name}_noise'] = (
+                band_correct[band_name] / bc if bc > 0 else 0.0
+            )
+
+        # Per-family accuracies
+        for family in sorted(family_count.keys()):
+            fc = family_count[family]
+            metrics[f'acc_{family}'] = (
+                family_correct[family] / fc if fc > 0 else 0.0
+            )
+
         if physics_active:
             metrics['physics_loss'] = val_physics_loss / num_batches
 
         return metrics
-
-    def _compute_accuracy(
-        self,
-        predicted_logits: Dict[str, torch.Tensor],
-        target_tokens: Dict[str, torch.Tensor],
-        target_mask: Dict[str, torch.BoolTensor],
-    ) -> float:
-        """Compute token accuracy on target positions.
-
-        Args:
-            predicted_logits: Dict mapping key → logits [B, V]
-            target_tokens: Dict mapping key → true tokens [B]
-            target_mask: Dict mapping key → mask [B] (True = predict this position)
-
-        Returns:
-            Accuracy as float (0 to 1)
-        """
-        total_correct = 0
-        total_count = 0
-
-        for key in predicted_logits.keys():
-            logits = predicted_logits[key]  # [B, V]
-            targets = target_tokens[key]  # [B]
-            mask = target_mask[key]  # [B]
-
-            # Get predictions
-            predictions = torch.argmax(logits, dim=-1)  # [B]
-
-            # Compute accuracy on target positions
-            correct = (predictions == targets) & mask
-            total_correct += correct.sum().item()
-            total_count += mask.sum().item()
-
-        accuracy = total_correct / total_count if total_count > 0 else 0.0
-        return accuracy
 
     def save_checkpoint(self, is_best: bool = False):
         """Save model checkpoint.
