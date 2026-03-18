@@ -88,7 +88,7 @@ class SimulatorRolloutProvider:
 
 
 def create_replayer(
-    config_path: str, device: str, cache_size: int = 0
+    config_path: str, device: str, cache_size: int = 0, compile: bool = False,
 ) -> Any:
     """Create a GT replayer from a dataset generation config YAML.
 
@@ -113,6 +113,7 @@ def create_replayer(
 
             return LeniaReplayAdapter.from_config(
                 config_path, device=device, cache_size=cache_size,
+                compile=compile,
             )
         case "cnn":
             from spinlock.mno.cno_replay import CNOReplayer
@@ -215,5 +216,5 @@ def build_rollout_provider(
     logger.info(
         "RolloutProvider: GT simulator from %s", dataset_config_path,
     )
-    replayer = create_replayer(dataset_config_path, device)
+    replayer = create_replayer(dataset_config_path, device, compile=False)
     return SimulatorRolloutProvider(replayer)

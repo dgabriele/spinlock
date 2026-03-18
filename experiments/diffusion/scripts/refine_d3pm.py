@@ -509,6 +509,252 @@ def generate_hard_targets(
     return hard_targets
 
 
+# ── Novel-Sobol self-consistency generation ──────────────────────────────────
+
+
+def generate_novel_sobol_targets(
+    diffusion: DiscreteD3PM,
+    denoiser: DenoisingNetwork,
+    rollout_provider: RolloutProvider,
+    tokenizer: VQTokenizer,
+    decoder: IntegratedTokenDecoder,
+    config: RefinementConfig,
+) -> List[Dict]:
+    """Generate hard targets from novel Sobol parameters + D3PM temporal completion.
+
+    Samples new (theta, IC) from the same Sobol parameter space as the training
+    dataset (different seed), tokenizes them, then has the D3PM predict temporal
+    tokens via inpainting. Physics verifies: rollout from the real (theta, IC) →
+    retokenize → check if D3PM's temporal prediction matches reality.
+
+    This expands the D3PM's training distribution to novel configurations without
+    reusing training data.
+
+    Returns:
+        List of accepted hard-target dicts.
+    """
+    from spinlock.lenia.params import (
+        DEFAULT_RANGES, sobol_expected_dims, sobol_batch_to_tensors,
+    )
+    from spinlock.lenia.fourier_ic import FourierICGenerator, FourierICConfig
+    from spinlock.sampling.sobol import StratifiedSobolSampler
+
+    device = config.device
+    threshold = config.quality_filter.min_observed_agreement
+    hard_targets = []
+    total_samples = 0
+    total_accepted = 0
+    agreement_sum = 0.0
+    max_accept = config.max_accepted_targets
+    gen_bs = config.generation_batch_size
+    n_candidates = config.d3pm_n_candidates
+
+    schema = TokenSchema.from_tokenizer(tokenizer)
+    temporal_keys = set(schema.keys_for_family("temporal"))
+    all_keys = sorted(schema.vocab_sizes_dict().keys())
+
+    # Sobol sampler with DIFFERENT seed from dataset generation (seed=42 → seed=137)
+    n_channels = 3  # Lenia channels
+    sobol_dim = sobol_expected_dims(n_channels, DEFAULT_RANGES)
+    sobol_sampler = StratifiedSobolSampler(
+        dimensionality=sobol_dim, scramble=True, seed=config.seed + 95,
+    )
+
+    # Fourier IC generator (theta-coherent ICs)
+    ic_gen = FourierICGenerator(FourierICConfig())
+
+    n_attempts = (max_accept or 5000) * 2
+    done = False
+
+    logger.info(
+        f"Novel-Sobol generation: seed_offset=+95, "
+        f"up to {n_attempts} proposals, target {max_accept} accepted"
+    )
+
+    for batch_start in range(0, n_attempts, gen_bs):
+        if done:
+            break
+        B = min(gen_bs, n_attempts - batch_start)
+
+        # Step 1: Sample new Sobol unit vectors [0,1]^D
+        # Dataset stores raw unit vectors as theta — tokenizer was trained on these
+        unit_vecs = sobol_sampler.sample(B)  # [B, D] numpy
+        unit_vecs_t = torch.from_numpy(unit_vecs).float()
+
+        # Raw [0,1] Sobol vectors for tokenizer (matches dataset format)
+        theta_for_tokenizer = unit_vecs_t.to(device)  # [B, 34]
+
+        # Physical params for rollout (radii, mu, sigma, dt, coupling, etc.)
+        batch_tensors = sobol_batch_to_tensors(
+            unit_vecs, n_channels, device=device, ranges=DEFAULT_RANGES,
+        )
+
+        # Step 2: Generate Fourier ICs (theta-coherent, using physical radii)
+        ics = ic_gen.generate_batch(
+            batch_size=B,
+            n_channels=n_channels,
+            grid_size=128,
+            seed=config.seed + 95 + batch_start,
+            device=torch.device(device),
+            kernel_radii=batch_tensors.radii,
+        )  # [B, C, H, W]
+
+        # Step 3: Rollout from physical params, tokenize with raw Sobol theta
+        with torch.no_grad():
+            conditioning = {"theta": theta_for_tokenizer, "ic": ics}
+            try:
+                trajectories = rollout_provider.rollout(
+                    conditioning, steps=config.rollout_steps,
+                )
+            except Exception as e:
+                logger.debug(f"Batch {batch_start}: rollout failed: {e}")
+                total_samples += B
+                continue
+
+            # Tokenize everything (GT tokens for all 3 families)
+            # theta_for_tokenizer is raw [0,1] Sobol vector (matches training format)
+            gt_tokens = tokenizer.tokenize(
+                temporal_raw=trajectories,
+                theta_features=theta_for_tokenizer,
+                initial_raw=ics,
+            )
+            del trajectories
+
+        gt_tokens_device = {
+            k: v.to(device) for k, v in gt_tokens.items() if k in all_keys
+        }
+
+        # Step 4: D3PM inpaints theta+IC given temporal (observed)
+        # This is the INVERSE problem: temporal → (theta, IC)
+        # Matches curriculum stage 2 (always_masked_families: [initial, theta])
+        observed_dict = {}
+        target_dict = {}
+        for key in all_keys:
+            if key in temporal_keys:
+                # Temporal: observed (conditioning signal)
+                observed_dict[key] = torch.ones(B, dtype=torch.bool, device=device)
+                target_dict[key] = torch.zeros(B, dtype=torch.bool, device=device)
+            else:
+                # Theta + IC: masked (D3PM must predict these)
+                observed_dict[key] = torch.zeros(B, dtype=torch.bool, device=device)
+                target_dict[key] = torch.ones(B, dtype=torch.bool, device=device)
+
+        best_agreement = [-1.0] * B
+        best_tokens: list = [None] * B
+
+        for candidate_idx in range(n_candidates):
+            # D3PM inpaints theta+IC given temporal observations
+            with torch.no_grad():
+                completed = diffusion.sample(
+                    batch_size=B,
+                    observed_dict=observed_dict,
+                    x_0_dict=gt_tokens_device,
+                    denoising_network=denoiser,
+                    device=device,
+                )
+
+            # Decode D3PM's predicted theta+IC → continuous params + grid
+            with torch.no_grad():
+                decoded = decoder.decode(completed)
+                theta_pred = decoded.get("theta")
+                u0_pred = decoded.get("grids")
+
+            if theta_pred is None or u0_pred is None:
+                logger.debug(f"Candidate {candidate_idx}: decode failed")
+                continue
+
+            # Rollout from D3PM's predicted (theta, IC) → realized trajectory
+            with torch.no_grad():
+                pred_conditioning = {
+                    "theta": theta_pred,
+                    "ic": u0_pred,
+                    "token_indices": completed,
+                }
+                try:
+                    pred_trajectories = rollout_provider.rollout(
+                        pred_conditioning, steps=config.rollout_steps,
+                    )
+                except Exception as e:
+                    logger.debug(f"Candidate {candidate_idx}: rollout failed: {e}")
+                    continue
+
+            # Retokenize realized trajectory
+            with torch.no_grad():
+                realized = tokenizer.tokenize(
+                    temporal_raw=pred_trajectories,
+                    theta_features=theta_pred,
+                    initial_raw=u0_pred,
+                )
+            del pred_trajectories
+            realized_temporal = {
+                k: v.to(device) for k, v in realized.items()
+                if k in temporal_keys
+            }
+
+            # Score: do realized temporal tokens match GT temporal?
+            # (D3PM predicted theta+IC → rollout → does it reproduce the dynamics?)
+            for b in range(B):
+                n_checked = 0
+                n_agree = 0
+                for key in temporal_keys:
+                    if key not in realized_temporal or key not in gt_tokens_device:
+                        continue
+                    n_checked += 1
+                    if realized_temporal[key][b] == gt_tokens_device[key][b]:
+                        n_agree += 1
+                agreement = n_agree / max(n_checked, 1)
+
+                if agreement > best_agreement[b]:
+                    best_agreement[b] = agreement
+                    best_tokens[b] = {
+                        k: v[b:b+1].clone() for k, v in completed.items()
+                    }
+
+        # Accept/reject
+        for b in range(B):
+            total_samples += 1
+            if best_tokens[b] is None:
+                continue
+
+            agreement = best_agreement[b]
+            agreement_sum += agreement
+
+            if agreement >= threshold:
+                hard_targets.append({
+                    "tokens": best_tokens[b],
+                    "observed": {k: v[b:b+1] for k, v in observed_dict.items()},
+                    "target": {k: v[b:b+1] for k, v in target_dict.items()},
+                    "agreement": agreement,
+                })
+                total_accepted += 1
+
+                if max_accept is not None and total_accepted >= max_accept:
+                    logger.info(
+                        f"  Reached {max_accept} accepted targets "
+                        f"after {total_samples} proposals"
+                    )
+                    done = True
+                    break
+
+        # Periodic logging
+        if total_samples % 100 < gen_bs or done:
+            target_str = f"/{max_accept}" if max_accept else ""
+            logger.info(
+                f"  Proposals: {total_samples}, "
+                f"accepted={total_accepted}{target_str} "
+                f"({100 * total_accepted / max(total_samples, 1):.1f}%), "
+                f"mean_agreement={agreement_sum / max(total_samples, 1):.3f}"
+            )
+
+    logger.info(
+        f"Novel-Sobol generation complete: "
+        f"{total_accepted}/{total_samples} accepted "
+        f"({100 * total_accepted / max(total_samples, 1):.1f}%), "
+        f"mean_agreement={agreement_sum / max(total_samples, 1):.3f}"
+    )
+    return hard_targets
+
+
 # ── Fine-tuning ──────────────────────────────────────────────────────────────
 
 
@@ -702,14 +948,20 @@ def main(args):
     tokenizer.model.to(config.device)
     decoder = IntegratedTokenDecoder(tokenizer)
 
-    # Load dataset
-    logger.info("\nLoading dataset...")
-    dataset = SpinlockDataset(
-        config.dataset_path,
-        max_samples=config.max_samples,
-        load_gt_temporal_features=True,
-    )
-    logger.info(f"Dataset: {len(dataset)} samples")
+    # Choose generation mode
+    unconditional = getattr(args, 'unconditional', False)
+
+    dataset = None
+    if not unconditional:
+        logger.info("\nLoading dataset...")
+        dataset = SpinlockDataset(
+            config.dataset_path,
+            max_samples=config.max_samples,
+            load_gt_temporal_features=True,
+        )
+        logger.info(f"Dataset: {len(dataset)} samples")
+    else:
+        logger.info("\nUnconditional mode: no dataset needed")
 
     # Refinement loop
     all_metrics = []
@@ -719,9 +971,14 @@ def main(args):
         logger.info(f"{'='*60}")
 
         logger.info("\nGenerating hard targets...")
-        hard_targets = generate_hard_targets(
-            dataset, diffusion, denoiser, rollout_provider, tokenizer, decoder, config
-        )
+        if unconditional:
+            hard_targets = generate_novel_sobol_targets(
+                diffusion, denoiser, rollout_provider, tokenizer, decoder, config
+            )
+        else:
+            hard_targets = generate_hard_targets(
+                dataset, diffusion, denoiser, rollout_provider, tokenizer, decoder, config
+            )
 
         logger.info("\nFine-tuning D3PM on hard targets...")
         ft_metrics = fine_tune_d3pm(diffusion, denoiser, hard_targets, config)
@@ -777,6 +1034,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Override device (e.g., 'cpu' for smoke tests)",
+    )
+    parser.add_argument(
+        "--unconditional",
+        action="store_true",
+        help="Novel-Sobol mode: sample new (theta, IC) from Sobol space (different seed), "
+             "D3PM predicts temporal via inpainting, physics verifies. No dataset reuse.",
     )
     args = parser.parse_args()
     main(args)
