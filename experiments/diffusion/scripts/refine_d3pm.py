@@ -427,6 +427,7 @@ def generate_novel_sobol_targets(
                 f"agreement: mean={ag.mean():.3f} std={ag.std():.3f} "
                 f"min={ag.min():.3f} max={ag.max():.3f}"
             )
+            _log_agreement_distribution(ag, threshold)
 
     ag = np.array(all_agreements) if all_agreements else np.array([0.0])
     logger.info(
