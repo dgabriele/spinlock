@@ -26,6 +26,10 @@ from spinlock.experimental.diffusion.data import (
     collate_dict_batch,
 )
 from spinlock.experimental.diffusion.training import DiffusionTrainer
+from spinlock.experimental.diffusion.training.curriculum_trainer import (
+    CurriculumDiffusionTrainer,
+    CurriculumStage,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -173,6 +177,10 @@ def main(args):
 
     # Create mask generator
     logger.info(f"Creating mask generator: strategy={config.masking.strategy}")
+    masking_family_kwargs = dict(
+        always_masked_families=config.masking.always_masked_families,
+        always_observed_families=config.masking.always_observed_families,
+    )
     if config.masking.strategy == MaskingStrategy.MIXED:
         if not config.masking.strategies:
             raise ValueError("masking.strategies list required when strategy='mixed'")
@@ -188,6 +196,7 @@ def main(args):
             category_level_info=category_level_info,
             mask_probability=config.masking.mask_probability,
             seed=config.masking.seed,
+            **masking_family_kwargs,
         )
     else:
         mask_generator = HierarchicalMaskGenerator(
@@ -196,6 +205,7 @@ def main(args):
             category_level_info=category_level_info,
             mask_probability=config.masking.mask_probability,
             seed=config.masking.seed,
+            **masking_family_kwargs,
         )
 
     # Create datasets
@@ -232,6 +242,7 @@ def main(args):
         graded_schedule_enabled=graded_cfg.enabled,
         graded_scale_factors=scale_factors,
         non_temporal_scale=graded_cfg.non_temporal_scale,
+        family_scale_overrides=graded_cfg.family_scale_overrides,
     )
 
     # Create denoising network
@@ -253,26 +264,76 @@ def main(args):
     num_params = sum(p.numel() for p in denoiser.parameters())
     logger.info(f"Denoising network: {num_params:,} parameters")
 
-    # Create trainer
-    logger.info("Creating trainer")
-    trainer = DiffusionTrainer(
-        diffusion_model=diffusion,
-        denoising_network=denoiser,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        config=config,
-        output_dir=config.output.dir,
-        device=config.device,
+    # Check for curriculum mode
+    use_curriculum = (
+        config.curriculum is not None
+        and config.curriculum.enabled
+        and len(config.curriculum.stages) > 0
     )
 
-    # Load checkpoint if resuming
-    if args.resume:
-        logger.info(f"Resuming from checkpoint: {args.resume}")
-        trainer.load_checkpoint(Path(args.resume))
+    if use_curriculum:
+        # Build CurriculumStage objects from config
+        stages = []
+        for stage_cfg in config.curriculum.stages:
+            stages.append(CurriculumStage(
+                name=stage_cfg.name,
+                strategy=MaskingStrategy(stage_cfg.strategy),
+                num_epochs=stage_cfg.num_epochs,
+                learning_rate=stage_cfg.learning_rate,
+                mask_probability=stage_cfg.mask_probability,
+                always_masked_families=stage_cfg.always_masked_families,
+                always_observed_families=stage_cfg.always_observed_families,
+            ))
 
-    # Train
-    logger.info(f"Starting training for {config.training.num_epochs} epochs")
-    history = trainer.train(num_epochs=config.training.num_epochs)
+        total_epochs = sum(s.num_epochs for s in stages)
+        logger.info(
+            f"Curriculum mode: {len(stages)} stages, "
+            f"{total_epochs} total epochs"
+        )
+
+        # Create curriculum trainer
+        trainer = CurriculumDiffusionTrainer(
+            curriculum_stages=stages,
+            vocab_sizes=vocab_sizes,
+            category_level_info=category_level_info,
+            diffusion_model=diffusion,
+            denoising_network=denoiser,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=config,
+            output_dir=config.output.dir,
+            device=config.device,
+        )
+
+        # Load checkpoint if resuming
+        if args.resume:
+            logger.info(f"Resuming from checkpoint: {args.resume}")
+            trainer.load_checkpoint(Path(args.resume))
+
+        # Train through curriculum
+        history = trainer.train_curriculum()
+
+    else:
+        # Standard (non-curriculum) training
+        logger.info("Creating trainer")
+        trainer = DiffusionTrainer(
+            diffusion_model=diffusion,
+            denoising_network=denoiser,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=config,
+            output_dir=config.output.dir,
+            device=config.device,
+        )
+
+        # Load checkpoint if resuming
+        if args.resume:
+            logger.info(f"Resuming from checkpoint: {args.resume}")
+            trainer.load_checkpoint(Path(args.resume))
+
+        # Train
+        logger.info(f"Starting training for {config.training.num_epochs} epochs")
+        history = trainer.train(num_epochs=config.training.num_epochs)
 
     # Save final checkpoint
     trainer.save_checkpoint(is_best=False)

@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any
 
 import torch
 
@@ -21,6 +21,8 @@ class CurriculumStage:
         num_epochs: Number of epochs for this stage
         learning_rate: Optional LR override for this stage
         mask_probability: Optional mask probability override
+        always_masked_families: Families always masked (target) in this stage
+        always_observed_families: Families always observed (conditioning) in this stage
     """
 
     def __init__(
@@ -30,12 +32,16 @@ class CurriculumStage:
         num_epochs: int,
         learning_rate: float = None,
         mask_probability: float = None,
+        always_masked_families: Optional[List[str]] = None,
+        always_observed_families: Optional[List[str]] = None,
     ):
         self.name = name
         self.strategy = strategy
         self.num_epochs = num_epochs
         self.learning_rate = learning_rate
         self.mask_probability = mask_probability
+        self.always_masked_families = always_masked_families
+        self.always_observed_families = always_observed_families
 
 
 class CurriculumDiffusionTrainer(DiffusionTrainer):
@@ -163,14 +169,25 @@ class CurriculumDiffusionTrainer(DiffusionTrainer):
     def _create_stage_mask_generator(
         self, stage: CurriculumStage
     ) -> HierarchicalMaskGenerator:
-        """Create mask generator for current stage."""
+        """Create mask generator for current stage.
+
+        Propagates per-stage family masking overrides to the generator.
+        """
         mask_prob = stage.mask_probability or 0.5
+        # Support both dict-style and Pydantic config objects for seed lookup
+        if isinstance(self.config, dict):
+            seed = self.config.get('seed', 42)
+        else:
+            seed = getattr(self.config, 'seed', 42)
+
         return HierarchicalMaskGenerator(
             strategy=stage.strategy,
             vocab_sizes=self.vocab_sizes,
             category_level_info=self.category_level_info,
             mask_probability=mask_prob,
-            seed=self.config.get('seed', 42) + self.current_stage_idx,  # Different seed per stage
+            seed=seed + self.current_stage_idx,  # Different seed per stage
+            always_masked_families=stage.always_masked_families,
+            always_observed_families=stage.always_observed_families,
         )
 
     def _update_dataset_mask_generator(self, new_generator: HierarchicalMaskGenerator):

@@ -1,6 +1,6 @@
 """Pydantic configuration models for discrete diffusion experiments."""
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pathlib import Path
 from typing import Dict, List, Optional
 from enum import Enum
@@ -99,6 +99,34 @@ class MaskingConfig(BaseModel):
     seed: int = 42
     strategies: Optional[List[MixedStrategyEntry]] = None  # only used when strategy="mixed"
 
+    # Family-level masking overrides (applied after base strategy)
+    always_masked_families: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Families whose keys are always masked (target). "
+            "E.g., ['initial', 'theta'] for inverse generation training."
+        ),
+    )
+    always_observed_families: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Families whose keys are always observed (conditioning). "
+            "E.g., ['temporal'] to always condition on dynamics."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_family_overrides(self):
+        """Ensure no family appears in both always_masked and always_observed."""
+        masked = set(self.always_masked_families or [])
+        observed = set(self.always_observed_families or [])
+        overlap = masked & observed
+        if overlap:
+            raise ValueError(
+                f"Families cannot be both always_masked and always_observed: {overlap}"
+            )
+        return self
+
 
 class GradedScheduleConfig(BaseModel):
     """Per-position graded forward process configuration.
@@ -128,13 +156,21 @@ class GradedScheduleConfig(BaseModel):
         default=None,
         description="Path to JSON file with per-position scale factors.",
     )
+    family_scale_overrides: Optional[Dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Per-family scale overrides, e.g. {'theta': 0.15, 'initial': 0.25}. "
+            "Applied to keys whose family matches, unless the key has an explicit "
+            "entry in scale_factors (which takes highest priority)."
+        ),
+    )
     non_temporal_scale: float = Field(
         default=0.3,
         ge=0.0,
         le=1.0,
         description=(
-            "Fallback scale factor for keys not in scale_factors. Low values "
-            "resolve causes first, matching the causal DAG: (theta, IC) → temporal."
+            "Fallback scale factor for keys not in scale_factors or "
+            "family_scale_overrides. Lowest priority in the 3-tier resolution."
         ),
     )
 
@@ -335,6 +371,46 @@ class OutputConfig(BaseModel):
         return v
 
 
+class CurriculumStageConfig(BaseModel):
+    """Single stage in a training curriculum.
+
+    Each stage defines a masking strategy, epoch count, and optional
+    overrides for learning rate, mask probability, and family-level
+    masking constraints.
+    """
+    name: str
+    strategy: MaskingStrategy
+    num_epochs: int = Field(ge=1)
+    learning_rate: Optional[float] = Field(default=None, gt=0.0)
+    mask_probability: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    always_masked_families: Optional[List[str]] = None
+    always_observed_families: Optional[List[str]] = None
+
+    @model_validator(mode="after")
+    def validate_stage_family_overrides(self):
+        """Ensure no family appears in both always_masked and always_observed."""
+        masked = set(self.always_masked_families or [])
+        observed = set(self.always_observed_families or [])
+        overlap = masked & observed
+        if overlap:
+            raise ValueError(
+                f"Stage '{self.name}': families cannot be both "
+                f"always_masked and always_observed: {overlap}"
+            )
+        return self
+
+
+class CurriculumConfig(BaseModel):
+    """Multi-stage curriculum learning configuration.
+
+    When enabled, the trainer progresses through stages sequentially,
+    each with its own masking strategy and optional LR/family overrides.
+    Total training epochs = sum of stage num_epochs.
+    """
+    enabled: bool = False
+    stages: List[CurriculumStageConfig] = Field(default_factory=list)
+
+
 class DiffusionExperimentConfig(BaseModel):
     """Complete configuration for discrete diffusion experiment."""
     dataset: DatasetConfig
@@ -343,6 +419,8 @@ class DiffusionExperimentConfig(BaseModel):
     model: ModelConfig
     training: TrainingConfig
     output: OutputConfig
+
+    curriculum: Optional[CurriculumConfig] = None
 
     device: str = Field(default="cuda", pattern="^(cuda|cpu)$")
     seed: int = 42

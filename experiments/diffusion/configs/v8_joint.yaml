@@ -1,0 +1,83 @@
+# D3PM v8 — Joint 3-Family Training with Curriculum
+#
+# 160 tokens: temporal (60) + initial (32) + theta (68)
+# Graded schedule encodes causal ordering: theta → IC → temporal
+# Curriculum: joint random → inverse generation → consolidation
+#
+# Theta (scale=0.15) resolves first (root causes / parameters)
+# IC (scale=0.25) resolves second (spatial initial conditions)
+# Temporal (scale=0.5–1.0, data-driven) resolves last (dynamics)
+
+dataset:
+  tokenized_path: "datasets/ds_lenia_fourier_10k_pretokenized.h5"
+  tokenizer_checkpoint: "checkpoints/lenia/vq/v3_fourier_10k/vq_tokenizer_best.pt"
+  use_pretokenized: true
+  truncation_length: 512    # select T=512 from multi-trunc HDF5 for training
+
+masking:
+  strategy: "random"
+  mask_probability: 0.5
+
+diffusion:
+  num_timesteps: 50
+  schedule_type: "cosine"
+  transition_type: "absorbing"
+  beta_scaling: "uniform"
+  graded_schedule:
+    enabled: true
+    position_scale_factors_path: "experiments/diffusion/configs/position_scales_v8.json"
+    family_scale_overrides:
+      theta: 0.15       # root causes — resolve first
+      initial: 0.25     # spatial IC — resolve second
+    non_temporal_scale: 0.3  # fallback (unused — temporal keys in JSON, IC/theta in overrides)
+
+model:
+  hidden_dim: 256
+  num_layers: 8        # +2 layers for cross-family reasoning
+  num_heads: 8
+  dropout: 0.1
+  use_hierarchical_guidance: true
+  hierarchical_guidance_weight: 0.1
+  hierarchical_guidance_mode: "per_category"
+
+training:
+  batch_size: 32
+  num_epochs: 30
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  gradient_clip_norm: 1.0
+  use_snr_weighting: true
+  use_vocab_size_weighting: true
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 2
+    min_lr: 1.0e-6
+
+curriculum:
+  enabled: true
+  stages:
+    - name: "joint_random"
+      strategy: "random"
+      num_epochs: 15
+      mask_probability: 0.5
+      # No family overrides — pure joint distribution learning
+    - name: "inverse_generation"
+      strategy: "random"
+      num_epochs: 10
+      mask_probability: 0.4
+      always_masked_families: ["initial", "theta"]
+      learning_rate: 5.0e-5
+      # Temporal randomly masked; IC+theta always targets
+    - name: "consolidation"
+      strategy: "random"
+      num_epochs: 5
+      mask_probability: 0.5
+      learning_rate: 2.0e-5
+      # Back to pure random to prevent catastrophic forgetting
+
+output:
+  dir: "experiments/diffusion/results/v8_joint"
+  checkpoint_prefix: "v8_joint_d3pm"
+
+device: "cuda"
+seed: 42

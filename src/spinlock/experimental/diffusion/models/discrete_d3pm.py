@@ -94,6 +94,7 @@ class DiscreteD3PM(nn.Module):
         graded_schedule_enabled: bool = False,
         graded_scale_factors: Optional[Dict[str, float]] = None,
         non_temporal_scale: float = 0.3,
+        family_scale_overrides: Optional[Dict[str, float]] = None,
     ):
         super().__init__()
 
@@ -125,11 +126,13 @@ class DiscreteD3PM(nn.Module):
         # Build per-category-level transition matrices
         self._build_transition_matrices()
 
-        # Build per-position graded scale factors
+        # Build per-position graded scale factors (3-tier: per-key > per-family > global)
         self._key_scale_factors: Dict[str, float] = {}
         if graded_schedule_enabled:
             self._key_scale_factors = self._build_graded_scale_factors(
-                graded_scale_factors or {}, non_temporal_scale
+                graded_scale_factors or {},
+                non_temporal_scale,
+                family_scale_overrides or {},
             )
 
         logger.info(
@@ -252,33 +255,56 @@ class DiscreteD3PM(nn.Module):
         self,
         scale_factors: Dict[str, float],
         non_temporal_scale: float,
+        family_scale_overrides: Optional[Dict[str, float]] = None,
     ) -> Dict[str, float]:
-        """Build per-position scale factors from explicit dict.
+        """Build per-position scale factors with 3-tier resolution.
 
-        Keys present in ``scale_factors`` use their specified value.
-        Keys not in ``scale_factors`` get ``non_temporal_scale`` as default.
+        Resolution order (highest priority first):
+        1. ``scale_factors[key]`` — per-key explicit value (e.g., from JSON)
+        2. ``family_scale_overrides[family]`` — per-family override
+        3. ``non_temporal_scale`` — global fallback
 
         Args:
             scale_factors: Dict mapping position key → scale factor.
-            non_temporal_scale: Default scale for keys not in scale_factors.
+            non_temporal_scale: Global fallback scale for unmatched keys.
+            family_scale_overrides: Dict mapping family name → scale factor.
 
         Returns:
             Dict mapping each vocab key to its resolved scale factor.
         """
+        family_overrides = family_scale_overrides or {}
         result: Dict[str, float] = {}
-        matched = 0
+        count_per_key = 0
+        count_per_family = 0
+        count_fallback = 0
+
         for key in self.vocab_sizes:
             if key in scale_factors:
+                # Tier 1: per-key explicit
                 result[key] = scale_factors[key]
-                matched += 1
+                count_per_key += 1
             else:
-                result[key] = non_temporal_scale
+                # Look up family from category_level_info
+                info = self.category_level_info.get(key, {})
+                family = info.get("family")
+
+                if family and family in family_overrides:
+                    # Tier 2: per-family override
+                    result[key] = family_overrides[family]
+                    count_per_family += 1
+                else:
+                    # Tier 3: global fallback
+                    result[key] = non_temporal_scale
+                    count_fallback += 1
 
         logger.info(
-            f"Graded schedule: {matched}/{len(self.vocab_sizes)} keys matched "
-            f"from scale_factors, {len(self.vocab_sizes) - matched} defaulted "
-            f"to non_temporal_scale={non_temporal_scale:.3f}"
+            f"Graded schedule 3-tier: {count_per_key} per-key, "
+            f"{count_per_family} per-family, {count_fallback} fallback "
+            f"(total {len(self.vocab_sizes)} keys)"
         )
+        if family_overrides:
+            logger.info(f"  Family overrides: {family_overrides}")
+
         return result
 
     def compute_effective_timesteps(

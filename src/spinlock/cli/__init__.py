@@ -37,6 +37,7 @@ from .train_diffusion import TrainDiffusionCommand
 from .train_mno_v2 import TrainMNOV2Command
 from .train_cvae import TrainCVAECommand
 from .visualize_lenia_ca import VisualizeLeniaCaCommand
+from .compute_position_scales import ComputePositionScalesCommand
 
 __all__ = [
     "CLICommand",
@@ -69,6 +70,7 @@ __all__ = [
     "TrainCVAECommand",
     "TrainMNOV2Command",
     "VisualizeLeniaCaCommand",
+    "ComputePositionScalesCommand",
     "main",
 ]
 
@@ -137,6 +139,7 @@ For more help on a specific command:
         TrainCVAECommand(),
         TrainMNOV2Command(),
         VisualizeLeniaCaCommand(),
+        ComputePositionScalesCommand(),
     ]
 
     for command in commands:
