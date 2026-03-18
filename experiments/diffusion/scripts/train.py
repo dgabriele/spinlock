@@ -30,6 +30,7 @@ from spinlock.experimental.diffusion.training.curriculum_trainer import (
     CurriculumDiffusionTrainer,
     CurriculumStage,
 )
+from spinlock.experimental.diffusion.data.token_filter import TokenFilter
 
 # Configure logging
 logging.basicConfig(
@@ -78,6 +79,7 @@ def create_datasets(
     config: DiffusionExperimentConfig,
     mask_generator: HierarchicalMaskGenerator,
     max_samples: int = None,
+    token_filter=None,
 ):
     """Create train and validation datasets."""
     # Check if using pre-tokenized data
@@ -87,6 +89,7 @@ def create_datasets(
             tokenized_dataset_path=config.dataset.tokenized_path,
             mask_generator=mask_generator,
             truncation_length=config.dataset.truncation_length,
+            token_filter=token_filter,
         )
     else:
         logger.info("Using on-the-fly tokenization (slow mode)")
@@ -175,6 +178,18 @@ def main(args):
             "Either tokenizer_checkpoint or use_pretokenized must be set"
         )
 
+    # Entropy-based token filtering (Otsu auto-threshold)
+    token_filter = None
+    if config.dataset.entropy_filter:
+        if not config.dataset.use_pretokenized:
+            raise ValueError("entropy_filter requires use_pretokenized=True")
+        token_filter = TokenFilter.from_pretokenized(
+            str(config.dataset.tokenized_path),
+            truncation_length=config.dataset.truncation_length,
+        )
+        vocab_sizes = token_filter.filter_vocab_sizes(vocab_sizes)
+        category_level_info = token_filter.filter_category_level_info(category_level_info)
+
     # Create mask generator
     logger.info(f"Creating mask generator: strategy={config.masking.strategy}")
     masking_family_kwargs = dict(
@@ -211,7 +226,9 @@ def main(args):
     # Create datasets
     logger.info("Creating datasets")
     max_samples = getattr(args, 'max_samples', None)
-    train_dataset, val_dataset = create_datasets(config, mask_generator, max_samples=max_samples)
+    train_dataset, val_dataset = create_datasets(
+        config, mask_generator, max_samples=max_samples, token_filter=token_filter,
+    )
 
     # Create dataloaders
     logger.info("Creating dataloaders")
@@ -232,6 +249,11 @@ def main(args):
         with open(graded_cfg.position_scale_factors_path) as f:
             scale_factors = json.load(f)
         logger.info(f"Loaded {len(scale_factors)} position scale factors from {graded_cfg.position_scale_factors_path}")
+
+    # Filter scale factors to active keys only
+    if token_filter is not None:
+        scale_factors = {k: v for k, v in scale_factors.items() if k in token_filter._active_set}
+        logger.info(f"Filtered scale factors to {len(scale_factors)} active keys")
 
     diffusion = DiscreteD3PM(
         vocab_sizes,

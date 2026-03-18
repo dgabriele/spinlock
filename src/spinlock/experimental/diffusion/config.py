@@ -24,6 +24,16 @@ class DatasetConfig(BaseModel):
     # Single truncation selection (load only this T from multi-trunc HDF5)
     truncation_length: Optional[int] = None
 
+    # Entropy-based token filtering (Otsu threshold, auto-detected)
+    entropy_filter: bool = Field(
+        default=False,
+        description=(
+            "Filter low-entropy token positions via Otsu's method. "
+            "Positions with near-zero entropy (constants) are frozen and "
+            "excluded from D3PM training. Requires use_pretokenized=True."
+        ),
+    )
+
     # On-the-fly tokenization mode (slow, flexible)
     path: Optional[Path] = None
     tokenizer_checkpoint: Optional[Path] = None
