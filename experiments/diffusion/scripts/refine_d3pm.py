@@ -67,11 +67,11 @@ logger = logging.getLogger(__name__)
 
 def load_d3pm_and_denoiser(
     checkpoint_path: str, device: str
-) -> Tuple[DiscreteD3PM, DenoisingNetwork, dict]:
+) -> Tuple[DiscreteD3PM, DenoisingNetwork, dict, "Optional[TokenFilter]"]:
     """Load trained D3PM + denoiser from checkpoint.
 
     Returns:
-        (diffusion_model, denoising_network, checkpoint_dict)
+        (diffusion_model, denoising_network, checkpoint_dict, token_filter)
     """
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = ckpt["config"]
@@ -91,6 +91,17 @@ def load_d3pm_and_denoiser(
     vocab_sizes = schema.vocab_sizes_dict()
     category_level_info = schema.category_level_info_dict()
 
+    # Apply entropy filter if training used it
+    token_filter = None
+    if getattr(config.dataset, 'entropy_filter', False):
+        from spinlock.experimental.diffusion.data.token_filter import TokenFilter
+        token_filter = TokenFilter.from_pretokenized(
+            str(config.dataset.tokenized_path),
+            truncation_length=config.dataset.truncation_length,
+        )
+        vocab_sizes = token_filter.filter_vocab_sizes(vocab_sizes)
+        category_level_info = token_filter.filter_category_level_info(category_level_info)
+
     # Reconstruct diffusion model
     graded_cfg = config.diffusion.graded_schedule
     scale_factors = graded_cfg.scale_factors or {}
@@ -99,6 +110,9 @@ def load_d3pm_and_denoiser(
 
         with open(graded_cfg.position_scale_factors_path) as f:
             scale_factors = json.load(f)
+
+    if token_filter is not None:
+        scale_factors = {k: v for k, v in scale_factors.items() if k in token_filter._active_set}
 
     diffusion = DiscreteD3PM(
         vocab_sizes,
@@ -138,8 +152,9 @@ def load_d3pm_and_denoiser(
     logger.info(
         f"Loaded D3PM + denoiser from {checkpoint_path} "
         f"(epoch {ckpt.get('epoch', '?')}, val_loss={ckpt.get('best_val_loss', '?')})"
+        + (f", entropy_filter={len(token_filter.active_keys)} active" if token_filter else "")
     )
-    return diffusion, denoiser, ckpt
+    return diffusion, denoiser, ckpt, token_filter
 
 
 def load_tokenizer(checkpoint_path: str) -> VQTokenizer:
@@ -519,6 +534,7 @@ def generate_novel_sobol_targets(
     tokenizer: VQTokenizer,
     decoder: IntegratedTokenDecoder,
     config: RefinementConfig,
+    token_filter=None,
 ) -> List[Dict]:
     """Generate hard targets from novel Sobol parameters + D3PM temporal completion.
 
@@ -550,8 +566,16 @@ def generate_novel_sobol_targets(
     n_candidates = config.d3pm_n_candidates
 
     schema = TokenSchema.from_tokenizer(tokenizer)
-    temporal_keys = set(schema.keys_for_family("temporal"))
-    all_keys = sorted(schema.vocab_sizes_dict().keys())
+    full_temporal_keys = set(schema.keys_for_family("temporal"))
+    full_keys = sorted(schema.vocab_sizes_dict().keys())
+
+    # D3PM operates on active keys only when entropy-filtered
+    if token_filter is not None:
+        all_keys = sorted(token_filter.active_keys)
+        temporal_keys = set(k for k in all_keys if k in full_temporal_keys)
+    else:
+        all_keys = full_keys
+        temporal_keys = full_temporal_keys
 
     # Sobol sampler with DIFFERENT seed from dataset generation (seed=42 → seed=137)
     n_channels = 3  # Lenia channels
@@ -621,21 +645,23 @@ def generate_novel_sobol_targets(
             del trajectories
 
         gt_tokens_device = {
-            k: v.to(device) for k, v in gt_tokens.items() if k in all_keys
+            k: v.to(device) for k, v in gt_tokens.items() if k in full_keys
         }
+        # Contract to active keys for D3PM
+        if token_filter is not None:
+            gt_active = token_filter.contract(gt_tokens_device)
+        else:
+            gt_active = gt_tokens_device
 
         # Step 4: D3PM inpaints theta+IC given temporal (observed)
-        # This is the INVERSE problem: temporal → (theta, IC)
-        # Matches curriculum stage 2 (always_masked_families: [initial, theta])
+        # Uses active keys only (entropy-filtered)
         observed_dict = {}
         target_dict = {}
         for key in all_keys:
             if key in temporal_keys:
-                # Temporal: observed (conditioning signal)
                 observed_dict[key] = torch.ones(B, dtype=torch.bool, device=device)
                 target_dict[key] = torch.zeros(B, dtype=torch.bool, device=device)
             else:
-                # Theta + IC: masked (D3PM must predict these)
                 observed_dict[key] = torch.zeros(B, dtype=torch.bool, device=device)
                 target_dict[key] = torch.ones(B, dtype=torch.bool, device=device)
 
@@ -643,19 +669,25 @@ def generate_novel_sobol_targets(
         best_tokens: list = [None] * B
 
         for candidate_idx in range(n_candidates):
-            # D3PM inpaints theta+IC given temporal observations
+            # D3PM inpaints theta+IC given temporal observations (active keys only)
             with torch.no_grad():
                 completed = diffusion.sample(
                     batch_size=B,
                     observed_dict=observed_dict,
-                    x_0_dict=gt_tokens_device,
+                    x_0_dict=gt_active,
                     denoising_network=denoiser,
                     device=device,
                 )
 
+            # Expand to full keys for decoder (which needs all families)
+            if token_filter is not None:
+                completed_full = token_filter.expand(completed)
+            else:
+                completed_full = completed
+
             # Decode D3PM's predicted theta+IC → continuous params + grid
             with torch.no_grad():
-                decoded = decoder.decode(completed)
+                decoded = decoder.decode(completed_full)
                 theta_pred = decoded.get("theta")
                 u0_pred = decoded.get("grids")
 
@@ -668,7 +700,7 @@ def generate_novel_sobol_targets(
                 pred_conditioning = {
                     "theta": theta_pred,
                     "ic": u0_pred,
-                    "token_indices": completed,
+                    "token_indices": completed_full,
                 }
                 try:
                     pred_trajectories = rollout_provider.rollout(
@@ -692,15 +724,14 @@ def generate_novel_sobol_targets(
             }
 
             # Score: do realized temporal tokens match GT temporal?
-            # (D3PM predicted theta+IC → rollout → does it reproduce the dynamics?)
             for b in range(B):
                 n_checked = 0
                 n_agree = 0
                 for key in temporal_keys:
-                    if key not in realized_temporal or key not in gt_tokens_device:
+                    if key not in realized_temporal or key not in gt_active:
                         continue
                     n_checked += 1
-                    if realized_temporal[key][b] == gt_tokens_device[key][b]:
+                    if realized_temporal[key][b] == gt_active[key][b]:
                         n_agree += 1
                 agreement = n_agree / max(n_checked, 1)
 
@@ -935,7 +966,7 @@ def main(args):
 
     # Load models
     logger.info("\nLoading models...")
-    diffusion, denoiser, _ = load_d3pm_and_denoiser(
+    diffusion, denoiser, _, token_filter = load_d3pm_and_denoiser(
         config.d3pm_checkpoint, config.device
     )
     rollout_provider = build_rollout_provider(
@@ -973,7 +1004,8 @@ def main(args):
         logger.info("\nGenerating hard targets...")
         if unconditional:
             hard_targets = generate_novel_sobol_targets(
-                diffusion, denoiser, rollout_provider, tokenizer, decoder, config
+                diffusion, denoiser, rollout_provider, tokenizer, decoder, config,
+                token_filter=token_filter,
             )
         else:
             hard_targets = generate_hard_targets(
