@@ -1079,9 +1079,24 @@ def main(args):
     else:
         logger.info("\nUnconditional mode: no dataset needed")
 
+    # Detect completed cycles for resume
+    start_cycle = 0
+    if args.resume:
+        existing = sorted(output_dir.glob("refinement_cycle_*.pt"))
+        if existing:
+            last_cycle_ckpt = existing[-1]
+            last_cycle_num = int(last_cycle_ckpt.stem.split("_")[-1])
+            logger.info(f"Resuming: found {len(existing)} cycle checkpoints, last=cycle_{last_cycle_num}")
+            # Load the last cycle's model weights
+            ckpt = torch.load(last_cycle_ckpt, map_location=config.device, weights_only=False)
+            denoiser.load_state_dict(ckpt["denoiser_state_dict"])
+            diffusion.load_state_dict(ckpt["diffusion_state_dict"])
+            start_cycle = last_cycle_num
+            logger.info(f"Loaded weights from {last_cycle_ckpt}, starting at cycle {start_cycle + 1}")
+
     # Refinement loop
     all_metrics = []
-    for cycle in range(config.num_refinement_cycles):
+    for cycle in range(start_cycle, config.num_refinement_cycles):
         logger.info(f"\n{'='*60}")
         logger.info(f"Refinement Cycle {cycle + 1}/{config.num_refinement_cycles}")
         logger.info(f"{'='*60}")
@@ -1157,6 +1172,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Novel-Sobol mode: sample new (theta, IC) from Sobol space (different seed), "
              "D3PM predicts temporal via inpainting, physics verifies. No dataset reuse.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from last completed cycle checkpoint in output_dir.",
     )
     args = parser.parse_args()
     main(args)
