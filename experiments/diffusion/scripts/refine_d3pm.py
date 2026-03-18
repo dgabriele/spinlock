@@ -114,6 +114,7 @@ def load_d3pm_and_denoiser(
         graded_schedule_enabled=graded_cfg.enabled,
         graded_scale_factors=scale_factors,
         non_temporal_scale=graded_cfg.non_temporal_scale,
+        family_scale_overrides=graded_cfg.family_scale_overrides,
     )
     diffusion.load_state_dict(ckpt["diffusion_state_dict"])
     diffusion.to(device)
@@ -394,9 +395,13 @@ def generate_hard_targets(
                             logger.debug(f"Candidate {candidate_idx}: rollout failed: {e}")
                             continue
 
-                    # Retokenize
+                    # Retokenize (pass IC+theta to avoid encoder errors, but only temporal tokens used)
                     with torch.no_grad():
-                        all_realized = tokenizer.tokenize(temporal_raw=trajectories)
+                        all_realized = tokenizer.tokenize(
+                            temporal_raw=trajectories,
+                            theta_features=theta_pred,
+                            initial_raw=u0_pred,
+                        )
                     del trajectories
                     realized_tokens = {
                         k: v.to(device) for k, v in all_realized.items()
@@ -690,6 +695,7 @@ def main(args):
         dataset_config_path=config.dataset_config_path,
     )
     tokenizer = load_tokenizer(config.tokenizer_checkpoint)
+    tokenizer.model.to(config.device)
     decoder = IntegratedTokenDecoder(tokenizer)
 
     # Load dataset

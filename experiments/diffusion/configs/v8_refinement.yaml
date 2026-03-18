@@ -1,0 +1,37 @@
+# D3PM v8 Offline Hard-Target Refinement
+#
+# Pipeline: D3PM inpaint → IntegratedTokenDecoder → GT rollout → retokenize →
+# quality filter → fine-tune D3PM
+#
+# Uses v8 joint model (3-family curriculum-trained with focal loss).
+# GT simulator for rollouts (no MNO).
+
+d3pm_checkpoint: "experiments/diffusion/results/v8_joint/v8_joint_d3pm_best.pt"
+mno_checkpoint: null  # GT simulator (LeniaReplayAdapter)
+tokenizer_checkpoint: "checkpoints/lenia/vq/v3_fourier_10k/vq_tokenizer_best.pt"
+
+dataset_path: "datasets/ds_lenia_fourier_10k.h5"
+max_samples: 1000       # Start with 1K for validation, scale up if quality is good
+rollout_steps: 512
+
+num_refinement_cycles: 2
+mask_probability: 0.5
+d3pm_start_step: null   # Full sampling
+
+d3pm_n_candidates: 4    # 4 stochastic denoising passes per sample
+max_accepted_targets: 500
+generation_batch_size: 8
+
+quality_filter:
+  min_observed_agreement: 0.8
+
+fine_tuning:
+  learning_rate: 2.0e-5
+  num_epochs: 3
+  batch_size: 32
+  gradient_clip_norm: 1.0
+  weight_decay: 1.0e-5
+
+output_dir: "experiments/diffusion/results/v8_refinement"
+device: "cuda"
+seed: 42
