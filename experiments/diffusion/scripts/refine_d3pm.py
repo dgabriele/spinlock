@@ -40,6 +40,7 @@ import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, TensorDataset
 
+import numpy as np
 from spinlock.data import SpinlockDataset
 from spinlock.experimental.common.config.loader import load_experiment_config
 from spinlock.experimental.diffusion.config import RefinementConfig
@@ -560,7 +561,7 @@ def generate_novel_sobol_targets(
     hard_targets = []
     total_samples = 0
     total_accepted = 0
-    agreement_sum = 0.0
+    all_agreements: List[float] = []
     max_accept = config.max_accepted_targets
     gen_bs = config.generation_batch_size
     n_candidates = config.d3pm_n_candidates
@@ -748,7 +749,7 @@ def generate_novel_sobol_targets(
                 continue
 
             agreement = best_agreement[b]
-            agreement_sum += agreement
+            all_agreements.append(agreement)
 
             if agreement >= threshold:
                 hard_targets.append({
@@ -770,18 +771,22 @@ def generate_novel_sobol_targets(
         # Periodic logging
         if total_samples % 100 < gen_bs or done:
             target_str = f"/{max_accept}" if max_accept else ""
+            ag = np.array(all_agreements) if all_agreements else np.array([0.0])
             logger.info(
                 f"  Proposals: {total_samples}, "
                 f"accepted={total_accepted}{target_str} "
                 f"({100 * total_accepted / max(total_samples, 1):.1f}%), "
-                f"mean_agreement={agreement_sum / max(total_samples, 1):.3f}"
+                f"agreement: mean={ag.mean():.3f} std={ag.std():.3f} "
+                f"min={ag.min():.3f} max={ag.max():.3f}"
             )
 
+    ag = np.array(all_agreements) if all_agreements else np.array([0.0])
     logger.info(
         f"Novel-Sobol generation complete: "
         f"{total_accepted}/{total_samples} accepted "
         f"({100 * total_accepted / max(total_samples, 1):.1f}%), "
-        f"mean_agreement={agreement_sum / max(total_samples, 1):.3f}"
+        f"agreement: mean={ag.mean():.3f} std={ag.std():.3f} "
+        f"min={ag.min():.3f} max={ag.max():.3f}"
     )
     return hard_targets
 
