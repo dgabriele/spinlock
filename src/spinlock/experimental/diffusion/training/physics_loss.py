@@ -228,8 +228,17 @@ class PhysicsDecodeHead(nn.Module):
                 with torch.no_grad():
                     soft_emb = self.codebooks[key](target_tokens[key])  # [B, D_k]
             else:
-                # Key absent from both logits and targets — skip (degenerate case).
-                continue
+                # Key absent from both logits and targets (e.g., entropy-filtered
+                # positions). Insert a zero embedding so the decoder receives its
+                # expected full-rank concatenated latent.
+                D_k = self.codebooks[key].weight.shape[1]
+                B = next(iter(logits_dict.values())).shape[0] if logits_dict else (
+                    next(iter(target_tokens.values())).shape[0] if target_tokens else 1
+                )
+                device = next(iter(logits_dict.values())).device if logits_dict else (
+                    next(iter(target_tokens.values())).device if target_tokens else "cpu"
+                )
+                soft_emb = torch.zeros(B, D_k, device=device)
             soft_embeddings.append(soft_emb)
 
         if not soft_embeddings:
