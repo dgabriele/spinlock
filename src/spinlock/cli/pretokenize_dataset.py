@@ -1,7 +1,7 @@
 """
-Pretokenize Dataset command for Spinlock CLI.
+Tokenize Dataset command for Spinlock CLI.
 
-Pre-tokenizes CNO dataset with VQTokenizer v2 for fast diffusion training by:
+Tokenizes a Lenia dataset with VQTokenizer for fast diffusion training by:
 1. Loading dataset features (temporal + initial)
 2. Batch tokenizing all samples with VQTokenizer
 3. Saving tokens to HDF5 for instant loading during training
@@ -10,12 +10,12 @@ This eliminates the on-the-fly tokenization bottleneck during diffusion training
 providing ~100x speedup per batch.
 
 Prerequisites:
-    1. CNO dataset with features (e.g., datasets/50k_baseline.h5)
-    2. Trained VQTokenizer v2 checkpoint
+    1. Dataset with features (e.g., datasets/ds_lenia_fourier_10k.h5)
+    2. Trained VQTokenizer checkpoint
 
 Documentation:
     - Diffusion training: experiments/diffusion/README.md
-    - VQTokenizer v2: src/spinlock/tokens/
+    - VQTokenizer: src/spinlock/tokens/
 """
 
 from argparse import ArgumentParser, Namespace
@@ -196,24 +196,24 @@ class PretokenizeDatasetCommand(CLICommand):
 
     @property
     def name(self) -> str:
-        return "pretokenize-dataset"
+        return "tokenize-dataset"
 
     @property
     def help(self) -> str:
-        return "Pre-tokenize CNO dataset with VQTokenizer for fast training"
+        return "Tokenize dataset with VQTokenizer for fast diffusion training"
 
     @property
     def description(self) -> str:
         return """
-Pre-tokenize CNO dataset with VQTokenizer v2 for fast diffusion training.
+Tokenize dataset with VQTokenizer for fast diffusion training.
 
-This command batch-tokenizes all samples in a CNO dataset and saves the tokens
+This command batch-tokenizes all samples in a dataset and saves the tokens
 to a new HDF5 file. This eliminates the on-the-fly tokenization bottleneck during
 training, providing ~100x speedup per batch.
 
 Process:
-1. Load CNO dataset features (temporal + initial)
-2. Load VQTokenizer v2 checkpoint
+1. Load dataset features (temporal + initial)
+2. Load VQTokenizer checkpoint
 3. Batch tokenize all samples (parallelized on GPU)
 4. Save tokens to HDF5 with compression
 
@@ -223,31 +223,23 @@ Output HDF5 structure:
   - features/initial: [N, D] original initial features (optional)
 
 Examples:
-  # Pre-tokenize 50K baseline dataset
-  spinlock pretokenize-dataset \\
-      --dataset datasets/50k_baseline.h5 \\
-      --tokenizer checkpoints/vqvae/vq_tokenizer_best.pt \\
-      --output datasets/50k_baseline_tokenized.h5 \\
+  # Tokenize 10K Lenia dataset
+  spinlock tokenize-dataset \\
+      --dataset datasets/ds_lenia_fourier_10k.h5 \\
+      --tokenizer checkpoints/lenia/vq/v3_fourier_10k/vq_tokenizer_best.pt \\
+      --output datasets/ds_lenia_fourier_10k_pretokenized.h5 \\
       --batch-size 128
 
   # Include features in output (standalone file)
-  spinlock pretokenize-dataset \\
-      --dataset datasets/50k_baseline.h5 \\
-      --tokenizer checkpoints/vqvae/vq_tokenizer_best.pt \\
-      --output datasets/50k_baseline_tokenized.h5 \\
+  spinlock tokenize-dataset \\
+      --dataset datasets/ds_lenia_fourier_10k.h5 \\
+      --tokenizer checkpoints/lenia/vq/v3_fourier_10k/vq_tokenizer_best.pt \\
+      --output datasets/ds_lenia_fourier_10k_pretokenized.h5 \\
       --copy-features
-
-  # Temporal resolution mode (requires pyramid encoder)
-  spinlock pretokenize-dataset \\
-      --dataset datasets/50k_baseline.h5 \\
-      --tokenizer checkpoints/vqvae/vq_tokenizer_best.pt \\
-      --output datasets/50k_temporal_resolution.h5 \\
-      --temporal-resolution \\
-      --batch-size 128
         """
 
     def add_arguments(self, parser: ArgumentParser) -> None:
-        """Add pretokenize-dataset command arguments."""
+        """Add tokenize-dataset command arguments."""
         parser.add_argument(
             "--dataset",
             type=Path,

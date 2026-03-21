@@ -108,6 +108,9 @@ class LocalHDF5Backend(StorageBackend):
             store_trajectories=config.get("store_trajectories", True),
             num_timesteps=config.get("num_timesteps", 1),
         )
+        # Mark how many realizations are unperturbed (natural)
+        num_unperturbed = config.get("num_unperturbed_realizations", config["num_realizations"])
+        self._writer.num_unperturbed_realizations = int(num_unperturbed)
         # Enter context manager
         self._writer.__enter__()
 

@@ -1746,6 +1746,7 @@ def compute_binned_similarity(
     n_bins: int = 5000,
     metric: str = "jaccard",
     families: Optional[list] = None,
+    checkpoint_path: Optional[str] = None,
 ) -> tuple:
     """Load tokens, bin by consecutive groups, compute pairwise similarity matrix.
 
@@ -1753,14 +1754,19 @@ def compute_binned_similarity(
 
     For metric='jaccard': builds set union per bin, pairwise Jaccard loop.
     For metric='js': builds frequency distributions per bin, scipy cdist jensenshannon.
+    For metric='weighted-hamming': loads codebook embeddings from VQ checkpoint,
+        computes per-sample weighted embedding distance with hierarchy discounting
+        (L0=1.0, L1=0.5, L2=0.25, ...), converts to similarity.
 
     Args:
         tokenized_h5_path: Path to pretokenized HDF5 dataset
         n_bins: Target number of bins (consecutive groups of samples)
-        metric: 'jaccard' or 'js'
+        metric: 'jaccard', 'js', or 'weighted-hamming'
         families: Optional list of token families to include (e.g. ['temporal']).
             Keys whose first '_'-delimited segment is not in this list are excluded.
             None (default) includes all families.
+        checkpoint_path: Path to VQ tokenizer checkpoint directory or file.
+            Required for 'weighted-hamming' metric (needs codebook embeddings).
 
     Returns:
         (similarity_matrix [n_bins, n_bins] float32, bin_indices list of (start, end) tuples)
@@ -1768,8 +1774,11 @@ def compute_binned_similarity(
     import h5py
     from scipy.spatial.distance import cdist
 
-    if metric not in ("jaccard", "js"):
-        raise ValueError(f"metric must be 'jaccard' or 'js', got {metric!r}")
+    if metric not in ("jaccard", "js", "weighted-hamming"):
+        raise ValueError(f"metric must be 'jaccard', 'js', or 'weighted-hamming', got {metric!r}")
+
+    if metric == "weighted-hamming" and checkpoint_path is None:
+        raise ValueError("checkpoint_path is required for weighted-hamming metric")
 
     print(f"Loading tokens from {tokenized_h5_path}...")
     with h5py.File(tokenized_h5_path, "r") as f:
@@ -1797,11 +1806,12 @@ def compute_binned_similarity(
             arrays_jac = np.stack(
                 [tokens_group[k][:] for k in token_keys], axis=1
             ).astype(np.int32)  # [N, K]
-        else:
+        elif metric == "js":
             # Load as integer array for JS
             arrays = np.stack(
                 [tokens_group[k][:] for k in token_keys], axis=1
             ).astype(np.int32)
+        # weighted-hamming loads tokens in its own branch (keyed by codebook)
 
     # Bin
     bin_size = max(1, n_samples // n_bins)
@@ -1834,7 +1844,7 @@ def compute_binned_similarity(
         sim = np.where(union_mat > 0, dot / union_mat, 0.0).astype(np.float32)
         np.fill_diagonal(sim, 1.0)
 
-    else:  # js
+    elif metric == "js":
         n_cats = arrays.shape[1]
         n_codes = int(arrays.max()) + 1
         actual_n_bins = (n_samples + bin_size - 1) // bin_size
@@ -1897,7 +1907,157 @@ def compute_binned_similarity(
 
         sim = _js_sim_chunked(freqs).astype(np.float32)
 
+    elif metric == "weighted-hamming":
+        # Embedding-space Hamming: replace Jaccard's binary code match/mismatch
+        # with L2 distance between codebook embedding vectors.
+        #
+        # Why "weighted Hamming": standard Hamming treats all code differences
+        # equally. This metric instead measures *how far apart* two codes are in
+        # learned embedding space — adjacent Voronoi cells contribute small
+        # distance, distant codes contribute large distance.
+        #
+        # No hierarchy discounting (L0/L1/L2 are NOT residual VQ). The VQ
+        # hierarchy is independent multi-scale projections: each level is a
+        # parallel view at a different latent dimensionality, jointly optimized
+        # under reconstruction pressure. The learned embedding magnitudes already
+        # encode each level's information content. See projector.py — each
+        # level head projects from the same input independently.
+        #
+        # Per-bin: average per-sample embedding vectors → centroid, then
+        # pairwise L2 between centroids → exponential similarity kernel.
+        import re
+        import torch
+        from pathlib import Path
+
+        # Load codebook embeddings from checkpoint
+        ckpt_path = Path(checkpoint_path)
+        # Find the actual .pt file
+        if ckpt_path.is_dir():
+            for name in ["vq_tokenizer_best.pt", "vq_tokenizer_final.pt",
+                         "best_model.pt", "final_model.pt"]:
+                candidate = ckpt_path / name
+                if candidate.exists():
+                    ckpt_path = candidate
+                    break
+        if ckpt_path.is_dir():
+            raise FileNotFoundError(
+                f"No model checkpoint found in {checkpoint_path}"
+            )
+
+        print(f"  Loading codebook embeddings from {ckpt_path}...")
+        from spinlock.tokens.tokenizer import VQTokenizer
+        tokenizer = VQTokenizer.from_checkpoint(str(ckpt_path))
+        model = tokenizer.model
+
+        # Build codebook lookup: quantizer_key → embedding [K, D].
+        # No per-level scaling — embeddings are used at their trained magnitudes.
+        codebook_info = {}  # key → embedding numpy [K, D]
+        for qkey in sorted(model.quantizers.keys()):
+            # Family filter
+            family = qkey.split("_")[0]
+            if families is not None and family not in families:
+                continue
+
+            quantizer = model.quantizers[qkey]
+            emb = quantizer.embedding.weight.detach().cpu().numpy()  # [K, D]
+            codebook_info[qkey] = emb
+
+        print(f"  Using {len(codebook_info)} quantizer codebooks (uniform weighting)")
+
+        # Load token arrays for matching keys
+        with h5py.File(tokenized_h5_path, "r") as f:
+            tokens_group = f["tokens"]
+            # Match HDF5 keys to codebook keys (handle truncation suffix stripping)
+            from spinlock.tokens.schema import strip_trunc_suffix, _TRUNC_RE
+            h5_keys = sorted(tokens_group.keys())
+
+            # Build mapping: codebook_key → h5_key
+            key_map = {}
+            for h5k in h5_keys:
+                base = strip_trunc_suffix(h5k)
+                if base in codebook_info:
+                    # Prefer the longest truncation if multiple exist
+                    if base not in key_map:
+                        key_map[base] = h5k
+                    else:
+                        # Keep the one with longer truncation
+                        m_old = _TRUNC_RE.match(key_map[base])
+                        m_new = _TRUNC_RE.match(h5k)
+                        if m_new and (not m_old or int(m_new.group(2)) > int(m_old.group(2))):
+                            key_map[base] = h5k
+                elif h5k in codebook_info:
+                    key_map[h5k] = h5k
+
+            matched_keys = sorted(key_map.keys())
+            if not matched_keys:
+                raise ValueError(
+                    f"No token keys matched codebook quantizers. "
+                    f"HDF5 keys: {h5_keys[:5]}..., codebook keys: {list(codebook_info.keys())[:5]}..."
+                )
+            print(f"  Matched {len(matched_keys)} keys between HDF5 and codebook")
+
+            n_samples = tokens_group[h5_keys[0]].shape[0]
+
+            # For each sample, compute the weighted embedding vector:
+            # concatenate w_l * codebook_k[token_k] across all keys
+            # This gives [N, total_weighted_dim] where total_weighted_dim = sum(D_k) for all keys.
+            # Then bin-average and compute pairwise distances.
+
+            # First pass: compute total embedding dim
+            total_dim = sum(codebook_info[k].shape[1] for k in matched_keys)
+            print(f"  Embedding dim: {total_dim}")
+
+            # Build per-sample embedding vectors [N, total_dim]
+            # Process in chunks to avoid memory blow-up on large datasets
+            chunk_size_load = min(n_samples, 10000)
+            sample_embeddings = np.zeros((n_samples, total_dim), dtype=np.float32)
+
+            for start_s in range(0, n_samples, chunk_size_load):
+                end_s = min(start_s + chunk_size_load, n_samples)
+                offset = 0
+                for cb_key in matched_keys:
+                    emb_weight = codebook_info[cb_key]
+                    h5k = key_map[cb_key]
+                    tokens_arr = tokens_group[h5k][start_s:end_s]  # [chunk, ]
+                    # Clamp to valid codebook range
+                    tokens_arr = np.clip(tokens_arr, 0, emb_weight.shape[0] - 1)
+                    # Lookup: [chunk, D_k]
+                    embedded = emb_weight[tokens_arr]
+                    D_k = emb_weight.shape[1]
+                    sample_embeddings[start_s:end_s, offset:offset + D_k] = embedded
+                    offset += D_k
+
+        # Bin: average embeddings per bin
+        bin_size = max(1, n_samples // n_bins)
+        actual_n_bins = (n_samples + bin_size - 1) // bin_size
+        bin_indices = []
+        bin_centroids = np.zeros((actual_n_bins, total_dim), dtype=np.float32)
+
+        for b, start in enumerate(range(0, n_samples, bin_size)):
+            end = min(start + bin_size, n_samples)
+            bin_centroids[b] = sample_embeddings[start:end].mean(axis=0)
+            bin_indices.append((start, end))
+
+        print(f"  Computing {actual_n_bins:,}×{actual_n_bins:,} embedding distance matrix...")
+
+        # Pairwise L2 distance between bin centroids, convert to similarity
+        # GPU-accelerated for large bin counts
+        use_gpu = torch.cuda.is_available()
+        dev = torch.device("cuda" if use_gpu else "cpu")
+        centroids_t = torch.tensor(bin_centroids, dtype=torch.float32, device=dev)
+        dists = torch.cdist(centroids_t, centroids_t).cpu().numpy()  # [n_bins, n_bins]
+
+        # Convert distance → similarity via exponential kernel: sim = exp(-d / median_d)
+        # Median distance gives a natural scale that adapts to the data.
+        upper_tri = dists[np.triu_indices(actual_n_bins, k=1)]
+        scale = float(np.median(upper_tri)) if len(upper_tri) > 0 else 1.0
+        scale = max(scale, 1e-6)
+        sim = np.exp(-dists / scale).astype(np.float32)
+        np.fill_diagonal(sim, 1.0)
+
+        print(f"  Distance scale (median): {scale:.4f}")
+
     avg = float(np.mean(sim[np.triu_indices(len(sim), k=1)]))
-    metric_label = "Jaccard" if metric == "jaccard" else "JS"
+    metric_label = {"jaccard": "Jaccard", "js": "JS", "weighted-hamming": "Weighted Hamming"}[metric]
     print(f"  ✓ Average pairwise {metric_label} similarity: {avg:.3f}")
     return sim, bin_indices

@@ -107,6 +107,10 @@ class _DatasetDimensionInferrer:
 
             result['initial_raw_channels'] = int(fields.attrs['num_channels'])
             result['num_realizations'] = int(fields.attrs['num_realizations'])
+            # How many realizations are natural (unperturbed). Defaults to all.
+            result['num_unperturbed_realizations'] = int(
+                fields.attrs.get('num_unperturbed_realizations', result['num_realizations'])
+            )
 
             # Validate shape matches metadata
             if len(fields.shape) != 5:
@@ -191,6 +195,10 @@ class SpinlockDataset:
             realization_mode: How to handle M realizations per sample.
                 - "single": Use realization_idx (existing behavior).
                 - "mean": Compute mean across M realizations per sample.
+                - "all": Expand all M realizations into separate samples.
+                - "natural": Like "all" but only unperturbed realizations
+                    (first num_unperturbed_realizations). Use for D3PM
+                    pretokenization to keep the inverse mapping clean.
         """
         import torch
         self._torch = torch
@@ -283,12 +291,20 @@ class SpinlockDataset:
 
                 self.ics = None  # ICs will be read per-sample in __getitem__
 
-                if self._realization_mode == "all":
-                    # Expand: each sample appears M times (one per realization)
-                    M = f["inputs/fields"].shape[1]
-                    self._realization_map = np.tile(np.arange(M), len(indices))
-                    self.indices = np.repeat(indices, M)
-                    self.params = torch.from_numpy(np.repeat(params, M, axis=0)).float()
+                if self._realization_mode in ("all", "natural"):
+                    # Expand: each sample appears M_eff times (one per realization)
+                    M_total = f["inputs/fields"].shape[1]
+                    if self._realization_mode == "natural":
+                        # Only use unperturbed realizations (first M_nat)
+                        M_nat = int(f["inputs/fields"].attrs.get(
+                            'num_unperturbed_realizations', M_total,
+                        ))
+                        M_eff = M_nat
+                    else:
+                        M_eff = M_total
+                    self._realization_map = np.tile(np.arange(M_eff), len(indices))
+                    self.indices = np.repeat(indices, M_eff)
+                    self.params = torch.from_numpy(np.repeat(params, M_eff, axis=0)).float()
                     self.n_samples = len(self.indices)
                 else:
                     self._realization_map = None

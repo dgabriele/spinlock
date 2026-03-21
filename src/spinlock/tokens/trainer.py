@@ -209,11 +209,14 @@ class VQTokenizerTrainer:
                 end = [1.0 / n] * n
             self._curriculum_weights_end = end
             self._curriculum_batches = getattr(vl_config, 'curriculum_batches', 563)
+            # curriculum_epochs overrides curriculum_batches at train() time
+            self._curriculum_epochs = getattr(vl_config, 'curriculum_epochs', None)
             # Set initial weights
             self.length_sampler.set_bin_weights(self._curriculum_weights_start)
             logger.info(
                 f"Weighted length curriculum: {self._curriculum_weights_start} → "
-                f"{self._curriculum_weights_end} over {self._curriculum_batches} batches"
+                f"{self._curriculum_weights_end} over "
+                f"{f'{self._curriculum_epochs} epochs' if self._curriculum_epochs else f'{self._curriculum_batches} batches'}"
             )
         elif (
             self.length_sampler is not None
@@ -303,6 +306,14 @@ class VQTokenizerTrainer:
                 theta_features,
                 temporal_mask,
                 temporal_lengths,
+            )
+
+        # Resolve curriculum_epochs → curriculum_batches now that we know loader size
+        if getattr(self, '_curriculum_epochs', None) is not None:
+            self._curriculum_batches = int(self._curriculum_epochs * len(train_loader))
+            logger.info(
+                f"Curriculum: {self._curriculum_epochs} epochs × "
+                f"{len(train_loader)} batches/epoch = {self._curriculum_batches} batches"
             )
 
         logger.info(f"Training VQ Tokenizer on {self.device}")
@@ -1273,9 +1284,10 @@ class VQTokenizerTrainer:
                         total_reset, len(self.model.quantizers),
                     )
 
-            # Periodic checkpoint: save latest every 500 batches so we never
-            # lose more than ~500 batches of work on crash or kill.
-            if (batch_idx + 1) % 500 == 0:
+            # Periodic checkpoint: save latest every N batches so we never
+            # lose more than N batches of work on crash or kill.
+            ckpt_interval = getattr(self.config.training, 'checkpoint_every_batches', 500)
+            if ckpt_interval > 0 and (batch_idx + 1) % ckpt_interval == 0:
                 latest_path = self._output_dir / f"{self._checkpoint_prefix}_latest.pt"
                 self._save_checkpoint(latest_path, epoch, val_loss=None)
                 logger.info(

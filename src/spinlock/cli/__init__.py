@@ -22,8 +22,6 @@ from .train_vqvae import TrainVQVAECommand
 from .train_vq_tokenizer import TrainVQTokenizerCommand
 from .compute_ground_truth_tokens import ComputeGroundTruthTokensCommand
 from .pretokenize_dataset import PretokenizeDatasetCommand
-from .generate_noa_features import GenerateNOAFeaturesCommand
-from .generate_mno_dataset import GenerateMNODatasetCommand
 from .diagnose_mno import DiagnoseMNOCommand
 from .validate_mno_vqvae import ValidateMNOVQVAECommand
 from .train_token_to_rollout_vae import TrainTokenToRolloutVAECommand
@@ -55,8 +53,6 @@ __all__ = [
     "TrainVQTokenizerCommand",
     "ComputeGroundTruthTokensCommand",
     "PretokenizeDatasetCommand",
-    "GenerateNOAFeaturesCommand",
-    "GenerateMNODatasetCommand",
     "DiagnoseMNOCommand",
     "ValidateMNOVQVAECommand",
     "TrainTokenToRolloutVAECommand",
@@ -112,8 +108,6 @@ For more help on a specific command:
     # Register commands
     commands = [
         GenerateCommand(),
-        GenerateNOAFeaturesCommand(),
-        GenerateMNODatasetCommand(),
         CloudGenerateCommand(),
         InfoCommand(),
         ValidateCommand(),

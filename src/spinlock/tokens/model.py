@@ -1176,8 +1176,13 @@ class JointHierarchicalVQVAE(nn.Module):
         num_tokens_float = base_tokens * level_multiplier
         num_tokens = int(num_tokens_float)
 
-        # L1 and L2: preserve standard minimum (6)
-        num_tokens = max(6, num_tokens)
+        # L1: dataset-aware minimum (spare capacity for diverse data)
+        if level_idx == 1 and n_samples > 1000:
+            min_tokens_l1 = min(16, max(8, int(np.sqrt(n_samples / 1000.0) * 2.4)))
+            num_tokens = max(min_tokens_l1, num_tokens)
+        else:
+            # L2+: preserve standard minimum (6)
+            num_tokens = max(6, num_tokens)
 
         return num_tokens
 

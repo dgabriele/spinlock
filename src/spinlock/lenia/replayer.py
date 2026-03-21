@@ -25,6 +25,7 @@ from .params import (
     sobol_batch_to_tensors,
     sobol_to_lenia_params,
 )
+from .perturbations import PerturbationConfig, apply_perturbation, _sample_perturbation_type
 from .simulator import (
     LeniaSimulator,
     build_kernel_ffts_batched,
@@ -183,6 +184,8 @@ class LeniaReplayer:
         dedup_threshold: float = 0.5,
         # Dynamics classification
         classify_dynamics: bool = False,
+        # Mid-simulation perturbation probing
+        perturbation_config: Optional[PerturbationConfig] = None,
     ):
         self.n_channels = n_channels
         self.grid_size = grid_size
@@ -212,6 +215,8 @@ class LeniaReplayer:
         self.classify_dynamics = classify_dynamics
         self._last_dynamics_classes: Optional[list[str]] = None
         self._last_activity_metrics: Optional[TemporalActivityMetrics] = None
+        # Perturbation probing
+        self.perturbation_config = perturbation_config
 
         self.simulator = LeniaSimulator(grid_size=grid_size, device=device)
         self.ic_generator = ic_generator if ic_generator is not None else LeniaICGenerator()
@@ -306,18 +311,27 @@ class LeniaReplayer:
         num_timesteps: int = 256,
         seed: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Simulate B parameter sets × M realizations.
+        """Simulate B parameter sets × M unperturbed (+ P perturbed) realizations.
 
-        Precomputes kernel FFTs once and shares them across all M realizations
+        Precomputes kernel FFTs once and shares them across all realizations
         (kernels depend only on params, not on ICs).
 
+        When perturbation_config is enabled, P additional perturbed realizations
+        are appended after the M unperturbed ones, giving total_M = M + P.
+
         Returns:
-            inputs  [B, M, C, H, W]    — initial conditions per realization
-            outputs [B, M, T, C, H, W] — full trajectories
+            inputs  [B, total_M, C, H, W]    — initial conditions per realization
+            outputs [B, total_M, T, C, H, W] — full trajectories
         """
         B = params_batch.shape[0]
         C = self.n_channels
         H = W = self.grid_size
+        M = num_realizations
+
+        # Compute total realizations (unperturbed + perturbed)
+        pc = self.perturbation_config
+        P = pc.num_perturbed_realizations if (pc and pc.enabled) else 0
+        total_M = M + P
 
         # Vectorized Sobol → tensor conversion (one GPU transfer, no Python loop)
         tensors = sobol_batch_to_tensors(
@@ -325,27 +339,40 @@ class LeniaReplayer:
             ranges=self.param_ranges,
         )
 
-        # Build kernel FFTs ONCE — shared across all M realizations
+        # Build kernel FFTs ONCE — shared across all realizations
         kernel_ffts = self._build_kernel_ffts(tensors)
 
-        all_inputs = torch.zeros(B, num_realizations, C, H, W, device=self.device)
-        all_outputs = torch.zeros(B, num_realizations, num_timesteps, C, H, W, device=self.device)
+        all_inputs = torch.zeros(B, total_M, C, H, W, device=self.device)
+        all_outputs = torch.zeros(B, total_M, num_timesteps, C, H, W, device=self.device)
 
         # Lock IC types across realizations for consistency:
-        # all M realizations of a given parameter set use the same IC type
+        # all realizations of a given parameter set use the same IC type
         has_locking = hasattr(self.ic_generator, 'lock_types')
         if has_locking:
             types = self.ic_generator.sample_types_for_batch(B)
             self.ic_generator.lock_types(types)
 
         try:
-            for m in range(num_realizations):
+            # ── Unperturbed realizations ──
+            for m in range(M):
                 ic_seed = None if seed is None else (seed * 1000 + m)
                 ic, traj = self._rollout_one_realization_fast(
                     kernel_ffts, tensors, num_timesteps, ic_seed,
                 )
                 all_inputs[:, m] = ic
                 all_outputs[:, m] = traj
+
+            # ── Perturbed realizations ──
+            if P > 0:
+                for p in range(P):
+                    # Distinct seed space: offset by 500 to avoid collision
+                    # with unperturbed seeds (which use seed * 1000 + m)
+                    p_seed = None if seed is None else (seed * 1000 + 500 + p)
+                    ic, traj = self._rollout_one_perturbed_realization(
+                        kernel_ffts, tensors, num_timesteps, p_seed, p, pc,
+                    )
+                    all_inputs[:, M + p] = ic
+                    all_outputs[:, M + p] = traj
         finally:
             if has_locking:
                 # Restore full batch types (retries may have overwritten last_types)
@@ -545,6 +572,90 @@ class LeniaReplayer:
         if any(r > 0 for r in retry_counts):
             total_retried = sum(1 for r in retry_counts if r > 0)
             logger.debug(f"LeniaReplayer: retried {total_retried}/{B} samples")
+
+        return ic, traj
+
+    def _rollout_one_perturbed_realization(
+        self,
+        kernel_ffts: torch.Tensor,
+        tensors: LeniaBatchTensors,
+        num_timesteps: int,
+        seed: Optional[int],
+        perturb_idx: int,
+        perturbation_config: PerturbationConfig,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Run one perturbed realization: simulate, perturb mid-trajectory, continue.
+
+        1. Generate a fresh IC (same Fourier IC path as unperturbed)
+        2. Simulate unperturbed for injection_step frames
+        3. Apply a randomly-selected structured perturbation
+        4. Continue simulation for remaining frames
+        5. Return the full trajectory (including pre-perturbation frames)
+
+        No retries on perturbed realizations — the perturbation response IS the
+        signal, even if the system dies or saturates post-perturbation.
+
+        Args:
+            kernel_ffts: [B, C, H, W//2+1] precomputed kernel FFTs.
+            tensors: Batch parameter tensors.
+            num_timesteps: Total trajectory length T.
+            seed: RNG seed for IC + perturbation.
+            perturb_idx: Index of this perturbed realization (for seed spacing).
+            perturbation_config: Perturbation settings.
+
+        Returns:
+            ic:   [B, C, H, W]
+            traj: [B, T, C, H, W]
+        """
+        B = tensors.radii.shape[0]
+        injection_step = max(1, int(num_timesteps * perturbation_config.injection_fraction))
+        remaining_steps = num_timesteps - injection_step
+
+        # Generate IC
+        ic = self.ic_generator.generate_batch(
+            batch_size=B,
+            n_channels=self.n_channels,
+            grid_size=self.grid_size,
+            seed=seed,
+            device=self.device,
+            kernel_radii=tensors.radii,
+        )
+
+        # Phase 1: simulate unperturbed up to injection_step
+        pre_traj = self._simulate_with_substeps(
+            ic, kernel_ffts, tensors.coupling, tensors.growth_mu,
+            tensors.growth_sigma, tensors.dt, injection_step,
+            growth_type=tensors.growth_type,
+        )  # [B, injection_step, C, H, W]
+
+        # Get state at injection point (last frame of pre-trajectory)
+        state_at_injection = pre_traj[:, -1].clone()  # [B, C, H, W]
+
+        # Apply perturbation
+        perturb_rng = torch.Generator(device=self.device)
+        if seed is not None:
+            perturb_rng.manual_seed(seed * 7 + perturb_idx * 31)
+
+        perturb_type = _sample_perturbation_type(
+            perturbation_config, perturb_rng, self.device,
+        )
+        perturbed_state = apply_perturbation(
+            state_at_injection, perturb_type, tensors.radii,
+            perturbation_config, perturb_rng,
+        )
+
+        # Phase 2: simulate from perturbed state for remaining steps
+        if remaining_steps > 0:
+            post_traj = self._simulate_with_substeps(
+                perturbed_state, kernel_ffts, tensors.coupling,
+                tensors.growth_mu, tensors.growth_sigma, tensors.dt,
+                remaining_steps, growth_type=tensors.growth_type,
+            )  # [B, remaining_steps, C, H, W]
+
+            # Concatenate: pre-perturbation + post-perturbation
+            traj = torch.cat([pre_traj, post_traj], dim=1)  # [B, T, C, H, W]
+        else:
+            traj = pre_traj
 
         return ic, traj
 

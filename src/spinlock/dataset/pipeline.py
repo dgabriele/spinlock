@@ -805,11 +805,20 @@ class DatasetGenerationPipeline:
         output_channels = self._num_output_channels if self._num_output_channels is not None else 2
 
         # Initialize storage backend with actual max grid size (not hardcoded 256)
+        # Effective realizations = base M + perturbation P (if enabled)
+        effective_realizations = self.config.simulation.num_realizations
+        sim_cfg = self.config.simulation
+        if sim_cfg.operator_type == "lenia" and sim_cfg.lenia is not None:
+            lenia_cfg = sim_cfg.lenia
+            if lenia_cfg.perturbation_enabled:
+                effective_realizations += lenia_cfg.perturbation_num_realizations
+
         storage_config = {
             "grid_size": self.max_grid_size,  # Use actual max, not hardcoded 256
             "input_channels": input_channels,  # Dynamically detected
             "output_channels": output_channels,  # Dynamically detected
-            "num_realizations": self.config.simulation.num_realizations,
+            "num_realizations": effective_realizations,
+            "num_unperturbed_realizations": self.config.simulation.num_realizations,
             "num_parameter_sets": num_samples,
             "compression": self.config.dataset.storage.compression,
             "compression_level": self.config.dataset.storage.compression_level,
@@ -1443,7 +1452,27 @@ class DatasetGenerationPipeline:
             )
 
         from spinlock.lenia.params import DEFAULT_RANGES
+        from spinlock.lenia.perturbations import PerturbationConfig
         param_ranges = DEFAULT_RANGES
+
+        # Build perturbation config from flat schema fields
+        perturbation_config = None
+        if lenia_cfg.perturbation_enabled:
+            pc_kwargs = {
+                "enabled": True,
+                "num_perturbed_realizations": lenia_cfg.perturbation_num_realizations,
+                "injection_fraction": lenia_cfg.perturbation_injection_fraction,
+                "bump_amplitude": lenia_cfg.perturbation_bump_amplitude,
+                "noise_amplitude": lenia_cfg.perturbation_noise_amplitude,
+            }
+            if lenia_cfg.perturbation_types is not None:
+                pc_kwargs["types"] = lenia_cfg.perturbation_types
+            perturbation_config = PerturbationConfig(**pc_kwargs)
+            print(
+                f"Lenia: perturbation probing enabled "
+                f"({perturbation_config.num_perturbed_realizations} perturbed realizations, "
+                f"injection at {perturbation_config.injection_fraction:.0%} of T)"
+            )
 
         self._lenia_replayer = LeniaReplayer(
             n_channels=cfg.n_channels,
@@ -1468,6 +1497,8 @@ class DatasetGenerationPipeline:
             dedup_threshold=lenia_cfg.dedup_threshold,
             # Dynamics classification
             classify_dynamics=lenia_cfg.classify_dynamics,
+            # Perturbation probing
+            perturbation_config=perturbation_config,
         )
 
     def _needs_rollout(self) -> bool:
@@ -1512,9 +1543,15 @@ class DatasetGenerationPipeline:
                 )
                 kernel_radii = tensors.radii
 
+            # Effective realizations = base M + perturbation P (if enabled)
+            eff_real = self.config.simulation.num_realizations
+            pc = self._lenia_replayer.perturbation_config
+            if pc and pc.enabled:
+                eff_real += pc.num_perturbed_realizations
+
             inputs, _ic_types = self._lenia_replayer.generate_ics_only(
                 batch_size=batch_size,
-                num_realizations=self.config.simulation.num_realizations,
+                num_realizations=eff_real,
                 kernel_radii=kernel_radii,
             )
             # Minimal dummy output (T=0) — never stored, never transferred

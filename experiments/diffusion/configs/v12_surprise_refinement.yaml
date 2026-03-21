@@ -1,0 +1,81 @@
+# D3PM v12 Pool-Based Retrain with Surprise Weighting
+#
+# Key insight: incremental fine-tuning (v11) causes compounding drift —
+# each cycle inherits errors from previous cycles. v12 fixes this by
+# resetting to v8 base weights each cycle and retraining on the FULL
+# accumulated target pool. Later cycles get more data, not more drift.
+#
+# Three-level surprise hierarchy:
+#   Level 1: PrioritizedReplayBuffer — hard targets sampled more from pool
+#   Level 2: Agreement-surprise weighting — hard samples get more gradient
+#            (CE loss signal dropped: confounded by random diffusion timestep)
+#   Level 3: Focal loss (unchanged) — hard positions within samples
+#
+# Literature: Prioritized Generative Replay (ICLR 2025),
+#             SuRe (2025), OHEM/Focal Loss lineage
+
+d3pm_checkpoint: "experiments/diffusion/results/v8_joint/v8_joint_d3pm_best.pt"
+mno_checkpoint: null  # GT simulator (LeniaReplayAdapter)
+tokenizer_checkpoint: "checkpoints/lenia/vq/v3_fourier_10k/vq_tokenizer_best.pt"
+
+dataset_path: "datasets/ds_lenia_fourier_10k.h5"
+max_samples: 10000
+rollout_steps: 512
+
+num_refinement_cycles: 10
+mask_probability: 0.5
+d3pm_start_step: null
+sampling_temperature: 1.0     # >1 increases candidate diversity, <1 sharpens
+max_accepted_targets: 500
+generation_batch_size: 32
+
+eval_samples: 96
+eval_frequency: 1
+early_stopping_patience: 3
+
+quality_filter:
+  min_observed_agreement: 0.8
+
+adaptive:
+  initial_d3pm_candidates: 2
+  perturbation:
+    enabled: true
+    initial_sigma: 0.03
+    sigma_growth_factor: 1.5
+    max_sigma: 0.15
+    perturbations_per_round: 4
+    freeze_categorical_dims: true
+    categorical_dim_indices: [32, 33]
+  budget:
+    min_extra_candidates: 2
+    max_extra_candidates: 16
+    budget_scaling: "linear"
+    d3pm_fraction: 0.5
+  stopping:
+    max_rounds_per_sample: 4
+    min_acceptance_rate: 0.05
+    acceptance_rate_window: 200
+    min_loss_improvement: 0.001
+
+fine_tuning:
+  learning_rate: 2.0e-5
+  num_epochs: 5
+  batch_size: 128
+  gradient_clip_norm: 1.0
+  weight_decay: 1.0e-5
+  # Retrain-from-base: anchor and per-cycle decay are unnecessary
+  # since we reset to v8 base weights before each cycle's fine-tuning.
+  anchor_weight: 0.0
+  replay_fraction: 0.0      # unused — pool IS the training set
+  max_replay_size: 5000     # target pool capacity
+  use_cosine_schedule: true
+  warmup_fraction: 0.1
+  min_lr_fraction: 0.1
+  per_cycle_lr_decay: 1.0   # no decay — always start from base
+  # v12 surprise: Level 1 (pool sampling) + Level 2 (agreement weighting)
+  surprise_alpha: 1.0       # pool priority exponent (0=uniform, 1=proportional)
+  max_surprise_weight: 5.0  # cap per-sample training weight
+
+output_dir: "experiments/diffusion/results/v12_surprise"
+device: "cuda"
+seed: 42

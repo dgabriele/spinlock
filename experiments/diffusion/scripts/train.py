@@ -90,6 +90,7 @@ def create_datasets(
             mask_generator=mask_generator,
             truncation_length=config.dataset.truncation_length,
             token_filter=token_filter,
+            aux_truncation_lengths=config.dataset.aux_truncation_lengths,
         )
     else:
         logger.info("Using on-the-fly tokenization (slow mode)")

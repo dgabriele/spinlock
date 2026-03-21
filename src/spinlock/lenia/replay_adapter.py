@@ -27,6 +27,7 @@ from .params import (
     LeniaParamRanges,
     sobol_batch_to_tensors,
 )
+from .perturbations import PerturbationConfig, apply_perturbation, _sample_perturbation_type
 from .simulator import (
     LeniaSimulator,
     build_multiring_kernel_ffts_batched,
@@ -263,6 +264,57 @@ class LeniaReplayAdapter:
             return torch.cat([ics.unsqueeze(1), traj], dim=1)
         return traj[:, -1]
 
+    def _simulate_perturbed(
+        self,
+        ics: torch.Tensor,
+        tensors: LeniaBatchTensors,
+        kernel_ffts: torch.Tensor,
+        timesteps: int,
+        return_all_steps: bool,
+        perturbation_config: PerturbationConfig,
+        seed: int = 0,
+    ) -> torch.Tensor:
+        """Simulate with mid-trajectory perturbation.
+
+        1. Simulate naturally for injection_step frames
+        2. Apply perturbation to the state
+        3. Continue simulation for remaining frames
+        4. Return full trajectory (pre + post perturbation)
+        """
+        injection_step = max(1, int(timesteps * perturbation_config.injection_fraction))
+        remaining_steps = timesteps - injection_step
+
+        # Phase 1: simulate naturally up to injection point
+        pre_traj = self._simulate(
+            ics, tensors, kernel_ffts, injection_step, return_all_steps=True,
+        )  # [B, injection_step+1, C, H, W] (IC prepended)
+
+        # State at injection point (last frame)
+        state = pre_traj[:, -1].clone()
+
+        # Apply perturbation
+        rng = torch.Generator(device=self.device)
+        rng.manual_seed(seed)
+        ptype = _sample_perturbation_type(perturbation_config, rng, self.device)
+        state = apply_perturbation(state, ptype, tensors.radii, perturbation_config, rng)
+
+        # Phase 2: simulate from perturbed state
+        if remaining_steps > 0:
+            post_traj = self._simulate(
+                state, tensors, kernel_ffts, remaining_steps, return_all_steps=True,
+            )  # [B, remaining_steps+1, C, H, W] (perturbed state prepended)
+
+            if return_all_steps:
+                # pre_traj: [B, injection_step+1, ...] includes IC
+                # post_traj: [B, remaining_steps+1, ...] includes perturbed state
+                # Concatenate: pre_traj + post_traj[:, 1:] to avoid duplicating injection frame
+                return torch.cat([pre_traj, post_traj[:, 1:]], dim=1)
+            return post_traj[:, -1:]
+        else:
+            if return_all_steps:
+                return pre_traj
+            return pre_traj[:, -1:]
+
     # ── Per-sample interface (CNOReplayer compat) ─────────────
 
     def rollout(
@@ -329,14 +381,22 @@ class LeniaReplayAdapter:
         ics: torch.Tensor,
         timesteps: int,
         return_all_steps: bool,
+        perturbation_config: Optional[PerturbationConfig] = None,
+        perturbation_seed: int = 0,
     ) -> torch.Tensor:
         """Simulate one sub-batch on GPU and return result on CPU."""
         ics_dev = ics.to(self.device)
         tensors = self._build_lenia_tensors(params_np)
         kernel_ffts = self._build_kernel_ffts(tensors)
-        result = self._simulate(
-            ics_dev, tensors, kernel_ffts, timesteps, return_all_steps,
-        )
+        if perturbation_config is not None and perturbation_config.enabled:
+            result = self._simulate_perturbed(
+                ics_dev, tensors, kernel_ffts, timesteps, return_all_steps,
+                perturbation_config, seed=perturbation_seed,
+            )
+        else:
+            result = self._simulate(
+                ics_dev, tensors, kernel_ffts, timesteps, return_all_steps,
+            )
         return result.cpu()
 
     def rollout_batch(
@@ -345,6 +405,8 @@ class LeniaReplayAdapter:
         ics: torch.Tensor,
         timesteps: int,
         return_all_steps: bool = True,
+        perturbation_config: Optional[PerturbationConfig] = None,
+        perturbation_seed: int = 0,
     ) -> torch.Tensor:
         """Fully vectorized batch rollout with OOM-safe GPU memory management.
 
@@ -359,6 +421,10 @@ class LeniaReplayAdapter:
             ics: [B, C, H, W] initial conditions.
             timesteps: Number of simulation steps.
             return_all_steps: If True, prepend IC → [B, T+1, C, H, W].
+            perturbation_config: If provided and enabled, apply perturbation
+                mid-trajectory. Used for perturbed realizations during
+                VQ training.
+            perturbation_seed: Seed for perturbation RNG.
 
         Returns:
             Trajectories [B, T+1, C, H, W] on CPU.
@@ -388,6 +454,8 @@ class LeniaReplayAdapter:
                 result[start:end] = self._run_sub_batch(
                     params_np[start:end], ics[start:end],
                     timesteps, return_all_steps,
+                    perturbation_config=perturbation_config,
+                    perturbation_seed=perturbation_seed + start,
                 )
                 start = end  # advance on success
                 # Cache the working size for this timestep count
@@ -395,7 +463,7 @@ class LeniaReplayAdapter:
             except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
                 old = eff_batch
-                eff_batch = max(4, eff_batch // 2)
+                eff_batch = max(1, eff_batch // 2)
                 logger.warning(
                     "OOM in rollout_batch (sub-batch %d→%d at T=%d), "
                     "halving to %d",

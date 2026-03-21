@@ -30,18 +30,18 @@ class PretokenizedDiffusionDataset(Dataset):
         mask_generator: HierarchicalMaskGenerator instance
         truncation_length: If set, select only this truncation from a
             multi-truncation HDF5 and remap keys to base form.
+        aux_truncation_lengths: Optional list of additional truncation lengths
+            to load for roundtrip consistency loss. Each creates a separate
+            PretokenizedTokenStore filtered to that truncation.
 
     Example:
         >>> dataset = PretokenizedDiffusionDataset(
         ...     tokenized_dataset_path=Path("datasets/50k_baseline_tokenized.h5"),
-        ...     mask_generator=mask_gen
+        ...     mask_generator=mask_gen,
+        ...     aux_truncation_lengths=[32, 64, 128, 256],
         ... )
         >>> batch = dataset[0]
-        >>> # batch = {
-        >>> #   'tokens': Dict[str, Tensor],
-        >>> #   'observed': Dict[str, BoolTensor],
-        >>> #   'target': Dict[str, BoolTensor]
-        >>> # }
+        >>> # batch['aux_trunc_tokens'][32] = Dict[str, Tensor]  # tokens at T=32
     """
 
     def __init__(
@@ -50,6 +50,7 @@ class PretokenizedDiffusionDataset(Dataset):
         mask_generator: HierarchicalMaskGenerator,
         truncation_length: Optional[int] = None,
         token_filter=None,
+        aux_truncation_lengths: Optional[list] = None,
     ):
         self.tokenized_dataset_path = tokenized_dataset_path
         self.mask_generator = mask_generator
@@ -60,6 +61,18 @@ class PretokenizedDiffusionDataset(Dataset):
             tokenized_dataset_path, truncation_length=truncation_length
         )
         self.num_samples = self.store.num_samples
+
+        # Auxiliary truncation stores for roundtrip loss
+        self.aux_stores: Dict[int, PretokenizedTokenStore] = {}
+        if aux_truncation_lengths:
+            for tl in aux_truncation_lengths:
+                self.aux_stores[tl] = PretokenizedTokenStore(
+                    tokenized_dataset_path, truncation_length=tl
+                )
+            logger.info(
+                f"Loaded {len(self.aux_stores)} auxiliary truncation stores: "
+                f"T={sorted(self.aux_stores.keys())}"
+            )
 
         logger.info(
             f"PretokenizedDiffusionDataset initialized: "
@@ -102,8 +115,17 @@ class PretokenizedDiffusionDataset(Dataset):
         observed_dict = {key: mask.squeeze(0) for key, mask in observed_dict.items()}
         target_dict = {key: mask.squeeze(0) for key, mask in target_dict.items()}
 
-        return {
+        result = {
             'tokens': tokens_dict,
             'observed': observed_dict,
             'target': target_dict,
         }
+
+        # Include auxiliary truncation tokens (temporal-only, base-key form)
+        if self.aux_stores:
+            result['aux_trunc_tokens'] = {
+                tl: store.get_sample(idx)
+                for tl, store in self.aux_stores.items()
+            }
+
+        return result

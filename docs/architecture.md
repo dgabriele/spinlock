@@ -1139,6 +1139,9 @@ These applications are secondary to the core goal of understanding operator beha
 - [Feature Families](features/README.md) - INITIAL, ARCHITECTURE, SUMMARY, TEMPORAL documentation
 - [VQ-VAE Training Guide](vqvae/training-guide.md) - VQ-VAE configuration and training details
 
+**D3PM Discrete Diffusion (Inverse Generation):**
+- [D3PM Architecture and Training Dynamics](d3pm-architecture.md) - Graded noise schedule, roundtrip consistency, curriculum stages, and the denoising trajectory as temporal unfolding
+
 **Phase 2-5 (Autonomous Operation - Planned):**
 - [NOA Roadmap](noa-roadmap.md) - **Complete 5-phase development plan** with Phase 2-5 autonomous operation architecture
 - This document (architecture.md) - Technical design for perturbation framework, episodic memory, curiosity, symbolic discovery

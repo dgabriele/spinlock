@@ -19,6 +19,7 @@ from .simulator import (
 )
 from .fourier_ic import FourierICConfig, FourierICGenerator
 from .initial_conditions import LeniaICGenerator
+from .perturbations import PerturbationConfig
 from .replayer import LeniaReplayer
 from .replay_adapter import LeniaReplayAdapter
 
@@ -39,6 +40,7 @@ __all__ = [
     "FourierICConfig",
     "FourierICGenerator",
     "LeniaICGenerator",
+    "PerturbationConfig",
     "LeniaReplayer",
     "LeniaReplayAdapter",
 ]

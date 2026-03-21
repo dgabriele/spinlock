@@ -111,6 +111,8 @@ class HDF5DatasetWriter:
         self.track_ic_metadata = track_ic_metadata
         self.store_trajectories = store_trajectories
         self.num_timesteps = num_timesteps
+        # How many realizations are unperturbed (natural). If not set, all are natural.
+        self.num_unperturbed_realizations: int = num_realizations
 
         # Reduced chunk size for more frequent flushing (prevents buffer accumulation)
         # Changed from 100 to 20 to reduce peak memory usage by ~80%
@@ -159,7 +161,8 @@ class HDF5DatasetWriter:
         meta.attrs["version"] = "1.0"
         meta.attrs["grid_size"] = self.grid_size
         meta.attrs["num_channels"] = self.input_channels  # Physical channel count (C)
-        meta.attrs["num_realizations"] = self.num_realizations  # Stochastic realizations (M)
+        meta.attrs["num_realizations"] = self.num_realizations  # Total realizations (M + P)
+        meta.attrs["num_unperturbed_realizations"] = self.num_unperturbed_realizations  # Natural only (M)
         meta.attrs["num_parameter_sets"] = self.num_parameter_sets
         meta.attrs["track_ic_metadata"] = self.track_ic_metadata
 
@@ -226,6 +229,7 @@ class HDF5DatasetWriter:
         # Add explicit format metadata for robust introspection
         inputs_dataset.attrs['format'] = 'NMCHW'
         inputs_dataset.attrs['num_realizations'] = self.num_realizations
+        inputs_dataset.attrs['num_unperturbed_realizations'] = self.num_unperturbed_realizations
         inputs_dataset.attrs['num_channels'] = self.input_channels
         inputs_dataset.attrs['description'] = (
             f"Input fields in [N, M, C, H, W] format where "

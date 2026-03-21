@@ -11,7 +11,7 @@ import logging
 import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -433,6 +433,7 @@ class DiscreteD3PM(nn.Module):
         t: int,
         observed_dict: Optional[Dict[str, torch.BoolTensor]] = None,
         x_0_dict: Optional[Dict[str, torch.Tensor]] = None,
+        temperature: float = 1.0,
     ) -> Dict[str, torch.Tensor]:
         """Single reverse diffusion step with RePaint inpainting.
 
@@ -445,16 +446,28 @@ class DiscreteD3PM(nn.Module):
             t: Current timestep (t → t-1)
             observed_dict: Optional dict of observed masks [B] (True = observed)
             x_0_dict: Optional clean tokens dict [B] (for RePaint)
+            temperature: Sampling temperature. 1.0 = standard. >1 = more diverse.
+                When != 1.0, the final step (t=0) uses tempered multinomial
+                sampling instead of argmax.
 
         Returns:
             Dict mapping key → denoised tokens x_{t-1} [B]
         """
         if t == 0:
-            # Final step: return predicted tokens directly
-            return {
-                key: torch.argmax(logits, dim=-1)
-                for key, logits in predicted_logits.items()
-            }
+            if temperature == 1.0:
+                # Standard: argmax at final step (backward compatible)
+                return {
+                    key: torch.argmax(logits, dim=-1)
+                    for key, logits in predicted_logits.items()
+                }
+            else:
+                # Tempered sampling at final step for diversity
+                return {
+                    key: torch.multinomial(
+                        F.softmax(logits / temperature, dim=-1), num_samples=1,
+                    ).squeeze(-1)
+                    for key, logits in predicted_logits.items()
+                }
 
         x_prev = {}
 
@@ -462,8 +475,8 @@ class DiscreteD3PM(nn.Module):
             B = logits.shape[0]
             V = self.vocab_sizes[key]
 
-            # Sample from predicted distribution
-            probs = F.softmax(logits, dim=-1)  # [B, V]
+            # Sample from predicted distribution (tempered)
+            probs = F.softmax(logits / temperature, dim=-1)  # [B, V]
             x_t_minus_1 = torch.multinomial(probs, num_samples=1).squeeze(-1)  # [B]
 
             # RePaint: Re-inject observed tokens via forward process
@@ -502,7 +515,12 @@ class DiscreteD3PM(nn.Module):
         denoising_network: Optional[nn.Module] = None,
         device: str = "cuda",
         start_step: Optional[int] = None,
-    ) -> Dict[str, torch.Tensor]:
+        temperature: float = 1.0,
+        snapshot_steps: Optional[List[int]] = None,
+    ) -> Union[
+        Dict[str, torch.Tensor],
+        Tuple[Dict[str, torch.Tensor], Dict[int, Dict[str, torch.Tensor]]],
+    ]:
         """Sampling loop with optional partial start and inpainting.
 
         When ``start_step`` is None (default), runs the full T → 0 reverse
@@ -523,9 +541,16 @@ class DiscreteD3PM(nn.Module):
             device: Device for computation
             start_step: Start reverse loop from this timestep instead of T.
                 None = full T (standard sampling). Must have x_0_dict for < T.
+            temperature: Sampling temperature. 1.0 = standard. >1 = more diverse.
+            snapshot_steps: Optional list of denoising steps at which to clone
+                x_t into a trajectory dict. When None (default), returns only
+                the final result (backward compatible). When set, returns a
+                tuple of (final_tokens, trajectory) where trajectory maps
+                step → {key: Tensor[B]}.
 
         Returns:
-            Dict mapping key → generated tokens [B]
+            When snapshot_steps is None: Dict mapping key → generated tokens [B]
+            When snapshot_steps is set: Tuple of (final_tokens, trajectory)
         """
         if denoising_network is None:
             raise ValueError("denoising_network is required for sampling")
@@ -568,8 +593,19 @@ class DiscreteD3PM(nn.Module):
                         0, vocab_size, (batch_size,), device=device
                     )
 
+        # Snapshot trajectory recording
+        trajectory: Optional[Dict[int, Dict[str, torch.Tensor]]] = None
+        snapshot_set: set = set()
+        if snapshot_steps is not None:
+            trajectory = {}
+            snapshot_set = set(snapshot_steps)
+
         # Iterative denoising actual_start → 0
         for t in reversed(range(actual_start)):
+            # Record snapshot before denoising this step (state at step t)
+            if t in snapshot_set:
+                trajectory[t] = {k: v.clone() for k, v in x_t.items()}
+
             # Compute graded effective timesteps for denoiser conditioning
             t_tensor = torch.full((batch_size,), t, device=device, dtype=torch.long)
             eff_t_dict = None
@@ -592,8 +628,11 @@ class DiscreteD3PM(nn.Module):
                 t,
                 observed_dict=observed_dict,
                 x_0_dict=x_0_dict,
+                temperature=temperature,
             )
 
+        if trajectory is not None:
+            return x_t, trajectory
         return x_t
 
     def get_timestep_weights(self) -> torch.Tensor:

@@ -21,7 +21,7 @@ class TrainDiffusionCommand(CLICommand):
     def description(self) -> str:
         return """Train a discrete D3PM diffusion model for token completion.
 
-Requires a pretokenized dataset (produced by spinlock pretokenize-dataset) and
+Requires a pretokenized dataset (produced by spinlock tokenize-dataset) and
 a config YAML specifying the model, diffusion schedule, and training parameters.
 
 Examples:

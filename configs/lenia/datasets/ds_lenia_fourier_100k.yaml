@@ -1,0 +1,116 @@
+# Lenia Fourier IC — 100K samples for improved D3PM inverse mapping
+#
+# 10× scale-up from ds_lenia_fourier_10k.yaml. In a 34-dim Sobol space,
+# 10K gives ~3 samples per dimension on average. 100K provides 10× better
+# coverage of the parameter space, which directly improves the D3PM's
+# inverse mapping quality.
+#
+# Same parameter space, same Fourier ICs, same quality filters.
+# Larger batch_size (100 vs 50) for throughput on GPU.
+
+metadata:
+  name: "lenia_fourier_100k"
+  description: "100K dataset: Fourier ICs for D3PM inverse mapping scale-up"
+
+parameter_space:
+  architecture: {}
+  stochastic: {}
+  operator:
+    kernel_radius_0: {type: integer, bounds: [8, 200]}
+    kernel_radius_1: {type: integer, bounds: [8, 200]}
+    kernel_radius_2: {type: integer, bounds: [8, 200]}
+    growth_mu_0: {type: continuous, bounds: [0.12, 0.38]}
+    growth_mu_1: {type: continuous, bounds: [0.12, 0.38]}
+    growth_mu_2: {type: continuous, bounds: [0.12, 0.38]}
+    growth_sigma_0: {type: continuous, bounds: [0.01, 0.1], log_scale: true}
+    growth_sigma_1: {type: continuous, bounds: [0.01, 0.1], log_scale: true}
+    growth_sigma_2: {type: continuous, bounds: [0.01, 0.1], log_scale: true}
+    coupling_01: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_02: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_10: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_12: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_20: {type: continuous, bounds: [-0.5, 1.0]}
+    coupling_21: {type: continuous, bounds: [-0.5, 1.0]}
+    kernel_rank: {type: integer, bounds: [1, 5]}
+    beta_c0_r0: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c0_r1: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c0_r2: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c0_r3: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c0_r4: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r0: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r1: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r2: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r3: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c1_r4: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r0: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r1: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r2: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r3: {type: continuous, bounds: [0.0, 1.0]}
+    beta_c2_r4: {type: continuous, bounds: [0.0, 1.0]}
+    kernel_type: {type: choice, choices: [gaussian, polynomial, step]}
+    growth_type: {type: choice, choices: [gaussian, polynomial, step]}
+  evolution:
+    time_scale: {type: integer, bounds: [4, 400]}
+
+sampling:
+  strategy: "sobol_stratified"
+  sobol:
+    scramble: true
+    seed: 42
+    backend: "torch"
+  total_samples: 100000
+  batch_size: 100
+
+simulation:
+  operator_type: "lenia"
+  device: "cuda"
+  n_channels: 3
+  grid_size: 128
+  num_realizations: 3
+  num_timesteps: 256
+  lenia:
+    kernel_type: "gaussian"
+    alive_threshold: 0.01
+    saturation_threshold: 0.95
+    max_retries: 5
+    substeps: 2
+    min_temporal_activity: 1.0e-5
+    min_early_late_mse: 1.0e-5
+    spatial_var_threshold: 0.001
+    gradient_energy_threshold: 1.0e-5
+    spectral_flatness_threshold: 0.1
+    dedup_enabled: false
+    classify_dynamics: true
+    fourier_ic_enabled: true
+    fourier_ic_num_modes: 4
+    fourier_ic_base_frequency_scale: 1.0
+    # Mid-simulation perturbation probing (Phase 1)
+    perturbation_enabled: true
+    perturbation_num_realizations: 3
+    perturbation_injection_fraction: 0.25
+    perturbation_types:
+      gaussian_bump: 0.3
+      channel_swap: 0.2
+      local_reset: 0.3
+      global_noise: 0.2
+    perturbation_bump_amplitude: 0.3
+    perturbation_noise_amplitude: 0.1
+
+dataset:
+  output_path: "datasets/ds_lenia_fourier_100k.h5"
+  storage:
+    compression: "lzf"
+    chunk_size: 8
+    store_trajectories: false
+
+features:
+  initial:
+    enabled: true
+  temporal:
+    enabled: false
+  summary:
+    enabled: false
+
+logging:
+  level: "INFO"
+  format: "structured"

@@ -188,33 +188,26 @@ class PhysicsDecodeHead(nn.Module):
 
         return head
 
-    def soft_decode(
+    def _soft_decode_to_reconstructed(
         self,
         logits_dict: Dict[str, torch.Tensor],
         temperature: float = 1.0,
         target_tokens: Optional[Dict[str, torch.Tensor]] = None,
-    ) -> Dict[str, torch.Tensor]:
-        """Differentiable soft-decode: softmax(logits/τ) @ codebook → decoder → inverse heads.
+    ) -> torch.Tensor:
+        """Logits → soft codebook lookup → shared decoder → reconstructed [B, total_dim].
 
-        For masked positions (keys in logits_dict), computes a soft weighted embedding
-        that carries gradients into the denoiser.  For unmasked positions (keys absent
-        from logits_dict but present in target_tokens), uses the ground-truth hard
-        embedding as a constant filler so the decoder always receives the full
-        concatenated latent, regardless of masking pattern.
+        Differentiable. Does NOT apply inverse heads — returns the raw
+        decoder output so callers (e.g. DenoisingRoundtripHead) can route
+        the temporal slice through the re-encode pipeline.
 
         Args:
             logits_dict: Dict mapping quantizer key → logits [B, V_k].
-                         Contains only masked-position keys.
             temperature: Softmax temperature (lower = sharper).
             target_tokens: Dict mapping quantizer key → token indices [B].
-                           Used to fill in unmasked positions. If None, unmasked
-                           positions are skipped (original behaviour, unsafe for
-                           partial masking).
+                           Used to fill in unmasked positions.
 
         Returns:
-            Dict with decoded physics parameters:
-                'theta': [B, param_dim] if theta_inverse available
-                'u0': [B, C, H, W] if initial_inverse available
+            [B, total_encoded_dim] reconstructed tensor from the shared decoder.
         """
         soft_embeddings = []
         for key in self.sorted_keys:
@@ -246,7 +239,39 @@ class PhysicsDecodeHead(nn.Module):
             )
 
         latent = torch.cat(soft_embeddings, dim=-1)  # [B, total_latent_dim]
-        reconstructed = self.decoder(latent)  # [B, total_encoded_dim]
+        return self.decoder(latent)  # [B, total_encoded_dim]
+
+    def soft_decode(
+        self,
+        logits_dict: Dict[str, torch.Tensor],
+        temperature: float = 1.0,
+        target_tokens: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Differentiable soft-decode: softmax(logits/τ) @ codebook → decoder → inverse heads.
+
+        For masked positions (keys in logits_dict), computes a soft weighted embedding
+        that carries gradients into the denoiser.  For unmasked positions (keys absent
+        from logits_dict but present in target_tokens), uses the ground-truth hard
+        embedding as a constant filler so the decoder always receives the full
+        concatenated latent, regardless of masking pattern.
+
+        Args:
+            logits_dict: Dict mapping quantizer key → logits [B, V_k].
+                         Contains only masked-position keys.
+            temperature: Softmax temperature (lower = sharper).
+            target_tokens: Dict mapping quantizer key → token indices [B].
+                           Used to fill in unmasked positions. If None, unmasked
+                           positions are skipped (original behaviour, unsafe for
+                           partial masking).
+
+        Returns:
+            Dict with decoded physics parameters:
+                'theta': [B, param_dim] if theta_inverse available
+                'u0': [B, C, H, W] if initial_inverse available
+        """
+        reconstructed = self._soft_decode_to_reconstructed(
+            logits_dict, temperature, target_tokens
+        )
         return self._split_and_apply_inverse(reconstructed)
 
     @torch.no_grad()

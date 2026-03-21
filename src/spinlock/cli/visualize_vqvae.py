@@ -130,7 +130,7 @@ Examples:
             "--metric",
             type=str,
             default="jaccard",
-            choices=["jaccard", "js"],
+            choices=["jaccard", "js", "weighted-hamming"],
             help="Similarity metric for binned-similarity dashboard (default: jaccard)",
         )
         parser.add_argument(
@@ -177,24 +177,30 @@ Examples:
         checkpoint_path = Path(args.checkpoint)
         output_dir = Path(args.output)
 
-        # Validate checkpoint exists
+        # Validate checkpoint exists — accept both direct .pt files and directories
         if not checkpoint_path.exists():
-            print(f"Error: Checkpoint directory not found: {checkpoint_path}")
+            print(f"Error: Checkpoint not found: {checkpoint_path}")
             return 1
 
-        # Check for model files (support both naming conventions)
-        has_model = (
-            (checkpoint_path / "final_model.pt").exists()
-            or (checkpoint_path / "best_model.pt").exists()
-            or (checkpoint_path / "vq_tokenizer_final.pt").exists()
-            or (checkpoint_path / "vq_tokenizer_best.pt").exists()
-        )
-        if not has_model:
-            print(f"Error: No model checkpoint found in {checkpoint_path}")
-            print(
-                "Expected: final_model.pt, best_model.pt, vq_tokenizer_final.pt, or vq_tokenizer_best.pt"
+        if checkpoint_path.is_file():
+            # Direct .pt path — use parent as display name, pass file to downstream
+            pass
+        else:
+            # Directory mode: check for known model filenames
+            has_model = (
+                (checkpoint_path / "final_model.pt").exists()
+                or (checkpoint_path / "best_model.pt").exists()
+                or (checkpoint_path / "vq_tokenizer_final.pt").exists()
+                or (checkpoint_path / "vq_tokenizer_best.pt").exists()
+                or (checkpoint_path / "vq_tokenizer_latest.pt").exists()
             )
-            return 1
+            if not has_model:
+                print(f"Error: No model checkpoint found in {checkpoint_path}")
+                print(
+                    "Expected: final_model.pt, best_model.pt, vq_tokenizer_final.pt, "
+                    "vq_tokenizer_best.pt, or vq_tokenizer_latest.pt"
+                )
+                return 1
 
         # Create output directory
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -214,6 +220,9 @@ Examples:
                 if not args.tokenized_dataset:
                     print("Error: --tokenized-dataset is required for binned-similarity")
                     return 1
+                if args.metric == "weighted-hamming" and not args.checkpoint:
+                    print("Error: --checkpoint is required for weighted-hamming metric")
+                    return 1
                 from spinlock.visualization.vqvae import create_binned_similarity_dashboard
                 output_path = output_dir / f"binned_similarity_{args.metric}.png"
                 print(f"Creating binned-similarity dashboard ({args.metric}, {args.n_bins} bins)...")
@@ -224,6 +233,7 @@ Examples:
                     metric=args.metric,
                     families=args.families,
                     dpi=args.dpi,
+                    checkpoint_path=str(checkpoint_path) if args.metric == "weighted-hamming" else None,
                 )
                 if not args.no_display:
                     plt.show(block=False)

@@ -20,6 +20,10 @@ from spinlock.experimental.diffusion.training.physics_loss import (
     PhysicsDecodeHead,
     PhysicsAwareLoss,
 )
+from spinlock.experimental.diffusion.training.roundtrip_loss import (
+    DenoisingRoundtripHead,
+    DenoisingRoundtripLoss,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +113,9 @@ class DiffusionTrainer:
         # Cache graded schedule flag
         self._graded_enabled = bool(self.diffusion._key_scale_factors)
 
+        # Trajectory probe counter (incremented each validate() call)
+        self._validation_count = 0
+
         # Focal loss gamma (0 = standard CE)
         self._focal_gamma = config.training.focal_gamma
         if self._focal_gamma > 0:
@@ -126,21 +133,55 @@ class DiffusionTrainer:
 
         # Physics-aware auxiliary loss (frozen tokenizer decode pipeline)
         self.physics_loss = None
+        self._decode_head = None  # shared between physics_loss and roundtrip_loss
         if config.training.physics_loss.enabled:
             tokenizer_ckpt = config.dataset.tokenizer_checkpoint
             if tokenizer_ckpt is None:
                 raise ValueError(
                     "physics_loss.enabled=True requires dataset.tokenizer_checkpoint"
                 )
-            decode_head = PhysicsDecodeHead.from_tokenizer_checkpoint(
+            self._decode_head = PhysicsDecodeHead.from_tokenizer_checkpoint(
                 tokenizer_ckpt,
                 families=config.training.physics_loss.families,
                 device=self.device,
             )
             self.physics_loss = PhysicsAwareLoss(
-                decode_head, config.training.physics_loss
+                self._decode_head, config.training.physics_loss
             )
             self.physics_loss.to(self.device)
+
+        # Denoising roundtrip consistency loss (frozen VQ re-encode pipeline)
+        self.roundtrip_loss = None
+        if config.training.roundtrip_loss.enabled:
+            tokenizer_ckpt = config.dataset.tokenizer_checkpoint
+            if tokenizer_ckpt is None:
+                raise ValueError(
+                    "roundtrip_loss.enabled=True requires dataset.tokenizer_checkpoint"
+                )
+            aux_trunc = config.dataset.aux_truncation_lengths
+            if not aux_trunc:
+                raise ValueError(
+                    "roundtrip_loss.enabled=True requires "
+                    "dataset.aux_truncation_lengths to be set"
+                )
+            # Reuse decode_head if already created for physics_loss
+            if self._decode_head is None:
+                self._decode_head = PhysicsDecodeHead.from_tokenizer_checkpoint(
+                    tokenizer_ckpt, device=self.device,
+                )
+            rt_head = DenoisingRoundtripHead.from_tokenizer_checkpoint(
+                tokenizer_ckpt,
+                decode_head=self._decode_head,
+                device=self.device,
+            )
+            # Truncation levels: aux + primary (if set)
+            trunc_levels = sorted(set(aux_trunc))
+            if config.dataset.truncation_length is not None:
+                trunc_levels = sorted(set(trunc_levels) | {config.dataset.truncation_length})
+            self.roundtrip_loss = DenoisingRoundtripLoss(
+                rt_head, config.training.roundtrip_loss, trunc_levels,
+            )
+            self.roundtrip_loss.to(self.device)
 
         logger.info(f"DiffusionTrainer initialized: device={device}, output_dir={output_dir}")
 
@@ -252,6 +293,8 @@ class DiffusionTrainer:
                     )
                     if 'physics_loss' in val_metrics:
                         val_log += f", val_phys={val_metrics['physics_loss']:.6f}"
+                    if 'roundtrip_loss' in val_metrics:
+                        val_log += f", val_rt={val_metrics['roundtrip_loss']:.6f}"
                     logger.info(val_log)
 
                     # Log diagnostic breakdowns
@@ -288,6 +331,8 @@ class DiffusionTrainer:
                         }
                         if 'physics_loss' in val_metrics:
                             wandb_metrics['val_physics_loss'] = val_metrics['physics_loss']
+                        if 'roundtrip_loss' in val_metrics:
+                            wandb_metrics['val_roundtrip_loss'] = val_metrics['roundtrip_loss']
                         self.wandb.log(wandb_metrics)
 
                     # Save best model
@@ -340,6 +385,8 @@ class DiffusionTrainer:
         self.denoiser.train()
         if self.physics_loss is not None:
             self.physics_loss.eval()
+        if self.roundtrip_loss is not None:
+            self.roundtrip_loss.eval()
         epoch_loss = 0.0
         num_batches = 0
 
@@ -392,6 +439,23 @@ class DiffusionTrainer:
                 loss = loss + self.config.training.physics_loss.weight * p_loss
                 physics_loss_val = p_loss.item()
 
+            # Denoising roundtrip consistency loss (after warmup)
+            roundtrip_loss_val = 0.0
+            if (
+                self.roundtrip_loss is not None
+                and self.current_epoch > self.config.training.roundtrip_loss.warmup_epochs
+            ):
+                aux_trunc = {
+                    tl: {k: v.to(self.device) for k, v in trunc_dict.items()}
+                    for tl, trunc_dict in batch.get('aux_trunc_tokens', {}).items()
+                }
+                rt_loss = self.roundtrip_loss(
+                    predicted_logits, tokens, aux_trunc, target, t,
+                    eff_t_dict, T=self.diffusion.schedule.num_timesteps,
+                )
+                loss = loss + self.config.training.roundtrip_loss.weight * rt_loss
+                roundtrip_loss_val = rt_loss.item()
+
             # Backward pass
             self.optimizer.zero_grad()
             loss.backward()
@@ -422,6 +486,8 @@ class DiffusionTrainer:
                 )
                 if physics_loss_val > 0:
                     log_msg += f", phys={physics_loss_val:.6f}"
+                if roundtrip_loss_val > 0:
+                    log_msg += f", rt={roundtrip_loss_val:.6f}"
 
                 logger.info(log_msg)
 
@@ -523,6 +589,7 @@ class DiffusionTrainer:
         self.denoiser.eval()
         val_loss = 0.0
         val_physics_loss = 0.0
+        val_roundtrip_loss = 0.0
         num_batches = 0
 
         # Accumulate detailed accuracy counters
@@ -542,6 +609,10 @@ class DiffusionTrainer:
         physics_active = (
             self.physics_loss is not None
             and self.current_epoch > self.config.training.physics_loss.warmup_epochs
+        )
+        roundtrip_active = (
+            self.roundtrip_loss is not None
+            and self.current_epoch > self.config.training.roundtrip_loss.warmup_epochs
         )
 
         for batch in self.val_loader:
@@ -579,6 +650,17 @@ class DiffusionTrainer:
                     T=T,
                 )
                 val_physics_loss += p_loss.item()
+
+            if roundtrip_active:
+                aux_trunc = {
+                    tl: {k: v.to(self.device) for k, v in trunc_dict.items()}
+                    for tl, trunc_dict in batch.get('aux_trunc_tokens', {}).items()
+                }
+                rt_loss = self.roundtrip_loss(
+                    predicted_logits, tokens, aux_trunc, target, t,
+                    eff_t_dict, T=T,
+                )
+                val_roundtrip_loss += rt_loss.item()
 
             # Noise band masks [B]
             band_low = t < (T // 3)
@@ -633,8 +715,112 @@ class DiffusionTrainer:
 
         if physics_active:
             metrics['physics_loss'] = val_physics_loss / num_batches
+        if roundtrip_active:
+            metrics['roundtrip_loss'] = val_roundtrip_loss / num_batches
+
+        # Trajectory probe: sample denoising trajectories and measure
+        # per-step agreement against truncation-matched ground truth
+        self._validation_count += 1
+        rt_cfg = self.config.training.roundtrip_loss
+        if (
+            rt_cfg.trajectory_probe_frequency > 0
+            and self._validation_count % rt_cfg.trajectory_probe_frequency == 0
+            and self.roundtrip_loss is not None
+        ):
+            self._run_trajectory_probe(metrics)
 
         return metrics
+
+    def _run_trajectory_probe(self, metrics: Dict[str, float]):
+        """Sample denoising trajectories and log per-step agreement.
+
+        Takes a small batch from val_loader, runs sample() with snapshot
+        recording at representative denoising steps, and measures how well
+        each snapshot's tokens agree with the nearest truncation-level GT.
+
+        Args:
+            metrics: Validation metrics dict (updated in-place with probe results).
+        """
+        rt_cfg = self.config.training.roundtrip_loss
+        n_probe = rt_cfg.trajectory_probe_samples
+        T = self.diffusion.schedule.num_timesteps
+
+        # Representative probe steps: ~80%, 60%, 40%, 20% of T
+        probe_steps = sorted({
+            max(1, int(T * f)) for f in [0.8, 0.6, 0.4, 0.2]
+        }, reverse=True)
+
+        # Grab a batch from val_loader
+        try:
+            probe_batch = next(iter(self.val_loader))
+        except StopIteration:
+            return
+
+        tokens = {k: v[:n_probe].to(self.device) for k, v in probe_batch['tokens'].items()}
+        aux_trunc = {}
+        for tl, trunc_dict in probe_batch.get('aux_trunc_tokens', {}).items():
+            aux_trunc[tl] = {k: v[:n_probe].to(self.device) for k, v in trunc_dict.items()}
+
+        if not aux_trunc:
+            return
+
+        # Run sample() with snapshot recording
+        result = self.diffusion.sample(
+            batch_size=n_probe,
+            denoising_network=self.denoiser,
+            device=self.device,
+            snapshot_steps=probe_steps,
+        )
+
+        if not isinstance(result, tuple):
+            return
+        final_tokens, trajectory = result
+
+        # Temporal keys only (matching roundtrip loss scope)
+        temporal_keys = [
+            k for k in final_tokens
+            if self.diffusion.category_level_info.get(k, {}).get('family') == 'temporal'
+        ]
+        if not temporal_keys:
+            return
+
+        trunc_levels = self.roundtrip_loss.truncation_levels
+
+        # For each snapshot step, find best-matching truncation and compute agreement
+        probe_parts = []
+        for step in sorted(trajectory.keys(), reverse=True):
+            snapshot = trajectory[step]
+
+            # Compute noise fraction → truncation index (same mapping as roundtrip loss)
+            noise_frac = step / T
+            inv_frac = 1.0 - noise_frac
+            trunc_idx = 0
+            for boundary in self.roundtrip_loss._boundaries:
+                if inv_frac > boundary:
+                    trunc_idx += 1
+            trunc_idx = min(trunc_idx, len(trunc_levels) - 1)
+            matched_trunc = trunc_levels[trunc_idx]
+
+            # Get GT tokens at this truncation level
+            gt = aux_trunc.get(matched_trunc, {})
+            if not gt:
+                continue
+
+            # Per-position agreement across temporal keys
+            n_agree = 0
+            n_total = 0
+            for key in temporal_keys:
+                if key in snapshot and key in gt:
+                    n_agree += (snapshot[key] == gt[key]).sum().item()
+                    n_total += gt[key].numel()
+
+            if n_total > 0:
+                agree = n_agree / n_total
+                probe_parts.append(f"t={step}→T{matched_trunc} agree={agree:.3f}")
+                metrics[f'probe_t{step}_agree'] = agree
+
+        if probe_parts:
+            logger.info(f"  Trajectory probe: {', '.join(probe_parts)}")
 
     def save_checkpoint(self, is_best: bool = False):
         """Save model checkpoint.

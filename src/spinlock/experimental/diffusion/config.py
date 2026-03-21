@@ -24,6 +24,17 @@ class DatasetConfig(BaseModel):
     # Single truncation selection (load only this T from multi-trunc HDF5)
     truncation_length: Optional[int] = None
 
+    # Auxiliary truncation lengths for roundtrip consistency loss.
+    # Loads extra token stores at these truncation levels for multi-resolution
+    # ground truth comparison. Only used when roundtrip_loss.enabled=True.
+    aux_truncation_lengths: Optional[List[int]] = Field(
+        default=None,
+        description=(
+            "Extra truncation lengths to load for roundtrip loss, "
+            "e.g. [32, 64, 128, 256]. Each adds ~7MB per 30K samples."
+        ),
+    )
+
     # Entropy-based token filtering (Otsu threshold, auto-detected)
     entropy_filter: bool = Field(
         default=False,
@@ -251,6 +262,41 @@ class PhysicsLossConfig(BaseModel):
     )
 
 
+class PerturbationConfig(BaseModel):
+    """Local parameter perturbation around D3PM proposals."""
+    enabled: bool = True
+    initial_sigma: float = Field(default=0.03, gt=0.0)
+    sigma_growth_factor: float = Field(default=1.5, gt=1.0)
+    max_sigma: float = Field(default=0.15, gt=0.0)
+    perturbations_per_round: int = Field(default=4, ge=1)
+    freeze_categorical_dims: bool = True
+    categorical_dim_indices: List[int] = Field(default_factory=lambda: [32, 33])
+
+
+class AdaptiveBudgetConfig(BaseModel):
+    """Difficulty-proportional candidate allocation."""
+    min_extra_candidates: int = Field(default=2, ge=1)
+    max_extra_candidates: int = Field(default=16, ge=1)
+    budget_scaling: str = Field(default="linear", pattern="^(linear|sqrt)$")
+    d3pm_fraction: float = Field(default=0.5, gt=0.0, le=1.0)
+
+
+class DynamicStoppingConfig(BaseModel):
+    """Per-sample and per-cycle stopping criteria."""
+    max_rounds_per_sample: int = Field(default=4, ge=1)
+    min_acceptance_rate: float = Field(default=0.05, ge=0.0, le=1.0)
+    acceptance_rate_window: int = Field(default=200, ge=10)
+    min_loss_improvement: float = Field(default=0.001, ge=0.0)
+
+
+class AdaptiveRefinementConfig(BaseModel):
+    """Top-level adaptive refinement configuration."""
+    initial_d3pm_candidates: int = Field(default=2, ge=1)
+    perturbation: PerturbationConfig = Field(default_factory=PerturbationConfig)
+    budget: AdaptiveBudgetConfig = Field(default_factory=AdaptiveBudgetConfig)
+    stopping: DynamicStoppingConfig = Field(default_factory=DynamicStoppingConfig)
+
+
 class MNOQualityFilterConfig(BaseModel):
     """Quality filter: trust MNO retokenization only when observed positions agree."""
     min_observed_agreement: float = Field(default=0.8, ge=0.0, le=1.0)
@@ -264,6 +310,50 @@ class FineTuningConfig(BaseModel):
     batch_size: int = Field(default=32, ge=1)
     gradient_clip_norm: float = Field(default=1.0, gt=0.0)
     weight_decay: float = Field(default=1e-5, ge=0.0)
+
+    # v11 stabilization: weight anchoring
+    anchor_weight: float = Field(
+        default=0.05, ge=0.0,
+        description="L2 penalty toward initial checkpoint weights. 0.0 = disabled.",
+    )
+
+    # v11 stabilization: replay buffer
+    replay_fraction: float = Field(
+        default=0.3, ge=0.0, le=1.0,
+        description="Fraction of training batch from replay buffer. 0.0 = disabled.",
+    )
+    max_replay_size: int = Field(
+        default=5000, ge=1,
+        description="Max replay buffer capacity (reservoir sampling when full).",
+    )
+
+    # v11 stabilization: LR scheduling
+    use_cosine_schedule: bool = Field(
+        default=True,
+        description="Cosine LR decay within each fine-tuning cycle.",
+    )
+    warmup_fraction: float = Field(
+        default=0.1, ge=0.0, le=0.5,
+        description="Fraction of FT steps for linear warmup.",
+    )
+    min_lr_fraction: float = Field(
+        default=0.1, ge=0.0, le=1.0,
+        description="Min LR as fraction of base at end of cosine cycle.",
+    )
+    per_cycle_lr_decay: float = Field(
+        default=0.9, gt=0.0, le=1.0,
+        description="Multiplicative LR decay each cycle. 1.0 = no decay.",
+    )
+
+    # v12 surprise-driven training
+    surprise_alpha: float = Field(
+        default=1.0, ge=0.0,
+        description="Priority exponent for replay sampling. 0=uniform, 1=proportional.",
+    )
+    max_surprise_weight: float = Field(
+        default=5.0, ge=1.0,
+        description="Cap on per-sample surprise weight to prevent outlier domination.",
+    )
 
 
 class CVAEFineTuningConfig(BaseModel):
@@ -319,10 +409,11 @@ class RefinementConfig(BaseModel):
     num_refinement_cycles: int = Field(default=3, ge=1)
     mask_probability: float = Field(default=0.5, ge=0.0, le=1.0)
     d3pm_start_step: Optional[int] = None  # Partial-start for conservative corrections
-
-    # D3PM stochastic diversity: run N independent denoising passes per batch.
-    # Different denoising trajectories produce different token completions.
-    d3pm_n_candidates: int = Field(default=4, ge=1)
+    sampling_temperature: float = Field(
+        default=1.0, gt=0.0,
+        description="Temperature for D3PM sampling. >1 increases diversity, <1 sharpens. "
+                    "When != 1.0, the final step (t=0) uses tempered sampling instead of argmax.",
+    )
 
     # Early stopping: stop generating hard targets once enough are accepted.
     max_accepted_targets: Optional[int] = None
@@ -336,10 +427,83 @@ class RefinementConfig(BaseModel):
     # Fine-tuning (D3PM only — no CVAE)
     fine_tuning: FineTuningConfig = Field(default_factory=FineTuningConfig)
 
+    # Adaptive refinement (difficulty-proportional search)
+    adaptive: AdaptiveRefinementConfig = Field(default_factory=AdaptiveRefinementConfig)
+
+    # Held-out evaluation: fixed sample set for apples-to-apples comparison
+    # across cycles. 0 = disabled.
+    eval_samples: int = 0
+    eval_frequency: int = Field(default=1, ge=1)
+
+    # v11 stabilization: eval-based early stopping
+    early_stopping_patience: int = Field(
+        default=3, ge=0,
+        description="Stop if eval agreement doesn't improve for N cycles. 0 = disabled.",
+    )
+
     # Output
     output_dir: str = "experiments/diffusion/results/v7_refinement"
     device: str = "cuda"
     seed: int = 42
+
+
+class DenoisingRoundtripLossConfig(BaseModel):
+    """Denoising roundtrip consistency loss configuration.
+
+    At each training step, soft-decodes D3PM logits through the frozen VQ
+    pipeline (codebooks → decoder → temporal inverse → pyramid re-encode →
+    projector → quantizer distances), producing roundtrip logits that are
+    compared against ground-truth tokens at a truncation level matching the
+    current noise level.
+
+    Requires auxiliary truncation-level tokens in the dataset (see
+    DatasetConfig.aux_truncation_lengths).
+    """
+    enabled: bool = False
+    weight: float = Field(default=0.1, ge=0.0)
+    temperature: float = Field(default=1.0, gt=0.0, description="Soft-decode sharpness")
+    warmup_epochs: int = Field(default=3, ge=0, description="Skip early epochs")
+    timestep_gate: str = Field(
+        default="cosine",
+        pattern="^(none|linear|cosine)$",
+        description="Weight by noise level: cosine (heavy at low noise), linear, or none",
+    )
+    noise_boundaries: Optional[List[float]] = Field(
+        default=None,
+        description=(
+            "Noise fraction boundaries for truncation level mapping. "
+            "Auto-computed as uniform spacing if None. Can be loaded from "
+            "calibrate_trajectory.py output for empirical boundaries."
+        ),
+    )
+
+    # Soft set-level coherence loss (differentiable Jaccard)
+    set_coherence_weight: float = Field(
+        default=0.0, ge=0.0,
+        description=(
+            "Weight for soft set-level Jaccard loss term. 0.0 = disabled "
+            "(backward compatible). Encourages roundtrip logits to produce "
+            "code usage sets matching truncation-level ground truth."
+        ),
+    )
+    set_coherence_temperature: float = Field(
+        default=0.5, gt=0.0,
+        description="Softmax temperature for soft code usage in Jaccard computation.",
+    )
+
+    # Trajectory probe (validation-time monitoring)
+    trajectory_probe_frequency: int = Field(
+        default=0, ge=0,
+        description=(
+            "Run trajectory probe every N validations. 0 = disabled. "
+            "Samples denoising trajectories and measures per-step agreement "
+            "against truncation-level ground truth."
+        ),
+    )
+    trajectory_probe_samples: int = Field(
+        default=4, ge=1,
+        description="Number of samples for trajectory probe.",
+    )
 
 
 class TrainingConfig(BaseModel):
@@ -362,6 +526,9 @@ class TrainingConfig(BaseModel):
         ),
     )
     physics_loss: PhysicsLossConfig = Field(default_factory=PhysicsLossConfig)
+    roundtrip_loss: DenoisingRoundtripLossConfig = Field(
+        default_factory=DenoisingRoundtripLossConfig,
+    )
 
     lr_scheduler: LRSchedulerConfig = Field(default_factory=LRSchedulerConfig)
 

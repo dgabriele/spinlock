@@ -562,6 +562,35 @@ class LeniaSimulationConfig(BaseModel):
         description="Scale factor for f_k = scale * G / kernel_radius_c * harmonic_k."
     )
 
+    # ── Mid-simulation perturbation probing ──
+    perturbation_enabled: bool = Field(
+        default=False,
+        description="Add perturbed realizations to reveal latent dynamics.",
+    )
+    perturbation_num_realizations: int = Field(
+        default=3, ge=1, le=20,
+        description="Number of perturbed realizations per parameter config.",
+    )
+    perturbation_injection_fraction: float = Field(
+        default=0.25, gt=0.0, lt=1.0,
+        description="Inject perturbation at T * fraction.",
+    )
+    perturbation_types: Optional[Dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Perturbation type weights. Keys: gaussian_bump, channel_swap, "
+            "local_reset, global_noise. Normalized to probabilities."
+        ),
+    )
+    perturbation_bump_amplitude: float = Field(
+        default=0.3, gt=0.0, le=1.0,
+        description="Amplitude of Gaussian bump perturbation.",
+    )
+    perturbation_noise_amplitude: float = Field(
+        default=0.1, gt=0.0, le=1.0,
+        description="Amplitude of global noise perturbation.",
+    )
+
 
 class SimulationConfig(BaseModel):
     """Complete simulation configuration."""

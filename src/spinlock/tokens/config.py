@@ -127,7 +127,20 @@ class VariableLengthConfig(BaseModel):
     curriculum_batches: int = Field(
         default=563,
         ge=1,
-        description="Number of batches over which the length curriculum completes.",
+        description=(
+            "Number of batches over which the length curriculum completes. "
+            "Ignored when curriculum_epochs is set."
+        ),
+    )
+    curriculum_epochs: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Length curriculum duration in epochs (e.g. 1.0 = one full epoch). "
+            "When set, overrides curriculum_batches with "
+            "int(curriculum_epochs * batches_per_epoch) at training time. "
+            "This makes the curriculum scale-invariant with dataset size."
+        ),
     )
 
     # Weighted length curriculum: per-bin probability weights that interpolate
@@ -662,6 +675,11 @@ class TrainingConfig(BaseModel):
 
     dead_code_reset_interval: int = Field(default=10, ge=0, description="0 = disabled")
     dead_code_threshold: float = Field(default=0.01, ge=0.0, le=1.0)
+
+    checkpoint_every_batches: int = Field(
+        default=500, ge=0,
+        description="Save latest checkpoint every N batches. 0 = disabled.",
+    )
 
     device: Literal["cuda", "cpu", "auto"] = "auto"
     compile_model: bool = False

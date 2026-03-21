@@ -1,0 +1,147 @@
+# VQ Tokenizer v3 — Fourier IC 100K (temporal-roundtrip-only)
+#
+# Same architecture as v3 pilot (gradient codebook, 2 hierarchy levels,
+# 30 groups), trained on the 100K dataset. The tokenizer needs to:
+# - Re-run feature cleaning on the larger dataset (may keep more features)
+# - Retrain all 60 quantizers on the fuller distribution
+# - Target: rt_te >= 0.93 (same as v3 10K ceiling)
+
+dataset_path: "datasets/ds_lenia_fourier_100k.h5"
+checkpoint_dir: "checkpoints/lenia/vq/v3_fourier_100k"
+
+feature_source: "learned"
+generation_config_path: "configs/lenia/datasets/ds_lenia_fourier_100k.yaml"
+generation_timesteps: 512
+replayer_cache_size: 16
+realization_mode: "all"
+
+encoder:
+  initial:
+    variant: "spatial"
+    spatial_token_grid: 4
+    spatial_token_dim: 8
+    spatial_base_channels: 32
+    spatial_quantizer: "vq"
+
+  temporal:
+    variant: "pyramid"
+    learned:
+      architecture: "pyramid_first"
+      d_cnn: 256
+      d_agg: 128
+      num_groups: 30
+      gated_groups: true
+      gate_init_bias: 5.0
+    level_dims: [6, 12, 20, 26]
+    downsample_factors: [2, 4, 8, 16]
+    variable_length:
+      enabled: true
+      min_timesteps: 32
+      max_timesteps: 512
+      length_bins: [32, 64, 128, 256, 512]
+      sampling_strategy: "fixed_bins"
+      adaptive_pyramid: true
+      min_pyramid_length: 1
+      mask_downsample_method: "ceil"
+      curriculum_length_bin_weights_start: [0.02, 0.03, 0.1, 0.4, 0.45]
+      curriculum_length_bin_weights_end: [0.2, 0.2, 0.2, 0.2, 0.2]
+      curriculum_batches: 563
+
+  theta:
+    variant: "direct"
+
+  embedding_dim: 32
+  hidden_dim: 128
+  dropout: 0.1
+  use_layer_norm: true
+
+inverse_heads:
+  theta_enabled: true
+  theta_hidden_dim: 64
+  initial_enabled: true
+  initial_variant: "spatial"
+  initial_bypass_decoder: true
+  initial_latent_roundtrip: true
+  temporal_latent_roundtrip: true
+
+aux_heads:
+  theta_enabled: false
+  theta_probe_enabled: false
+  initial_enabled: false
+  initial_probe_enabled: false
+
+quantizer:
+  embedding_dim: 64
+  commitment_cost: 0.25
+  use_ema: false
+  ema_decay: 0.97
+  epsilon: 1.0e-5
+
+hierarchy:
+  num_levels: 2
+  min_latent_dim: 4
+  max_latent_dim: 192
+
+training:
+  num_epochs: 20
+  batch_size: 48
+  learning_rate: 0.001
+  val_split: 0.1
+  val_every_n_epochs: 1
+
+  optimizer: "adamw"
+  weight_decay: 0.05
+  gradient_clip_norm: 1.0
+  gradient_accumulation_steps: 8
+
+  use_scheduler: true
+  scheduler_type: "cosine"
+  warmup_epochs: 1
+
+  freeze_on_rt_drop: false
+
+  early_stopping_patience: 30
+  early_stopping_min_delta: 0.001
+
+  convergence_stop_enabled: true
+  convergence_stop_vq: 0.001
+  convergence_stop_recon: 0.0001
+  convergence_stop_info: 0.001
+  convergence_stop_topo_post: 0.999
+  convergence_stop_window: 100
+  convergence_stop_min_batches: 500
+
+  dead_code_reset_interval: 0
+  dead_code_threshold: 0.01
+
+  device: "auto"
+  compile_model: false
+
+loss:
+  reconstruction_weight: 0.1
+  orthogonality_weight: 0.0
+  informativeness_weight: 2.0
+  informativeness_mode: "log_barrier"
+  topographic_weight: 0.5
+  topographic_n_samples: 64
+  group_balance_weight: 2.0
+  gate_sparsity_weight: 0.0
+  normalize_reconstruction: true
+  normalize_loss_scales: true
+  loss_scale_ema_momentum: 0.99
+  loss_scale_ema_exempt: ["roundtrip"]
+
+  roundtrip:
+    enabled: true
+    weight: 25.0
+    theta_weight: 0.0
+    initial_weight: 0.0
+    temporal_weight: 1.0
+
+normalization:
+  method: "none"
+  clip_std_multiplier: null
+
+random_seed: 7
+verbose: true
+log_level: "INFO"

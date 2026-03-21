@@ -23,9 +23,11 @@ Usage:
 """
 
 import argparse
+import copy
 import logging
+import math
+import random
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -33,11 +35,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, TensorDataset
 
-import numpy as np
 from spinlock.experimental.common.config.loader import load_experiment_config
 from spinlock.experimental.diffusion.config import RefinementConfig
+from spinlock.experimental.diffusion.refinement import (
+    AdaptiveRefinementSearch,
+    PrioritizedReplayBuffer,
+)
 from spinlock.experimental.diffusion.models import (
     DenoisingNetwork,
     DiffusionSchedule,
@@ -171,339 +177,6 @@ def load_tokenizer(checkpoint_path: str) -> VQTokenizer:
     return tokenizer
 
 
-# ── Hard target generation ───────────────────────────────────────────────────
-
-
-def generate_novel_sobol_targets(
-    diffusion: DiscreteD3PM,
-    denoiser: DenoisingNetwork,
-    rollout_provider: RolloutProvider,
-    tokenizer: VQTokenizer,
-    decoder: IntegratedTokenDecoder,
-    config: RefinementConfig,
-    token_filter=None,
-    cycle: int = 0,
-) -> List[Dict]:
-    """Generate hard targets from novel Sobol parameters + D3PM temporal completion.
-
-    Samples new (theta, IC) from the same Sobol parameter space as the training
-    dataset (different seed), tokenizes them, then has the D3PM predict temporal
-    tokens via inpainting. Physics verifies: rollout from the real (theta, IC) →
-    retokenize → check if D3PM's temporal prediction matches reality.
-
-    This expands the D3PM's training distribution to novel configurations without
-    reusing training data.
-
-    Returns:
-        List of accepted hard-target dicts.
-    """
-    from spinlock.lenia.params import (
-        DEFAULT_RANGES, sobol_expected_dims, sobol_batch_to_tensors,
-    )
-    from spinlock.lenia.fourier_ic import FourierICGenerator, FourierICConfig
-    from spinlock.sampling.sobol import StratifiedSobolSampler
-
-    device = config.device
-    threshold = config.quality_filter.min_observed_agreement
-    hard_targets = []
-    total_samples = 0
-    total_accepted = 0
-    all_agreements: List[float] = []
-    max_accept = config.max_accepted_targets
-    gen_bs = config.generation_batch_size
-    n_candidates = config.d3pm_n_candidates
-
-    schema = TokenSchema.from_tokenizer(tokenizer)
-    full_temporal_keys = set(schema.keys_for_family("temporal"))
-    full_keys = sorted(schema.vocab_sizes_dict().keys())
-
-    # D3PM operates on active keys only when entropy-filtered
-    if token_filter is not None:
-        all_keys = sorted(token_filter.active_keys)
-        temporal_keys = set(k for k in all_keys if k in full_temporal_keys)
-    else:
-        all_keys = full_keys
-        temporal_keys = full_temporal_keys
-
-    # Sobol sampler with different seed per cycle (avoids resampling same configs)
-    n_channels = 3  # Lenia channels
-    sobol_dim = sobol_expected_dims(n_channels, DEFAULT_RANGES)
-    cycle_seed = config.seed + 95 + cycle * 1000
-    sobol_sampler = StratifiedSobolSampler(
-        dimensionality=sobol_dim, scramble=True, seed=cycle_seed,
-    )
-
-    # Fourier IC generator (theta-coherent ICs)
-    ic_gen = FourierICGenerator(FourierICConfig())
-
-    n_attempts = (max_accept or 5000) * 2
-    done = False
-
-    logger.info(
-        f"Novel-Sobol generation: cycle={cycle}, seed={cycle_seed}, "
-        f"up to {n_attempts} proposals, target {max_accept} accepted"
-    )
-
-    for batch_start in range(0, n_attempts, gen_bs):
-        if done:
-            break
-        B = min(gen_bs, n_attempts - batch_start)
-
-        # Step 1: Sample new Sobol unit vectors [0,1]^D
-        # Dataset stores raw unit vectors as theta — tokenizer was trained on these
-        unit_vecs = sobol_sampler.sample(B)  # [B, D] numpy
-        unit_vecs_t = torch.from_numpy(unit_vecs).float()
-
-        # Raw [0,1] Sobol vectors for tokenizer (matches dataset format)
-        theta_for_tokenizer = unit_vecs_t.to(device)  # [B, 34]
-
-        # Physical params for rollout (radii, mu, sigma, dt, coupling, etc.)
-        batch_tensors = sobol_batch_to_tensors(
-            unit_vecs, n_channels, device=device, ranges=DEFAULT_RANGES,
-        )
-
-        # Step 2: Generate Fourier ICs (theta-coherent, using physical radii)
-        ics = ic_gen.generate_batch(
-            batch_size=B,
-            n_channels=n_channels,
-            grid_size=128,
-            seed=cycle_seed + batch_start,
-            device=torch.device(device),
-            kernel_radii=batch_tensors.radii,
-        )  # [B, C, H, W]
-
-        # Step 3: Rollout from physical params, tokenize with raw Sobol theta
-        with torch.no_grad():
-            conditioning = {"theta": theta_for_tokenizer, "ic": ics}
-            try:
-                trajectories = rollout_provider.rollout(
-                    conditioning, steps=config.rollout_steps,
-                )
-            except Exception as e:
-                logger.debug(f"Batch {batch_start}: rollout failed: {e}")
-                total_samples += B
-                continue
-
-            # Tokenize everything (GT tokens for all 3 families)
-            # theta_for_tokenizer is raw [0,1] Sobol vector (matches training format)
-            gt_tokens = tokenizer.tokenize(
-                temporal_raw=trajectories,
-                theta_features=theta_for_tokenizer,
-                initial_raw=ics,
-            )
-            del trajectories
-
-        gt_tokens_device = {
-            k: v.to(device) for k, v in gt_tokens.items() if k in full_keys
-        }
-        # Contract to active keys for D3PM
-        if token_filter is not None:
-            gt_active = token_filter.contract(gt_tokens_device)
-        else:
-            gt_active = gt_tokens_device
-
-        # Step 4: D3PM inpaints theta+IC given temporal (observed)
-        # Uses active keys only (entropy-filtered)
-        observed_dict = {}
-        target_dict = {}
-        for key in all_keys:
-            if key in temporal_keys:
-                observed_dict[key] = torch.ones(B, dtype=torch.bool, device=device)
-                target_dict[key] = torch.zeros(B, dtype=torch.bool, device=device)
-            else:
-                observed_dict[key] = torch.zeros(B, dtype=torch.bool, device=device)
-                target_dict[key] = torch.ones(B, dtype=torch.bool, device=device)
-
-        best_agreement = [-1.0] * B
-        best_tokens: list = [None] * B
-
-        for candidate_idx in range(n_candidates):
-            # D3PM inpaints theta+IC given temporal observations (active keys only)
-            with torch.no_grad():
-                completed = diffusion.sample(
-                    batch_size=B,
-                    observed_dict=observed_dict,
-                    x_0_dict=gt_active,
-                    denoising_network=denoiser,
-                    device=device,
-                )
-
-            # Expand to full keys for decoder (which needs all families)
-            if token_filter is not None:
-                completed_full = token_filter.expand(completed)
-            else:
-                completed_full = completed
-
-            # Decode D3PM's predicted theta+IC → continuous params + grid
-            with torch.no_grad():
-                decoded = decoder.decode(completed_full)
-                theta_pred = decoded.get("theta")
-                u0_pred = decoded.get("grids")
-
-            if theta_pred is None or u0_pred is None:
-                logger.debug(f"Candidate {candidate_idx}: decode failed")
-                continue
-
-            # Rollout from D3PM's predicted (theta, IC) → realized trajectory
-            with torch.no_grad():
-                pred_conditioning = {
-                    "theta": theta_pred,
-                    "ic": u0_pred,
-                    "token_indices": completed_full,
-                }
-                try:
-                    pred_trajectories = rollout_provider.rollout(
-                        pred_conditioning, steps=config.rollout_steps,
-                    )
-                except Exception as e:
-                    logger.debug(f"Candidate {candidate_idx}: rollout failed: {e}")
-                    continue
-
-            # Retokenize realized trajectory
-            with torch.no_grad():
-                realized = tokenizer.tokenize(
-                    temporal_raw=pred_trajectories,
-                    theta_features=theta_pred,
-                    initial_raw=u0_pred,
-                )
-            del pred_trajectories
-            realized_temporal = {
-                k: v.to(device) for k, v in realized.items()
-                if k in temporal_keys
-            }
-
-            # Score: do realized temporal tokens match GT temporal?
-            for b in range(B):
-                n_checked = 0
-                n_agree = 0
-                for key in temporal_keys:
-                    if key not in realized_temporal or key not in gt_active:
-                        continue
-                    n_checked += 1
-                    if realized_temporal[key][b] == gt_active[key][b]:
-                        n_agree += 1
-                agreement = n_agree / max(n_checked, 1)
-
-                if agreement > best_agreement[b]:
-                    best_agreement[b] = agreement
-                    best_tokens[b] = {
-                        k: v[b:b+1].clone() for k, v in completed.items()
-                    }
-
-        # Accept/reject
-        for b in range(B):
-            total_samples += 1
-            if best_tokens[b] is None:
-                continue
-
-            agreement = best_agreement[b]
-            all_agreements.append(agreement)
-
-            if agreement >= threshold:
-                hard_targets.append({
-                    "tokens": best_tokens[b],
-                    "observed": {k: v[b:b+1] for k, v in observed_dict.items()},
-                    "target": {k: v[b:b+1] for k, v in target_dict.items()},
-                    "agreement": agreement,
-                })
-                total_accepted += 1
-
-                if max_accept is not None and total_accepted >= max_accept:
-                    logger.info(
-                        f"  Reached {max_accept} accepted targets "
-                        f"after {total_samples} proposals"
-                    )
-                    done = True
-                    break
-
-        # Periodic logging
-        if total_samples % 100 < gen_bs or done:
-            target_str = f"/{max_accept}" if max_accept else ""
-            ag = np.array(all_agreements) if all_agreements else np.array([0.0])
-            logger.info(
-                f"  Proposals: {total_samples}, "
-                f"accepted={total_accepted}{target_str} "
-                f"({100 * total_accepted / max(total_samples, 1):.1f}%), "
-                f"agreement: mean={ag.mean():.3f} std={ag.std():.3f} "
-                f"min={ag.min():.3f} max={ag.max():.3f}"
-            )
-            _log_agreement_distribution(ag, threshold)
-
-    ag = np.array(all_agreements) if all_agreements else np.array([0.0])
-    logger.info(
-        f"Novel-Sobol generation complete: "
-        f"{total_accepted}/{total_samples} accepted "
-        f"({100 * total_accepted / max(total_samples, 1):.1f}%), "
-        f"agreement: mean={ag.mean():.3f} std={ag.std():.3f} "
-        f"min={ag.min():.3f} max={ag.max():.3f}"
-    )
-    _log_agreement_distribution(ag, threshold)
-    return hard_targets
-
-
-def _log_agreement_distribution(
-    agreements: np.ndarray, threshold: float, n_bins: int = 5,
-):
-    """Log a data-driven bucketed frequency distribution of agreement values.
-
-    Uses Jenks natural breaks (Fisher-Caspall) to find optimal bin edges
-    that minimize within-class variance, then logs counts per bin.
-    """
-    if len(agreements) < n_bins:
-        return
-
-    # Jenks natural breaks via dynamic programming (1D k-means)
-    sorted_vals = np.sort(agreements)
-    n = len(sorted_vals)
-
-    # Compute sum-of-squared-deviations matrix
-    # ssd[i][j] = SSD of sorted_vals[i:j+1]
-    def _ssd(arr):
-        return np.sum((arr - arr.mean()) ** 2) if len(arr) > 0 else 0.0
-
-    # DP: find k breaks minimizing total SSD
-    # For small n_bins this is fast enough with a greedy approach
-    # Use quantile-based initialization then refine
-    breaks = [sorted_vals[0]]
-    for b in range(1, n_bins):
-        breaks.append(np.quantile(sorted_vals, b / n_bins))
-    breaks.append(sorted_vals[-1] + 1e-6)
-
-    # Refine: iterate to find better break points (1D k-means style)
-    for _ in range(20):
-        # Assign to bins
-        assignments = np.digitize(sorted_vals, breaks[1:-1])
-        # Recompute breaks as midpoints between adjacent cluster boundaries
-        new_breaks = [sorted_vals[0]]
-        for b in range(n_bins):
-            cluster = sorted_vals[assignments == b]
-            if len(cluster) > 0:
-                new_breaks.append(cluster.max() + 1e-6)
-            else:
-                new_breaks.append(new_breaks[-1])
-        if len(new_breaks) == len(breaks) and all(
-            abs(a - b) < 1e-6 for a, b in zip(new_breaks, breaks)
-        ):
-            break
-        breaks = new_breaks
-
-    # Build histogram with final breaks
-    bin_edges = sorted(set(breaks))
-    if len(bin_edges) < 2:
-        return
-
-    logger.info("  Agreement distribution:")
-    for i in range(len(bin_edges) - 1):
-        lo, hi = bin_edges[i], bin_edges[i + 1]
-        count = np.sum((agreements >= lo) & (agreements < hi))
-        pct = 100 * count / len(agreements)
-        bar = "#" * int(pct / 2)
-        accepted = "✓" if lo >= threshold else " "
-        logger.info(
-            f"    {accepted} [{lo:.3f}-{hi:.3f}): {count:5d} ({pct:5.1f}%) {bar}"
-        )
-
-
 # ── Fine-tuning ──────────────────────────────────────────────────────────────
 
 
@@ -512,10 +185,21 @@ def fine_tune_d3pm(
     denoiser: DenoisingNetwork,
     hard_targets: List[Dict],
     config: RefinementConfig,
+    anchor_params: Optional[Dict[str, torch.Tensor]] = None,
+    replay_buffer: Optional[PrioritizedReplayBuffer] = None,
+    cycle: int = 0,
 ) -> Dict[str, float]:
     """Fine-tune the D3PM denoiser on collected hard targets.
 
     All token positions (temporal + initial + theta) are trained.
+
+    v12 surprise-driven training:
+    - Three-level surprise hierarchy:
+      Level 1: PrioritizedReplayBuffer — hard targets replayed more often
+      Level 2: Surprise-weighted loss — geometric mean of agreement-surprise
+               and CE-loss-surprise per sample
+      Level 3: Focal loss (per-position, unchanged)
+    - Plus v11 stabilization: anchor, cosine LR, per-cycle decay
 
     Returns:
         Dict with final training metrics.
@@ -525,32 +209,76 @@ def fine_tune_d3pm(
 
     if not hard_targets:
         logger.warning("No hard targets to fine-tune on. Skipping.")
-        return {"loss": float("nan"), "num_samples": 0}
+        return {"loss": float("nan"), "anchor_loss": 0.0, "num_samples": 0}
+
+    # ── Replay mixing ─────────────────────────────────────────────────────
+    if replay_buffer and len(replay_buffer) > 0 and ft_config.replay_fraction > 0:
+        n_replay = int(
+            len(hard_targets) * ft_config.replay_fraction / (1 - ft_config.replay_fraction)
+        )
+        replay_samples = replay_buffer.sample(n_replay)
+        training_targets = hard_targets + replay_samples
+        random.shuffle(training_targets)
+        logger.info(
+            f"  Replay mixing: {len(hard_targets)} new + {len(replay_samples)} replay "
+            f"= {len(training_targets)} total"
+        )
+    else:
+        training_targets = hard_targets
+
+    # ── Per-cycle LR decay ────────────────────────────────────────────────
+    effective_lr = ft_config.learning_rate * (ft_config.per_cycle_lr_decay ** cycle)
 
     logger.info(
-        f"Fine-tuning on {len(hard_targets)} hard targets: "
-        f"lr={ft_config.learning_rate}, epochs={ft_config.num_epochs}, "
+        f"Fine-tuning on {len(training_targets)} targets (cycle {cycle + 1}): "
+        f"lr={effective_lr:.2e}, epochs={ft_config.num_epochs}, "
         f"batch_size={ft_config.batch_size}"
+        + (f", anchor_weight={ft_config.anchor_weight}" if ft_config.anchor_weight > 0 else "")
     )
 
     optimizer = AdamW(
         denoiser.parameters(),
-        lr=ft_config.learning_rate,
+        lr=effective_lr,
         weight_decay=ft_config.weight_decay,
     )
 
+    # ── Cosine schedule with warmup ───────────────────────────────────────
+    scheduler = None
+    if ft_config.use_cosine_schedule:
+        steps_per_epoch = max(1, len(training_targets) // ft_config.batch_size)
+        total_steps = steps_per_epoch * ft_config.num_epochs
+        warmup_steps = int(total_steps * ft_config.warmup_fraction)
+        cosine_steps = max(1, total_steps - warmup_steps)
+        min_lr_frac = ft_config.min_lr_fraction
+
+        def lr_lambda(step: int) -> float:
+            if step < warmup_steps:
+                return 0.1 + 0.9 * (step / max(1, warmup_steps))
+            progress = (step - warmup_steps) / cosine_steps
+            return min_lr_frac + (1 - min_lr_frac) * 0.5 * (1 + math.cos(math.pi * progress))
+
+        scheduler = LambdaLR(optimizer, lr_lambda)
+
     denoiser.train()
 
-    keys = sorted(hard_targets[0]["tokens"].keys())
-    total_loss = 0.0
+    keys = sorted(training_targets[0]["tokens"].keys())
+    total_ce_loss = 0.0
+    total_anchor_loss = 0.0
+    total_mean_surprise = 0.0
     num_steps = 0
 
     for epoch in range(ft_config.num_epochs):
-        epoch_loss = 0.0
+        epoch_ce_loss = 0.0
+        epoch_anchor_loss = 0.0
+        epoch_mean_surprise = 0.0
         epoch_steps = 0
 
-        for batch_start in range(0, len(hard_targets), ft_config.batch_size):
-            batch_items = hard_targets[batch_start : batch_start + ft_config.batch_size]
+        # Re-shuffle each epoch
+        epoch_targets = training_targets.copy()
+        random.shuffle(epoch_targets)
+
+        for batch_start in range(0, len(epoch_targets), ft_config.batch_size):
+            batch_items = epoch_targets[batch_start : batch_start + ft_config.batch_size]
             B = len(batch_items)
 
             tokens_batch = {
@@ -578,9 +306,37 @@ def fine_tune_d3pm(
                 noisy_tokens, t, observed_dict=observed_batch
             )
 
-            loss = _compute_refinement_loss(
+            per_sample_loss = _compute_refinement_loss(
                 predicted_logits, tokens_batch, target_batch,
             )
+
+            # ── Level 2: Agreement-surprise sample weighting ─────────────
+            # Uses static agreement signal only. The dynamic CE loss signal
+            # is confounded by the random diffusion timestep (t~U[0,T]) and
+            # adds noise rather than useful difficulty information.
+            with torch.no_grad():
+                agreements = torch.tensor(
+                    [item["agreement"] for item in batch_items],
+                    device=device, dtype=torch.float32,
+                )
+                agreement_surprise = 1.0 - agreements  # [B]
+                sample_weights = agreement_surprise / agreement_surprise.mean().clamp(min=1e-6)
+                sample_weights = sample_weights.clamp(max=ft_config.max_surprise_weight)
+
+            ce_loss = (per_sample_loss * sample_weights).sum() / sample_weights.sum()
+
+            # ── Anchor regularization ─────────────────────────────────────
+            anchor_loss_val = 0.0
+            if anchor_params is not None and ft_config.anchor_weight > 0:
+                anchor_loss = sum(
+                    (p - anchor_params[name]).pow(2).sum()
+                    for name, p in denoiser.named_parameters()
+                    if p.requires_grad and name in anchor_params
+                )
+                loss = ce_loss + ft_config.anchor_weight * anchor_loss
+                anchor_loss_val = anchor_loss.item()
+            else:
+                loss = ce_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -588,18 +344,37 @@ def fine_tune_d3pm(
                 denoiser.parameters(), ft_config.gradient_clip_norm
             )
             optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
 
-            epoch_loss += loss.item()
+            epoch_ce_loss += ce_loss.item()
+            epoch_anchor_loss += anchor_loss_val
+            epoch_mean_surprise += sample_weights.mean().item()
             epoch_steps += 1
             num_steps += 1
 
-        avg_epoch_loss = epoch_loss / max(epoch_steps, 1)
-        total_loss += avg_epoch_loss
-        logger.info(f"  Fine-tune epoch {epoch + 1}/{ft_config.num_epochs}: loss={avg_epoch_loss:.4f}")
+        avg_ce = epoch_ce_loss / max(epoch_steps, 1)
+        avg_anchor = epoch_anchor_loss / max(epoch_steps, 1)
+        avg_surprise = epoch_mean_surprise / max(epoch_steps, 1)
+        total_ce_loss += avg_ce
+        total_anchor_loss += avg_anchor
+        total_mean_surprise += avg_surprise
+
+        current_lr = optimizer.param_groups[0]["lr"]
+        anchor_str = f", anchor={avg_anchor:.4f}" if ft_config.anchor_weight > 0 else ""
+        logger.info(
+            f"  Fine-tune epoch {epoch + 1}/{ft_config.num_epochs}: "
+            f"ce={avg_ce:.4f}{anchor_str}, surprise_w={avg_surprise:.2f}, lr={current_lr:.2e}"
+        )
 
     return {
-        "loss": total_loss / max(ft_config.num_epochs, 1),
-        "num_samples": len(hard_targets),
+        "loss": total_ce_loss / max(ft_config.num_epochs, 1),
+        "anchor_loss": total_anchor_loss / max(ft_config.num_epochs, 1),
+        "mean_surprise_weight": total_mean_surprise / max(ft_config.num_epochs, 1),
+        "effective_lr": effective_lr,
+        "num_samples": len(training_targets),
+        "num_new_samples": len(hard_targets),
+        "num_replay_samples": len(training_targets) - len(hard_targets),
         "num_steps": num_steps,
     }
 
@@ -610,10 +385,12 @@ def _compute_refinement_loss(
     target_mask: Dict[str, torch.BoolTensor],
     focal_gamma: float = 2.0,
 ) -> torch.Tensor:
-    """Focal cross-entropy loss on target (masked) positions.
+    """Per-sample focal cross-entropy loss on target (masked) positions.
 
-    Uses the same focal loss as training to avoid wasting gradient on
-    shared tokens that the model already predicts with high confidence.
+    Returns per-sample losses [B] — caller applies surprise weighting
+    and reduces. Uses focal loss (Level 3 of the surprise hierarchy)
+    to avoid wasting gradient on positions the model already predicts
+    with high confidence.
     """
     B = next(iter(predicted_logits.values())).shape[0]
     device = next(iter(predicted_logits.values())).device
@@ -627,7 +404,7 @@ def _compute_refinement_loss(
 
         loss = F.cross_entropy(logits, targets, reduction="none")  # [B]
 
-        # Focal weighting: down-weight easy predictions
+        # Focal weighting: down-weight easy predictions (Level 3)
         if focal_gamma > 0:
             with torch.no_grad():
                 p_t = F.softmax(logits, dim=-1)
@@ -639,7 +416,7 @@ def _compute_refinement_loss(
         per_sample_count = per_sample_count + mask
 
     per_sample_loss = per_sample_loss / per_sample_count.clamp(min=1.0)
-    return per_sample_loss.mean()
+    return per_sample_loss  # [B] — caller applies Level 2 weighting
 
 
 # ── Checkpointing ────────────────────────────────────────────────────────────
@@ -652,15 +429,25 @@ def save_refinement_checkpoint(
     metrics: Dict,
     config: RefinementConfig,
     output_dir: Path,
+    replay_buffer: Optional[PrioritizedReplayBuffer] = None,
+    best_eval_agreement: float = 0.0,
+    patience_counter: int = 0,
+    best_cycle: int = 0,
 ):
-    """Save checkpoint after a refinement cycle."""
+    """Save checkpoint after a refinement cycle (includes early stopping + replay state)."""
     checkpoint = {
         "cycle": cycle,
         "denoiser_state_dict": denoiser.state_dict(),
         "diffusion_state_dict": diffusion.state_dict(),
         "metrics": metrics,
         "refinement_config": config.model_dump(),
+        # v11 early stopping state
+        "best_eval_agreement": best_eval_agreement,
+        "patience_counter": patience_counter,
+        "best_cycle": best_cycle,
     }
+    if replay_buffer is not None:
+        checkpoint["replay_buffer"] = replay_buffer.state_dict()
     path = output_dir / f"refinement_cycle_{cycle}.pt"
     torch.save(checkpoint, path)
     logger.info(f"Refinement checkpoint saved: {path}")
@@ -683,8 +470,10 @@ def main(args):
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    ft_config = config.fine_tuning
+
     logger.info("=" * 60)
-    logger.info("D3PM Offline Hard-Target Refinement (Integrated)")
+    logger.info("D3PM Offline Hard-Target Refinement (v12 Pool-Based Retrain)")
     logger.info("=" * 60)
     logger.info(f"  D3PM checkpoint:     {config.d3pm_checkpoint}")
     logger.info(f"  Rollout source:      {config.mno_checkpoint or 'GT simulator'}")
@@ -693,7 +482,20 @@ def main(args):
     logger.info(f"  Refinement cycles:   {config.num_refinement_cycles}")
     logger.info(f"  Mask probability:    {config.mask_probability}")
     logger.info(f"  Quality threshold:   {config.quality_filter.min_observed_agreement}")
-    logger.info(f"  D3PM candidates:     {config.d3pm_n_candidates}")
+    logger.info(f"  D3PM candidates:     {config.adaptive.initial_d3pm_candidates} (adaptive initial)")
+    logger.info(f"  Sampling temperature:{config.sampling_temperature}")
+    logger.info(f"  Adaptive:            perturbation={'ON' if config.adaptive.perturbation.enabled else 'OFF'}, "
+                f"max_rounds={config.adaptive.stopping.max_rounds_per_sample}, "
+                f"max_extra={config.adaptive.budget.max_extra_candidates}")
+    # v11 stabilization log
+    logger.info(f"  Anchor weight:       {ft_config.anchor_weight}")
+    logger.info(f"  Replay fraction:     {ft_config.replay_fraction} (max {ft_config.max_replay_size})")
+    logger.info(f"  Cosine schedule:     {ft_config.use_cosine_schedule}")
+    logger.info(f"  Per-cycle LR decay:  {ft_config.per_cycle_lr_decay}")
+    logger.info(f"  Early stopping:      patience={config.early_stopping_patience}")
+    # v12 surprise log
+    logger.info(f"  Surprise alpha:      {ft_config.surprise_alpha}")
+    logger.info(f"  Max surprise weight: {ft_config.max_surprise_weight}")
     logger.info(f"  Device:              {config.device}")
 
     # Load models
@@ -711,6 +513,28 @@ def main(args):
     tokenizer.model.to(config.device)
     decoder = IntegratedTokenDecoder(tokenizer)
 
+    # ── Base weights: snapshot for retrain-from-base each cycle ─────────
+    # Instead of incremental fine-tuning (which causes compounding drift),
+    # we reset to the base checkpoint before each fine-tuning round and
+    # train on the full accumulated target pool.
+    base_denoiser_state = {
+        k: v.detach().clone() for k, v in denoiser.state_dict().items()
+    }
+    base_diffusion_state = {
+        k: v.detach().clone() for k, v in diffusion.state_dict().items()
+    }
+    logger.info(f"Base weights captured for retrain-from-base")
+
+    # ── Target pool (Level 1: prioritized by agreement-surprise) ─────────
+    replay_buffer = PrioritizedReplayBuffer(
+        ft_config.max_replay_size, alpha=ft_config.surprise_alpha,
+    )
+
+    # ── Early stopping state ──────────────────────────────────────────────
+    best_eval_agreement = 0.0
+    patience_counter = 0
+    best_cycle = 0
+
     # Detect completed cycles for resume
     start_cycle = 0
     if args.resume:
@@ -719,12 +543,45 @@ def main(args):
             last_cycle_ckpt = existing[-1]
             last_cycle_num = int(last_cycle_ckpt.stem.split("_")[-1])
             logger.info(f"Resuming: found {len(existing)} cycle checkpoints, last=cycle_{last_cycle_num}")
-            # Load the last cycle's model weights
             ckpt = torch.load(last_cycle_ckpt, map_location=config.device, weights_only=False)
+            # Load fine-tuned model for inference in next cycle
             denoiser.load_state_dict(ckpt["denoiser_state_dict"])
             diffusion.load_state_dict(ckpt["diffusion_state_dict"])
+            # Restore target pool
+            if "replay_buffer" in ckpt:
+                replay_buffer.load_state_dict(ckpt["replay_buffer"])
+                logger.info(f"  Restored target pool: {len(replay_buffer)} items")
+            if "best_eval_agreement" in ckpt:
+                best_eval_agreement = ckpt["best_eval_agreement"]
+                patience_counter = ckpt["patience_counter"]
+                best_cycle = ckpt["best_cycle"]
+                logger.info(
+                    f"  Restored early stopping: best={best_eval_agreement:.4f} "
+                    f"(cycle {best_cycle}), patience={patience_counter}"
+                )
             start_cycle = last_cycle_num
             logger.info(f"Loaded weights from {last_cycle_ckpt}, starting at cycle {start_cycle + 1}")
+
+    # Create adaptive search (reused across cycles for improvement tracking)
+    search = AdaptiveRefinementSearch(
+        diffusion, denoiser, rollout_provider, tokenizer, decoder, config,
+        token_filter=token_filter,
+    )
+
+    # Held-out evaluation set (generated once, reused across cycles)
+    eval_gt_data = []
+    if config.eval_samples > 0:
+        eval_gt_data = search.generate_eval_set(config.eval_samples)
+        if eval_gt_data:
+            logger.info("\nBaseline evaluation (before any fine-tuning):")
+            baseline_metrics = search.evaluate_model(eval_gt_data)
+            # Initialize best from baseline if resuming from scratch
+            if best_eval_agreement == 0.0:
+                best_eval_agreement = baseline_metrics.get("mean_agreement", 0.0)
+        else:
+            baseline_metrics = {}
+    else:
+        baseline_metrics = {}
 
     # Refinement loop
     all_metrics = []
@@ -733,40 +590,134 @@ def main(args):
         logger.info(f"Refinement Cycle {cycle + 1}/{config.num_refinement_cycles}")
         logger.info(f"{'='*60}")
 
-        logger.info("\nGenerating hard targets...")
-        hard_targets = generate_novel_sobol_targets(
-            diffusion, denoiser, rollout_provider, tokenizer, decoder, config,
-            token_filter=token_filter, cycle=cycle,
+        logger.info("\nGenerating hard targets (adaptive)...")
+        hard_targets = search.generate_targets(cycle=cycle)
+
+        # Accumulate in target pool
+        replay_buffer.add(hard_targets)
+        logger.info(f"Target pool: {len(replay_buffer)} items total")
+
+        # ── Retrain from base on accumulated pool ─────────────────────
+        # Reset to v8 base weights — eliminates compounding drift.
+        # Each cycle trains from scratch on the full pool, so later cycles
+        # benefit from more data without inheriting errors from earlier cycles.
+        denoiser.load_state_dict(base_denoiser_state)
+        diffusion.load_state_dict(base_diffusion_state)
+
+        # Sample from pool (priority-weighted: hard targets overrepresented)
+        n_train = min(len(replay_buffer), 2000)
+        training_targets = replay_buffer.sample(n_train)
+        logger.info(
+            f"  Retrain from base: {n_train} targets sampled from pool "
+            f"({len(hard_targets)} new this cycle)"
         )
 
-        logger.info("\nFine-tuning D3PM on hard targets...")
-        ft_metrics = fine_tune_d3pm(diffusion, denoiser, hard_targets, config)
+        logger.info("\nFine-tuning D3PM on target pool...")
+        ft_metrics = fine_tune_d3pm(
+            diffusion, denoiser, training_targets, config,
+            anchor_params=None,   # no anchor needed — always starting from base
+            replay_buffer=None,   # no replay mixing — pool IS the training set
+            cycle=0,              # always cycle 0 LR (no decay, fresh start)
+        )
+
+        # Held-out evaluation
+        eval_metrics = {}
+        if eval_gt_data and (cycle + 1) % config.eval_frequency == 0:
+            logger.info("\nEvaluating on held-out set...")
+            eval_metrics = search.evaluate_model(eval_gt_data)
 
         all_metrics.append({
             "cycle": cycle + 1,
-            "num_accepted": len(hard_targets),
+            "num_targets": len(hard_targets),
             **ft_metrics,
+            **{f"eval_{k}": v for k, v in eval_metrics.items()},
         })
+
+        # ── Early stopping ────────────────────────────────────────────────
+        current_agreement = eval_metrics.get("mean_agreement", 0.0)
+        if eval_metrics and config.early_stopping_patience > 0:
+            if current_agreement > best_eval_agreement:
+                best_eval_agreement = current_agreement
+                patience_counter = 0
+                best_cycle = cycle + 1
+                logger.info(
+                    f"  New best eval agreement: {best_eval_agreement:.4f} (cycle {best_cycle})"
+                )
+            else:
+                patience_counter += 1
+                logger.info(
+                    f"  No improvement: {current_agreement:.4f} <= {best_eval_agreement:.4f} "
+                    f"(patience {patience_counter}/{config.early_stopping_patience})"
+                )
 
         save_refinement_checkpoint(
             diffusion, denoiser, cycle + 1, ft_metrics, config, output_dir,
+            replay_buffer=replay_buffer,
+            best_eval_agreement=best_eval_agreement,
+            patience_counter=patience_counter,
+            best_cycle=best_cycle,
         )
+
+        # Check early stopping after saving (so we always have the latest checkpoint)
+        if (
+            config.early_stopping_patience > 0
+            and patience_counter >= config.early_stopping_patience
+        ):
+            logger.info(
+                f"\nEarly stopping triggered: no improvement for {patience_counter} cycles. "
+                f"Best was cycle {best_cycle} with agreement {best_eval_agreement:.4f}"
+            )
+            # Load best cycle checkpoint
+            best_ckpt_path = output_dir / f"refinement_cycle_{best_cycle}.pt"
+            if best_ckpt_path.exists():
+                best_ckpt = torch.load(best_ckpt_path, map_location=config.device, weights_only=False)
+                denoiser.load_state_dict(best_ckpt["denoiser_state_dict"])
+                diffusion.load_state_dict(best_ckpt["diffusion_state_dict"])
+                logger.info(f"Restored best model from cycle {best_cycle}")
+            break
 
     # Summary
     logger.info(f"\n{'='*60}")
     logger.info("Refinement Complete")
     logger.info(f"{'='*60}")
-    for m in all_metrics:
+    if baseline_metrics:
         logger.info(
-            f"  Cycle {m['cycle']}: accepted={m['num_accepted']}, "
-            f"loss={m['loss']:.4f}"
+            f"  Baseline: eval_agreement={baseline_metrics.get('mean_agreement', 0):.4f}, "
+            f"eval_accept={baseline_metrics.get('acceptance_rate', 0):.3f}"
         )
+    for m in all_metrics:
+        eval_str = ""
+        if "eval_mean_agreement" in m:
+            eval_str = (
+                f", eval_agreement={m['eval_mean_agreement']:.4f}"
+                f", eval_accept={m['eval_acceptance_rate']:.3f}"
+            )
+        anchor_str = ""
+        if m.get("anchor_loss", 0) > 0:
+            anchor_str = f", anchor={m['anchor_loss']:.4f}"
+        diversity_str = ""
+        if "eval_mean_pairwise_hamming" in m:
+            diversity_str = (
+                f", hamming={m['eval_mean_pairwise_hamming']:.3f}"
+                f", unique={m['eval_mean_unique_candidates']:.1f}"
+                f", collapsed={m['eval_frac_fully_collapsed']:.2f}"
+            )
+        logger.info(
+            f"  Cycle {m['cycle']}: targets={m.get('num_new_samples', m['num_targets'])}"
+            f"+{m.get('num_replay_samples', 0)}replay, "
+            f"loss={m['loss']:.4f}{anchor_str}"
+            f", lr={m.get('effective_lr', ft_config.learning_rate):.2e}"
+            f"{eval_str}{diversity_str}"
+        )
+    if config.early_stopping_patience > 0 and best_cycle > 0:
+        logger.info(f"  Best cycle: {best_cycle} (agreement={best_eval_agreement:.4f})")
 
     final_path = output_dir / "refinement_final.pt"
     torch.save({
         "denoiser_state_dict": denoiser.state_dict(),
         "diffusion_state_dict": diffusion.state_dict(),
         "all_metrics": all_metrics,
+        "baseline_eval_metrics": baseline_metrics,
         "refinement_config": config.model_dump(),
     }, final_path)
     logger.info(f"\nFinal refined model saved: {final_path}")

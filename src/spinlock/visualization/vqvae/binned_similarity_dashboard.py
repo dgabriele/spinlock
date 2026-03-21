@@ -32,6 +32,7 @@ def create_binned_similarity_dashboard(
     families: Optional[list] = None,
     figsize: Tuple[int, int] = (20, 16),
     dpi: int = 150,
+    checkpoint_path: Optional[str] = None,
 ) -> Figure:
     """Single-figure dashboard: dendrogram + similarity heatmap for binned token sets.
 
@@ -39,12 +40,15 @@ def create_binned_similarity_dashboard(
         tokenized_h5_path: Path to pretokenized HDF5 dataset
         output_path: If given, save PNG (and PDF) to this path
         n_bins: Target number of bins (consecutive sample groups)
-        metric: 'jaccard' (set-based) or 'js' (Jensen-Shannon frequency-based)
+        metric: 'jaccard' (set-based), 'js' (Jensen-Shannon frequency-based),
+            or 'weighted-hamming' (hierarchy-weighted embedding distance)
         families: Optional list of token families to include (e.g. ['temporal']).
             Excludes theta/IC tokens when set, isolating the temporal encoder's diversity.
             None (default) includes all families.
         figsize: Figure size in inches
         dpi: Figure resolution
+        checkpoint_path: Path to VQ tokenizer checkpoint directory (required for
+            weighted-hamming metric, which needs codebook embeddings)
 
     Returns:
         Matplotlib Figure object
@@ -52,7 +56,7 @@ def create_binned_similarity_dashboard(
     from .utils import compute_binned_similarity
     from .components import plot_similarity_dendrogram_heatmap
 
-    metric_label = {"jaccard": "Jaccard", "js": "JS"}[metric]
+    metric_label = {"jaccard": "Jaccard", "js": "JS", "weighted-hamming": "Weighted Hamming"}[metric]
     families_label = "+".join(sorted(families)) if families else "all"
 
     print("=" * 70)
@@ -67,6 +71,7 @@ def create_binned_similarity_dashboard(
         n_bins=n_bins,
         metric=metric,
         families=families,
+        checkpoint_path=checkpoint_path,
     )
 
     # Layout: narrow dendrogram (1/6) + wide heatmap (5/6)

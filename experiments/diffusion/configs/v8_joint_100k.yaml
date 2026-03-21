@@ -1,0 +1,83 @@
+# D3PM v8 — Joint 3-Family Training on 100K Dataset
+#
+# Same architecture as v8 (256D, 8 layers, 8 heads, 3-stage curriculum,
+# focal loss), trained on 100K pretokenized dataset for 10x better
+# parameter space coverage. The inverse mapping should start from a
+# much higher baseline.
+#
+# Points to 100K pretokenized dataset and 100K VQ tokenizer checkpoint.
+
+dataset:
+  tokenized_path: "datasets/ds_lenia_fourier_100k_pretokenized.h5"
+  tokenizer_checkpoint: "checkpoints/lenia/vq/v3_fourier_100k/vq_tokenizer_best.pt"
+  use_pretokenized: true
+  truncation_length: 512
+  entropy_filter: true
+
+masking:
+  strategy: "random"
+  mask_probability: 0.5
+
+diffusion:
+  num_timesteps: 50
+  schedule_type: "cosine"
+  transition_type: "absorbing"
+  beta_scaling: "uniform"
+  graded_schedule:
+    enabled: true
+    # NOTE: position_scale_factors need recomputing for 100K tokenizer
+    # Run: spinlock compute-position-scales with the 100K pretokenized dataset
+    # For now, use family overrides only (same causal hierarchy)
+    family_scale_overrides:
+      theta: 0.15
+      initial: 0.25
+    non_temporal_scale: 0.3
+
+model:
+  hidden_dim: 256
+  num_layers: 8
+  num_heads: 8
+  dropout: 0.1
+  use_hierarchical_guidance: true
+  hierarchical_guidance_weight: 0.1
+  hierarchical_guidance_mode: "per_category"
+
+training:
+  batch_size: 128
+  num_epochs: 10
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  gradient_clip_norm: 1.0
+  use_snr_weighting: true
+  use_vocab_size_weighting: true
+  focal_gamma: 2.0
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 1
+    min_lr: 1.0e-6
+
+curriculum:
+  enabled: true
+  stages:
+    - name: "joint_random"
+      strategy: "random"
+      num_epochs: 8
+      mask_probability: 0.5
+    - name: "inverse_generation"
+      strategy: "random"
+      num_epochs: 8
+      mask_probability: 0.4
+      always_masked_families: ["initial", "theta"]
+      learning_rate: 5.0e-5
+    - name: "consolidation"
+      strategy: "random"
+      num_epochs: 4
+      mask_probability: 0.5
+      learning_rate: 2.0e-5
+
+output:
+  dir: "experiments/diffusion/results/v8_joint_100k"
+  checkpoint_prefix: "v8_joint_100k_d3pm"
+
+device: "cuda"
+seed: 42

@@ -1,0 +1,65 @@
+# D3PM v9 Adaptive Refinement
+#
+# Difficulty-proportional search: D3PM warm-start + local Sobol perturbation.
+# Easy samples cost 2 candidates; hard samples get up to 16+ extra with
+# progressive sigma widening.
+#
+# Pipeline per sample:
+#   1. Novel Sobol → Fourier IC → GT rollout → tokenize temporal
+#   2. D3PM inpaints theta+IC (2 initial candidates)
+#   3. If accepted → done (cheap path)
+#   4. If rejected → adaptive budget:
+#      a. More D3PM re-samples (token-space posterior)
+#      b. Local Gaussian perturbation around decoded theta (physics-space)
+#      c. Progressive sigma widening per round
+#      d. Stop when accepted or budget exhausted
+
+d3pm_checkpoint: "experiments/diffusion/results/v8_joint/v8_joint_d3pm_best.pt"
+mno_checkpoint: null  # GT simulator (LeniaReplayAdapter)
+tokenizer_checkpoint: "checkpoints/lenia/vq/v3_fourier_10k/vq_tokenizer_best.pt"
+
+dataset_path: "datasets/ds_lenia_fourier_10k.h5"
+max_samples: 10000
+rollout_steps: 512
+
+num_refinement_cycles: 10
+mask_probability: 0.5
+d3pm_start_step: null
+d3pm_n_candidates: 4   # Legacy field (adaptive uses initial_d3pm_candidates)
+max_accepted_targets: 1000
+generation_batch_size: 48
+
+quality_filter:
+  min_observed_agreement: 0.8
+
+adaptive:
+  initial_d3pm_candidates: 2
+  perturbation:
+    enabled: true
+    initial_sigma: 0.03
+    sigma_growth_factor: 1.5
+    max_sigma: 0.15
+    perturbations_per_round: 4
+    freeze_categorical_dims: true
+    categorical_dim_indices: [32, 33]
+  budget:
+    min_extra_candidates: 2
+    max_extra_candidates: 16
+    budget_scaling: "linear"
+    d3pm_fraction: 0.5
+  stopping:
+    max_rounds_per_sample: 4
+    min_acceptance_rate: 0.05
+    acceptance_rate_window: 200
+    min_loss_improvement: 0.001
+
+fine_tuning:
+  learning_rate: 2.0e-5
+  num_epochs: 5
+  batch_size: 128
+  gradient_clip_norm: 1.0
+  weight_decay: 1.0e-5
+
+output_dir: "experiments/diffusion/results/v9_adaptive"
+device: "cuda"
+seed: 42
