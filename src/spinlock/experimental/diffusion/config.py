@@ -476,6 +476,16 @@ class DenoisingRoundtripLossConfig(BaseModel):
             "calibrate_trajectory.py output for empirical boundaries."
         ),
     )
+    roundtrip_metric: str = Field(
+        default="ce",
+        pattern="^(ce|weighted_hamming)$",
+        description=(
+            "Per-position roundtrip comparison metric. "
+            "'ce': cross-entropy against GT tokens (standard, treats all errors equally). "
+            "'weighted_hamming': soft embedding-distance loss that penalizes proportionally "
+            "to codebook geometry — near-miss codes cost less than distant codes."
+        ),
+    )
 
     # Soft set-level coherence loss (differentiable Jaccard)
     set_coherence_weight: float = Field(

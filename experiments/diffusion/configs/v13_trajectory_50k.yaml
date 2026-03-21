@@ -13,7 +13,7 @@ dataset:
   use_pretokenized: true
   truncation_length: 512
   aux_truncation_lengths: [32, 64, 128, 256]
-  entropy_filter: true
+  entropy_filter: false
 
 masking:
   strategy: "random"
@@ -67,6 +67,7 @@ training:
     temperature: 1.0
     warmup_epochs: 3
     timestep_gate: "cosine"
+    roundtrip_metric: "weighted_hamming"
     set_coherence_weight: 0.05
     set_coherence_temperature: 0.5
     trajectory_probe_frequency: 1

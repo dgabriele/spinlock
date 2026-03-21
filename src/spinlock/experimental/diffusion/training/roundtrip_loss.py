@@ -470,8 +470,21 @@ class DenoisingRoundtripLoss(nn.Module):
             V = logits.shape[1]
             gt_selected = gt_selected.clamp(0, V - 1)
 
-            # CE loss per sample
-            loss = F.cross_entropy(logits, gt_selected, reduction='none')  # [B]
+            # Per-sample loss: CE or soft weighted Hamming
+            if self.config.roundtrip_metric == "weighted_hamming":
+                # Soft weighted Hamming: expected embedding distance under
+                # predicted distribution vs GT embedding.
+                # Gradients flow through softmax → logits → denoiser, and
+                # nearby codes get gentler gradients than distant ones.
+                codebook = self.roundtrip_head.quantizers[qkey].embedding.weight  # [V, D]
+                probs = F.softmax(logits / self.config.temperature, dim=-1)  # [B, V]
+                pred_embed = probs @ codebook  # [B, D] — expected embedding
+                gt_embed = codebook[gt_selected]  # [B, D] — GT embedding
+                loss = (pred_embed - gt_embed).pow(2).sum(dim=-1)  # [B]
+            else:
+                # Standard CE: all wrong predictions penalized equally
+                loss = F.cross_entropy(logits, gt_selected, reduction='none')  # [B]
+
             per_sample_loss = per_sample_loss + loss
             n_keys += 1
 
