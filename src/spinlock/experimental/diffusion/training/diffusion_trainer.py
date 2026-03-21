@@ -757,6 +757,7 @@ class DiffusionTrainer:
             return
 
         tokens = {k: v[:n_probe].to(self.device) for k, v in probe_batch['tokens'].items()}
+        observed = {k: v[:n_probe].to(self.device) for k, v in probe_batch['observed'].items()}
         aux_trunc = {}
         for tl, trunc_dict in probe_batch.get('aux_trunc_tokens', {}).items():
             aux_trunc[tl] = {k: v[:n_probe].to(self.device) for k, v in trunc_dict.items()}
@@ -764,9 +765,14 @@ class DiffusionTrainer:
         if not aux_trunc:
             return
 
-        # Run sample() with snapshot recording
+        # Run conditional sample() with snapshot recording.
+        # We condition on observed tokens from the GT batch so that the
+        # trajectory snapshots are grounded in the same dynamics as the GT —
+        # otherwise agreement would be at chance level.
         result = self.diffusion.sample(
             batch_size=n_probe,
+            observed_dict=observed,
+            x_0_dict=tokens,
             denoising_network=self.denoiser,
             device=self.device,
             snapshot_steps=probe_steps,
