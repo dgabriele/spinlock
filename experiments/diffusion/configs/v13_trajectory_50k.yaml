@@ -1,0 +1,99 @@
+# D3PM v13 — Trajectory-as-temporal-unfolding on 50K perturbed dataset
+#
+# First training run with:
+# - Roundtrip loss (multi-truncation consistency)
+# - Trajectory probe (validation-time monitoring)
+# - Set coherence (soft Jaccard, low weight to start)
+# - 300K effective samples (50K params × 6 realizations)
+# - 3-stage curriculum (8+8+4 = 20 epochs)
+
+dataset:
+  tokenized_path: "datasets/ds_lenia_fourier_50k_perturbed_pretokenized.h5"
+  tokenizer_checkpoint: "checkpoints/lenia/vq/v3_fourier_50k_perturbed/vq_tokenizer_latest.pt"
+  use_pretokenized: true
+  truncation_length: 512
+  aux_truncation_lengths: [32, 64, 128, 256]
+  entropy_filter: true
+
+masking:
+  strategy: "random"
+  mask_probability: 0.5
+
+diffusion:
+  num_timesteps: 50
+  schedule_type: "cosine"
+  transition_type: "absorbing"
+  beta_scaling: "uniform"
+  graded_schedule:
+    enabled: true
+    family_scale_overrides:
+      theta: 0.15
+      initial: 0.25
+    non_temporal_scale: 0.3
+
+model:
+  hidden_dim: 256
+  num_layers: 8
+  num_heads: 8
+  dropout: 0.1
+  use_hierarchical_guidance: true
+  hierarchical_guidance_weight: 0.1
+  hierarchical_guidance_mode: "per_category"
+
+training:
+  batch_size: 128
+  num_epochs: 20
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  gradient_clip_norm: 1.0
+  use_snr_weighting: true
+  use_vocab_size_weighting: true
+  focal_gamma: 2.0
+  log_frequency: 50
+  val_frequency: 1
+  val_batch_size: 128
+  val_split: 0.1
+  checkpoint_frequency: 5
+  save_best: true
+
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 1
+    min_lr: 1.0e-6
+
+  roundtrip_loss:
+    enabled: true
+    weight: 0.1
+    temperature: 1.0
+    warmup_epochs: 3
+    timestep_gate: "cosine"
+    set_coherence_weight: 0.05
+    set_coherence_temperature: 0.5
+    trajectory_probe_frequency: 1
+    trajectory_probe_samples: 4
+
+curriculum:
+  enabled: true
+  stages:
+    - name: "joint_random"
+      strategy: "random"
+      num_epochs: 8
+      mask_probability: 0.5
+    - name: "inverse_generation"
+      strategy: "random"
+      num_epochs: 8
+      mask_probability: 0.4
+      always_masked_families: ["initial", "theta"]
+      learning_rate: 5.0e-5
+    - name: "consolidation"
+      strategy: "random"
+      num_epochs: 4
+      mask_probability: 0.5
+      learning_rate: 2.0e-5
+
+output:
+  dir: "experiments/diffusion/results/v13_trajectory"
+  checkpoint_prefix: "v13_trajectory_d3pm"
+
+device: "cuda"
+seed: 42
