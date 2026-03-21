@@ -535,6 +535,17 @@ class TrainingConfig(BaseModel):
             "70-80% of tokens, amplifying gradient on the 20-30% that differ."
         ),
     )
+    primary_loss_metric: str = Field(
+        default="ce",
+        pattern="^(ce|weighted_hamming)$",
+        description=(
+            "Primary per-position loss metric. "
+            "'ce': cross-entropy (standard, treats all wrong predictions equally). "
+            "'weighted_hamming': soft embedding-distance loss through frozen codebook — "
+            "near-miss codes get small loss, distant codes get large loss. "
+            "Requires dataset.tokenizer_checkpoint for codebook access."
+        ),
+    )
     physics_loss: PhysicsLossConfig = Field(default_factory=PhysicsLossConfig)
     roundtrip_loss: DenoisingRoundtripLossConfig = Field(
         default_factory=DenoisingRoundtripLossConfig,

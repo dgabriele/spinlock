@@ -121,6 +121,26 @@ class DiffusionTrainer:
         if self._focal_gamma > 0:
             logger.info(f"Focal loss enabled: gamma={self._focal_gamma}")
 
+        # Primary loss metric: CE or weighted Hamming
+        self._primary_metric = config.training.primary_loss_metric
+        self._codebook_embeddings: Dict[str, torch.Tensor] = {}
+        if self._primary_metric == "weighted_hamming":
+            tokenizer_ckpt = config.dataset.tokenizer_checkpoint
+            if tokenizer_ckpt is None:
+                raise ValueError(
+                    "primary_loss_metric='weighted_hamming' requires "
+                    "dataset.tokenizer_checkpoint for codebook access"
+                )
+            from spinlock.tokens.tokenizer import VQTokenizer
+            tokenizer = VQTokenizer.from_checkpoint(tokenizer_ckpt)
+            for qkey in tokenizer.model.quantizers:
+                cb = tokenizer.model.quantizers[qkey].embedding.weight.detach()
+                self._codebook_embeddings[qkey] = cb.to(device)
+            logger.info(
+                f"Weighted Hamming primary loss: loaded {len(self._codebook_embeddings)} "
+                f"codebook embeddings"
+            )
+
         # Optional wandb logging
         self.use_wandb = config.training.use_wandb
         if self.use_wandb:
@@ -543,8 +563,26 @@ class DiffusionTrainer:
             targets = target_tokens[key]  # [B]
             mask = target_mask[key]  # [B]
 
-            # Compute cross-entropy loss
-            loss = F.cross_entropy(logits, targets, reduction='none')  # [B]
+            if self._primary_metric == "weighted_hamming" and key in self._codebook_embeddings:
+                # Soft weighted Hamming: expected embedding distance.
+                # Gradient: loss → L² → pred_embed → softmax → logits → denoiser.
+                # One frozen matmul (codebook), clean gradient path.
+                codebook = self._codebook_embeddings[key]  # [V_cb, D]
+                V_cb = codebook.shape[0]
+                V_logits = logits.shape[1]
+                if V_logits < V_cb:
+                    logits_padded = F.pad(logits, (0, V_cb - V_logits), value=float('-inf'))
+                elif V_logits > V_cb:
+                    logits_padded = logits[:, :V_cb]
+                else:
+                    logits_padded = logits
+                probs = F.softmax(logits_padded, dim=-1)  # [B, V_cb]
+                pred_embed = probs @ codebook  # [B, D]
+                gt_embed = codebook[targets.clamp(0, V_cb - 1)]  # [B, D]
+                loss = (pred_embed - gt_embed).pow(2).sum(dim=-1)  # [B]
+            else:
+                # Standard cross-entropy
+                loss = F.cross_entropy(logits, targets, reduction='none')  # [B]
 
             # Focal loss: down-weight easy predictions by (1-p_t)^γ
             if self._focal_gamma > 0:

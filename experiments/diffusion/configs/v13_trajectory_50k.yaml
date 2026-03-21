@@ -49,6 +49,7 @@ training:
   use_snr_weighting: true
   use_vocab_size_weighting: true
   focal_gamma: 2.0
+  primary_loss_metric: "weighted_hamming"
   log_frequency: 50
   val_frequency: 1
   val_batch_size: 128
@@ -63,12 +64,12 @@ training:
 
   roundtrip_loss:
     enabled: true
-    weight: 0.1
+    weight: 0.0
     temperature: 1.0
     warmup_epochs: 3
     timestep_gate: "cosine"
     roundtrip_metric: "weighted_hamming"
-    set_coherence_weight: 0.05
+    set_coherence_weight: 0.0
     set_coherence_temperature: 0.5
     trajectory_probe_frequency: 1
     trajectory_probe_samples: 4
