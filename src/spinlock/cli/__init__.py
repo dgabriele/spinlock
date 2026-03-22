@@ -36,6 +36,7 @@ from .train_mno_v2 import TrainMNOV2Command
 from .train_cvae import TrainCVAECommand
 from .visualize_lenia_ca import VisualizeLeniaCaCommand
 from .compute_position_scales import ComputePositionScalesCommand
+from .refine_d3pm import RefineD3PMCommand
 
 __all__ = [
     "CLICommand",
@@ -67,6 +68,7 @@ __all__ = [
     "TrainMNOV2Command",
     "VisualizeLeniaCaCommand",
     "ComputePositionScalesCommand",
+    "RefineD3PMCommand",
     "main",
 ]
 
@@ -134,6 +136,7 @@ For more help on a specific command:
         TrainMNOV2Command(),
         VisualizeLeniaCaCommand(),
         ComputePositionScalesCommand(),
+        RefineD3PMCommand(),
     ]
 
     for command in commands:

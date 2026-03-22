@@ -1,0 +1,71 @@
+# D3PM v13 Refinement — inverse generation empirical test
+#
+# Tests whether the v13 weighted-Hamming D3PM can infer (theta, IC) from
+# observed temporal tokens, decode to physical parameters, rollout via GT
+# simulator, and reproduce the original dynamics.
+#
+# Uses pool-based retrain (v12 architecture) with the v13 checkpoint.
+
+d3pm_checkpoint: "experiments/diffusion/results/v13_trajectory/v13_trajectory_d3pm_best.pt"
+mno_checkpoint: null  # GT simulator (LeniaReplayAdapter)
+tokenizer_checkpoint: "checkpoints/lenia/vq/v3_fourier_50k_perturbed/vq_tokenizer_latest.pt"
+
+dataset_path: "datasets/ds_lenia_fourier_50k_perturbed.h5"
+dataset_config_path: "configs/lenia/datasets/ds_lenia_fourier_50k_perturbed.yaml"
+max_samples: 500
+rollout_steps: 512
+
+num_refinement_cycles: 3
+mask_probability: 0.5
+d3pm_start_step: null
+sampling_temperature: 1.0
+max_accepted_targets: 200
+generation_batch_size: 16
+
+eval_samples: 48
+eval_frequency: 1
+early_stopping_patience: 3
+
+quality_filter:
+  min_observed_agreement: 0.8
+
+adaptive:
+  initial_d3pm_candidates: 2
+  perturbation:
+    enabled: true
+    initial_sigma: 0.03
+    sigma_growth_factor: 1.5
+    max_sigma: 0.15
+    perturbations_per_round: 4
+    freeze_categorical_dims: true
+    categorical_dim_indices: [32, 33]
+  budget:
+    min_extra_candidates: 2
+    max_extra_candidates: 16
+    budget_scaling: "linear"
+    d3pm_fraction: 0.5
+  stopping:
+    max_rounds_per_sample: 4
+    min_acceptance_rate: 0.05
+    acceptance_rate_window: 200
+    min_loss_improvement: 0.001
+
+fine_tuning:
+  learning_rate: 2.0e-5
+  num_epochs: 3
+  batch_size: 64
+  gradient_clip_norm: 1.0
+  weight_decay: 1.0e-5
+  anchor_weight: 0.0
+  replay_fraction: 0.0
+  max_replay_size: 5000
+  use_cosine_schedule: true
+  warmup_fraction: 0.1
+  min_lr_fraction: 0.1
+  per_cycle_lr_decay: 1.0
+  surprise_alpha: 1.0
+  max_surprise_weight: 5.0
+
+output_dir: "experiments/diffusion/results/v13_refinement"
+device: "cuda"
+seed: 42
