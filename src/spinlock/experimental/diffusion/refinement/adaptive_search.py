@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 from spinlock.experimental.diffusion.config import RefinementConfig
@@ -119,6 +120,15 @@ class AdaptiveRefinementSearch:
 
         # Per-cycle acceptance rate (logged, not used for stopping)
         self.cycle_acceptance_rates: List[float] = []
+
+        # Cosine-embedding agreement: cache codebook embeddings per temporal key
+        self._temporal_codebooks: Dict[str, Tensor] = {}
+        if config.quality_filter.agreement_metric == "cosine_embedding":
+            for key in self.temporal_keys:
+                if key in tokenizer.model.quantizers:
+                    self._temporal_codebooks[key] = (
+                        tokenizer.model.quantizers[key].embedding.weight.detach()
+                    )
 
         # GPU memory phasing: tokenizer is swapped CPU↔GPU around rollouts
         # to free ~226MB VRAM for Lenia trajectory tensors.
@@ -1084,16 +1094,38 @@ class AdaptiveRefinementSearch:
         gt: Dict[str, Tensor],
         B: int,
     ) -> Tensor:
-        """Fraction of temporal tokens matching between realized and GT."""
+        """Score temporal agreement between realized and GT tokens.
+
+        When ``agreement_metric == "token_match"``, returns fraction of exact
+        matches (binary, in [0, 1]).
+
+        When ``agreement_metric == "cosine_embedding"``, looks up codebook
+        embeddings for each position and returns mean cosine similarity across
+        temporal keys.  This is geometry-aware: near-miss codes (close in
+        embedding space) score high, consistent with weighted-Hamming training.
+        """
         device = next(iter(gt.values())).device
         n_agree = torch.zeros(B, device=device)
         n_checked = 0
 
-        for key in self.temporal_keys:
-            if key not in realized or key not in gt:
-                continue
-            n_checked += 1
-            n_agree += (realized[key][:B] == gt[key][:B]).float()
+        if self.config.quality_filter.agreement_metric == "cosine_embedding":
+            for key in self.temporal_keys:
+                if key not in realized or key not in gt:
+                    continue
+                cb = self._temporal_codebooks.get(key)
+                if cb is None:
+                    continue
+                cb_dev = cb.to(device)
+                r_emb = cb_dev[realized[key][:B]]  # [B, D_k]
+                g_emb = cb_dev[gt[key][:B]]        # [B, D_k]
+                n_agree += F.cosine_similarity(r_emb, g_emb, dim=-1)
+                n_checked += 1
+        else:
+            for key in self.temporal_keys:
+                if key not in realized or key not in gt:
+                    continue
+                n_checked += 1
+                n_agree += (realized[key][:B] == gt[key][:B]).float()
 
         return n_agree / max(n_checked, 1)
 

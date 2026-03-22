@@ -27,7 +27,8 @@ eval_frequency: 1
 early_stopping_patience: 3
 
 quality_filter:
-  min_observed_agreement: 0.8
+  min_observed_agreement: 0.95  # cosine threshold (higher than 0.8 token_match since near-misses get credit)
+  agreement_metric: "cosine_embedding"
 
 adaptive:
   initial_d3pm_candidates: 2

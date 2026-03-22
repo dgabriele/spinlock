@@ -297,10 +297,20 @@ class AdaptiveRefinementConfig(BaseModel):
     stopping: DynamicStoppingConfig = Field(default_factory=DynamicStoppingConfig)
 
 
-class MNOQualityFilterConfig(BaseModel):
-    """Quality filter: trust MNO retokenization only when observed positions agree."""
+class QualityFilterConfig(BaseModel):
+    """Quality filter: trust retokenization only when observed positions agree."""
     min_observed_agreement: float = Field(default=0.8, ge=0.0, le=1.0)
     # Fraction of observed-position tokens that must match GT
+    agreement_metric: str = Field(
+        default="token_match",
+        pattern="^(token_match|cosine_embedding)$",
+        description=(
+            "How to measure temporal agreement. "
+            "'token_match': binary per-position match (fraction of exact matches). "
+            "'cosine_embedding': cosine similarity in codebook embedding space — "
+            "near-miss codes score high, consistent with weighted-Hamming training."
+        ),
+    )
 
 
 class FineTuningConfig(BaseModel):
@@ -422,7 +432,7 @@ class RefinementConfig(BaseModel):
     generation_batch_size: int = Field(default=8, ge=1)
 
     # Quality filter
-    quality_filter: MNOQualityFilterConfig = Field(default_factory=MNOQualityFilterConfig)
+    quality_filter: QualityFilterConfig = Field(default_factory=QualityFilterConfig)
 
     # Fine-tuning (D3PM only — no CVAE)
     fine_tuning: FineTuningConfig = Field(default_factory=FineTuningConfig)
