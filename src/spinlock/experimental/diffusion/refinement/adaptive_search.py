@@ -1008,14 +1008,14 @@ class AdaptiveRefinementSearch:
             theta_vecs = []
             ic_vecs = []
             for cand in candidates:
-                nt_vecs.append(torch.cat([cand[k].squeeze(0) for k in nt_keys]))
+                nt_vecs.append(torch.cat([cand[k].reshape(-1) for k in nt_keys]))
                 if theta_keys_sorted:
                     theta_vecs.append(
-                        torch.cat([cand[k].squeeze(0) for k in theta_keys_sorted])
+                        torch.cat([cand[k].reshape(-1) for k in theta_keys_sorted])
                     )
                 if initial_keys_sorted:
                     ic_vecs.append(
-                        torch.cat([cand[k].squeeze(0) for k in initial_keys_sorted])
+                        torch.cat([cand[k].reshape(-1) for k in initial_keys_sorted])
                     )
 
             nt_mat = torch.stack(nt_vecs)  # [N, K]
