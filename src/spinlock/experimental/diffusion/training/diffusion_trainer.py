@@ -171,8 +171,10 @@ class DiffusionTrainer:
             self.physics_loss.to(self.device)
 
         # Denoising roundtrip consistency loss (frozen VQ re-encode pipeline)
+        # Only load the heavy roundtrip head if weight > 0 or trajectory probe is on
         self.roundtrip_loss = None
-        if config.training.roundtrip_loss.enabled:
+        rt_cfg = config.training.roundtrip_loss
+        if rt_cfg.enabled and (rt_cfg.weight > 0 or rt_cfg.trajectory_probe_frequency > 0):
             tokenizer_ckpt = config.dataset.tokenizer_checkpoint
             if tokenizer_ckpt is None:
                 raise ValueError(
@@ -459,10 +461,11 @@ class DiffusionTrainer:
                 loss = loss + self.config.training.physics_loss.weight * p_loss
                 physics_loss_val = p_loss.item()
 
-            # Denoising roundtrip consistency loss (after warmup)
+            # Denoising roundtrip consistency loss (after warmup, only if weight > 0)
             roundtrip_loss_val = 0.0
             if (
                 self.roundtrip_loss is not None
+                and self.config.training.roundtrip_loss.weight > 0
                 and self.current_epoch > self.config.training.roundtrip_loss.warmup_epochs
             ):
                 aux_trunc = {
@@ -650,6 +653,7 @@ class DiffusionTrainer:
         )
         roundtrip_active = (
             self.roundtrip_loss is not None
+            and self.config.training.roundtrip_loss.weight > 0
             and self.current_epoch > self.config.training.roundtrip_loss.warmup_epochs
         )
 

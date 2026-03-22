@@ -42,7 +42,7 @@ model:
 
 training:
   batch_size: 128
-  num_epochs: 20
+  num_epochs: 18
   learning_rate: 1.0e-4
   weight_decay: 1.0e-5
   gradient_clip_norm: 1.0
@@ -79,7 +79,7 @@ curriculum:
   stages:
     - name: "joint_random"
       strategy: "random"
-      num_epochs: 8
+      num_epochs: 6
       mask_probability: 0.5
     - name: "inverse_generation"
       strategy: "random"
