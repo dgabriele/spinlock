@@ -287,23 +287,19 @@ class NLTokenizerTrainer(BaseTokenizerTrainer):
 
         # Model forward
         outputs = self.model(
-            temporal_features=unpacked.get("temporal_features"),
-            initial_manual=unpacked.get("initial_manual"),
+            temporal_raw=temporal_raw,
             theta_features=unpacked.get("theta_features"),
             temporal_mask=unpacked.get("temporal_mask"),
             temporal_lengths=unpacked.get("temporal_lengths"),
-            temporal_raw=temporal_raw,
         )
 
-        # Listener roundtrip
+        # Listener roundtrip: z_full → project to z_lfm → LFM → listener → ẑ_full
         z_hat = None
         if listener_enabled:
-            gen_out = self.adapter.generate(outputs["z"])
+            gen_out = self.adapter.generate(outputs["z_lfm"])
             z_hat = self.listener(gen_out["token_probs"], gen_out["mask"])
 
-        # Loss — uses behavioral equivalence for inverse losses
-        # theta_encoded: ground truth theta's encoding (from family_embeddings)
-        # theta_hat_encoded: re-encoded predicted theta (from model forward)
+        # Loss — behavioral equivalence for inverse, topographic on z_full
         family_embs = outputs.get("family_embeddings", {})
         loss_dict = self.loss_fn(
             h=outputs["h"],
@@ -312,9 +308,7 @@ class NLTokenizerTrainer(BaseTokenizerTrainer):
             logvar=outputs["logvar"],
             theta_encoded=family_embs.get("theta"),
             theta_hat_encoded=outputs.get("theta_hat_encoded"),
-            ic=unpacked.get("initial_manual"),
-            ic_hat=outputs.get("ic_hat"),
-            z=outputs["z"],
+            z=outputs["z_full"],
             z_hat=z_hat,
             listener_enabled=listener_enabled,
         )

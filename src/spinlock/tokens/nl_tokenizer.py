@@ -20,13 +20,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import torch
-import numpy as np
 
 from spinlock.data import SpinlockDataset
-from spinlock.encoding.normalization import (
-    compute_normalization_stats,
-    apply_standard_normalization,
-)
 
 from .base_tokenizer import BaseTokenizer
 from .nl_config import NLTokenizerConfig
@@ -82,10 +77,7 @@ class NLTokenizer(BaseTokenizer):
             logger.info(f"Loading dataset from {dataset}")
             dataset = SpinlockDataset.from_file(str(dataset))
 
-        if self.config.feature_source == "learned":
-            return self._train_learned_mode(dataset, output_dir, checkpoint_prefix)
-        else:
-            return self._train_manual_mode(dataset, output_dir, checkpoint_prefix)
+        return self._train_learned_mode(dataset, output_dir, checkpoint_prefix)
 
     # ──────────────────────────────────────────────────────────────
     # Learned mode (production path)
@@ -141,6 +133,10 @@ class NLTokenizer(BaseTokenizer):
             self.group_indices,
             theta_param_dim=param_dim,
         )
+
+        # ── Auto-set listener latent_dim to match z_full ──
+        self.config.listener.latent_dim = self.model.z_full_dim
+        logger.info(f"z_full_dim={self.model.z_full_dim}, lfm_projection_dim={self.config.vae.lfm_projection_dim}")
 
         # ── Create adapter + listener ──
         logger.info("Creating LFMAdapter and NLListener")
@@ -259,81 +255,15 @@ class NLTokenizer(BaseTokenizer):
         return replayer
 
     # ──────────────────────────────────────────────────────────────
-    # Manual mode (legacy path)
-    # ──────────────────────────────────────────────────────────────
-
-    def _train_manual_mode(
-        self,
-        dataset: SpinlockDataset,
-        output_dir: Path,
-        checkpoint_prefix: str,
-    ) -> Dict[str, Any]:
-        """Train with pre-extracted manual features."""
-        logger.info("MANUAL MODE: pre-extracted temporal features")
-
-        features = self._extract_features(dataset)
-
-        if self.group_indices is None:
-            self.group_indices = self._auto_group_indices(features)
-
-        if self.config.normalization.method != "none":
-            features = self._normalize_features(features)
-
-        # Auto-detect dimensions
-        temporal_input_dim = (
-            features["temporal"].shape[2]
-            if features.get("temporal") is not None else None
-        )
-        theta_param_dim = (
-            features["theta"].shape[1]
-            if features.get("theta") is not None else None
-        )
-        initial_input_dim = (
-            features["initial_manual"].shape[1]
-            if features.get("initial_manual") is not None else None
-        )
-
-        self.model = NLTokenizerModel(
-            self.config, self.group_indices,
-            temporal_input_dim=temporal_input_dim,
-            theta_param_dim=theta_param_dim,
-            initial_input_dim=initial_input_dim,
-        )
-
-        self.adapter = LFMAdapter(self.config.lfm_adapter)
-        self.listener = NLListener(self.config.listener)
-
-        trainer = NLTokenizerTrainer(
-            self.model, self.adapter, self.listener,
-            self.config, self.group_indices,
-            normalization_stats=self.normalization_stats,
-        )
-
-        history = trainer.train(
-            temporal_features=features.get("temporal"),
-            initial_manual=features.get("initial_manual"),
-            theta_features=features.get("theta"),
-            temporal_mask=features.get("temporal_mask"),
-            temporal_lengths=features.get("temporal_lengths"),
-            output_dir=output_dir,
-            checkpoint_prefix=checkpoint_prefix,
-        )
-
-        logger.info("Manual-mode training complete")
-        return history
-
-    # ──────────────────────────────────────────────────────────────
     # Inference
     # ──────────────────────────────────────────────────────────────
 
     def encode(
         self,
-        temporal_features: Optional[torch.Tensor] = None,
-        initial_manual: Optional[torch.Tensor] = None,
+        temporal_raw: Optional[torch.Tensor] = None,
         theta_features: Optional[torch.Tensor] = None,
         temporal_mask: Optional[torch.Tensor] = None,
         temporal_lengths: Optional[torch.Tensor] = None,
-        temporal_raw: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Encode features to latent z.
 
@@ -346,30 +276,30 @@ class NLTokenizer(BaseTokenizer):
         self.model.eval()
         with torch.no_grad():
             result = self.model.encode(
-                temporal_features=temporal_features,
-                initial_manual=initial_manual,
+                temporal_raw=temporal_raw,
                 theta_features=theta_features,
                 temporal_mask=temporal_mask,
                 temporal_lengths=temporal_lengths,
-                temporal_raw=temporal_raw,
             )
-        return result["z"]
+        return result["z_full"]
 
-    def generate_text(self, z: torch.Tensor) -> List[str]:
-        """Generate NL expressions from latent vectors.
+    def generate_text(self, z_full: torch.Tensor) -> List[str]:
+        """Generate NL expressions from z_full via LFM projection.
 
         Args:
-            z: [B, latent_dim]
+            z_full: [B, z_full_dim] full latent vector
 
         Returns:
             List of B text strings
         """
-        if self.adapter is None:
-            raise ValueError("LFM adapter not initialized.")
+        if self.adapter is None or self.model is None:
+            raise ValueError("Model/adapter not initialized.")
 
+        self.model.eval()
         self.adapter.eval()
         with torch.no_grad():
-            gen_out = self.adapter.generate(z)
+            z_lfm = self.model.z_to_lfm(z_full)
+            gen_out = self.adapter.generate(z_lfm)
             return self.adapter.decode_to_text(gen_out["tokens"])
 
     @classmethod
@@ -409,86 +339,3 @@ class NLTokenizer(BaseTokenizer):
         logger.info("NL checkpoint loaded")
         return tokenizer
 
-    # ──────────────────────────────────────────────────────────────
-    # Feature pipeline (manual mode only)
-    # ──────────────────────────────────────────────────────────────
-
-    def _extract_features(
-        self, dataset: SpinlockDataset,
-    ) -> Dict[str, Optional[torch.Tensor]]:
-        """Extract temporal, IC, and theta features from dataset (manual mode)."""
-        features: Dict[str, Optional[torch.Tensor]] = {}
-
-        with dataset.open():
-            if hasattr(dataset.features, "temporal"):
-                temporal = dataset.features.temporal.load_all()
-                features["temporal"] = torch.from_numpy(temporal).float()
-                N, T, _ = temporal.shape
-                features["temporal_mask"] = torch.ones(N, T, dtype=torch.bool)
-                features["temporal_lengths"] = torch.full((N,), T, dtype=torch.long)
-            else:
-                features["temporal"] = None
-                features["temporal_mask"] = None
-                features["temporal_lengths"] = None
-
-            if hasattr(dataset.features, "initial"):
-                initial_manual = dataset.features.initial.load_all()
-                features["initial_manual"] = torch.from_numpy(initial_manual).float()
-            else:
-                features["initial_manual"] = None
-
-            if hasattr(dataset, "params") and dataset.params is not None:
-                params = dataset.params.load_all()
-                features["theta"] = torch.from_numpy(params).float()
-            elif hasattr(dataset.features, "theta"):
-                theta = dataset.features.theta.load_all()
-                features["theta"] = torch.from_numpy(theta).float()
-            else:
-                features["theta"] = None
-
-        return features
-
-    def _auto_group_indices(
-        self, features: Dict[str, Optional[torch.Tensor]],
-    ) -> Dict[str, list]:
-        """Create simple group indices from feature dimensions."""
-        groups: Dict[str, list] = {}
-        offset = 0
-
-        if features.get("temporal") is not None:
-            D = features["temporal"].shape[2]
-            groups["temporal_group_0"] = list(range(offset, offset + D))
-            offset += D
-
-        if features.get("initial_manual") is not None:
-            D = features["initial_manual"].shape[1]
-            groups["initial_group_0"] = list(range(offset, offset + D))
-            offset += D
-
-        if features.get("theta") is not None:
-            D = features["theta"].shape[1]
-            groups["theta_group_0"] = list(range(offset, offset + D))
-
-        return groups
-
-    def _normalize_features(self, features: Dict) -> Dict:
-        """Normalize features using configured method."""
-        for key in ["temporal", "initial_manual", "theta"]:
-            tensor = features.get(key)
-            if tensor is None:
-                continue
-
-            if key == "temporal":
-                N, T, D = tensor.shape
-                flat = tensor.reshape(-1, D).numpy()
-                stats = compute_normalization_stats(flat)
-                normalized = apply_standard_normalization(flat, stats)
-                features[key] = torch.from_numpy(normalized.reshape(N, T, D)).float()
-            else:
-                data = tensor.numpy()
-                stats = compute_normalization_stats(data)
-                features[key] = torch.from_numpy(
-                    apply_standard_normalization(data, stats)
-                ).float()
-
-        return features

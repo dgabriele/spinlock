@@ -49,8 +49,6 @@ class NLTokenizerLoss:
         logvar: torch.Tensor,
         theta_encoded: Optional[torch.Tensor] = None,
         theta_hat_encoded: Optional[torch.Tensor] = None,
-        ic: Optional[torch.Tensor] = None,
-        ic_hat: Optional[torch.Tensor] = None,
         z: Optional[torch.Tensor] = None,
         z_hat: Optional[torch.Tensor] = None,
         listener_enabled: bool = False,
@@ -66,9 +64,7 @@ class NLTokenizerLoss:
                 (not raw params — the encoder output, detached)
             theta_hat_encoded: [B, theta_dim] re-encoded predicted theta
                 (encoder(theta_inverse(z)) — gradients flow through inverse)
-            ic: [B, ic_dim] ground truth IC features (optional)
-            ic_hat: [B, ic_dim] predicted IC features (optional)
-            z: [B, latent_dim] original latent
+            z: [B, z_full_dim] full latent vector
             z_hat: [B, latent_dim] listener-predicted latent (optional)
             listener_enabled: Whether to include listener roundtrip loss
 
@@ -98,19 +94,13 @@ class NLTokenizerLoss:
             theta_inv_loss = F.mse_loss(theta_hat_encoded, theta_encoded.detach())
         components["theta_inverse"] = theta_inv_loss
 
-        # ── 4. IC inverse ──
-        ic_inv_loss = torch.tensor(0.0, device=device)
-        if ic is not None and ic_hat is not None:
-            ic_inv_loss = F.mse_loss(ic_hat, ic)
-        components["ic_inverse"] = ic_inv_loss
-
-        # ── 5. Listener roundtrip ──
+        # ── 4. Listener roundtrip ──
         listener_loss = torch.tensor(0.0, device=device)
         if listener_enabled and z is not None and z_hat is not None:
             listener_loss = F.mse_loss(z_hat, z.detach())
         components["listener_roundtrip"] = listener_loss
 
-        # ── 6. Topographic: preserve behavioral neighborhoods in z ──
+        # ── 5. Topographic: preserve behavioral neighborhoods in z ──
         topo_loss = torch.tensor(0.0, device=device)
         if cfg.topographic_weight > 0 and z is not None:
             topo_loss = self._topographic_loss(h, z)
@@ -121,7 +111,6 @@ class NLTokenizerLoss:
             cfg.reconstruction_weight * recon_loss
             + cfg.kl_weight * self._kl_weight_scale * kl_loss
             + cfg.theta_inverse_weight * theta_inv_loss
-            + cfg.ic_inverse_weight * ic_inv_loss
             + cfg.topographic_weight * topo_loss
         )
         if listener_enabled:

@@ -1,8 +1,8 @@
-# NLTokenizer v1 — Continuous VAE + LFM integration (learned features)
+# NLTokenizer v1 — Per-group hierarchical VAE + LFM
 #
-# Uses PyramidFirstEncoder on raw trajectories [B, T, C, H, W] — the same
-# learned feature path that VQ v3 uses. On-the-fly trajectory generation
-# via LeniaReplayAdapter.
+# Matches VQTokenizer's information capacity: 30 groups × 2-level VAE heads
+# with ~1400D total latent (vs VQ's ~1800D with 60 codebooks). Uses the same
+# PyramidFirstEncoder + on-the-fly trajectory generation pipeline as VQ v3.
 #
 # Usage:
 #   spinlock train-nl-tokenizer --config configs/lenia/nl/nl_v1.yaml
@@ -10,22 +10,21 @@
 dataset_path: "datasets/ds_lenia_fourier_10k.h5"
 output_dir: "checkpoints/nl/v1"
 
-# ── Feature source (production = learned) ──
-feature_source: "learned"
+# ── Pipeline ──
 generation_config_path: "configs/lenia/datasets/ds_lenia_fourier_10k.yaml"
 generation_timesteps: 512
 realization_mode: "all"
 replayer_cache_size: 16
 
-# ── Encoder (learned temporal + theta MLP) ──
+# ── Encoder (same as VQ v3) ──
 encoder:
   temporal:
     variant: "pyramid"
-    level_dims: [6, 12, 20, 26]  # unused by PyramidFirst but kept for schema
+    level_dims: [6, 12, 20, 26]  # unused by PyramidFirst, kept for schema
     downsample_factors: [2, 4, 8, 16]
     learned:
       architecture: "pyramid_first"
-      # in_channels: auto-detected from dataset
+      # in_channels: auto-detected
       embedding_dim: 240
       num_groups: 30
       d_cnn: 256
@@ -40,24 +39,27 @@ encoder:
       min_pyramid_length: 4
   theta:
     variant: "mlp"
-    # param_dim: auto-detected from dataset
+    # param_dim: auto-detected
     hidden_dim: 64
     output_dim: 32
     dropout: 0.1
-  embedding_dim: 64   # D_group for learned projection
-  hidden_dim: 128
-  dropout: 0.1
+  embedding_dim: 32  # D_group — matches VQ v3
 
-# ── VAE bottleneck ──
+# ── Hierarchy (matches VQ's 2-level structure) ──
+hierarchy:
+  num_levels: 2
+
+# ── Per-group hierarchical VAE ──
 vae:
-  latent_dim: 256
-  coarse_dim: 64
-  encoder_hidden_dims: [1024, 512]
-  decoder_hidden_dims: [512, 1024]
+  level_ratios: [1.0, 0.5]        # L0: D_group=32, L1: 16 → 48D per group
+  # group_encoder_hidden_dim: null  # default: D_group × 2 = 64
+  theta_z_dim: 32
+  feature_decoder_hidden_dims: [1024, 768]
+  lfm_projection_dim: 256          # z_full (~1472D) → z_lfm (256D) for LFM
 
 # ── LFM adapter ──
 lfm_adapter:
-  latent_dim: 256
+  latent_dim: 256    # must match lfm_projection_dim
   vocab_size: 8000
   max_output_len: 256
   decoder_hidden_dim: 256
@@ -69,31 +71,27 @@ lfm_adapter:
   temperature: 1.0
   hard_sample: true
 
-# ── NL Listener ──
+# ── NL Listener (latent_dim auto-set to z_full_dim at runtime) ──
 listener:
   vocab_size: 8000
   hidden_dim: 256
   num_heads: 4
   num_layers: 2
-  latent_dim: 256
   dropout: 0.1
 
 # ── Inverse decoders ──
 inverse:
   theta_hidden_dim: 128
   theta_dropout: 0.1
-  ic_hidden_dim: 256
-  ic_dropout: 0.1
 
 # ── Loss ──
 loss:
   reconstruction_weight: 1.0
   kl_weight: 0.1
   kl_free_bits: 2.0
-  theta_inverse_weight: 1.0     # behavioral equivalence: ‖encoder(θ_hat) - encoder(θ_true)‖²
-  ic_inverse_weight: 0.0        # no IC encoding in learned mode
+  theta_inverse_weight: 1.0       # behavioral: ‖enc(θ̂) - enc(θ)‖²
   listener_roundtrip_weight: 1.0
-  topographic_weight: 0.5       # preserve behavioral neighborhoods in z-space
+  topographic_weight: 0.5         # ρ(d_h, d_z) neighborhood preservation
   topographic_n_samples: 64
 
 # ── Training ──
@@ -101,7 +99,6 @@ training:
   num_epochs: 50
   batch_size: 32
   learning_rate: 1.0e-3
-  weight_decay: 0.0
   optimizer: "adam"
   val_split: 0.2
   val_every_n_epochs: 5
@@ -117,4 +114,4 @@ training:
   checkpoint_every_n_epochs: 10
 
 normalization:
-  method: "none"   # learned features don't need manual normalization
+  method: "none"

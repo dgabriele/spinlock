@@ -1,4 +1,4 @@
-# NLTokenizer v1 smoke test — minimal learned mode for CI/local testing
+# NLTokenizer v1 smoke test — minimal per-group VAE for CI/local testing
 #
 # Usage:
 #   spinlock train-nl-tokenizer \
@@ -8,7 +8,6 @@
 dataset_path: "datasets/ds_lenia_fourier_10k.h5"
 output_dir: "/tmp/nl_smoke"
 
-feature_source: "learned"
 generation_config_path: "configs/lenia/datasets/ds_lenia_fourier_10k.yaml"
 generation_timesteps: 32
 realization_mode: "single"
@@ -35,14 +34,15 @@ encoder:
     output_dim: 16
     dropout: 0.0
   embedding_dim: 16  # D_group
-  hidden_dim: 32
-  dropout: 0.0
+
+hierarchy:
+  num_levels: 2
 
 vae:
-  latent_dim: 64
-  coarse_dim: 16
-  encoder_hidden_dims: [128]
-  decoder_hidden_dims: [128]
+  level_ratios: [1.0, 0.5]  # L0: 16, L1: 8 → 24D per group → 96D temporal + 16D theta = 112D total
+  theta_z_dim: 16
+  feature_decoder_hidden_dims: [128]
+  lfm_projection_dim: 64
 
 lfm_adapter:
   latent_dim: 64
@@ -60,21 +60,17 @@ listener:
   hidden_dim: 64
   num_heads: 2
   num_layers: 1
-  latent_dim: 64
   dropout: 0.0
 
 inverse:
   theta_hidden_dim: 32
   theta_dropout: 0.0
-  ic_hidden_dim: 64
-  ic_dropout: 0.0
 
 loss:
   reconstruction_weight: 1.0
   kl_weight: 0.1
   kl_free_bits: 1.0
   theta_inverse_weight: 1.0
-  ic_inverse_weight: 0.0
   listener_roundtrip_weight: 1.0
   topographic_weight: 0.5
   topographic_n_samples: 16
