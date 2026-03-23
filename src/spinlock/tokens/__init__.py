@@ -1,24 +1,25 @@
-"""VQ Tokenizer for trajectory encoding.
+"""Tokenizer package — VQ (discrete) and NL (continuous VAE + LFM).
 
-This package provides a clean, modular implementation of hierarchical VQ-VAE
-for multi-family trajectory tokenization with:
-- Joint temporal + initial feature training
-- Variable-length temporal sequence support
-- End-to-end CNN training for initial conditions
-- Integration with feature grouping system
-- Clean V2-only checkpoint format
+This package provides modular tokenizer implementations for encoding
+Lenia dynamics into latent representations:
 
-Example:
+1. **VQTokenizer**: Discrete codebook tokens via hierarchical VQ-VAE.
+   Used with D3PM for inverse generation.
+2. **NLTokenizer**: Continuous VAE latents projected into LFM's frozen
+   autoregressive decoder for natural language expression generation.
+
+Both share the family encoder pattern (temporal, IC, theta) via base classes.
+
+Example (VQ):
     >>> from spinlock.tokens import VQTokenizer, TokenizerConfig
-    >>>
-    >>> # Training
-    >>> config = TokenizerConfig(...)
     >>> tokenizer = VQTokenizer(config)
     >>> tokenizer.train(dataset, output_dir="checkpoints/")
-    >>>
-    >>> # Inference
-    >>> tokenizer = VQTokenizer.from_checkpoint("checkpoints/best.pt")
-    >>> tokens = tokenizer.tokenize(trajectories)
+
+Example (NL):
+    >>> from spinlock.tokens import NLTokenizer, NLTokenizerConfig
+    >>> tokenizer = NLTokenizer(config)
+    >>> tokenizer.train(dataset, output_dir="checkpoints/nl/")
+    >>> text = tokenizer.generate_text(z)
 """
 
 from .config import (
@@ -49,15 +50,32 @@ from .checkpoint import (
 from .pretraining import CNNPretrainer
 from .schema import TokenSchema, CategoryLevelInfo
 
+# Base classes
+from .base_model import BaseTokenizerModel
+from .base_tokenizer import BaseTokenizer
+from .base_trainer import BaseTokenizerTrainer
+
+# NL tokenizer
+from .nl_config import NLTokenizerConfig
+from .nl_tokenizer import NLTokenizer
+from .nl_model import NLTokenizerModel
+from .nl_lfm_adapter import LFMAdapter, NLListener, NLTokenBridge
+
 __all__ = [
-    # Main interface
+    # Main interfaces
     "VQTokenizer",
+    "NLTokenizer",
 
     # Schema
     "TokenSchema",
     "CategoryLevelInfo",
 
-    # Configuration
+    # Base classes
+    "BaseTokenizerModel",
+    "BaseTokenizer",
+    "BaseTokenizerTrainer",
+
+    # VQ configuration
     "TokenizerConfig",
     "EncoderConfig",
     "InitialEncoderConfig",
@@ -69,10 +87,19 @@ __all__ = [
     "NormalizationConfig",
     "PretrainingConfig",
 
-    # Core components
+    # NL configuration
+    "NLTokenizerConfig",
+
+    # VQ core components
     "JointHierarchicalVQVAE",
     "VQTokenizerTrainer",
     "VQVAELoss",
+
+    # NL core components
+    "NLTokenizerModel",
+    "LFMAdapter",
+    "NLListener",
+    "NLTokenBridge",
 
     # Utilities
     "save_checkpoint",

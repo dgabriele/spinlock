@@ -1702,6 +1702,25 @@ files = [
 ]
 
 [[package]]
+name = "lfm"
+version = "0.1.0"
+description = "Language Faculty Model — a constraint-driven, compositional, morphosyntactic prior that enables structured communication without predefined semantics for GPU-based multi-agent systems."
+optional = false
+python-versions = ">=3.11,<3.14"
+groups = ["main"]
+files = []
+develop = false
+
+[package.dependencies]
+numpy = ">=1.24"
+pydantic = ">=2.0"
+torch = ">=2.0"
+
+[package.source]
+type = "directory"
+url = "../lfm"
+
+[[package]]
 name = "librt"
 version = "0.7.5"
 description = "Mypyc runtime library"
@@ -3459,7 +3478,7 @@ description = "C version of reader, parser and emitter for ruamel.yaml derived f
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "platform_python_implementation == \"CPython\" and python_version < \"3.15\""
+markers = "platform_python_implementation == \"CPython\""
 files = [
     {file = "ruamel_yaml_clib-0.2.15-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:88eea8baf72f0ccf232c22124d122a7f26e8a24110a0273d9bcddcb0f7e1fa03"},
     {file = "ruamel_yaml_clib-0.2.15-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:9b6f7d74d094d1f3a4e157278da97752f16ee230080ae331fcc219056ca54f77"},
@@ -4366,5 +4385,5 @@ jupyter = ["ipytree (>=0.2.2)", "ipywidgets (>=8.0.0)", "notebook"]
 
 [metadata]
 lock-version = "2.1"
-python-versions = "^3.11"
-content-hash = "0baf6b7ff6772f3b04918eddf6e4192bc6296fb6a8dd5e91666f2c7b69585990"
+python-versions = ">=3.11,<3.14"
+content-hash = "38a0a8d1058f4abec794a9c87f79bd69f0af9d18129e971041e2852c64610e4d"

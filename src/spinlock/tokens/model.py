@@ -15,6 +15,7 @@ import torch.nn as nn
 
 from spinlock.encoding.vector_quantizer import VectorQuantizer
 from spinlock.encoding.residual_decoder import MultiLayerResidualDecoder
+from .base_model import BaseTokenizerModel
 
 from .encoders import (
     PyramidTemporalEncoder,
@@ -40,7 +41,7 @@ from .decoders import SpatialICDecoder, SpatialICLatentDecoder
 logger = logging.getLogger(__name__)
 
 
-class JointHierarchicalVQVAE(nn.Module):
+class JointHierarchicalVQVAE(BaseTokenizerModel):
     """Joint Hierarchical VQ-VAE for multi-family trajectory tokenization.
 
     Supports independent encoding and hierarchical quantization of:
@@ -568,20 +569,9 @@ class JointHierarchicalVQVAE(nn.Module):
     def _parse_families(self, group_indices: Dict[str, List[int]]) -> List[str]:
         """Parse unique families from group_indices keys.
 
-        Family presence is derived from group_indices: if there are keys
-        starting with "theta_", the theta family exists. No boolean flag needed.
-
-        Args:
-            group_indices: Dict with keys like "temporal_group_1", "initial_group_2"
-
-        Returns:
-            List of unique families, e.g., ["temporal", "initial"]
+        Delegates to BaseTokenizerModel.parse_families().
         """
-        families = set()
-        for key in group_indices.keys():
-            family = key.split('_', 1)[0]
-            families.add(family)
-        return sorted(families)
+        return self.parse_families(group_indices)
 
     def _use_per_group_encoders(self) -> bool:
         """Return True when PCA/OPQ grouping is configured (per-group encoder path)."""

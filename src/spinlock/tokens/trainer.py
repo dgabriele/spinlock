@@ -24,11 +24,12 @@ from .config import TokenizerConfig
 from .fsq import FiniteScalarQuantizer
 from .checkpoint import save_checkpoint
 from .schedules import ParameterSchedule
+from .base_trainer import BaseTokenizerTrainer
 
 logger = logging.getLogger(__name__)
 
 
-class VQTokenizerTrainer:
+class VQTokenizerTrainer(BaseTokenizerTrainer):
     """Training orchestrator for VQ tokenizer.
 
     Manages the complete training pipeline including data loading,
@@ -56,84 +57,18 @@ class VQTokenizerTrainer:
         feature_metadata: Optional[Any] = None,
         replayer=None,
     ):
-        self.model = model
-        self.config = config
-        self.group_indices = group_indices
-        self.normalization_stats = normalization_stats
-        self.feature_metadata = feature_metadata
+        # Shared: device, optimizer, scheduler, warmup, batch mode, tracking
+        super().__init__(
+            model, config, group_indices,
+            normalization_stats=normalization_stats,
+            feature_metadata=feature_metadata,
+        )
+
+        # ── VQ-specific init ──
         self.replayer = replayer  # CNOReplayer for on-the-fly trajectory generation
-
-        # Determine device
-        if config.training.device == "auto":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(config.training.device)
-
-        self.model.to(self.device)
 
         # Loss function (pass aux_config whenever configured)
         self.loss_fn = VQVAELoss(config.loss, aux_config=config.aux_heads)
-
-        # Optimizer
-        if config.training.optimizer == "adam":
-            self.optimizer = torch.optim.Adam(
-                model.parameters(),
-                lr=config.training.learning_rate,
-                weight_decay=config.training.weight_decay,
-            )
-        elif config.training.optimizer == "adamw":
-            self.optimizer = torch.optim.AdamW(
-                model.parameters(),
-                lr=config.training.learning_rate,
-                weight_decay=config.training.weight_decay,
-            )
-        else:
-            raise ValueError(f"Unknown optimizer: {config.training.optimizer}")
-
-        # Learning rate scheduler (optional)
-        self.scheduler = None
-        if config.training.use_scheduler:
-            if config.training.scheduler_type == "cosine":
-                self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    self.optimizer,
-                    T_max=config.training.num_epochs - config.training.warmup_epochs,
-                )
-            elif config.training.scheduler_type == "step":
-                self.scheduler = torch.optim.lr_scheduler.StepLR(
-                    self.optimizer,
-                    step_size=config.training.num_epochs // 3,
-                    gamma=0.1,
-                )
-            elif config.training.scheduler_type == "exponential":
-                self.scheduler = torch.optim.lr_scheduler.ExponentialLR(
-                    self.optimizer, gamma=0.95
-                )
-
-        # Per-batch linear LR warmup (optional): ramps LR from 0.1% to 100%
-        # over warmup_batches *batches*.  Since the optimizer only steps every
-        # gradient_accumulation_steps micro-batches, we convert to optimizer
-        # steps so the warmup completes after the configured number of batches.
-        self._warmup_scheduler = None
-        self._warmup_steps_done = 0
-        accum = config.training.gradient_accumulation_steps
-        warmup_optim_steps = max(
-            1, (config.training.warmup_batches + accum - 1) // accum
-        ) if config.training.warmup_batches > 0 else 0
-        self._warmup_batches = warmup_optim_steps
-        if self._warmup_batches > 0:
-            self._warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-                self.optimizer,
-                start_factor=1e-3,
-                end_factor=1.0,
-                total_iters=self._warmup_batches,
-            )
-            logger.info(
-                "Per-batch LR warmup: %d batches → %d optimizer steps (%.4f → %.4f)",
-                config.training.warmup_batches,
-                self._warmup_batches,
-                config.training.learning_rate * 1e-3,
-                config.training.learning_rate,
-            )
 
         # Model compilation (optional)
         if config.training.compile_model and hasattr(torch, 'compile'):
@@ -234,22 +169,8 @@ class VQTokenizerTrainer:
                 f"(cosine schedule)"
             )
 
-        # Batch unpacking mode: False = TensorDataset (index-based), True = dict batches
-        self._dict_batch_mode = False
-
-        # Intra-epoch convergence stopping state
+        # Intra-epoch convergence stopping state (VQ-specific)
         self._convergence_stopped = False
-
-        # Tracking
-        self.best_val_loss = float('inf')       # Best-model saving (no min_delta)
-        self._best_es_metric = float('inf')     # Early-stopping patience (uses min_delta)
-        self.epochs_without_improvement = 0
-        self.training_history = {
-            'train_losses': [],
-            'val_losses': [],
-            'train_metrics': [],
-            'val_metrics': [],
-        }
 
     def train(
         self,

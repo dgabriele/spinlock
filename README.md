@@ -18,6 +18,7 @@ The framework is designed as a foundation for higher-level systems—agents that
 - [🏗️ Architecture](#️-architecture)
 - [📊 Feature Families](#-feature-families)
 - [🎛️ VQ-VAE Behavioral Tokenization](#️-vq-vae-behavioral-tokenization)
+- [NLTokenizer: Natural Language Behavioral Encoding](#nltokenizer-natural-language-behavioral-encoding)
 - [⚡ Quick Start](#-quick-start)
 - [🚀 Installation](#-installation)
 - [Research Context](#research-context)
@@ -314,6 +315,105 @@ Traditional VQ-VAE training optimizes reconstruction in the **encoded space**, b
 4. **Faster convergence**: Joint optimization is more efficient than separate encoder/decoder training
 
 See [Training Regimes Guide](docs/training-regimes-guide.md) for detailed comparisons.
+
+---
+
+## NLTokenizer: Natural Language Behavioral Encoding
+
+The NLTokenizer is a parallel pathway to VQTokenizer that encodes Lenia dynamics into **continuous VAE latent vectors** and projects them through a frozen pretrained language model decoder to produce **natural language expressions**. Instead of discrete VQ codebooks and D3PM diffusion, NLTokenizer operates in continuous z-space, using perturbation sampling and listener roundtrip fidelity to generate communicable descriptions of operator behavior.
+
+### Feature Mode
+
+NLTokenizer defaults to `feature_source="learned"`, using **PyramidFirstEncoder** on raw trajectories `[B, T, C, H, W]` with on-the-fly trajectory generation via the Lenia replayer. This is the same production path used by VQ v3. A legacy manual mode (`feature_source="manual"`) accepts pre-extracted temporal features `[B, T, D]` via `PyramidTemporalEncoder`, but it is not the primary path.
+
+### Architecture
+
+```
+temporal_raw [B, T, C, H, W]
+  │
+  ├── PyramidFirstEncoder ──→ per_group [B, G, D_group] ─┐
+  │                                                       │
+  ├── ICEncoder (initial_manual) ─────────────────────────┤
+  │                                                       │
+  └── ThetaMLPEncoder (theta_features) ──────────────────-┤
+                                                          ↓
+                                                  Concatenate → h
+                                                          │
+                   ┌──────────────────────────────────────┤
+                   │               VAE Encoder            │
+                   │      h → (mu, logvar) → z = (z_coarse || z_fine)
+                   │                                      │
+  ┌────────────────┼──────────────┬───────────────────────┼─────────────┐
+  │                │              │                        │             │
+  ▼                ▼              ▼                        ▼             ▼
+Feature        Theta Inverse   LFMAdapter             NLListener   Topographic
+Decoder        z → theta_hat   z → Gumbel-Softmax    NL → z_hat   Loss
+z → h_hat      theta_hat →     → NL tokens                        1-rho(d_h,d_z)
+               re-encode       (frozen decoder)
+               via ThetaEncoder
+               ↓
+           Behavioral Loss:
+           ||enc(theta_hat) - enc(theta_true)||^2
+```
+
+**Learned feature encoding**: Raw trajectories `[B, T, C, H, W]` feed into `PyramidFirstEncoder`, which applies a spatial CNN, multi-resolution temporal pyramid, and learned group projection to produce per-group embeddings `[B, G, D_group]`. These are flattened and concatenated with theta and IC embeddings to form the joint behavioral representation `h`.
+
+**VAE bottleneck**: The encoder maps `h` to a split latent `z = (z_coarse, z_fine)`, where `z_coarse` captures broad behavioral regime and `z_fine` encodes details. The **feature decoder** reconstructs `h` from `z`.
+
+**Behavioral theta inverse**: The inverse decoder predicts `theta_hat` from `z`, then **re-encodes** the prediction through the same `ThetaMLPEncoder`: the loss is `||encoder(theta_hat) - encoder(theta_true)||^2`, computed in encoding space rather than parameter space. This handles the many-to-many mapping from `(theta, IC) -> behavior`: two different parameter vectors that produce the same behavioral encoding incur zero loss.
+
+**Topographic pressure**: A topographic similarity loss computes the Pearson correlation between pairwise L2 distances in h-space (behavioral embeddings) and z-space (VAE latent). The loss `1 - rho(d_h, d_z)` ensures z-space neighborhoods correspond to behavioral neighborhoods, enabling smooth interpolation when sampling nearby latent vectors.
+
+**Language output**: The **LFMAdapter** projects `z` through Gumbel-Softmax into token probabilities consumed by LFM's frozen autoregressive decoder, producing natural language output. The **NLListener** closes the loop: it re-encodes the token probabilities back to a latent estimate `z_hat`, and the roundtrip fidelity loss `||z - z_hat||^2` ensures the NL expression retains the behavioral information encoded in `z`.
+
+### Loss Components
+
+| Component | Formula | Weight | Notes |
+|-----------|---------|--------|-------|
+| Feature reconstruction | MSE(h, h_hat) | 1.0 | Encoding-space reconstruction |
+| KL divergence | KL(q(z&#124;x) &#124;&#124; N(0,I)) | 0.1 | Free-bits floor, warmup ramp |
+| Behavioral theta inverse | MSE(encoder(theta_hat), encoder(theta_true)) | 1.0 | Re-encoded, not param-space MSE |
+| Listener roundtrip | MSE(z, listener(NL(z))) | 1.0 | Enabled after warmup stage |
+| Topographic | 1 - rho(d_h, d_z) | 0.5 | Pearson on pairwise distances |
+
+### Comparison with VQTokenizer
+
+| Aspect | VQTokenizer | NLTokenizer |
+|--------|-------------|-------------|
+| Feature path | PyramidFirstEncoder on raw trajectories (learned, production) | PyramidFirstEncoder on raw trajectories (learned, production) |
+| Bottleneck | Discrete VQ codebooks (90 quantizers) | Continuous VAE latent z |
+| Output | Discrete token sets (Jaccard, Hamming) | Natural language token sequences |
+| Generative sampling | D3PM discrete diffusion | z-space perturbation sampling |
+| Roundtrip metric | Weighted Hamming / codebook cosine | Listener roundtrip fidelity (MSE in z) |
+| Regularization | VQ commitment loss | KL divergence + topographic |
+| Communication medium | Token set comparison | Human-readable NL expressions |
+
+### Training Stages
+
+**Stage 1: VAE Warmup** — KL weight ramps from 0 to target over a configurable schedule. Only reconstruction, inverse, and topographic losses are active. This establishes a well-structured latent space with behavioral topology before introducing the language pathway.
+
+**Stage 2: Full + Listener Roundtrip** — LFMAdapter and NLListener are activated. The full loss includes reconstruction, inverse, KL, topographic, language modeling (cross-entropy on frozen decoder targets), and listener roundtrip fidelity. The listener loss ensures that NL outputs are not just fluent but faithful to the encoded dynamics.
+
+### Downstream Goal
+
+Agents produce natural language expressions describing Lenia dynamics, communicate these expressions to other agents, and collectively develop a shared lingua franca for behavioral description. An LLM translation layer maps the emergent vocabulary to English, enabling human-interpretable explanations of discovered dynamical regimes.
+
+### CLI
+
+```bash
+poetry run spinlock train-nl-tokenizer \
+    --config configs/lenia/nl/nl_v1.yaml
+```
+
+### Key Files
+
+- `nl_config.py` — Pydantic configuration for all NLTokenizer components
+- `nl_model.py` — Core VAE model with family encoders, latent split, and decoders
+- `nl_lfm_adapter.py` — Gumbel-Softmax projection into frozen LFM decoder
+- `nl_losses.py` — Combined loss: reconstruction + inverse + KL + topographic + listener roundtrip
+- `nl_trainer.py` — Training loop with KL ramp scheduling and stage transitions
+- `nl_tokenizer.py` — Inference-time tokenizer interface (encode dynamics to NL)
+- `nl_checkpoint.py` — Save/load with frozen decoder weight exclusion
 
 ---
 

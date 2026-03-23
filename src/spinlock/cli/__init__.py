@@ -37,6 +37,7 @@ from .train_cvae import TrainCVAECommand
 from .visualize_lenia_ca import VisualizeLeniaCaCommand
 from .compute_position_scales import ComputePositionScalesCommand
 from .refine_d3pm import RefineD3PMCommand
+from .train_nl_tokenizer import TrainNLTokenizerCommand
 
 __all__ = [
     "CLICommand",
@@ -69,6 +70,7 @@ __all__ = [
     "VisualizeLeniaCaCommand",
     "ComputePositionScalesCommand",
     "RefineD3PMCommand",
+    "TrainNLTokenizerCommand",
     "main",
 ]
 
@@ -137,6 +139,7 @@ For more help on a specific command:
         VisualizeLeniaCaCommand(),
         ComputePositionScalesCommand(),
         RefineD3PMCommand(),
+        TrainNLTokenizerCommand(),
     ]
 
     for command in commands:

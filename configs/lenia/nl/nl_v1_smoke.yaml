@@ -1,0 +1,97 @@
+# NLTokenizer v1 smoke test — minimal learned mode for CI/local testing
+#
+# Usage:
+#   spinlock train-nl-tokenizer \
+#     --config configs/lenia/nl/nl_v1_smoke.yaml \
+#     --max-samples 100 --device cuda
+
+dataset_path: "datasets/ds_lenia_fourier_10k.h5"
+output_dir: "/tmp/nl_smoke"
+
+feature_source: "learned"
+generation_config_path: "configs/lenia/datasets/ds_lenia_fourier_10k.yaml"
+generation_timesteps: 32
+realization_mode: "single"
+
+encoder:
+  temporal:
+    variant: "pyramid"
+    level_dims: [4, 8]
+    downsample_factors: [2, 4]
+    learned:
+      architecture: "pyramid_first"
+      embedding_dim: 64
+      num_groups: 4
+      d_cnn: 32
+      d_agg: 16
+      gated_groups: false
+    variable_length:
+      enabled: true
+      adaptive_pyramid: true
+      min_pyramid_length: 4
+  theta:
+    variant: "mlp"
+    hidden_dim: 32
+    output_dim: 16
+    dropout: 0.0
+  embedding_dim: 16  # D_group
+  hidden_dim: 32
+  dropout: 0.0
+
+vae:
+  latent_dim: 64
+  coarse_dim: 16
+  encoder_hidden_dims: [128]
+  decoder_hidden_dims: [128]
+
+lfm_adapter:
+  latent_dim: 64
+  vocab_size: 256
+  max_output_len: 32
+  decoder_hidden_dim: 64
+  decoder_num_layers: 1
+  decoder_num_heads: 2
+  freeze_decoder: true
+  temperature: 1.0
+  hard_sample: true
+
+listener:
+  vocab_size: 256
+  hidden_dim: 64
+  num_heads: 2
+  num_layers: 1
+  latent_dim: 64
+  dropout: 0.0
+
+inverse:
+  theta_hidden_dim: 32
+  theta_dropout: 0.0
+  ic_hidden_dim: 64
+  ic_dropout: 0.0
+
+loss:
+  reconstruction_weight: 1.0
+  kl_weight: 0.1
+  kl_free_bits: 1.0
+  theta_inverse_weight: 1.0
+  ic_inverse_weight: 0.0
+  listener_roundtrip_weight: 1.0
+  topographic_weight: 0.5
+  topographic_n_samples: 16
+
+training:
+  num_epochs: 3
+  batch_size: 8
+  learning_rate: 1.0e-3
+  optimizer: "adam"
+  val_split: 0.2
+  val_every_n_epochs: 1
+  device: "cuda"
+  kl_warmup_epochs: 1
+  listener_start_epoch: 2
+  log_every_n_batches: 5
+  checkpoint_every_n_epochs: 2
+  early_stopping_patience: 10
+
+normalization:
+  method: "none"

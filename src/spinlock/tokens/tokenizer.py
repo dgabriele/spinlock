@@ -24,11 +24,12 @@ from .config import TokenizerConfig
 from .model import JointHierarchicalVQVAE
 from .trainer import VQTokenizerTrainer
 from .checkpoint import load_checkpoint, verify_pretrained_cnn
+from .base_tokenizer import BaseTokenizer
 
 logger = logging.getLogger(__name__)
 
 
-class VQTokenizer:
+class VQTokenizer(BaseTokenizer):
     """High-level interface for VQ-VAE tokenization.
 
     Provides simple train() and tokenize() methods for trajectory encoding.
@@ -102,11 +103,7 @@ class VQTokenizer:
         model: Optional[JointHierarchicalVQVAE] = None,
         group_indices: Optional[Dict[str, list]] = None,
     ):
-        self.config = config
-        self.model = model
-        self.group_indices = group_indices
-        self.normalization_stats = None
-        self.feature_metadata = None  # Will be populated during training
+        super().__init__(config, model=model, group_indices=group_indices)
 
     def _resume_training(
         self,
